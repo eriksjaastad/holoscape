@@ -101,6 +101,26 @@ Contains: Project context, Erik's style, what happened on Day 1, how to work wit
 
 ---
 
+## 🤖 Agents & Automation
+
+Side projects that run alongside Hologram:
+
+- **`docs/agents/SOCIAL_MEDIA_AGENT.md`** - Automated social media pipeline
+  - Skin Generator → Screenshot → Caption → Post
+  - Instagram, Twitter/X, Facebook automation
+  - Discord logging with human-in-the-loop
+  - Phased implementation plan
+
+- **`docs/skin-ideas/SKIN_IDEAS.md`** - Skin concepts + Skin Generator Agent idea
+  - Default "Origin" skin philosophy
+  - TV intro inspiration (Westworld, Foundation, etc.)
+  - Skin concept library
+  - Skin Generator Agent spec
+
+See also: `ROADMAP.md` → Side Tools section
+
+---
+
 ## 📅 Session Notes
 
 - **`docs/SESSION_NOTES_DAY_1.md`** - Complete story of December 18, 2025

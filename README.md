@@ -104,6 +104,13 @@ Traditional windows are constraints. Hologram embraces:
 - [ ] Integrate Three.js visualizer
 - [ ] Add Sonique-inspired styling
 
+## Running Hologram Locally
+
+1. `npm install` to populate dependencies.
+2. `npm run dev` to launch the Electron app with `NODE_ENV=development` (automatic DevTools and live reload when you rebuild assets).
+3. `npm start` when you want to run the production-like build (transparent window, vibrancy, and the breathing visualizer with metrics).
+4. For the Phase 0.5 Spike 1 measurement pass, keep the metrics overlay visible and record the FPS/CPU/Heap numbers while the app runs on the target machine; aim for 60fps, <5% CPU at idle, <200MB memory.
+
 ---
 
 ## Related Projects
