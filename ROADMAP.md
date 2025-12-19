@@ -167,77 +167,91 @@ These are **mandatory** requirements that must be maintained throughout developm
 
 **Achievement:** Roadmap reviewed and approved by 7 different AIs with unprecedented consensus on architecture and security model.
 
-**Next:** Phase 1 - Foundation, Security & Offline Resilience
+**Next:** Phase 2 - Single AI Connection + Complete Security Layer
 
 ---
 
-### Phase 1: Foundation, Security & Offline Resilience
-**Goal:** Transparent window with security foundation and offline resilience
+### Phase 0.5: Technical Spikes ✅ COMPLETE
+**Status:** ✅ Complete (December 19, 2025)
+**Goal:** Validate risky integrations before committing
 
-#### Week 1-2: Electron Foundation + Router + Security Foundation
-- [ ] Initialize Electron project with security config
-  - `frame: false, transparent: true, vibrancy: 'ultra-dark'`
-  - Content Security Policy configured
-  - No remote content loading
-- [ ] Create frameless, transparent window
-- [ ] Add custom drag handles (`-webkit-app-region`)
-- [ ] Implement macOS menu bar integration
-- [ ] Set up global hotkey (show/hide)
-- [ ] **Build Router layer with security hooks** (intent classifier)
-  - [ ] **Local intent classification** (regex/keyword patterns for offline operation)
-  - [ ] Define pattern libraries for Red/Yellow/Green actions
-  - [ ] Fallback to cloud LLM for ambiguous cases (when online)
-  - [ ] Queue ambiguous cases for cloud analysis when reconnected
-  - [ ] **Critical:** Security assessment must work 100% offline
-- [ ] **Build Security Layer foundation:**
-  - [ ] Define RiskLevel enum (Green/Yellow/Red)
-  - [ ] Define Action interface with risk mapping
-  - [ ] **Create Action Catalog v0** (explicit list of all possible actions):
-    - Network calls (model API requests) → Green/Yellow based on provider
-    - Filesystem reads → Green (read-only safe)
-    - Filesystem writes → Yellow (creates files)
-    - Filesystem deletes → Red (destructive)
-    - Shell execution → Red (dangerous, v1.0 disabled by default)
-    - Browser automation → Yellow (web requests, v1.0 basic only)
-    - **v1.0 ships with only network + filesystem reads enabled by default**
-  - [ ] Create SecurityLayer.assessRisk() signature
-  - [ ] Document risk classification for planned actions
-  - [ ] Design "Red Switch" state machine
-- [ ] Test window positioning and sizing
-- [ ] **Security Check:** Verify no external network calls
-- [ ] **Security Check:** Verify Three.js will be bundled locally (no CDN)
-- [ ] **Security Check:** Verify Router can classify intents offline (no LLM required for basic patterns)
+#### Spike 1: Transparent Window + Three.js Performance
+- [x] Create minimal Electron app: `transparent: true, frame: false, vibrancy: 'ultra-dark'`
+- [x] Three.js scene with 5,000 particles + breathing animation
+- [x] Measured on target hardware:
+  - FPS: **120fps** ✅ (target: 60fps — 2x exceeded)
+  - CPU: **0.1%** ✅ (target: <5% — 50x exceeded)
+  - Heap: **4.1MB** ✅ (target: <200MB — 50x exceeded)
+- [x] **GATE: PASSED** — Screenshot: `docs/milestones/`
 
-#### Week 3-4: Three.js Visualizer + Orchestrator Stub + Offline Resilience
-- [ ] Set up Three.js in Electron
-- [ ] Implement breathing particle sphere
-- [ ] Create visualizer states (Idle/Listening/Thinking/Locked)
-- [ ] **Implement Orchestrator stub** (personality from config, NO sub-agent dispatch yet)
-- [ ] **Load system prompt from `config/personas/cortana.json`**
-- [ ] Build basic chat UI (simple first, Sonique-ify later)
-- [ ] Add message input/output
-- [ ] Implement idle animation loop (NEVER static)
-- [ ] **Offline Resilience (CRITICAL):**
-  - [ ] Implement network status detection (navigator.onLine + ping test)
-  - [ ] Add "Offline" indicator in UI (subtle badge/icon)
-  - [ ] Visualizer continues running offline (no network dependency)
-  - [ ] Chat history remains accessible (read-only from local storage)
-  - [ ] Disable send button with "Waiting for connection..." tooltip
-  - [ ] Queue failed messages for retry on reconnection
-  - [ ] Test: Disconnect WiFi, verify app doesn't crash
-  - [ ] Test: Verify visualizer + history work offline
-- [ ] **Security Check:** Verify visualizer doesn't leak data
-- [ ] **Security Check:** Offline mode doesn't expose keys in logs
+#### Spike 2: Streaming API + Visualizer Sync
+- [x] Add OpenAI streaming call to spike 1
+- [x] Visualizer state changes: Idle (cyan) → Thinking (purple) → Speaking (green) → Idle
+- [x] Verified no dropped frames during API activity (120fps sustained)
+- [x] **GATE: PASSED** — CPU: 0.3%, Heap: 4.8MB
 
-**Milestone:** Transparent window with breathing hologram + security foundation + offline resilience
+#### Spike 3: Non-Rectangular Hit Testing
+- [x] Applied CSS clip-path to spike window (ellipse)
+- [x] Custom drag handle works
+- [x] Click-through: NO — CSS clip-path is visual only
+- [x] **GATE: PASSED** — Blocker documented, `setIgnoreMouseEvents()` deferred to Phase 5
+
+**Results:** All spikes validated. See `docs/spikes/` for details.
+
+---
+
+### Phase 1A: Development Infrastructure ✅ COMPLETE
+**Status:** ✅ Complete (December 19, 2025)
+**Goal:** Build the foundation all other code sits on
+
+#### Week 1: Project Scaffold ✅
+- [x] TypeScript configuration (strict mode, separate configs for main/renderer/preload)
+- [x] Path aliases (`@/main`, `@/renderer`, `@/shared`)
+- [x] Build tooling: Vite for renderer, esbuild for main
+- [x] Code quality: ESLint, Prettier, Husky + lint-staged
+- [x] Testing: Vitest for unit tests
+- [x] **Deferred:** electron-builder → Phase 6.5, Playwright E2E → Phase 4
+
+#### Week 2: Core Architecture ✅
+- [x] IPC bridge types (`src/shared/ipc-types.ts`)
+- [x] Preload script with typed contextBridge
+- [x] Main process service registry (`src/main/services/index.ts`)
+- [x] Logging infrastructure with sensitive data redaction (`src/main/services/logger.ts`)
+- [x] Error types and handling patterns (`src/shared/errors.ts`)
+
+---
+
+### Phase 1B: Window + Visualizer + Offline ✅ COMPLETE
+**Status:** ✅ Complete (December 19, 2025)
+**Goal:** Breathing hologram in a transparent window that works offline
+
+#### Week 3: Electron Window + Three.js ✅
+- [x] macOS Menu Bar (`src/main/menu.ts`): App, Edit, View, Window, Help
+- [x] Global Hotkey (`src/main/shortcuts.ts`): Cmd+Shift+H toggle
+- [x] GPU Vertex Shader: Breathing animation moved to GPU
+- [x] Smooth State Transitions: idle (#7efbff), thinking (#ca79ff), speaking (#4dfdd1), listening (#ffcc66), error (#ff6666)
+- [x] Window Service (`src/main/services/window.ts`)
+- [x] Window IPC Channels: `window:toggle`, `window:set-always-on-top`
+- [x] Performance verified: 120fps+ with state transitions
+
+#### Week 4: Chat UI + Offline Resilience ✅
+- [x] Chat history with `electron-store` (100 message limit)
+- [x] ChatHistoryService (`src/main/services/chat-history.ts`)
+- [x] OrchestratorService with personality config (`config/personality.json`)
+- [x] NetworkService with polling + IPC events
+- [x] SecurityService with assessment logging
+- [x] Offline UI: badge, disabled button, tooltip
+- [x] All services registered in main/index.ts
+
+**Milestone:** Transparent window with breathing hologram + security foundation + offline resilience ✅
 
 **Security Review:**
-- [ ] No telemetry in build
-- [ ] No external asset loading
-- [ ] Visualizer runs without network
-- [ ] Security Layer foundation exists (sub-agent dispatch in Phase 3)
-- [ ] App gracefully degrades offline (doesn't crash)
-- [ ] Orchestrator stub loads personality correctly
+- [x] No telemetry in build
+- [x] No external asset loading
+- [x] Visualizer runs without network
+- [x] Security Layer foundation exists
+- [x] App gracefully degrades offline
+- [x] Orchestrator stub loads personality correctly
 
 ---
 
@@ -1133,16 +1147,48 @@ Hologram is the **UI layer** that unifies:
 - 24-week cut list documented (MCP, Skin Community, Cortana Special → v1.1)
 - Based on **UNANIMOUS CONSENSUS** from 5 independent AI reviewers
 
-**Next:** Implementation begins with corrected sequencing
+**v4.0** - December 19, 2025 (Phase 1 Complete + Side Tools)
+- **Phase 0.5:** Technical Spikes complete (120fps, 0.1% CPU validated)
+- **Phase 1A:** Development Infrastructure complete (TypeScript, Vite, services)
+- **Phase 1B:** Window + Visualizer + Offline complete
+- **Side Tools:** Social Media Agent started (Phases 1-3 complete)
+- Detailed prompts created for agent delegation (`prompts/` directory)
+- Deferred items moved to proper phases (electron-builder → 6.5, Playwright → 4)
+
+**Next:** Phase 2 - Single AI Connection + Complete Security Layer
+
+---
+
+## Side Tools (Parallel Development)
+
+### Social Media Agent
+**Location:** `agents/social-media/`
+**Roadmap:** `docs/agents/SOCIAL_MEDIA_ROADMAP.md`
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1 | ✅ | Skin concept generator (GPT-4o-mini → Discord) |
+| Phase 2 | ✅ | Screenshot renderer (Puppeteer → 1080x1080 PNG) |
+| Phase 3 | ✅ | Caption generator (Instagram, Twitter, Facebook) |
+| Phase 4 | 🚀 | Manual posting workflow (human-in-the-loop) |
+| Phase 5 | ⏳ | Full automation (auto-post with safety rails) |
+| Phase 6 | ⏳ | Content calendar (scheduled variety) |
+
+**Quick Start:**
+```bash
+cd agents/social-media
+npm install
+npm run package  # Full workflow: concept → image → captions → Discord
+```
 
 ---
 
 *Last updated: December 19, 2025*  
-*Status: **v3.0 FINAL - Phase 0 Complete ✅ | Phase 1 In Progress 🚀***  
+*Status: **v4.0 - Phase 0.5 ✅ | Phase 1A ✅ | Phase 1B ✅ | Phase 2 Next 🚀***  
 *Timeline: Realistic 42-52 weeks*  
 *Started: December 18, 2025*
 
 ---
 
-**Phase 0 Complete. Phase 1 begins. Let's build something beautiful. Securely. Realistically.** 💜🔒✨
+**Phase 1 Complete. Phase 2 begins. The hologram breathes. The agent posts. Let's keep building.** 💜🔒✨
 
