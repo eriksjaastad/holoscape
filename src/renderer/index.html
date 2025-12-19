@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.openai.com"
+    />
+    <title>Hologram | Spike 0.5</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="drag-handle"></div>
+    <div id="visualizer-root">
+      <canvas id="visualizer-canvas"></canvas>
+    </div>
+
+    <div id="metrics-panel">
+      <div class="metric-row">
+        <span class="metric-label">FPS</span>
+        <span id="metric-fps">0.0</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">CPU</span>
+        <span id="metric-cpu">—</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Heap</span>
+        <span id="metric-mem">—</span>
+      </div>
+      <div class="metric-footer">Target: 60fps · &lt;5% CPU · &lt;200MB</div>
+    </div>
+
+    <div id="chat-panel">
+      <input
+        id="api-key-input"
+        type="password"
+        placeholder="OpenAI API key (optional for simulation)"
+        aria-label="OpenAI API key"
+      />
+      <div class="chat-controls">
+        <input id="chat-input" type="text" placeholder="Ask anything..." />
+        <button id="send-button" type="button">Send</button>
+      </div>
+      <div id="response-log" aria-live="polite" role="status">
+        Streaming output will appear here.
+      </div>
+      <div id="chat-status">Idle</div>
+    </div>
+
+    <div id="offline-badge" class="offline-badge" hidden>Offline</div>
+
+    <div id="info-overlay">
+      <p class="title">Phase 0.5 · Spike 1</p>
+      <p class="subtitle">Transparent window · Three.js breathing sphere · Measurement enabled</p>
+    </div>
+
+    <div id="prefs-overlay" aria-modal="true" role="dialog" aria-labelledby="prefs-title" hidden>
+      <div class="prefs-content">
+        <div class="prefs-header">
+          <h2 id="prefs-title">Preferences</h2>
+          <button id="prefs-close" aria-label="Close preferences">×</button>
+        </div>
+        <div class="prefs-section">
+          <h3>Appearance</h3>
+          <label>
+            <input type="checkbox" id="prefs-high-contrast" />
+            Enable high contrast mode
+          </label>
+          <label>
+            <input type="checkbox" id="prefs-show-fps" checked />
+            Always show FPS overlay
+          </label>
+        </div>
+        <div class="prefs-section">
+          <h3>Hotkeys</h3>
+          <p>Cmd+Shift+H — Toggle window visibility</p>
+          <p>Cmd+, — Preferences</p>
+        </div>
+        <div class="prefs-footer">
+          <button type="button" id="prefs-close-bottom">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
