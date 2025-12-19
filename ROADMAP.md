@@ -47,6 +47,58 @@ Create a desktop AI interface that:
 
 ---
 
+## ⚠️ Critical Reading: Engineering Counterpoint
+
+**Before investing time in this project, read the "Critical Counterpoint: Engineering Concerns" section in [`docs/IMPLEMENTATION_DIRECTIVES.md`](docs/IMPLEMENTATION_DIRECTIVES.md).**
+
+That section raises serious concerns about the "Cool > Efficiency" philosophy, technical red flags, and what's missing from this project's planning. This roadmap and the counterpoint should be read together.
+
+### Additional Concerns Specific to This Roadmap
+
+**1. The "7 AI Reviews with Unanimous Consensus" Is Not Validation**
+
+This roadmap cites agreement from 7 AI models as evidence the architecture is sound. This reasoning is flawed:
+
+- **AI models tend to agree with well-structured prompts.** If you present a detailed, internally-consistent vision, AI models will generally affirm it. They're optimized to be helpful, not to challenge fundamental assumptions.
+- **Consensus ≠ correctness.** Seven AI models agreeing doesn't mean the timeline is realistic, the technical approach is sound, or the product will find users. It means the documents are coherent.
+- **No AI model said "don't build this."** That should be a yellow flag. Real technical review includes "this might not be worth doing" as a possible conclusion.
+- **The reviews validated internal consistency, not external viability.** Whether users want a Sonique-inspired AI chat client in 2025 is a market question, not an architecture question.
+
+The phrase "unprecedented consensus" appears in the session logs. Unprecedented agreement from AI models reviewing AI-generated architecture documents is not unprecedented — it's expected.
+
+**2. Three Pivots on Day 1 Predicts Scope Instability**
+
+From the session log:
+> "The pivot happened THREE times: Morning: Cortana interface → Sonique-inspired design. Afternoon: White-label AI client. Evening: Agent Operating System."
+
+This pattern — expanding scope during planning rather than constraining it — typically continues into implementation. The 42-52 week timeline assumes the vision stabilizes. If it keeps expanding (as Day 1 suggests it will), the timeline becomes meaningless.
+
+**3. Documentation-to-Code Ratio Is Inverted**
+
+Current state:
+- ~4,800 lines of documentation
+- ~100 lines of actual code
+- Ratio: **48:1**
+
+Healthy projects typically have the inverse — more code than docs. Extensive upfront documentation often indicates:
+- Analysis paralysis
+- Premature optimization of architecture
+- Avoidance of the hard work of implementation
+- A vision that's easier to describe than to build
+
+The existence of detailed GPU memory management specs (Phase 4) before a single Three.js line has been written suggests planning has outpaced reality-testing.
+
+**4. Success Criteria Are Unfalsifiable**
+
+From this document's success criteria:
+- "A screenshot looks 'impossible'"
+- "Users say 'this is the coolest thing I've ever seen'"
+- "Feels like talking to the future"
+
+These cannot be objectively measured, which means the project can never definitively fail — or succeed. This protects the vision from reality but makes it impossible to know when to stop, pivot, or ship.
+
+---
+
 ## Security & Privacy Checklist (Built-in from Day 1)
 
 These are **mandatory** requirements that must be maintained throughout development:
