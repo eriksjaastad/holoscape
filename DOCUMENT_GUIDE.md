@@ -270,3 +270,11 @@ Make talking to AI feel as special as it actually is.
 *Last updated: December 19, 2025*  
 *Status: Phase 0 complete, awaiting advisor review*
 
+## Related Documentation
+
+- [Automation Reliability](patterns/automation-reliability.md) - automation
+- [Discord Webhooks Per Project](patterns/discord-webhooks-per-project.md) - Discord
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models
+- [AI Team Orchestration](patterns/ai-team-orchestration.md) - orchestration
+- [Safety Systems](patterns/safety-systems.md) - security
+- [cortana-personal-ai/README](../ai-model-scratch-build/README.md) - Cortana AI

@@ -6,7 +6,13 @@
     "generate": "tsx src/index.ts generate",
     "render": "tsx src/index.ts render",
     "caption": "tsx src/index.ts caption",
-    "list": "tsx src/index.ts list"
+    "list": "tsx src/index.ts list",
+    "package": "tsx src/index.ts package",
+    "approve": "tsx src/index.ts approve",
+    "reject": "tsx src/index.ts reject",
+    "posted": "tsx src/index.ts posted",
+    "pending": "tsx src/index.ts pending",
+    "approved": "tsx src/index.ts approved"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

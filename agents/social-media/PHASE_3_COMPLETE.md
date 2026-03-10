@@ -87,36 +87,36 @@ A caption generation system that creates tailored social media captions for Inst
 **Generated Captions:**
 
 **Instagram (122 chars):**
-```
+```bash
 Dive into the whimsical world of Cog & Steam! Where creativity meets mechanics. ✨
 #CogAndSteam #AIAssistant #MechanicalArt
 ```
 
 **Twitter (196 chars):**
-```
+```bash
 Unlock the gears of creativity with Cog & Steam! This AI marvel whirs with whimsical charm, fueling your inventiveness. Ready to tinker? Let's get mechanical! #CogAndSteam #AIArtistry
 ```
 
 **Facebook (228 chars):**
-```
+```bash
 Introducing our latest skin concept: Cog & Steam! This whimsical AI assistant embodies the spirit of invention with its charming mechanical flair. What would you love to tinker with if you had your own gadget at your fingertips?
 ```
 
 ### Another Example: "Zen Harmony"
 
 **Instagram (142 chars):**
-```
+```bash
 Embrace tranquility with Zen Harmony 🌸. Let calmness guide your journey and inspire moments of reflection.
 #ZenHarmony #Mindfulness #CalmTech
 ```
 
 **Twitter (157 chars):**
-```
+```bash
 Meet Zen Harmony: your AI companion that whispers tranquility and simplicity. Embrace mindfulness with every interaction. 🌸 #ZenVibes #Mindfulness
 ```
 
 **Facebook (231 chars):**
-```
+```bash
 Introducing our new AI assistant skin, Zen Harmony! 🌸 With its tranquil colors and soothing vibe, it encourages moments of mindfulness and reflection. What little practices do you incorporate into your day for a touch of serenity?
 ```
 
@@ -146,21 +146,21 @@ Introducing our new AI assistant skin, Zen Harmony! 🌸 With its tranquil color
 
 ```bash
 # Generate with captions only (no image)
-npm run generate -- --caption --no-post
+doppler run -- npm run generate -- --caption --no-post
 
 # Full package: concept + image + captions
-npm run generate -- --mood "cyberpunk neon" --render --caption
+doppler run -- npm run generate -- --mood "cyberpunk neon" --render --caption
 
 # Generate captions for existing concept
-npm run caption output/concepts/2025-12-19-zen-harmony.json
+doppler run -- npm run caption output/concepts/2025-12-19-zen-harmony.json
 
 # Preview without posting to Discord
-npm run generate -- --render --caption --no-post
+doppler run -- npm run generate -- --render --caption --no-post
 ```
 
 ## Files Summary
 
-```
+```bash
 agents/social-media/
 ├── src/
 │   ├── caption.ts           # NEW - Platform-specific caption generation
@@ -217,3 +217,10 @@ Phase 3 is successful if:
 
 All criteria met! The caption generator produces high-quality, platform-optimized content ready for social media. 📝✨
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [Cost Management](Documents/reference/MODEL_COST_COMPARISON.md) - cost management
+- [Discord Webhooks Per Project](patterns/discord-webhooks-per-project.md) - Discord
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models

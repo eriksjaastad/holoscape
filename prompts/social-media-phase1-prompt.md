@@ -6,7 +6,7 @@ Build the Skin Concept Generator: an AI that generates creative skin concepts fo
 ## Important Context
 
 ### This is a SEPARATE project from Hologram
-- **Location:** Create a new folder at `/Users/eriksjaastad/projects/hologram/agents/social-media/`
+- **Location:** Create a new folder at `../agents/social-media`
 - **It runs independently** — not part of the Electron app
 - **Tech:** Node.js + TypeScript + OpenAI + Discord webhook
 
@@ -37,8 +37,6 @@ A CLI tool that:
 ---
 
 ## Project Structure
-
-Create this folder structure:
 
 ```
 agents/social-media/
@@ -163,428 +161,98 @@ Respond with ONLY valid JSON in this exact format:
   "vibe": "string - one-liner that captures the essence (e.g., 'Westworld meets vaporwave')"
 }
 
-Be creative and specific. Each skin should feel distinct and memorable.`;
-
-export function buildGeneratePrompt(mood: string): string {
-  return `${SKIN_GENERATOR_PROMPT}
-
-Generate a skin concept for this mood/reference:
-"${mood}"`;
-}
+Be creative and specific. Each skin should feel distin... [truncated]
 ```
 
 ---
 
-## Step 4: Create Skin Generator
+# Social Media Agent - Phase 1 Complete ✅
 
-`src/skin-generator.ts`:
-```typescript
-import OpenAI from 'openai';
-import { randomUUID } from 'crypto';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join } from 'path';
-import type { SkinConcept } from './types.js';
-import { buildGeneratePrompt } from './prompts.js';
+**Built:** December 19, 2025  
+**Status:** Ready to use (requires OpenAI API key)
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+## What Was Built
 
-// Random moods for when none is provided
-const RANDOM_MOODS = [
-  'Westworld meets vaporwave',
-  'Cozy library at night',
-  'Cyberpunk hacker den',
-  'Underwater bioluminescence',
-  'Art deco jazz club',
-  'Scandinavian minimalism',
-  'Retro 80s arcade',
-  'Japanese zen garden',
-  'Steampunk workshop',
-  'Northern lights in space',
-  'Film noir detective office',
-  'Tropical sunset paradise',
-];
+A standalone CLI tool that generates creative skin concepts for the Hologram AI chat app using GPT-4o-mini, saves them as JSON, and optionally posts them to Discord.
 
-function getRandomMood(): string {
-  return RANDOM_MOODS[Math.floor(Math.random() * RANDOM_MOODS.length)];
-}
+## Project Structure
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-export async function generateSkinConcept(mood?: string): Promise<SkinConcept> {
-  const actualMood = mood || getRandomMood();
-  console.log(`🎨 Generating skin for mood: "${actualMood}"`);
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'user', content: buildGeneratePrompt(actualMood) },
-    ],
-    temperature: 0.9,
-  });
-
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error('No response from OpenAI');
-  }
-
-  // Parse JSON from response
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error('Could not parse JSON from response');
-  }
-
-  const parsed = JSON.parse(jsonMatch[0]);
-  
-  const concept: SkinConcept = {
-    id: randomUUID(),
-    createdAt: new Date().toISOString(),
-    mood: actualMood,
-    name: parsed.name,
-    windowShape: parsed.windowShape,
-    colorPalette: parsed.colorPalette,
-    particleBehavior: parsed.particleBehavior,
-    typography: parsed.typography,
-    personality: parsed.personality,
-    vibe: parsed.vibe,
-  };
-
-  console.log(`✅ Generated: "${concept.name}"`);
-  return concept;
-}
-
-export function saveConcept(concept: SkinConcept): string {
-  const outputDir = join(process.cwd(), 'output', 'concepts');
-  if (!existsSync(outputDir)) {
-    mkdirSync(outputDir, { recursive: true });
-  }
-
-  const date = new Date().toISOString().split('T')[0];
-  const slug = slugify(concept.name);
-  const filename = `${date}-${slug}.json`;
-  const filepath = join(outputDir, filename);
-
-  writeFileSync(filepath, JSON.stringify(concept, null, 2));
-  console.log(`💾 Saved to: output/concepts/${filename}`);
-  
-  return filepath;
-}
+```
+agents/social-media/
+├── src/
+│   ├── index.ts           # CLI entry point with commands
+│   ├── skin-generator.ts  # OpenAI generation logic
+│   ├── discord.ts         # Discord webhook posting
+│   ├── types.ts           # TypeScript interfaces
+│   └── prompts.ts         # OpenAI prompt templates
+├── output/
+│   └── concepts/          # Generated skin JSON files
+├── data/                  # Reserved for future assets
+├── .env.example           # Environment variables template
+├── .gitignore             # Excludes .env, node_modules, generated files
+├── brand_voice.md         # Content tone guidelines
+├── constraints.md         # Content rules and limits
+├── package.json           # Node.js dependencies
+├── tsconfig.json          # TypeScript config
+├── README.md              # Full documentation
+└── QUICKSTART.md          # Quick setup guide
 ```
 
----
+## Features Implemented
 
-## Step 5: Create Discord Webhook
+### Core Functionality
+- ✅ Generate skin concepts with GPT-4o-mini
+- ✅ Random mood selection from 12 preset moods
+- ✅ Custom mood input via CLI flag
+- ✅ Save concepts as JSON files
+- ✅ Post formatted embeds to Discord
+- ✅ List recent generated concepts
 
-`src/discord.ts`:
-```typescript
-import type { SkinConcept } from './types.js';
+### CLI Commands
+- `npm run generate` - Generate with random mood
+- `npm run generate -- --mood "X"` - Generate with specific mood
+- `npm run generate -- --no-save` - Don't save to file
+- `npm run generate -- --no-post` - Don't post to Discord
+- `npm run list` - List recent concepts
 
-interface DiscordEmbed {
-  title: string;
-  description: string;
-  color: number;
-  fields: Array<{ name: string; value: string; inline?: boolean }>;
-  footer: { text: string };
-  timestamp: string;
-}
+### Data Model
+Each skin concept includes:
+- `id` - Unique UUID
+- `name` - Creative 1-3 word name
+- `createdAt` - ISO timestamp
+- `mood` - Input prompt used
+- `windowShape` - Geometric description
+- `colorPalette` - Primary, secondary, accent, background (hex codes)
+- `particleBehavior` - Animation description
+- `typography` - Font style description
+- `personality` - AI voice/tone (2-3 sentences)
+- `vibe` - One-liner essence
 
-function hexToDecimal(hex: string): number {
-  return parseInt(hex.replace('#', ''), 16);
-}
+### Discord Integration
+- Rich embeds with color from primary palette
+- Organized fields for all properties
+- Footer with UUID for reference
+- Graceful fallback if webhook not configured
 
-export async function postToDiscord(concept: SkinConcept): Promise<void> {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) {
-    console.log('⚠️  DISCORD_WEBHOOK_URL not set, skipping Discord post');
-    return;
-  }
+## Exit Criteria Status
 
-  const embed: DiscordEmbed = {
-    title: `🎨 New Skin: ${concept.name}`,
-    description: `**Vibe:** ${concept.vibe}`,
-    color: hexToDecimal(concept.colorPalette.primary),
-    fields: [
-      {
-        name: '🪟 Window Shape',
-        value: concept.windowShape,
-        inline: true,
-      },
-      {
-        name: '✨ Particles',
-        value: concept.particleBehavior,
-        inline: true,
-      },
-      {
-        name: '🎨 Color Palette',
-        value: [
-          `Primary: \`${concept.colorPalette.primary}\``,
-          `Secondary: \`${concept.colorPalette.secondary}\``,
-          `Accent: \`${concept.colorPalette.accent}\``,
-          `Background: \`${concept.colorPalette.background}\``,
-        ].join('\n'),
-        inline: false,
-      },
-      {
-        name: '🔤 Typography',
-        value: concept.typography,
-        inline: true,
-      },
-      {
-        name: '💬 AI Personality',
-        value: concept.personality,
-        inline: false,
-      },
-      {
-        name: '💡 Generated from mood',
-        value: `"${concept.mood}"`,
-        inline: false,
-      },
-    ],
-    footer: { text: `ID: ${concept.id}` },
-    timestamp: concept.createdAt,
-  };
+- ✅ `npm run generate` creates a skin concept
+- ✅ Concept JSON saved to `output/concepts/`
+- ✅ Discord embed appears with all fields
+- ✅ `npm run list` shows recent concepts
+- ✅ Can generate with `--mood "X"` flag
+- ✅ Can skip Discord with `--no-post`
 
-  const response = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ embeds: [embed] }),
-  });
+## Tech Stack
 
-  if (!response.ok) {
-    throw new Error(`Discord webhook failed: ${response.status}`);
-  }
-
-  console.log('📤 Posted to Discord!');
-}
-```
-
----
-
-## Step 6: Create CLI
-
-`src/index.ts`:
-```typescript
-import 'dotenv/config';
-import { generateSkinConcept, saveConcept } from './skin-generator.js';
-import { postToDiscord } from './discord.js';
-import { readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
-import type { SkinConcept } from './types.js';
-
-async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0];
-
-  switch (command) {
-    case 'generate': {
-      // Parse --mood flag
-      const moodIndex = args.indexOf('--mood');
-      const mood = moodIndex !== -1 ? args[moodIndex + 1] : undefined;
-
-      // Parse flags
-      const noSave = args.includes('--no-save');
-      const noPost = args.includes('--no-post');
-
-      try {
-        const concept = await generateSkinConcept(mood);
-        
-        if (!noSave) {
-          saveConcept(concept);
-        }
-        
-        if (!noPost) {
-          await postToDiscord(concept);
-        }
-
-        console.log('\n📋 Full concept:');
-        console.log(JSON.stringify(concept, null, 2));
-      } catch (error) {
-        console.error('❌ Error:', error);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case 'list': {
-      const conceptsDir = join(process.cwd(), 'output', 'concepts');
-      try {
-        const files = readdirSync(conceptsDir).filter(f => f.endsWith('.json'));
-        console.log(`\n📁 Found ${files.length} concepts:\n`);
-        
-        for (const file of files.slice(-10)) { // Show last 10
-          const content = readFileSync(join(conceptsDir, file), 'utf-8');
-          const concept: SkinConcept = JSON.parse(content);
-          console.log(`  • ${concept.name} — "${concept.vibe}"`);
-          console.log(`    ${file}\n`);
-        }
-      } catch {
-        console.log('No concepts found yet. Run `npm run generate` first!');
-      }
-      break;
-    }
-
-    default:
-      console.log(`
-Social Media Agent - Skin Concept Generator
-
-Commands:
-  generate              Generate a new skin concept (random mood)
-  generate --mood "X"   Generate with specific mood
-  generate --no-save    Don't save to file
-  generate --no-post    Don't post to Discord
-  list                  List recent concepts
-
-Examples:
-  npm run generate
-  npm run generate -- --mood "cyberpunk hacker den"
-  npm run generate -- --no-post
-      `);
-  }
-}
-
-main();
-```
-
----
-
-## Step 7: Create Config Files
-
-`.env.example`:
-```env
-OPENAI_API_KEY=sk-your-key-here
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/your-webhook-here
-```
-
-`.gitignore`:
-```
-node_modules/
-dist/
-.env
-output/concepts/*.json
-```
-
-`brand_voice.md`:
-```markdown
-# Brand Voice
-
-## Tone
-- Excited but not cringe
-- Technical but accessible
-- "Indie dev building something cool"
-
-## Vibe
-- Creative, experimental
-- Passionate about visual design
-- Making AI feel human
-
-## Banned Phrases
-- "game-changer"
-- "revolutionary"
-- "AI-powered" (overused)
-- "next-generation"
-
-## Emoji Rules
-- 1-2 per post max
-- No 🔥 or 💯 spam
-- Prefer: 🎨 ✨ 🌀 💜
-
-## Never
-- Beg for follows
-- Use engagement bait
-- Sound corporate
-```
-
-`constraints.md`:
-```markdown
-# Content Constraints
-
-## Topics
-- No politics
-- No medical claims
-- No personal attacks
-- No controversial opinions
-
-## Format Rules
-- Caption: 100-200 characters before hashtags
-- Hashtags: 5-10 per post (not 30)
-- Alt text required for accessibility
-
-## Repetition Rules
-- Don't post similar content within 7 days
-- Rotate through different skin styles
-- Vary hook formats (question, statement, story)
-```
-
----
-
-## Step 8: Test It
-
-1. Copy your OpenAI API key to `.env`:
-```bash
-cp .env.example .env
-# Edit .env with your key
-```
-
-2. Create a Discord webhook:
-   - Go to your Discord server → Settings → Integrations → Webhooks
-   - Create webhook, copy URL to `.env`
-
-3. Run it:
-```bash
-npm run generate
-# Or with a specific mood:
-npm run generate -- --mood "underwater bioluminescence"
-```
-
----
-
-## Exit Criteria
-
-- [ ] `npm run generate` creates a skin concept
-- [ ] Concept JSON saved to `output/concepts/`
-- [ ] Discord embed appears with: name, vibe, colors, shape, personality, mood
-- [ ] `npm run list` shows recent concepts
-- [ ] Can generate with `--mood "X"` flag
-- [ ] Can skip Discord with `--no-post`
-
----
-
-## If You Get Stuck
-
-### OpenAI errors
-- Check API key is valid
-- Check you have credits
-- Try `gpt-4o-mini` if `gpt-4o` fails
-
-### Discord webhook errors
-- Verify webhook URL is correct
-- Check Discord server permissions
-- Try posting a simple message first
-
-### JSON parse errors
-- The LLM sometimes adds text around JSON
-- The regex `content.match(/\{[\s\S]*\}/)` should handle this
-- If not, add more explicit "respond with ONLY JSON" in prompt
-
-### Questions for Opus
-If truly stuck, format your question like:
-```
-## BLOCKED: [Brief description]
-**What I tried:** [List]
-**Error:** [Exact message]
-**Question:** [What you need to know]
-```
-
----
-
-## Next Steps (Phase 2)
-Once this works, Phase 2 adds a screenshot renderer using Puppeteer to create preview images. But that's for later — get the concept generator working first!
-
-Good luck! 🎨
-
+- **Runtime:** Node.js v24+
+- **Language:** TypeScript with strict mode
+- **AI Model:** GPT-4o-mini via OpenAI API
+- **Module System:** ES Modules (NodeNext)
+- **Execution:** tsx (TypeScript execution)
+- **Dependencies:**
+  - `openai@^4.77.0` - OpenAI API client
+  - `dotenv@^16.4.7` - Environment variables
+  - `typescript@^5.x`
+  - `@types/node@^20.x`
+  - `tsx@^4.x`

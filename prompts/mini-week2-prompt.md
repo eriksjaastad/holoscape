@@ -124,3 +124,7 @@ When complete, ALL of these should work:
 
 Good luck! 🚀
 
+## Related Documentation
+
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models

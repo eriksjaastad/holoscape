@@ -36,3 +36,31 @@ export interface CaptionSet {
   twitter: Caption;
   facebook: Caption;
 }
+
+export type PostStatus = 'pending' | 'approved' | 'rejected' | 'posted';
+
+export interface PostPackage {
+  id: string;
+  createdAt: string;
+  concept: SkinConcept;
+  imagePath: string;
+  captions: CaptionSet;
+  altText: string;
+  suggestedTime: string;
+  reasoning: string;
+  platforms: Platform[];
+  status: PostStatus;
+  approvedAt?: string;
+  rejectedAt?: string;
+  rejectedReason?: string;
+  postedAt?: string;
+}
+
+export interface Decision {
+  id: string;
+  packageId: string;
+  action: 'created' | 'approved' | 'rejected' | 'regenerated' | 'posted';
+  timestamp: string;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+}

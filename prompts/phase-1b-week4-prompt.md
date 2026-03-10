@@ -24,7 +24,7 @@ Add chat history persistence, network status detection, offline UI handling, and
 ## Step 1: Install Dependencies
 
 ```bash
-cd /Users/eriksjaastad/projects/hologram
+cd ..
 npm install electron-store
 ```
 
@@ -1031,3 +1031,9 @@ Format questions like:
 
 Good luck! 🛡️
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Team Orchestration](patterns/ai-team-orchestration.md) - orchestration
+- [Safety Systems](patterns/safety-systems.md) - security

@@ -4,7 +4,6 @@ import { setVisualizerState } from './visualizer';
 const chatInput = document.getElementById('chat-input') as HTMLInputElement | null;
 const sendButton = document.getElementById('send-button') as HTMLButtonElement | null;
 const responseLog = document.getElementById('response-log') as HTMLDivElement | null;
-const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null;
 const statusBadge = document.getElementById('chat-status') as HTMLDivElement | null;
 const offlineBadge = document.getElementById('offline-badge') as HTMLDivElement | null;
 const chatPanel = document.getElementById('chat-panel') as HTMLDivElement | null;
@@ -44,39 +43,29 @@ function updateOfflineState(online: boolean) {
 }
 
 async function initializeNetworkStatus() {
-  if (window.hologram?.invoke) {
+  if (window.holoscape?.invoke) {
     try {
-      const status = await window.hologram.invoke('network:get-status');
+      const status = await window.holoscape.invoke('network:get-status');
       updateOfflineState(status.online);
     } catch (err) {
       console.warn('Failed to get initial network status:', err);
     }
   }
 
-  if (window.hologram?.on) {
-    window.hologram.on('network:status', (payload) => {
+  if (window.holoscape?.on) {
+    window.holoscape.on('network:status', (payload) => {
       updateOfflineState(payload.online);
     });
   }
 }
 
-async function setApiKeyFromEnv() {
-  if (apiKeyInput && window.hologram?.getApiKey) {
-    const envKey = await window.hologram.getApiKey();
-    if (envKey) {
-      apiKeyInput.value = envKey;
-      apiKeyInput.placeholder = 'Loaded from .env';
-    }
-  }
-}
-
 async function loadChatHistory(): Promise<void> {
-  if (!responseLog || !window.hologram?.invoke) {
+  if (!responseLog || !window.holoscape?.invoke) {
     return;
   }
 
   try {
-    const history = await window.hologram.invoke('chat:get-history');
+    const history = await window.holoscape.invoke('chat:get-history');
     if (history && history.length > 0) {
       history.forEach((msg) => {
         responseLog.textContent += `[${msg.role}] ${msg.content}\n`;
@@ -102,7 +91,6 @@ async function handleSend() {
     return;
   }
 
-  const apiKey = apiKeyInput?.value.trim();
   sendButton.disabled = true;
   chatInput.blur();
   responseLog.textContent += `[user] ${prompt}\n`;
@@ -112,7 +100,6 @@ async function handleSend() {
   let tokenStreamed = false;
   try {
     const streamOptions: StreamOptions = {
-      apiKey: apiKey || undefined,
       messages: [{ role: 'user', content: prompt }],
     };
 
@@ -146,13 +133,12 @@ chatInput?.addEventListener('keydown', (event) => {
   }
 });
 
-setApiKeyFromEnv();
 initializeNetworkStatus();
 loadChatHistory();
 updateChatStatus('Idle');
 
-if (window.hologram?.on) {
-  window.hologram.on('chat:message-added', ({ message }) => {
+if (window.holoscape?.on) {
+  window.holoscape.on('chat:message-added', ({ message }) => {
     if (responseLog) {
       responseLog.textContent += `[${message.role}] ${message.content}\n`;
     }

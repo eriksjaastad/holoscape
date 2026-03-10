@@ -49,7 +49,7 @@ Create a desktop AI interface that:
 
 ## ⚠️ Critical Reading: Engineering Counterpoint
 
-**Before investing time in this project, read the "Critical Counterpoint: Engineering Concerns" section in [`docs/IMPLEMENTATION_DIRECTIVES.md`](docs/IMPLEMENTATION_DIRECTIVES.md).**
+**Before investing time in this project, read the "Critical Counterpoint: Engineering Concerns" section in [`Documents/core/IMPLEMENTATION_DIRECTIVES.md`](Documents/core/IMPLEMENTATION_DIRECTIVES.md).**
 
 That section raises serious concerns about the "Cool > Efficiency" philosophy, technical red flags, and what's missing from this project's planning. This roadmap and the counterpoint should be read together.
 
@@ -86,1109 +86,314 @@ Healthy projects typically have the inverse — more code than docs. Extensive u
 - Avoidance of the hard work of implementation
 - A vision that's easier to describe than to build
 
-The existence of detailed GPU memory management specs (Phase 4) before a single Three.js line has been written suggests planning has outpaced reality-testing.
-
-**4. Success Criteria Are Unfalsifiable**
-
-From this document's success criteria:
-- "A screenshot looks 'impossible'"
-- "Users say 'this is the coolest thing I've ever seen'"
-- "Feels like talking to the future"
-
-These cannot be objectively measured, which means the project can never definitively fail — or succeed. This protects the vision from reality but makes it impossible to know when to stop, pivot, or ship.
+The existence of detailed GPU memory management specs (Phase 4) before a single Three.js line has been written suggest... [truncated]
 
 ---
 
-## Security & Privacy Checklist (Built-in from Day 1)
+# Cortana Interface Design Roadmap
 
-These are **mandatory** requirements that must be maintained throughout development:
-
-### 🔐 Data & Privacy
-- [ ] **No telemetry by default** - No analytics, crash reporting, or usage pings
-- [ ] **No cloud dependency** - Core app works offline
-- [ ] **Direct API connections** - No relay servers between user and providers
-- [ ] **No remote assets** - No CDNs, external fonts, or marketplace thumbnails (unless explicit opt-in)
-- [ ] **Clear network policy** - Document all network calls, make them user-visible
-
-### 🔑 API Key Management
-- [ ] **OS keychain storage** - macOS Keychain, Windows Credential Manager
-- [ ] **Never log keys** - Keys never appear in logs, console, or error dialogs
-- [ ] **Masked display** - UI fields showing keys masked by default
-- [ ] **Panic button** - One-click "Delete all keys" feature
-- [ ] **Local-only mode** - Obvious indicator when in local-only mode
-
-### 🛡️ Security Fundamentals
-- [ ] **Signed releases** - macOS notarization / Windows code signing
-- [ ] **Checksums published** - SHA-256 hashes for all releases
-- [ ] **Permission system** - Green/Yellow/Red risk levels implemented
-- [ ] **Red Switch UI** - High-risk actions require explicit authorization
-- [ ] **Sandbox for plugins** - If plugins added, constrained API with explicit permissions
-
-### 📦 Updates & Extensibility
-- [ ] **Manual updates** - No auto-update phoning home (or make it explicit opt-in)
-- [ ] **Skins are safe** - Visual assets only, no arbitrary code execution
-- [ ] **Plugin permissions** - If plugins supported, clear UI showing what they can access
-- [ ] **Offline capable** - Core features work without network
-
-### 📄 Documentation & Trust
-- [ ] **Security statement** - Plain English "Security and Privacy" page
-- [ ] **Public wording** - "No account. No cloud. No telemetry. Keys stored locally."
-- [ ] **Release page** - Clear changelog, download links, checksums
-- [ ] **Open source option** - Consider open-sourcing key-handling and network code
+**Purpose:** Design the Halo-inspired chat interface (the "hardware" for our AI "software")  
+**Status:** Design phase - can work on this while data collects  
+**Timeline:** Design now, implement later (when ready to query)
 
 ---
 
-## Development Phases
+## Philosophy: Hardware vs Software
 
-### Phase 0: Foundation & Security Design ✅ COMPLETE
-**Status:** ✅ Complete (December 19, 2025)  
-**Goal:** Documentation, architecture planning, security model design
+**Software (Data/AI Layer):**
+- Data collection (running automatically)
+- Memory processing
+- AI analysis
+- Safety layers
+- Pattern detection
 
-#### Completed:
-- [x] Project structure created
-- [x] Core vision documented
-- [x] Sonique research completed
-- [x] Three.js visualizer code obtained
-- [x] Orchestrator architecture designed
-- [x] API abstraction layer designed
-- [x] Security & legal concerns documented
-- [x] Security checklist integrated into roadmap
-- [x] Finalize Phase 0 documentation
-- [x] Get advisor feedback on roadmap (7 AI reviews completed!)
-- [x] Set up Git repository
-- [x] Initialize npm/Electron project
-- [x] First successful Electron app launch
-- [x] Milestone tracking system created
+**Hardware (Interface Layer):**
+- How Erik talks to Cortana
+- Visual design and animations
+- Interaction patterns
+- Audio/music
+- User experience
 
-#### Deferred to Later Phases:
-- [ ] Document skin format specification (Phase 7 pre-work)
-
-**Security Focus:** Design privacy-preserving architecture from day one ✅
-
-**Achievement:** Roadmap reviewed and approved by 7 different AIs with unprecedented consensus on architecture and security model.
-
-**Next:** Phase 2 - Single AI Connection + Complete Security Layer
+**These are separate tracks!** We can design the interface now without building query features.
 
 ---
 
-### Phase 0.5: Technical Spikes ✅ COMPLETE
-**Status:** ✅ Complete (December 19, 2025)
-**Goal:** Validate risky integrations before committing
+## Design Phases
 
-#### Spike 1: Transparent Window + Three.js Performance
-- [x] Create minimal Electron app: `transparent: true, frame: false, vibrancy: 'ultra-dark'`
-- [x] Three.js scene with 5,000 particles + breathing animation
-- [x] Measured on target hardware:
-  - FPS: **120fps** ✅ (target: 60fps — 2x exceeded)
-  - CPU: **0.1%** ✅ (target: <5% — 50x exceeded)
-  - Heap: **4.1MB** ✅ (target: <200MB — 50x exceeded)
-- [x] **GATE: PASSED** — Screenshot: `docs/milestones/`
+### Phase 1: Core Interface Design (Now - Weeks)
+**Goal:** Design the look, feel, and interactions
 
-#### Spike 2: Streaming API + Visualizer Sync
-- [x] Add OpenAI streaming call to spike 1
-- [x] Visualizer state changes: Idle (cyan) → Thinking (purple) → Speaking (green) → Idle
-- [x] Verified no dropped frames during API activity (120fps sustained)
-- [x] **GATE: PASSED** — CPU: 0.3%, Heap: 4.8MB
+**Tasks:**
+- [ ] Sketch detailed interface layout
+- [ ] Design animation system (what expressions?)
+- [ ] Define color palette (blue/purple Halo theme)
+- [ ] Plan interaction flows (how conversations work)
+- [ ] Audio design (what sounds? when? how to toggle?)
+- [ ] Hotkey system design
+- [ ] Menu bar behavior
 
-#### Spike 3: Non-Rectangular Hit Testing
-- [x] Applied CSS clip-path to spike window (ellipse)
-- [x] Custom drag handle works
-- [x] Click-through: NO — CSS clip-path is visual only
-- [x] **GATE: PASSED** — Blocker documented, `setIgnoreMouseEvents()` deferred to Phase 5
-
-**Results:** All spikes validated. See `docs/spikes/` for details.
+**Deliverables:**
+- Detailed mockups (can be hand-drawn or digital)
+- Interaction flow diagrams
+- Animation storyboards
+- Audio/music plan
+- Technical requirements doc
 
 ---
 
-### Phase 1A: Development Infrastructure ✅ COMPLETE
-**Status:** ✅ Complete (December 19, 2025)
-**Goal:** Build the foundation all other code sits on
+### Phase 2: Technical Architecture (Later)
+**Goal:** Plan how to build it
 
-#### Week 1: Project Scaffold ✅
-- [x] TypeScript configuration (strict mode, separate configs for main/renderer/preload)
-- [x] Path aliases (`@/main`, `@/renderer`, `@/shared`)
-- [x] Build tooling: Vite for renderer, esbuild for main
-- [x] Code quality: ESLint, Prettier, Husky + lint-staged
-- [x] Testing: Vitest for unit tests
-- [x] **Deferred:** electron-builder → Phase 6.5, Playwright E2E → Phase 4
+**Tasks:**
+- [ ] Choose desktop app framework (Electron? Tauri? Native?)
+- [ ] Design data flow (interface ↔ AI backend)
+- [ ] Plan animation system (CSS? Lottie? Custom?)
+- [ ] Audio system architecture
+- [ ] Hotkey implementation approach
+- [ ] Menu bar integration
 
-#### Week 2: Core Architecture ✅
-- [x] IPC bridge types (`src/shared/ipc-types.ts`)
-- [x] Preload script with typed contextBridge
-- [x] Main process service registry (`src/main/services/index.ts`)
-- [x] Logging infrastructure with sensitive data redaction (`src/main/services/logger.ts`)
-- [x] Error types and handling patterns (`src/shared/errors.ts`)
+**Deliverables:**
+- Technical architecture doc
+- Framework comparison
+- Prototype plan
+- Performance considerations
 
 ---
 
-### Phase 1B: Window + Visualizer + Offline ✅ COMPLETE
-**Status:** ✅ Complete (December 19, 2025)
-**Goal:** Breathing hologram in a transparent window that works offline
+### Phase 3: Prototype & Iteration (When Ready)
+**Goal:** Build working prototype
 
-#### Week 3: Electron Window + Three.js ✅
-- [x] macOS Menu Bar (`src/main/menu.ts`): App, Edit, View, Window, Help
-- [x] Global Hotkey (`src/main/shortcuts.ts`): Cmd+Shift+H toggle
-- [x] GPU Vertex Shader: Breathing animation moved to GPU
-- [x] Smooth State Transitions: idle (#7efbff), thinking (#ca79ff), speaking (#4dfdd1), listening (#ffcc66), error (#ff6666)
-- [x] Window Service (`src/main/services/window.ts`)
-- [x] Window IPC Channels: `window:toggle`, `window:set-always-on-top`
-- [x] Performance verified: 120fps+ with state transitions
-
-#### Week 4: Chat UI + Offline Resilience ✅
-- [x] Chat history with `electron-store` (100 message limit)
-- [x] ChatHistoryService (`src/main/services/chat-history.ts`)
-- [x] OrchestratorService with personality config (`config/personality.json`)
-- [x] NetworkService with polling + IPC events
-- [x] SecurityService with assessment logging
-- [x] Offline UI: badge, disabled button, tooltip
-- [x] All services registered in main/index.ts
-
-**Milestone:** Transparent window with breathing hologram + security foundation + offline resilience ✅
-
-**Security Review:**
-- [x] No telemetry in build
-- [x] No external asset loading
-- [x] Visualizer runs without network
-- [x] Security Layer foundation exists
-- [x] App gracefully degrades offline
-- [x] Orchestrator stub loads personality correctly
+**Tasks:**
+- [ ] Build basic window/frame
+- [ ] Implement menu bar integration
+- [ ] Add hotkey trigger
+- [ ] Create animation area
+- [ ] Build chat interface
+- [ ] Integrate with AI backend
+- [ ] Add audio/music
+- [ ] Polish and refine
 
 ---
 
-### Phase 2: Single AI Connection + Complete Security Layer
-**Goal:** Connect to one AI with full security architecture
+### Phase 4: Enhancement & Polish (Future)
+**Goal:** Make it EPIC
 
-#### Week 5-6: Keychain + OpenAI Integration + Security Hardening
-- [ ] **Implement OS keychain storage** (keytar or equivalent)
-- [ ] Create API key input UI (masked by default)
-- [ ] **Add "Rotate key" button** (delete old, prompt for new)
-- [ ] **Never log API keys** (audit all logging code)
-- [ ] **Implement request/response logging** (sanitized - no keys, log errors)
-- [ ] **Add log rotation** (max 10MB, 7 days retention, auto-purge)
-- [ ] **Add "Clear logs" button** in Settings
-- [ ] Build OpenAI adapter (direct connection)
-- [ ] Send message → get response
-- [ ] Display response in chat window
-- [ ] **Implement auto-save conversation state** (crash recovery)
-- [ ] **Add conversation encryption** (OS keychain-derived key)
-- [ ] **Add conversation size limit** (max 10MB, auto-prune old messages)
-- [ ] **Add "Clear history" button** in Settings
-- [ ] **Security Check:** Keys never in logs/console
-- [ ] **Security Check:** Conversation encryption works
-
-#### Week 7-8: Complete Security Layer + Permission System
-- [ ] **Implement complete Security Layer** (risk assessment engine)
-- [ ] **Create Permission Scope UI** (Green/Yellow/Red visual indicators)
-- [ ] **Build "Red Switch" authorization UI** (Sonique drawer style)
-- [ ] **Integrate Security Layer with Router** (all actions pass through security)
-- [ ] Implement SSE streaming for OpenAI
-- [ ] Display tokens as they arrive
-- [ ] Add loading/thinking indicators (visualizer state changes)
-- [ ] Handle errors gracefully (no key leaks in errors)
-- [ ] **Add "Delete all keys" panic button**
-- [ ] **Implement PII detection in logs** (strip sensitive patterns)
-- [ ] Test with various prompts and edge cases
-- [ ] **Test:** Intentionally trigger errors, verify keys not in logs
-
-**Milestone:** Can chat with GPT-4o in real-time. Complete Security Layer blocks high-risk actions.
-
-**Security Review:**
-- [ ] Keys stored in OS keychain only
-- [ ] Keys never appear in UI (unless explicitly shown)
-- [ ] Keys never in error messages or logs
-- [ ] Permission system works (Green/Yellow/Red)
-- [ ] Red actions require explicit authorization
-- [ ] Panic button wipes all keys
-- [ ] Conversations encrypted at rest
-- [ ] Logs sanitized and rotated
-- [ ] PII detection prevents sensitive data leaks
+**Tasks:**
+- [ ] Advanced animations
+- [ ] Easter eggs
+- [ ] Voice modes
+- [ ] Visual enhancements
+- [ ] Performance optimization
+- [ ] User customization options
 
 ---
 
-### Phase 3: Multi-AI Support + First Sub-Agent
-**Goal:** Abstract API layer, add Anthropic/Google, **implement sub-agent dispatch**
+## Current Focus: Phase 1 Design
 
-#### Week 9-10: Abstraction Layer + Connection Manager
-- [ ] Build Connection Manager (add/remove/list profiles)
-- [ ] Create BaseAdapter interface
-- [ ] Refactor OpenAI adapter to use base
-- [ ] Implement Anthropic adapter (direct connection)
-- [ ] Implement Google adapter (direct connection)
-- [ ] Add connection switching UI
-- [ ] **Implement first sub-agent: Coder Agent (Claude)**
-- [ ] **Enable Orchestrator sub-agent dispatch** (NOW that Security Layer exists)
-- [ ] **Test security integration:** Sub-agent actions pass through Security Layer
-- [ ] Test connection management flow
-- [ ] **Security Check:** All connections direct, no relay
+### Key Questions to Answer
 
-#### Week 11-12: Custom Endpoints + More Sub-Agents
-- [ ] Add custom endpoint adapter (for Cortana)
-- [ ] **Implement File Agent** (local file operations)
-  - [ ] Move-not-modify rule (never edit in-place)
-  - [ ] Audit log for all file operations (separate log file)
-  - [ ] Handle file companions together (like PNG + YAML)
-  - [ ] Sandbox: only write inside allowed directories
-  - [ ] File extension whitelist (security)
-  - [ ] File size limits per operation (prevent abuse)
-- [ ] **Implement Web Agent** (search/scrape)
-- [ ] Build conversation history manager
-- [ ] **Test multi-agent workflows** (e.g., "write code and save it")
-- [ ] Handle provider-specific features
-- [ ] Add error recovery and fallbacks
-- [ ] **Security Check:** File Agent respects permissions
-- [ ] **Security Check:** File audit logs don't leak sensitive paths
+**Layout & Structure:**
+1. What are the exact dimensions of each section?
+2. How does the animation area collapse/expand?
+3. What's the minimum window size?
+4. Does it resize? Fixed size?
+5. Where do scrollbars appear (if any)?
 
-**Milestone:** Can switch between GPT-4o, Claude, Gemini. Orchestrator dispatches to multiple sub-agents through Security Layer.
+**Animation System:**
+1. What emotions/expressions does Cortana show?
+   - Thinking
+   - Happy/excited
+   - Snarky/playful
+   - Concerned
+   - Idle/neutral
+   - Surprised
+   - Others?
+2. How do animations transition?
+3. What triggers each expression?
+4. Static images or animated GIFs or video?
+5. Can user customize expressions?
 
-**Security Review:**
-- [ ] All API connections are direct (no relay)
-- [ ] Each connection stores keys separately
-- [ ] Connection UI shows where data goes
-- [ ] Sub-agents respect permission system (all actions pass through Security Layer)
-- [ ] File Agent cannot write outside allowed dirs
-- [ ] File audit logs are secure and size-limited
+**Visual Design:**
+1. Exact color palette (Halo theme)
+2. What visual effects to use?
+3. How to make it feel "alive"?
+4. How to make it feel futuristic?
+5. How to make it feel personal?
+
+**Interaction Patterns:**
+1. How does user send messages?
+2. How does user receive messages?
+3. How does user customize Cortana?
+4. How does user access settings?
+5. How does user manage API keys?
 
 ---
 
-### Phase 4: Hologram Visualizer Polish
-**Goal:** Transform from prototype to "living artifact" with production-grade performance
+# Social Media Agent — Roadmap
 
-#### Week 13-14: Three.js Enhancement + Performance Monitoring
-- [ ] **Optimize particle rendering:**
-  - [ ] Implement InstancedMesh for 10K+ particles (reduce draw calls to 1)
-  - [ ] Use custom ShaderMaterial (avoid Three.js built-in overhead)
-  - [ ] Move breathing animation to GPU vertex shader (not CPU)
-  - [ ] Use BufferGeometry with dynamic attributes
-  - [ ] Enable frustum culling for off-screen particles
-  - [ ] Implement texture atlases for particle variations
-  - [ ] Define particle count limits by GPU tier:
-    - Low-end (Intel integrated): 10K particles
-    - Mid-tier (discrete GPU): 50K particles
-    - High-end (M1/M2/M3): 100K particles
-- [ ] Add color customization per skin
-- [ ] Implement smooth state transitions
-- [ ] Add subtle physics-based movement
-- [ ] Test performance across devices
-- [ ] Ensure 60fps minimum (30fps acceptable)
-- [ ] **GPU Memory Management:**
-  - [ ] Proper disposal of Three.js objects (geometry.dispose(), material.dispose(), texture.dispose())
-  - [ ] Track VRAM vs System RAM separately (renderer.info.memory)
-  - [ ] Texture count monitoring (detect leaks via renderer.info.memory.textures)
-  - [ ] Draw call count monitoring (renderer.info.render.calls, target <100/frame)
-  - [ ] Triangle count monitoring (renderer.info.render.triangles)
-  - [ ] WebGL context loss handler (webglcontextlost event)
-  - [ ] GPU memory leak testing (1 hour soak test, max 10MB/hour drift)
-  - [ ] Shader compilation time tracking (cold start optimization)
-- [ ] **Performance Monitoring:**
-  - [ ] Add FPS counter (dev mode, top-right corner)
-  - [ ] Track frame time budget (<8ms target for 120fps, <16ms for 60fps)
-  - [ ] Alert if < 30fps sustained (5+ seconds)
-  - [ ] Per-frame GPU time (EXT_disjoint_timer_query if available)
-  - [ ] Performance profiler dashboard (dev mode)
-  - [ ] Sample metrics (every 60 frames, not every frame to reduce overhead)
-- [ ] **Battery Impact Testing:**
-  - [ ] Test continuous animation battery drain (MacBook Pro M1, M2, M3)
-  - [ ] Implement "Power saver mode" (reduces particles by 50%, lowers FPS cap to 30)
-  - [ ] Battery status detection (`navigator.getBattery()` API)
-  - [ ] Auto-enable power saver when battery < 20%
-  - [ ] **Pause visualizer when window minimized/hidden** (drops to 1fps or pauses entirely)
-  - [ ] **Resume visualizer smoothly when window shown** (fade-in animation)
-- [ ] **Performance Budgets (NEW):**
-  - [ ] Define and document targets:
-    - FPS: 60fps target, 30fps minimum
-    - Frame time: <8ms target, <16ms acceptable
-    - Draw calls: <100 per frame
-    - VRAM: <200MB for visualizer alone
-  - [ ] Auto-trigger power saver if sustained <30fps for 5+ seconds
-- [ ] **Security Check:** Visualizer isolated from network
-
-#### Week 15-16: Animation System Integration
-- [ ] Add idle animation (slow breathing)
-- [ ] Add thinking animation (faster pulse)
-- [ ] Add speaking animation (active movement)
-- [ ] Add locked animation (red, slow pulse)
-- [ ] Sync with chat state changes
-- [ ] Add "heartbeat" that never stops
-- [ ] Polish transitions between states
-- [ ] **Make it feel alive**
-
-**Milestone:** Hologram reacts to conversation state, never looks frozen
-
-**Security Review:**
-- [ ] Animations don't expose sensitive data
-- [ ] Visualizer state changes don't trigger network calls
+**Project:** Automated social media content generation and posting  
+**Parent Project:** Hologram (`ROADMAP.md`)  
+**Status:** Phase 4 Complete ✅  
+**Estimated Total:** 2-3 weeks of focused work (or spread across evenings)  
+**Last Updated:** December 19, 2025
 
 ---
 
-### Phase 5: Sonique Aesthetic Transformation
-**Goal:** Transform from rectangle to biomorphic UI
+## 🚀 NEXT SESSION: What To Do (Start Here!)
 
-#### Week 17-18: Non-Rectangular Window
-- [ ] Implement CSS `clip-path` for curved edges
-- [ ] Add SVG mask support
-- [ ] Test custom window shapes
-- [ ] Optimize transparency rendering
-- [ ] Add macOS vibrancy effects
-- [ ] Test on different displays/themes
-- [ ] Ensure drag handles work on curved edges
-- [ ] **Security Check:** Custom window doesn't bypass OS security
+**Location:** `../../agents/social-media`
 
-#### Week 19-20: Sonique-Inspired Elements
-- [ ] Design curved chat bubbles
-- [ ] Implement kinetic menu animations
-- [ ] Build "fishbowl" layout (visualizer + chat)
-- [ ] Add Halo-inspired HUD elements
-- [ ] Integrate Ampolyte/Halo fonts
-- [ ] Polish all transitions
-- [ ] Add optional sound effects (easily disabled)
-- [ ] **Test that it looks "impossible"**
+### Option A: Test Phase 4 (Manual Posting Workflow) — 15 minutes
 
-**Milestone:** Interface looks unmistakably "Hologram" - alien glass, not software
+Phase 4 is built but **not manually tested yet**. Here's how to test it:
 
-**Security Review:**
-- [ ] Custom UI doesn't create new attack surfaces
-- [ ] Audio assets are local (no CDN)
-- [ ] Fonts are bundled (no external loading)
-
----
-
-### Phase 6: MCP Integration + Skill System
-**Goal:** Model Context Protocol support for extensible skills
-
-#### Week 21-22: MCP Foundation
-- [ ] Research MCP specification thoroughly
-- [ ] Design skill manifest format
-- [ ] Implement MCP skill loader
-- [ ] Create sandbox environment for skills
-- [ ] Build skill permission system
-- [ ] Create example MCP skills (Weather, Spotify)
-- [ ] Add skill management UI
-- [ ] Test skill hot-swapping
-- [ ] **Security Check:** Skills run in sandbox
-
-#### Week 23-24: Skill Ecosystem
-- [ ] Document skill creation guide
-- [ ] Create skill marketplace UI (local only)
-- [ ] Build skill preview system
-- [ ] Add skill import/export
-- [ ] Implement skill signatures/hashes
-- [ ] Test community skill workflow
-- [ ] **Integrate with Orchestrator dispatcher**
-- [ ] **Add skill permission warnings**
-
-**Milestone:** Users can install MCP skills as "extensions" with clear permission model
-
-**Security Review:**
-- [ ] Skills run in constrained sandbox
-- [ ] Skill permissions explicitly requested
-- [ ] UI clearly shows what skill can access
-- [ ] Skills cannot access API keys
-- [ ] Skill marketplace is local (no phoning home)
-- [ ] Skills signed/hashed for integrity
-
----
-
-### Phase 7: Skin System + White-Label Personalities
-**Goal:** Users can fully customize appearance AND personality
-
-#### Week 25-26: Skin Architecture
-- [ ] Design skin manifest format (visual + personality)
-- [ ] Implement skin loader (assets only, no code execution)
-- [ ] Create default skins:
-  - Cortana (Halo-inspired, military, brief)
-  - Wizard (mystical, verbose, archaic English)
-  - Minimal (clean, modern, no personality)
-- [ ] Add skin switcher UI
-- [ ] **Link skins to personality configs**
-- [ ] Test skin hot-swapping
-- [ ] **Security Check:** Skins cannot execute code
-
-#### Week 27-28: Skin Creation Tools + Community
-- [ ] Document skin format specification
-- [ ] Create personality editor UI
-- [ ] Build skin preview system
-- [ ] Add import/export (with hash verification)
-- [ ] Test white-label workflow (skin changes personality)
-- [ ] Document custom skin creation guide
-- [ ] Plan community skin hosting (separate from app)
-- [ ] **Implement takedown process for copyright**
-
-**Milestone:** Users can install skins that change both appearance AND AI personality
-
-**Security Review:**
-- [ ] Skins are assets + config only (no JavaScript)
-- [ ] Skin parser safely handles malformed files
-- [ ] Skin format doesn't allow arbitrary file access
-- [ ] Community skins hosted separately (optional)
-- [ ] Takedown process documented for DMCA
-
----
-
-### Phase 8: Cortana Integration (Special Connection)
-**Goal:** Make Cortana a first-class connection with memory features
-
-#### Week 29-30: Cortana Adapter
-- [ ] Connect to Cortana backend API
-- [ ] Handle memory context in responses
-- [ ] Add special UI for memory references
-- [ ] Implement timeline view (optional)
-- [ ] Test with real Cortana data
-- [ ] **Security Check:** Cortana connection respects privacy
-
-#### Week 31-32: Cortana Features Polish
-- [ ] Add "Remember this" command
-- [ ] Show memory sources in chat
-- [ ] Implement confidence indicators
-- [ ] Add safety layer UI (circuit breakers)
-- [ ] Polish Cortana-specific experience
-- [ ] Test memory query workflows
-
-**Milestone:** Cortana is fully integrated as special connection type
-
-**Security Review:**
-- [ ] Cortana data stays local (or user's server)
-- [ ] Memory queries don't leak to other providers
-- [ ] Circuit breakers prevent obsessive querying
-
----
-
-### Phase 9: Polish, Security Audit & Release
-**Goal:** Ship v1.0 with full security review
-
-#### Week 33-34: Security Audit + Bug Fixes
-- [ ] **Comprehensive security audit**
-  - [ ] Verify no telemetry in release build
-  - [ ] Audit all network calls
-  - [ ] Test keychain storage security
-  - [ ] Verify permission system works
-  - [ ] Test panic button (delete all keys)
-  - [ ] Review all logging (no sensitive data)
-  - [ ] Test with malicious inputs
-- [ ] Fix all critical bugs
-- [ ] Optimize rendering performance
-- [ ] Reduce memory usage if needed
-- [ ] Test on various macOS versions
-- [ ] Document known limitations
-
-#### Week 35-36: Release Preparation
-- [ ] **Set up code signing** (macOS notarization)
-- [ ] **Generate checksums** (SHA-256 for all builds)
-- [ ] Write user documentation
-- [ ] **Create "Security & Privacy" page** (plain English)
-- [ ] Create demo video
-- [ ] Set up DMG installer
-- [ ] Test installation flow
-- [ ] Write release notes
-- [ ] **Publish checksums and release page**
-- [ ] Consider open-sourcing key handling code
-
-**Milestone:** Hologram 1.0 released with full security transparency
-
-**Final Security Checklist:**
-- [ ] No account required
-- [ ] No cloud dependency
-- [ ] No telemetry by default
-- [ ] Keys in OS keychain
-- [ ] All connections direct to providers
-- [ ] Signed release with checksums
-- [ ] Security page published
-- [ ] Panic button works
-- [ ] Permission system enforced
-- [ ] Open source consideration documented
-
----
-
-## Open Questions
-
-### Architecture:
-- Should conversation history sync across connections?
-- How do we handle context windows (4K vs 128K)?
-- Should we support local models (Ollama, LM Studio)?
-- What's the performance impact of continuous visualizer on battery?
-- ~~**Offline mode:** How should app behave when network is down?~~ **RESOLVED: Basic offline resilience in Phase 1**
-  - ~~Cache last responses?~~ → v1.1
-  - ~~Queue actions for retry?~~ → Basic queuing in v1.0, advanced in v1.1
-  - ~~Detect network status?~~ → Phase 1 ✅
-
-### Security & Privacy:
-- Should we open-source the entire app or just key-handling code?
-- How do we handle crash reports if no telemetry? (Manual export?)
-- Should update checks be manual or opt-in auto?
-- How do we verify community skins are safe?
-
-### Design:
-- How "weird" can we make the window shape before it's unusable?
-- Should visualizer be always-on or toggleable?
-- What's the default size/position?
-- How many default skins should we ship with?
-
-### Business:
-- Is this open source or proprietary?
-- Do we build a "Parent API" service for users without keys?
-- Should we monetize? (Donations, paid skins, hosted version?)
-- What's the liability if user's API keys are compromised?
-
-### Features:
-- Voice input/output? (TTS/STT)
-- Plugin system for third-party extensions? (security concerns)
-- Mobile companion app (future)?
-- Collaboration features? (Share conversations?)
-
-### Legal & Compliance:
-- Do we need a privacy policy if we collect nothing?
-- How do we handle DMCA for community skins?
-- Provider terms compliance (are we a "competing service"?)
-- Export controls on AI software?
-
----
-
-## Technical Debt & Future Work
-
-### Post-Launch (v1.1+):
-- [ ] Windows support (currently macOS-focused)
-- [ ] Linux support
-- [ ] Voice integration (speech-to-text, text-to-speech)
-- [ ] Context window management (summarization)
-- [ ] **Conversation export** (Markdown/JSON with key masking)
-- [ ] **Rate limit tracking** per provider (alert when approaching limits)
-- [ ] Cost tracking per connection
-- [ ] Model comparison mode (same prompt to multiple models)
-- [ ] Prompt templates library
-- [ ] Advanced rate limiting
-- [ ] Conversation search
-- [ ] **Advanced offline mode enhancements:**
-  - [ ] Cache last N responses (local LLM fallback)
-  - [ ] Advanced message queuing with retry strategies
-  - [ ] Offline conversation mode with local models (Ollama)
-
-### Known Limitations to Document:
-- macOS only in v1.0 (Windows/Linux later)
-- Requires user's own API keys
-- No conversation sync across devices
-- Basic offline capability (visualizer + history, no new messages)
-- Custom skins require technical knowledge
-
----
-
-## Success Criteria
-
-### The App is Ready for v1.0 When:
-
-**Technical:**
-- [ ] All Phase 9 security checklist items complete
-- [ ] No critical bugs in issue tracker
-- [ ] Performance targets met (see IMPLEMENTATION_DIRECTIVES.md)
-- [ ] Tested on macOS 12, 13, 14, 15
-- [ ] Signed and notarized
-- [ ] Documentation complete
-
-**Design:**
-- [ ] A screenshot looks "impossible" (people ask "how?")
-- [ ] The visualizer feels alive (never frozen)
-- [ ] Window shape is non-rectangular and beautiful
-- [ ] UI is usable while looking alien
-
-**Architecture:**
-- [ ] Orchestrator supports MCP without rewrite
-- [ ] Adding new sub-agents doesn't require UI changes
-- [ ] Swapping skins changes personality correctly
-- [ ] Permission system enforced throughout
-
-**Trust:**
-- [ ] Users say "I trust this with my API keys"
-- [ ] Security page is clear and honest
-- [ ] Panic button is obvious and works
-- [ ] All network calls are documented
-
-**Cool Factor:**
-- [ ] Users say "this is the coolest thing I've ever seen"
-- [ ] Erik shows it to friends and they want it
-- [ ] People share screenshots on social media
-- [ ] Feels like talking to the future
-
-### The App Has Failed If:
-
-- [ ] It looks like a standard chat window
-- [ ] The visualizer is static or removed
-- [ ] Actions are hardcoded (no orchestrator)
-- [ ] Users say "it's just another AI client"
-- [ ] Security claims are inaccurate
-- [ ] API keys are ever logged or leaked
-- [ ] Telemetry was added without explicit opt-in
-- [ ] Users don't trust it with their keys
-
----
-
-## Session Log
-
-### December 19, 2025 - Fresh Eyes "Scope Control" Review ✅
-
-**Reviewer:** Anonymous fresh perspective (never seen project before)
-
-**Focus:** Scope control, trust math, "will this ship?"
-
-**Valid Concerns Raised:**
-
-1. **Better "No Telemetry" Promise:**
-   - Original: "Zero telemetry, transparent network calls"
-   - **NEW:** "No account. No cloud dependency. No background network calls. All network destinations are user-configured and visible."
-   - This is more specific and harder to accidentally violate
-   - ✅ Adopted
-
-2. **Action Catalog Missing:**
-   - We have Green/Yellow/Red but no explicit list of what actions exist
-   - **NEW:** Action Catalog v0 added to Phase 1 security foundation
-   - Explicit list: network, filesystem (read/write/delete), shell, browser
-   - v1.0 ships with only network + filesystem reads enabled by default
-   - ✅ Added
-
-3. **Battery When Hidden:**
-   - Already had power saver mode, but not explicit pause when minimized
-   - **NEW:** Pause visualizer when window minimized (1fps or paused)
-   - ✅ Clarified
-
-**Already Addressed:**
-- Three hard problems → MCP/marketplace already on v1.1 cut list ✅
-- Plugins = supply chain risk → Already sandboxed, Phase 6, v2-tier ✅
-- Battery drain → Already had power saver, auto-disable when minimized ✅
-
-**Reviewer's Verdict:** Valid scope concerns, mostly already handled, minor tweaks needed
-
-**Status:** All tweaks applied ✅
-
----
-
-### December 19, 2025 - Phase 0 Complete! 🎉
-
-**Status:** ✅ **PHASE 0 SHIPPED**
-
-**Completed:**
-- Git repository initialized
-- npm/Electron project created
-- Core dependencies installed (Electron, Three.js)
-- First successful app launch (frameless, transparent window)
-- Milestone tracking system established
-- 7 AI reviews completed with unanimous architectural consensus
-
-**The Moment:**
-First window screenshot captured at 11:19 PM. The app already looks "impossible" - translucent, floating, alien glass. And we haven't even added the particle sphere yet.
-
-**Erik's verdict:** "man this is a badass project" 🔥
-
-**What's Next:**
-Phase 1 begins! First tasks:
-- Build Security Layer foundation (Risk enums, Action Catalog)
-- Set up Three.js breathing particle sphere
-- Implement offline resilience
-- Create Orchestrator stub with Cortana personality
-
-**See:** `docs/milestones/2025-12-19_phase-0-complete.png`
-
----
-
-### December 19, 2025 - Final Gemini Review: "Hidden Dragon" Found ✅
-
-**Reviewer:** Gemini 3 Flash (Strategic Architect assisting with prompt creation)
-
-**Status:** ✅ **FINAL PASS - READY TO BUILD**
-
-**Critical Issue Identified:**
-- **"Hidden Dragon"** - Router's intent classifier has circular dependency with offline state
-- Problem: If Router uses LLM to classify intent, but we're offline, Security Layer is blind
-- Example: User says "delete files" offline → Router can't ask GPT-4 what this means → Security can't assess risk
-- **Solution:** Router needs local pattern matching (regex/keywords) that works 100% offline
-- Cloud LLM only for ambiguous cases when online
-
-**Roadmap Update:**
-- ✅ Added local intent classification requirement to Phase 1, Week 1-2
-- ✅ Security assessment must work offline (no cloud dependency for basic patterns)
-- ✅ Pattern libraries for Red/Yellow/Green actions defined locally
-
-**Key Quote:**
-> "You cannot wait for the cloud to tell you if a user is trying to delete files."
-
-**Gemini's Verdict:**
-- Roadmap matured from "Vision Board" to "Engineering Spec"
-- Timeline honest (42+ weeks)
-- Security stance ironclad
-- **Status: READY TO BUILD**
-
-**Phase 0 Status:** ✅ **COMPLETE**
-
----
-
-### December 18-19, 2025 - Round 2 Reviews: UNANIMOUS VERDICT (Day 2)
-
-**Completed:**
-- Claude Opus 4 review
-- Claude Sonnet (Composer) review
-- Gemini 3 Flash Preview review
-- GPT-5.1 Codex Max review
-- Grok Code Fast review
-
-**UNPRECEDENTED CONSENSUS: All 5 reviewers gave "CONDITIONAL PASS" ⚠️**
-
-**Critical Issues Identified (100% Agreement):**
-
-1. **OFFLINE MODE MUST BE PHASE 1** ⚠️
-   - All 5 reviewers independently flagged this
-   - Cannot claim "Local-First" if app crashes when WiFi disconnects
-   - Quote (Grok): "Positioning offline mode in 'Technical Debt' is architecturally dishonest"
-   - **RESOLVED:** Moved to Phase 1, Week 3-4
-
-2. **SECURITY LAYER BEFORE ORCHESTRATOR** ⚠️
-   - All 5 detected dependency inversion
-   - Quote (Claude): "Building the roof before the foundation"
-   - Orchestrator dispatches actions, so Security Layer must exist first
-   - **RESOLVED:** Restructured Phase 1 (Security foundation Week 1-2, Orchestrator stub Week 3-4)
-
-3. **TIMELINE IS UNREALISTIC** ⚠️
-   - Opus: 48-52 weeks actual
-   - Claude: 42-44 weeks
-   - Grok: 52-60 weeks
-   - All agree 36 weeks is 30-40% too optimistic
-   - **ACKNOWLEDGED:** Realistic estimate now 42-52 weeks
-
-4. **GPU MONITORING INSUFFICIENT** ⚠️
-   - All 5 flag missing: VRAM tracking, WebGL context limits, draw call budgets
-   - **RESOLVED:** Enhanced Phase 4 with comprehensive GPU metrics
-
-**Roadmap Updates Made (v2.0 → v3.0):**
-
-- ✅ **Phase 1 Restructured:**
-  - Week 1-2: Electron + Router + Security Foundation
-  - Week 3-4: Visualizer + Orchestrator Stub + Offline Resilience
-  
-- ✅ **Offline Mode Added to Phase 1:**
-  - Network status detection
-  - Graceful degradation (visualizer + history work offline)
-  - Message queuing for retry
-  - ~14 hours effort (all reviewers agreed minimal)
-
-- ✅ **Security Layer Enhancements (Phase 2):**
-  - Log rotation and sanitization
-  - Conversation encryption
-  - PII detection in logs
-  - Clear logs/history buttons
-
-- ✅ **GPU Monitoring Enhanced (Phase 4):**
-  - VRAM vs System RAM tracking
-  - Texture/draw call/triangle count monitoring
-  - WebGL context loss handling
-  - Shader compilation time tracking
-  - Performance budgets defined
-
-- ✅ **Timeline Reality Acknowledged:**
-  - Original: 36 weeks
-  - Realistic: 42-52 weeks
-  - 24-week forced ship: Requires cut list (documented)
-
-**The "24-Week Cut List" (All 5 Agreed):**
-1. Phase 6 (MCP Integration) → v1.1
-2. Phase 7 (Skin Community Features) → v1.1
-3. Phase 8 (Cortana Special Integration) → v1.1
-4. Phase 5 (Advanced Sonique) → Reduce to basic non-rectangular
-
-**Key Insight:**
-The level of consensus across 5 different AI models is extraordinary. When completely independent reviewers all identify the same issues, it's a strong signal those issues are real.
-
-**Review Documents:**
-- `docs/reviews/claude-opus-4-review-v2.md`
-- `docs/reviews/claude-review-v2.md`
-- `docs/reviews/gemini-3-flash-preview-review-v2.md`
-- `docs/reviews/gpt-5.1-codex-max-review-v2.md`
-- `docs/reviews/Grok-review-v2.md`
-
-**Next Steps:**
-- Erik reviews updated roadmap (v3.0)
-- Finalize Phase 0 with corrected sequencing
-- Begin Phase 1 with proper foundation (Security first, then Orchestrator)
-
----
-
-### December 18-19, 2025 - Four-Review Consensus (Day 2, Round 1)
-
-**Completed:**
-- Opus 4.5 comprehensive architecture review
-- Grok detailed code review
-- GPT-5.1.1 Codex max review  
-- Gemini 3 Flash Preview strategic review
-
-**Strong Consensus Across All 4 Reviews:**
-1. **Cross-pollination is critical** - Reuse patterns from Trading, Cortana, Agent OS, Image Workflow, Hypocrisy Now
-2. **Timeline realism** - Phase 1 needs 6-8 weeks (not 4), implementation 2-3x longer than docs
-3. **GPU/Performance gaps** ⚠️ - All 4 flagged: GPU memory leaks, battery impact, need monitoring
-4. **Offline mode missing** ⚠️ - Network detection, cache responses, queue actions
-
-**Roadmap Updates Made:**
-- ✅ Added GPU/performance monitoring to Phase 4 (FPS counter, memory leak testing, power saver mode)
-- ✅ Added API key rotation button to Phase 2
-- ✅ Added request/response logging (sanitized) to Phase 2
-- ✅ Added crash recovery (auto-save conversation) to Phase 2
-- ✅ Added explicit File Agent safety rules to Phase 3 (move-not-modify, audit logs, companions)
-- ✅ Added Three.js bundling check to Phase 1
-- ✅ Added offline mode to Open Questions and Technical Debt
-- ✅ Added conversation export and rate limit tracking to Technical Debt
-
-**Key Quote from Gemini:**
-> "Hologram is the 'Body' to Cortana's 'Soul.' By leveraging the local-first security model... we're building an interface that feels like the future (Sonique 1999 vibe) but operates with industrial-grade reliability (Trading Projects 2025 vibe)."
-
-**Review Documents:**
-- `docs/reviews/OPUS_4.5_REVIEW.md`
-- `docs/reviews/GROK_CODE_REVIEW.md`
-- `docs/reviews/gpt5.1.1.md`
-- `docs/reviews/gemini-3-flash-preview__hologram-roadmap-review.md`
-
-**Next Steps:**
-- Round 2 reviews with fresh contexts (if needed for consensus check)
-- Finalize Phase 0 after review feedback
-- Begin Phase 1 implementation
-
----
-
-### December 18-19, 2025 - Master Architect Review (Day 2)
-
-**Completed:**
-- Claude Opus 4.5 comprehensive architecture review
-- Cross-pollination analysis across Erik's 5 major projects
-- Detailed sprint breakdowns with realistic time estimates
-- Definition of Done checklists for v1.0
-- Gap detection and risk register
-
-**New Document Created:**
-- `OPUS_4.5_REVIEW.md` - Complete strategic review by Claude Opus 4.5
-
-**Key Cross-Pollination Discoveries:**
-1. **Agent OS** → Use kernel architecture, db.py pattern, plugin interface
-2. **Cortana Personal AI** → Port 4-layer safety architecture, circuit breakers
-3. **Trading Projects** → Adapt risk classification, API retry patterns
-4. **Hypocrisy Now** → Apply offline-first philosophy, connection pooling (future)
-5. **Image Workflow** → Adopt code quality rules, FileTracker patterns
-
-**Revised Timeline:**
-- Phase 1 (original 4 weeks) → **6-8 weeks** (Three.js + Electron complexity)
-- Phase 2 (original 4 weeks) → **4-5 weeks** (well-defined security layer)
-- Phase 3 (original 4 weeks) → **5-6 weeks** (multi-API coordination)
-
-**Strategic Insight:**
-Hologram is the **UI layer** that unifies:
-- Agent OS (kernel/runtime)
-- Cortana (memory/personality backend)
-- Trading (risk patterns)
-
-**Next Steps:**
-1. Erik reviews ARCHITECT_REVIEW.md
-2. Initialize Electron project with transparency config
-3. Port Agent OS db.py to TypeScript
-4. Begin Sprint 1.1 (Electron Foundation)
-
----
-
-### December 18, 2025 - Project Launch (Day 1)
-
-**Major Events:**
-- Project created (split from Cortana interface)
-- Gemini insight: "AI companies use boring chat windows"
-- Erik's pivot: "Why don't we make a white label version?"
-- Hologram born as standalone project
-- **Second pivot:** Agent Operating System (Hub & Spoke architecture)
-- ChatGPT security review completed
-
-**Decisions Made:**
-- Desktop app (Electron)
-- Menu bar mode
-- Sonique aesthetic (non-rectangular, biomorphic)
-- **Orchestrator pattern** from day one
-- **MCP integration** (not "later" - build socket now)
-- Skin system changes appearance AND personality
-- Multi-AI support as core feature
-- **Local-only, zero telemetry** as hard requirement
-- **Security layer** (Green/Yellow/Red permissions)
-
-**Documents Created:**
-- README.md (project overview)
-- CLAUDE.md (AI collaborator context)
-- ROADMAP.md (this file - comprehensive plan)
-- SESSION_NOTES_DAY_1.md (detailed session notes)
-- IMPLEMENTATION_DIRECTIVES.md (developer bible)
-- ORCHESTRATOR_ARCHITECTURE.md (Hub & Spoke design)
-- API_ABSTRACTION_LAYER.md (multi-AI support)
-- Hologram_LocalOnly_Concerns_and_Checklist.pdf (security review)
-
-**The Energy:**
-- Erik went from "I need to get to work" to "wait, one more thing..." THREE TIMES
-- His brain "lit up" when discussing the interface
-- Nearly missed work deadline because of excitement
-- This is the sign of something special 🔥
-
-**Key Quote:**
-> "If Sonique could make an MP3 player look like alien technology in 1999, we can make an AI interface look magical in 2025."
-
-**Next Session:**
-- Get advisor feedback on this roadmap
-- Revisions based on feedback
-- Finalize Phase 0
-- Initialize Git repository
-- Begin Phase 1 when ready
-
-### December 18-19, 2025 - Security Review
-
-**Completed:**
-- ChatGPT security consultation
-- Legal/compliance concerns documented
-- Product stance clarified (local-only, no telemetry)
-- Security checklist integrated into roadmap
-- All concerns from PDF extracted and incorporated
-
-**Key Insights from ChatGPT:**
-- "Zero data collected" is fragile - use "No account. No cloud. No telemetry."
-- API keys in OS keychain is the right model
-- Direct-to-provider connections reduce terms risk
-- Skins should be assets only (no code execution)
-- Plugins need sandbox + explicit permissions
-- Signed releases + checksums = trust signals
-
-**Security Decisions:**
-- Default to no telemetry (no exceptions)
-- Manual update checks (or explicit opt-in)
-- Skins are visual only (v1.0)
-- Plugins postponed until sandboxing ready
-- One-click "Delete all keys" panic button
-- Keys never in logs, console, or error messages
-
----
-
-## Resources
-
-### Inspiration:
-- Sonique (2001 MP3 player)
-- Winamp skins
-- Halo UI (Cortana aesthetic)
-- Modern glass/translucent UIs
-- Cyberpunk 2077 interface elements
-
-### Technical References:
-- Electron documentation
-- Three.js examples
-- OpenAI/Anthropic/Google API docs
-- MCP (Model Context Protocol) specification
-- macOS app design guidelines
-- macOS Keychain Services documentation
-
-### Related Projects:
-- **Cortana Personal AI** - Erik's memory AI (primary use case)
-- **AI-journal** - Multi-AI interaction journal (data source)
-- **Trading Projects** - Additional data sources
-
-### Security & Privacy:
-- OWASP Electron Security Guidelines
-- macOS Code Signing and Notarization
-- Windows Code Signing Best Practices
-- API Provider Terms of Service (OpenAI, Anthropic, Google)
-
----
-
-## Notes
-
-### Philosophy:
-- **"Janky compass, not detailed map"** - iterate and adjust
-- **"Cool > Efficiency"** - spend the CPU on magic
-- **Priority:** Cool factor > feature completeness
-- **Timeline:** Flexible - adjust based on feedback and discoveries
-- **Success Metric:** "Does this make talking to AI feel special?"
-
-### For Advisors Reviewing This Roadmap:
-
-**We need feedback on:**
-1. **Security model** - Is local-only + OS keychain sufficient?
-2. **Phase ordering** - Should we build differently?
-3. **Open source** - All, some, or none?
-4. **Legal concerns** - Privacy policy needed? DMCA handling?
-5. **Provider compliance** - Are we violating any terms?
-6. **Monetization** - If any, what's ethical?
-7. **Scope** - Is this too ambitious for v1.0?
-
-**What we're confident about:**
-- The vision (revolutionary tech deserves revolutionary design)
-- The architecture (Orchestrator pattern is sound)
-- The security stance (local-only, no telemetry)
-- The user model (bring your own keys)
-
-**What we're uncertain about:**
-- Legal/compliance edge cases
-- Community content moderation (skins)
-- Plugin security model
-- Business sustainability
-
----
-
-## Revision History
-
-**v1.0** - December 18, 2025 (Initial)
-- Basic roadmap created during project launch
-- 9 development phases outlined
-
-**v2.0** - December 18-19, 2025 (Security Integration)
-- Security & privacy checklist added
-- ChatGPT legal review integrated
-- Security checkpoints added to all phases
-- Success criteria expanded with security focus
-- Open questions expanded with legal concerns
-- Ready for advisor review
-
-**v3.0** - December 19, 2025 (Round 2 Consensus - MAJOR RESTRUCTURE)
-- **CRITICAL:** Offline mode moved from Technical Debt → Phase 1
-- **CRITICAL:** Phase 1 restructured (Security Layer foundation before Orchestrator)
-- **CRITICAL:** Timeline reality check (36 weeks → 42-52 weeks realistic)
-- GPU monitoring massively enhanced (VRAM, WebGL context, performance budgets)
-- Security hardening in Phase 2 (log rotation, conversation encryption, PII detection)
-- File Agent enhanced with security constraints
-- Sub-agent dispatch explicitly tied to completed Security Layer
-- 24-week cut list documented (MCP, Skin Community, Cortana Special → v1.1)
-- Based on **UNANIMOUS CONSENSUS** from 5 independent AI reviewers
-
-**v4.0** - December 19, 2025 (Phase 1 Complete + Side Tools)
-- **Phase 0.5:** Technical Spikes complete (120fps, 0.1% CPU validated)
-- **Phase 1A:** Development Infrastructure complete (TypeScript, Vite, services)
-- **Phase 1B:** Window + Visualizer + Offline complete
-- **Side Tools:** Social Media Agent started (Phases 1-3 complete)
-- Detailed prompts created for agent delegation (`prompts/` directory)
-- Deferred items moved to proper phases (electron-builder → 6.5, Playwright → 4)
-
-**Next:** Phase 2 - Single AI Connection + Complete Security Layer
-
----
-
-## Side Tools (Parallel Development)
-
-### Social Media Agent
-**Location:** `agents/social-media/`
-**Roadmap:** `docs/agents/SOCIAL_MEDIA_ROADMAP.md`
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| Phase 1 | ✅ | Skin concept generator (GPT-4o-mini → Discord) |
-| Phase 2 | ✅ | Screenshot renderer (Puppeteer → 1080x1080 PNG) |
-| Phase 3 | ✅ | Caption generator (Instagram, Twitter, Facebook) |
-| Phase 4 | 🚀 | Manual posting workflow (human-in-the-loop) |
-| Phase 5 | ⏳ | Full automation (auto-post with safety rails) |
-| Phase 6 | ⏳ | Content calendar (scheduled variety) |
-
-**Quick Start:**
 ```bash
-cd agents/social-media
-npm install
-npm run package  # Full workflow: concept → image → captions → Discord
+cd ../../agents/social-media
+
+# 1. Generate a full post package
+doppler run -- npm run package
+
+# 2. Check Discord — you should see a rich embed with:
+#    - Preview image
+#    - Instagram/Twitter/Facebook captions in code blocks
+#    - Alt text
+#    - Reasoning ("Why this?")
+#    - Suggested posting time
+
+# 3. Copy the Package ID from Discord footer
+
+# 4. Test approval workflow
+doppler run -- npm run approve <package-id-from-discord>
+doppler run -- npm run pending  # Should show empty
+doppler run -- npm run approved # Should show your package
+
+# 5. (Optional) Test rejection
+doppler run -- npm run package  # Generate another one
+doppler run -- npm run reject <package-id> --reason "colors too dark"
+
+# 6. (Optional) Manually post to Instagram
+#    - Copy caption from Discord
+#    - Post to Instagram with the preview image
+#    - Mark as posted:
+doppler run -- npm run posted <package-id>
+```
+
+**If everything works:** Phase 4 is fully complete! 🎉
+
+**If something breaks:** Check the error, fix it, and re-test.
+
+---
+
+### Option B: Skip Testing, Move to Phase 5 (Full Automation)
+
+If you want to skip manual testing and go straight to automation:
+
+**Phase 5 adds:**
+- Auto-posting to Instagram/Twitter/Facebook via APIs
+- Scheduling (cron job)
+- Safety rails (rate limiting, 30-min delay, daily limits)
+- All actions logged to Discord
+
+**Before starting Phase 5, you'll need:**
+1. Instagram Business Account + Meta Graph API credentials
+2. Twitter/X Developer Account + API keys
+3. Facebook Page + access token
+
+**Estimated time:** 1-2 days (mostly API setup hassle)
+
+**Recommendation:** Test Phase 4 first so you know the foundation works!
+
+---
+
+### Current State Summary
+
+**What's working (tested):**
+- ✅ Skin concept generation (Phase 1)
+- ✅ Preview image rendering (Phase 2)
+- ✅ Caption generation for 3 platforms (Phase 3)
+- ✅ TypeScript compilation passes
+- ✅ All CLI commands execute without errors
+
+**What's built but untested:**
+- ⚠️ Phase 4 Discord approval embed (needs visual verification)
+- ⚠️ Phase 4 package approval/rejection workflow
+- ⚠️ Phase 4 decision logging to `data/*.json`
+
+**What's not started:**
+- ❌ Phase 5 (Auto-posting)
+- ❌ Phase 6 (Learning/analytics)
+
+---
+
+## What This Agent Actually Is (One Sentence)
+
+A daily loop that **selects from your content library, writes the post package (caption/hashtags/alt text), enforces rules, publishes (or requests approval), then logs results** so tomorrow's pick is smarter.
+
+---
+
+## Architecture Diagram
+
+```
+[Content Library] --> [Content Selector] --> [Post Package Generator] --> [Rule Enforcer] --> [Publisher/Approver] --> [Logs]
 ```
 
 ---
 
-*Last updated: December 19, 2025*  
-*Status: **v4.0 - Phase 0.5 ✅ | Phase 1A ✅ | Phase 1B ✅ | Phase 2 Next 🚀***  
-*Timeline: Realistic 42-52 weeks*  
-*Started: December 18, 2025*
+## Phases
 
----
+### Phase 1: Skin Concept Generation (Complete ✅)
 
-**Phase 1 Complete. Phase 2 begins. The hologram breathes. The agent posts. Let's keep building.** 💜🔒✨
+**Goal:** Generate a unique "skin" concept for each post, based on the content library.
 
+**Example:** "A cyberpunk cityscape with neon lights and flying cars."
+
+**Implementation:**
+- Use AI to generate skin concepts from content metadata.
+- Store skin concepts in the post package.
+
+### Phase 2: Preview Image Rendering (Complete ✅)
+
+**Goal:** Render a preview image based on the skin concept.
+
+**Implementation:**
+- Use DALL-E or Stable Diffusion to generate the image.
+- Store the image URL in the post package.
+
+### Phase 3: Caption Generation (Complete ✅)
+
+**Goal:** Generate captions for Instagram, Twitter, and Facebook.
+
+**Implementation:**
+- Use AI to generate captions based on the skin concept and content.
+- Include relevant hashtags.
+- Generate alt text for accessibility.
+
+### Phase 4: Discord Approval Embed (In Progress 🚧)
+
+**Goal:** Send a rich embed to Discord for approval.
+
+**Implementation:**
+- Include the preview image.
+- Include the captions for each platform.
+- Include the alt text.
+- Include a "Why this?" section explaining the reasoning.
+- Add approve/reject buttons.
+
+### Phase 5: Auto-Posting (Not Started ❌)
+
+**Goal:** Automatically post to Instagram, Twitter, and Facebook.
+
+**Implementation:**
+- Use the Instagram Graph API, Twitter API, and Facebook API.
+- Implement scheduling (cron job).
+- Implement safety rails (rate limiting, 30-min delay, daily limits).
+- Log all actions to Discord.
+
+### Phase 6: Learning/Analytics (Not Started ❌)
+
+**Goal:** Learn from past performance to improve future posts.
+
+**Implementation:**
+- Track engagement metrics (likes, comments, shares).
+- Use AI to analyze the data and identify patterns.
+- Adjust the content selection and caption generation accordingly.

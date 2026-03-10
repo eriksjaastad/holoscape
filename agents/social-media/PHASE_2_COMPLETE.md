@@ -102,16 +102,16 @@ The `preview.html` template includes:
 
 ```bash
 # Generate new concept with preview
-npm run generate -- --render
+doppler run -- npm run generate -- --render
 
 # Generate specific mood with preview
-npm run generate -- --mood "cyberpunk neon" --render
+doppler run -- npm run generate -- --mood "cyberpunk neon" --render
 
 # Render existing concept
-npm run render output/concepts/2025-12-19-zen-harmony.json
+doppler run -- npm run render output/concepts/2025-12-19-zen-harmony.json
 
 # Generate + render but skip Discord
-npm run generate -- --render --no-post
+doppler run -- npm run generate -- --render --no-post
 ```
 
 ## Performance
@@ -149,7 +149,7 @@ These are acceptable for MVP. Future iterations could:
 
 ## Files Summary
 
-```
+```bash
 agents/social-media/
 ├── src/
 │   ├── renderer.ts          # NEW - Puppeteer screenshot logic
@@ -176,3 +176,7 @@ Phase 2 is successful if:
 
 All criteria met! The renderer produces beautiful, professional-looking skin previews that are ready to share on social media. 🎨✨
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [Discord Webhooks Per Project](patterns/discord-webhooks-per-project.md) - Discord

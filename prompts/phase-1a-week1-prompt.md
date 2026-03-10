@@ -491,3 +491,6 @@ After completing all steps, run:
 - `src/api/openai-stream.ts`
 - Updated `package.json`
 
+## Related Documentation
+
+- [[trading_strategy_framework]] - trading strategy

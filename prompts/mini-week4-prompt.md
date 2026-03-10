@@ -73,7 +73,7 @@ After each step, verify it works:
 
 12. **Final verification:**
     ```bash
-    npm run build && npm run lint && npm test
+    doppler run -- npm run build && npm run lint && npm test
     ```
 
 ---
@@ -100,7 +100,7 @@ When online:
 Don't spend more than 10 minutes on any single error.
 
 If blocked, create a question file or message with:
-```
+```bash
 ## BLOCKED: [Brief description]
 **What I tried:** [List what you attempted]
 **Error:** [Exact error message]
@@ -132,3 +132,9 @@ Start with Step 1 in `prompts/phase-1b-week4-prompt.md`.
 
 Good luck! 🛡️
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Team Orchestration](patterns/ai-team-orchestration.md) - orchestration
+- [Safety Systems](patterns/safety-systems.md) - security
