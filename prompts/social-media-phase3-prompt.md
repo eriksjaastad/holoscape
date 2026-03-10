@@ -22,7 +22,7 @@ Add platform-specific caption generation for Instagram, Twitter, and Facebook. E
 
 ## Project Location
 
-All work in: `/Users/eriksjaastad/projects/hologram/agents/social-media/`
+All work in: `../agents/social-media`
 
 ---
 
@@ -197,436 +197,98 @@ export async function generateCaptions(concept: SkinConcept): Promise<CaptionSet
     generateCaption(concept, 'facebook'),
   ]);
 
-  console.log(`✅ Captions generated:`);
-  console.log(`   Instagram: ${instagram.characterCount} chars`);
-  console.log(`   Twitter: ${twitter.characterCount} chars`);
-  console.log(`   Facebook: ${facebook.characterCount} chars`);
-
   return { instagram, twitter, facebook };
 }
-
-export function formatCaptionForDiscord(caption: Caption): string {
-  const hashtags = caption.hashtags.length > 0 
-    ? `\n${caption.hashtags.join(' ')}`
-    : '';
-  return `${caption.text}${hashtags}`;
-}
 ```
 
----
+# Social Media Agent - Phase 3 Complete ✅
 
-## Step 3: Update Discord Module
+**Built:** December 19, 2025  
+**Status:** Platform-specific caption generation fully functional
 
-Update `src/discord.ts` to include captions:
+## What Was Built
 
-```typescript
-import { readFileSync } from 'fs';
-import type { SkinConcept, CaptionSet } from './types.js';
-import { formatCaptionForDiscord } from './caption.js';
+A caption generation system that creates tailored social media captions for Instagram, Twitter, and Facebook. Each platform gets unique content that matches its tone, length requirements, and engagement patterns.
 
-interface DiscordEmbed {
-  title: string;
-  description: string;
-  color: number;
-  fields: Array<{ name: string; value: string; inline?: boolean }>;
-  image?: { url: string };
-  footer: { text: string };
-  timestamp: string;
-}
+## New Files Created
 
-function hexToDecimal(hex: string): number {
-  return parseInt(hex.replace('#', ''), 16);
-}
+### Source Code
+- `src/caption.ts` - Caption generation with platform-specific prompts and formatting
 
-export async function postToDiscord(
-  concept: SkinConcept,
-  imagePath?: string,
-  captions?: CaptionSet
-): Promise<void> {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-  if (!webhookUrl) {
-    console.log('⚠️  DISCORD_WEBHOOK_URL not set, skipping Discord post');
-    return;
-  }
+### Updates
+- `src/types.ts` - Added `Platform`, `Caption`, `CaptionSet` types
+- `src/discord.ts` - Shows caption variants in embeds (replaces personality field)
+- `src/index.ts` - Added `--caption` flag and `caption` command
+- `package.json` - Added `caption` script
 
-  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-    {
-      name: '🪟 Window Shape',
-      value: concept.windowShape,
-      inline: true,
-    },
-    {
-      name: '✨ Particles',
-      value: concept.particleBehavior,
-      inline: true,
-    },
-    {
-      name: '🎨 Colors',
-      value: [
-        `Primary: \`${concept.colorPalette.primary}\``,
-        `Secondary: \`${concept.colorPalette.secondary}\``,
-        `Accent: \`${concept.colorPalette.accent}\``,
-      ].join(' · '),
-      inline: false,
-    },
-  ];
+### Output
+- Caption files saved as `*-captions.json` alongside concepts
 
-  // Add caption fields if provided
-  if (captions) {
-    fields.push(
-      {
-        name: '📸 Instagram',
-        value: formatCaptionForDiscord(captions.instagram),
-        inline: false,
-      },
-      {
-        name: '🐦 Twitter',
-        value: formatCaptionForDiscord(captions.twitter),
-        inline: false,
-      },
-      {
-        name: '📘 Facebook',
-        value: formatCaptionForDiscord(captions.facebook),
-        inline: false,
-      }
-    );
-  } else {
-    // Original personality field when no captions
-    fields.push({
-      name: '💬 Personality',
-      value: concept.personality.slice(0, 200) + (concept.personality.length > 200 ? '...' : ''),
-      inline: false,
-    });
-  }
+## Features Implemented
 
-  const embed: DiscordEmbed = {
-    title: `🎨 New Skin: ${concept.name}`,
-    description: `**Vibe:** ${concept.vibe}`,
-    color: hexToDecimal(concept.colorPalette.primary),
-    fields,
-    footer: { text: `ID: ${concept.id}` },
-    timestamp: concept.createdAt,
-  };
+### Core Caption Generation
+- ✅ Platform-specific prompt templates
+- ✅ Character limit enforcement (Instagram 150, Twitter 200, Facebook flexible)
+- ✅ Hashtag generation with normalization (adds # if missing)
+- ✅ Parallel generation (3 platforms at once for speed)
+- ✅ Character counting including hashtags
 
-  // Add image if provided
-  if (imagePath) {
-    embed.image = { url: 'attachment://preview.png' };
-  }
+### Platform-Specific Rules
 
-  // Post with or without image
-  if (imagePath) {
-    const FormData = (await import('form-data')).default;
-    const form = new FormData();
-    
-    form.append('payload_json', JSON.stringify({ embeds: [embed] }));
-    form.append('files[0]', readFileSync(imagePath), {
-      filename: 'preview.png',
-      contentType: 'image/png',
-    });
+**Instagram:**
+- Max 150 characters before hashtags
+- 3-5 relevant hashtags
+- 1-2 emoji max, placed naturally
+- Excited but not cringe
+- Banned phrases: "game-changer", "revolutionary", etc.
 
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      body: form as unknown as BodyInit,
-      headers: form.getHeaders(),
-    });
+**Twitter:**
+- Max 200 characters total (including hashtags)
+- 1-2 hashtags only if room
+- Playful, witty, or provocative
+- No emoji spam
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Discord webhook failed: ${response.status} - ${text}`);
-    }
-  } else {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ embeds: [embed] }),
-    });
+**Facebook:**
+- 1-2 sentences, conversational
+- Community-building: ends with question
+- No hashtags (Facebook doesn't need them)
+- Warmer/longer than Twitter
 
-    if (!response.ok) {
-      throw new Error(`Discord webhook failed: ${response.status}`);
-    }
-  }
+### CLI Commands
+- ✅ `npm run generate -- --caption` - Generate with captions
+- ✅ `npm run generate -- --render --caption` - Full package
+- ✅ `npm run caption <concept.json>` - Captions for existing concept
+- ✅ Captions save to `-captions.json` file
 
-  console.log('📤 Posted to Discord!');
-}
-```
+### Discord Integration
+- ✅ Shows all 3 caption variants in embed
+- ✅ Formatted with platform emoji (📸 Instagram, 🐦 Twitter, 📘 Facebook)
+- ✅ Each caption in its own field with hashtags
+- ✅ Replaces personality field when captions present
 
----
+## Exit Criteria Status
 
-## Step 4: Update CLI
+- ✅ `npm run generate -- --caption` generates 3 platform captions
+- ✅ Captions saved to `-captions.json` file
+- ✅ Instagram: ≤150 chars + 3-5 hashtags
+- ✅ Twitter: ≤200 chars total
+- ✅ Facebook: 1-2 sentences with question
+- ✅ Discord embed shows all 3 caption variants
+- ✅ `npm run caption <concept.json>` works for existing concepts
+- ✅ No AI-generic phrases ("game-changer", "revolutionary")
+- ✅ TypeScript compiles with no errors
 
-Update `src/index.ts`:
+## Example Output
 
-```typescript
-import 'dotenv/config';
-import { generateSkinConcept, saveConcept } from './skin-generator.js';
-import { renderPreview, renderFromFile } from './renderer.js';
-import { generateCaptions } from './caption.js';
-import { postToDiscord } from './discord.js';
-import { readdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import type { SkinConcept, CaptionSet } from './types.js';
+### Generated Skin: "Cog & Steam"
 
-async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0];
+**Concept:**
+- Theme: Steampunk workshop
+- Colors: Bronze (#6A4E3A), Gold (#C1A56B), Copper (#B28A49)
+- Vibe: "A mechanical marvel of creativity and invention"
 
-  switch (command) {
-    case 'generate': {
-      // Parse flags
-      const moodIndex = args.indexOf('--mood');
-      const mood = moodIndex !== -1 ? args[moodIndex + 1] : undefined;
+**Generated Captions:**
 
-      const noSave = args.includes('--no-save');
-      const noPost = args.includes('--no-post');
-      const shouldRender = args.includes('--render');
-      const shouldCaption = args.includes('--caption');
-
-      try {
-        // Generate concept
-        const concept = await generateSkinConcept(mood);
-        
-        if (!noSave) {
-          saveConcept(concept);
-        }
-        
-        // Render preview if requested
-        let imagePath: string | undefined;
-        if (shouldRender) {
-          imagePath = await renderPreview(concept);
-        }
-
-        // Generate captions if requested
-        let captions: CaptionSet | undefined;
-        if (shouldCaption) {
-          captions = await generateCaptions(concept);
-          
-          // Save captions alongside concept if saving
-          if (!noSave) {
-            const captionsPath = imagePath 
-              ? imagePath.replace('.png', '-captions.json')
-              : join(process.cwd(), 'output', 'concepts', `${concept.id}-captions.json`);
-            writeFileSync(captionsPath, JSON.stringify(captions, null, 2));
-            console.log(`💾 Captions saved to: ${captionsPath}`);
-          }
-        }
-        
-        // Post to Discord
-        if (!noPost) {
-          await postToDiscord(concept, imagePath, captions);
-        }
-
-        console.log('\n📋 Full concept:');
-        console.log(JSON.stringify(concept, null, 2));
-
-        if (captions) {
-          console.log('\n📝 Captions:');
-          console.log(JSON.stringify(captions, null, 2));
-        }
-      } catch (error) {
-        console.error('❌ Error:', error);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case 'caption': {
-      // Generate captions for an existing concept
-      const conceptPath = args[1];
-      if (!conceptPath) {
-        console.error('Usage: caption <path-to-concept.json>');
-        process.exit(1);
-      }
-
-      try {
-        const content = readFileSync(conceptPath, 'utf-8');
-        const concept: SkinConcept = JSON.parse(content);
-        const captions = await generateCaptions(concept);
-        
-        console.log('\n📝 Generated Captions:');
-        console.log(JSON.stringify(captions, null, 2));
-
-        // Save captions
-        const captionsPath = conceptPath.replace('.json', '-captions.json');
-        writeFileSync(captionsPath, JSON.stringify(captions, null, 2));
-        console.log(`\n💾 Saved to: ${captionsPath}`);
-      } catch (error) {
-        console.error('❌ Error:', error);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case 'render': {
-      const conceptPath = args[1];
-      if (!conceptPath) {
-        console.error('Usage: render <path-to-concept.json>');
-        process.exit(1);
-      }
-
-      try {
-        const imagePath = await renderFromFile(conceptPath);
-        console.log(`✅ Rendered: ${imagePath}`);
-      } catch (error) {
-        console.error('❌ Error:', error);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case 'list': {
-      const conceptsDir = join(process.cwd(), 'output', 'concepts');
-      try {
-        const files = readdirSync(conceptsDir).filter(f => f.endsWith('.json') && !f.includes('captions'));
-        console.log(`\n📁 Found ${files.length} concepts:\n`);
-        
-        for (const file of files.slice(-10)) {
-          const content = readFileSync(join(conceptsDir, file), 'utf-8');
-          const concept: SkinConcept = JSON.parse(content);
-          console.log(`  • ${concept.name} — "${concept.vibe}"`);
-          console.log(`    ${file}\n`);
-        }
-      } catch {
-        console.log('No concepts found yet. Run `npm run generate` first!');
-      }
-      break;
-    }
-
-    default:
-      console.log(`
-Social Media Agent - Skin Concept Generator
-
-Commands:
-  generate                    Generate a new skin concept (random mood)
-  generate --mood "X"         Generate with specific mood
-  generate --render           Generate + create preview image
-  generate --caption          Generate + create platform captions
-  generate --render --caption Full package: concept + image + captions
-  generate --no-save          Don't save to file
-  generate --no-post          Don't post to Discord
-  
-  render <concept.json>       Render preview from existing concept
-  caption <concept.json>      Generate captions for existing concept
-  list                        List recent concepts
-
-Examples:
-  npm run generate
-  npm run generate -- --mood "cyberpunk neon" --render --caption
-  npm run caption output/concepts/2025-12-19-zen-harmony.json
-      `);
-  }
-}
-
-main();
-```
-
----
-
-## Step 5: Update package.json Scripts
-
-```json
-{
-  "scripts": {
-    "generate": "tsx src/index.ts generate",
-    "render": "tsx src/index.ts render",
-    "caption": "tsx src/index.ts caption",
-    "list": "tsx src/index.ts list"
-  }
-}
-```
-
----
-
-## Step 6: Test It
-
+**Instagram (122 chars):**
 ```bash
-# Generate with captions only (no image)
-npm run generate -- --caption --no-post
-
-# Full package: concept + image + captions
-npm run generate -- --mood "steampunk workshop" --render --caption
-
-# Generate captions for existing concept
-npm run caption output/concepts/2025-12-19-zen-harmony.json
-```
-
----
-
-## Exit Criteria
-
-- [ ] `npm run generate -- --caption` generates 3 platform captions
-- [ ] Captions saved to `-captions.json` file
-- [ ] Instagram: ≤150 chars + 3-5 hashtags
-- [ ] Twitter: ≤200 chars total
-- [ ] Facebook: 1-2 sentences with question
-- [ ] Discord embed shows all 3 caption variants
-- [ ] `npm run caption <concept.json>` works for existing concepts
-- [ ] No AI-generic phrases ("game-changer", "revolutionary")
-- [ ] TypeScript compiles with no errors
-
----
-
-## Expected Discord Output
-
-When you run `generate --render --caption`, Discord should show:
-
-```
-🎨 New Skin: Neon Dreams
-Vibe: Cyberpunk hacker den
-
-🪟 Window Shape          ✨ Particles
-Hexagonal with edges     Fast orbital trails
-
-🎨 Colors
-Primary: #00ff88 · Secondary: #ff00ff · Accent: #00ffff
-
-📸 Instagram
-Living in the future ✨ This AI skin makes me feel like a hacker in a neon-lit basement.
-#AIdesign #hologram #cyberpunk #synthwave #uiux
-
-🐦 Twitter
-Just dropped a new Hologram skin that makes my desktop look like Blade Runner. The future is now. #AIart
-
-📘 Facebook
-What would your AI assistant look like if it lived in a cyberpunk world? We just made that dream real — what aesthetic would you want next?
-
-[PREVIEW IMAGE]
-
-ID: abc123-def456
-```
-
----
-
-## If You Get Stuck
-
-### Captions too long
-- Reduce character limits in prompts
-- Add stricter "Max X characters" instruction
-
-### Hashtags have inconsistent format
-- The code normalizes them (adds # if missing)
-
-### Captions sound AI-generic
-- The banned phrases are in `brand_voice.md`
-- Add more banned phrases to the prompt if needed
-
-### Parallel API calls failing
-- Could serialize them: `const instagram = await ...; const twitter = await ...;`
-- But parallel is faster and usually works
-
----
-
-## Files Summary
-
-### Created:
-- `src/caption.ts` — Caption generation with platform prompts
-
-### Modified:
-- `src/types.ts` — Added `Platform`, `Caption`, `CaptionSet` types
-- `src/discord.ts` — Added caption fields to embed
-- `src/index.ts` — Added `--caption` flag and `caption` command
-- `package.json` — Added `caption` script
-
----
-
-Good luck! 📝
-
+Dive into the whimsical world of Cog & Steam! Where creativity meets mechanics. ⚙️✨ What do you think? #steampunk #aiart #holoscape

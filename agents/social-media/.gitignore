@@ -2,4 +2,8 @@ node_modules/
 dist/
 .env
 output/concepts/*.json
+output/previews/*.png
+data/
 
+.env.doppler-backup
+.env

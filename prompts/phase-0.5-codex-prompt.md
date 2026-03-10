@@ -180,3 +180,10 @@ Don't block on perfection. Ship the spike.
 *For: GPT 5.1 Codex Mini (mid-tier execution model)*
 *Reviewed by: Claude Opus 4*
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models
+- [[research_methodology]] - research
+- [[sales_strategy]] - sales/business

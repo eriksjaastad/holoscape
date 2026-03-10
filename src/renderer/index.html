@@ -16,6 +16,9 @@
       <canvas id="visualizer-canvas"></canvas>
     </div>
 
+    <!-- Security Indicator -->
+    <div id="security-indicator-container"></div>
+
     <div id="metrics-panel">
       <div class="metric-row">
         <span class="metric-label">FPS</span>
@@ -33,12 +36,6 @@
     </div>
 
     <div id="chat-panel">
-      <input
-        id="api-key-input"
-        type="password"
-        placeholder="OpenAI API key (optional for simulation)"
-        aria-label="OpenAI API key"
-      />
       <div class="chat-controls">
         <input id="chat-input" type="text" placeholder="Ask anything..." />
         <button id="send-button" type="button">Send</button>
@@ -82,6 +79,53 @@
           <button type="button" id="prefs-close-bottom">Close</button>
         </div>
       </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="settings-panel hidden">
+      <h2>Settings</h2>
+
+      <!-- Connection Switcher -->
+      <section class="settings-section">
+        <div id="connection-switcher"></div>
+      </section>
+
+      <section class="settings-section">
+        <h3>🔑 API Keys</h3>
+        <p id="key-status" class="status-missing">Checking...</p>
+
+        <div class="key-input-group">
+          <input
+            type="password"
+            id="settings-api-key-input"
+            placeholder="Enter OpenAI API key (sk-...)"
+            autocomplete="off"
+          />
+          <button id="save-key-btn">Save</button>
+          <button id="rotate-key-btn" style="display: none">Rotate</button>
+          <button id="delete-key-btn" class="danger" style="display: none">Delete</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>💬 Chat History</h3>
+        <button id="clear-history-btn">Clear History</button>
+      </section>
+
+      <section class="settings-section">
+        <h3>📋 Logs</h3>
+        <button id="clear-logs-btn">Clear Logs</button>
+      </section>
+
+      <section class="settings-section danger-zone">
+        <h3>🚨 Danger Zone</h3>
+        <button id="panic-btn" class="danger">Delete All Keys + Clear Everything</button>
+        <p class="help-text">
+          This will delete all API keys, chat history, and logs. Cannot be undone.
+        </p>
+      </section>
+
+      <p id="settings-status" class="status-message"></p>
     </div>
 
     <script type="module" src="./main.ts"></script>

@@ -31,14 +31,14 @@ function updateFpsDisplay(fpsValue: number) {
 }
 
 async function refreshNodeMetrics(): Promise<void> {
-  if (!window.hologram?.getMetrics) {
+  if (!window.holoscape?.getMetrics) {
     markMetricsUnavailable('Metrics API unavailable');
-    console.warn('hologram.getMetrics is not exposed in the renderer.');
+    console.warn('holoscape.getMetrics is not exposed in the renderer.');
     return;
   }
 
   try {
-    const metrics: ProcessMetrics = await window.hologram.getMetrics();
+    const metrics: ProcessMetrics = await window.holoscape.getMetrics();
     if (!metrics) {
       markMetricsUnavailable('Metrics call returned no data');
       return;

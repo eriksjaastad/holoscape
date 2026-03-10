@@ -87,7 +87,7 @@ export function createAppMenu(): Menu {
           label: 'Learn More',
           click: () => {
             log.info('Learn More clicked');
-            shell.openExternal('https://github.com/eriksjaastad/hologram');
+            shell.openExternal('https://github.com/eriksjaastad/Holoscape');
           },
         },
       ],

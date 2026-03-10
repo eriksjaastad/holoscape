@@ -23,8 +23,8 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-if (window.hologram?.on) {
-  window.hologram.on('preferences:open', () => {
+if (window.holoscape?.on) {
+  window.holoscape.on('preferences:open', () => {
     showPreferences();
   });
 }

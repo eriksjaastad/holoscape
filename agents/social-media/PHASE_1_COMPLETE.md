@@ -191,3 +191,11 @@ This phase is successful if:
 
 All criteria met! 🎨
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [[PROJECT_STRUCTURE_STANDARDS]] - project structure
+- [Discord Webhooks Per Project](patterns/discord-webhooks-per-project.md) - Discord
+- [Tiered AI Sprint Planning](patterns/tiered-ai-sprint-planning.md) - prompt engineering
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models
+- [[sales_strategy]] - sales/business

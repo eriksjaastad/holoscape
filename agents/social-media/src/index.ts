@@ -3,6 +3,14 @@ import { generateSkinConcept, saveConcept } from './skin-generator.js';
 import { renderPreview, renderFromFile } from './renderer.js';
 import { generateCaptions } from './caption.js';
 import { postToDiscord } from './discord.js';
+import { createPostPackage } from './package-generator.js';
+import { postApprovalRequest } from './approval-discord.js';
+import {
+  logDecision,
+  updatePackageStatus,
+  getPendingPackages,
+  getApprovedPackages,
+} from './decision-logger.js';
 import { slugify } from './utils.js';
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -73,6 +81,132 @@ async function main() {
       } catch (error) {
         console.error('❌ Error:', error);
         process.exit(1);
+      }
+      break;
+    }
+
+    // NEW: Create full post package and request approval
+    case 'package': {
+      const moodIndex = args.indexOf('--mood');
+      const mood = moodIndex !== -1 ? args[moodIndex + 1] : undefined;
+
+      try {
+        console.log('📦 Creating full post package...\n');
+
+        // Generate everything
+        const concept = await generateSkinConcept(mood);
+        saveConcept(concept);
+
+        const imagePath = await renderPreview(concept);
+        const captions = await generateCaptions(concept);
+
+        // Create package
+        const pkg = createPostPackage(concept, imagePath, captions);
+
+        // Post approval request to Discord
+        await postApprovalRequest(pkg);
+
+        console.log('\n✅ Post package ready for approval!');
+        console.log(`   Package ID: ${pkg.id}`);
+        console.log(`   Check Discord for the approval request.`);
+      } catch (error) {
+        console.error('❌ Error:', error);
+        process.exit(1);
+      }
+      break;
+    }
+
+    // NEW: Approve a package
+    case 'approve': {
+      const packageId = args[1];
+      if (!packageId) {
+        console.error('Usage: approve <package-id>');
+        process.exit(1);
+      }
+
+      const pkg = updatePackageStatus(packageId, 'approved', {
+        approvedAt: new Date().toISOString(),
+      });
+
+      if (pkg) {
+        logDecision(packageId, 'approved');
+        console.log(`✅ Package ${packageId.slice(0, 8)}... approved!`);
+        console.log(`   Now manually post to: ${pkg.platforms.join(', ')}`);
+      }
+      break;
+    }
+
+    // NEW: Reject a package
+    case 'reject': {
+      const packageId = args[1];
+      const reasonIndex = args.indexOf('--reason');
+      const reason = reasonIndex !== -1 ? args[reasonIndex + 1] : undefined;
+
+      if (!packageId) {
+        console.error('Usage: reject <package-id> [--reason "why"]');
+        process.exit(1);
+      }
+
+      const pkg = updatePackageStatus(packageId, 'rejected', {
+        rejectedAt: new Date().toISOString(),
+        rejectedReason: reason,
+      });
+
+      if (pkg) {
+        logDecision(packageId, 'rejected', reason);
+        console.log(`❌ Package ${packageId.slice(0, 8)}... rejected.`);
+        if (reason) {
+          console.log(`   Reason: ${reason}`);
+        }
+      }
+      break;
+    }
+
+    // NEW: Mark as posted
+    case 'posted': {
+      const packageId = args[1];
+      if (!packageId) {
+        console.error('Usage: posted <package-id>');
+        process.exit(1);
+      }
+
+      const pkg = updatePackageStatus(packageId, 'posted', {
+        postedAt: new Date().toISOString(),
+      });
+
+      if (pkg) {
+        logDecision(packageId, 'posted');
+        console.log(`📸 Package ${packageId.slice(0, 8)}... marked as posted!`);
+      }
+      break;
+    }
+
+    // NEW: List pending packages
+    case 'pending': {
+      const pending = getPendingPackages();
+      console.log(`\n📬 Pending packages: ${pending.length}\n`);
+
+      for (const pkg of pending) {
+        console.log(`  • ${pkg.concept.name}`);
+        console.log(`    ID: ${pkg.id}`);
+        console.log(`    Created: ${new Date(pkg.createdAt).toLocaleString()}`);
+        console.log(`    Platforms: ${pkg.platforms.join(', ')}\n`);
+      }
+      break;
+    }
+
+    // NEW: List approved packages
+    case 'approved': {
+      const approved = getApprovedPackages();
+      console.log(`\n✅ Approved packages: ${approved.length}\n`);
+
+      for (const pkg of approved) {
+        console.log(`  • ${pkg.concept.name}`);
+        console.log(`    ID: ${pkg.id}`);
+        console.log(
+          `    Approved: ${pkg.approvedAt ? new Date(pkg.approvedAt).toLocaleString() : 'unknown'}`
+        );
+        console.log(`    Platforms: ${pkg.platforms.join(', ')}\n`);
       }
       break;
     }
@@ -156,6 +290,17 @@ Commands:
   generate --no-save          Don't save to file
   generate --no-post          Don't post to Discord
   
+  package                     Create full post package + request approval
+  package --mood "X"          Package with specific mood
+  
+  approve <package-id>        Approve a pending package
+  reject <package-id>         Reject a pending package
+  reject <id> --reason "why"  Reject with reason
+  posted <package-id>         Mark package as manually posted
+  
+  pending                     List pending packages
+  approved                    List approved packages
+  
   render <concept.json>       Render preview from existing concept
   caption <concept.json>      Generate captions for existing concept
   list                        List recent concepts
@@ -165,6 +310,11 @@ Examples:
   npm run generate -- --mood "underwater bioluminescence" --render
   npm run generate -- --mood "cyberpunk neon" --render --caption
   npm run caption output/concepts/2025-12-19-zen-harmony.json
+  
+  npm run package
+  npm run package -- --mood "cyberpunk neon"
+  npm run approve abc12345-def6-7890
+  npm run posted abc12345-def6-7890
       `);
   }
 }

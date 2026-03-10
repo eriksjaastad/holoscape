@@ -611,3 +611,8 @@ registerGlobalShortcuts(() => windowService.getWindow());
 [Specific question for Opus]
 ```
 
+## Related Documentation
+
+- [[trading_strategy_framework]] - trading strategy
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models
+- [Safety Systems](patterns/safety-systems.md) - security

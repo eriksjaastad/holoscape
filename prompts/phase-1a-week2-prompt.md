@@ -725,3 +725,10 @@ describe('error type guards', () => {
 [Specific question for Opus]
 ```
 
+## Related Documentation
+
+- [Doppler Secrets Management](Documents/reference/DOPPLER_SECRETS_MANAGEMENT.md) - secrets management
+- [[PROJECT_STRUCTURE_STANDARDS]] - project structure
+- [[trading_strategy_framework]] - trading strategy
+- [AI Model Cost Comparison](Documents/reference/MODEL_COST_COMPARISON.md) - AI models
+- [Safety Systems](patterns/safety-systems.md) - security
