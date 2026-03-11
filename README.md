@@ -16,7 +16,7 @@ python main.py
 
 ## Documentation
 
-See the `Documents/` directory for detailed documentation.
+See the `.agent/rules/` directory for detailed documentation.
 
 ## Status
 
