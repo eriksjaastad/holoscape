@@ -1,29 +1,3 @@
-
-<!-- SCAFFOLD:START - Do not edit between markers -->
-# holoscape
-
-Brief description of the project's purpose
-
-## Quick Start
-
-```bash
-# Setup
-pip install -r requirements.txt
-
-# Run
-python main.py
-```
-
-## Documentation
-
-See the `.agent/rules/` directory for detailed documentation.
-
-## Status
-
-- **Current Phase:** Foundation
-- **Status:** #status/active
-
-<!-- SCAFFOLD:END - Custom content below is preserved -->
 # Hologram
 
 **A white-label AI chat client with a soul.**
