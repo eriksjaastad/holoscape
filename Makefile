@@ -1,4 +1,4 @@
-.PHONY: build test xcode bundle clean run
+.PHONY: build test test-unit test-property test-ui xcode bundle clean run
 
 # Default: build debug
 build:
@@ -8,7 +8,27 @@ build:
 test:
 	swift test
 
-# Generate Xcode project with all targets and open it
+# Run only unit tests
+test-unit:
+	swift test --filter HoloscapeTests
+
+# Run only property-based tests
+test-property:
+	swift test --filter HoloscapePropertyTests
+
+# Run UI tests (requires Xcode and built .app bundle)
+test-ui: bundle
+	xcodebuild test \
+		-scheme Holoscape \
+		-destination 'platform=macOS' \
+		-only-testing:HoloscapeUITests \
+		2>&1 | tail -40
+
+# Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
+test-class:
+	swift test --filter $(CLASS)
+
+# Generate Xcode project and open it
 xcode:
 	swift package generate-xcodeproj
 	@echo ""
