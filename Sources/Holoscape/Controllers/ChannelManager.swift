@@ -108,6 +108,7 @@ class ChannelManager {
         case .shell: return "Shell"
         case .agentDirect, .agentAPI: return "Agent"
         case .groupChat: return "Chat"
+        case .ssh: return "SSH"
         }
     }
 }
