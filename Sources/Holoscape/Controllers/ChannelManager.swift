@@ -5,13 +5,15 @@ class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
     private var channelOrder: [UUID] = []
     private var instanceCounters: [String: Int] = [:]
+    private var highWaterMarks: [String: Int] = [:]
+    private var channelLabels: [UUID: String] = [:]
     private let configService: ConfigService
 
     init(configService: ConfigService) {
         self.configService = configService
     }
 
-    /// Create a new channel and add it to the registry.
+    /// Create a new channel and add it to the registry (V1 factory pattern).
     func createChannel(
         type: ChannelType,
         role: String?,
@@ -24,6 +26,38 @@ class ChannelManager {
         let controller = factory(id, type, effectiveRole, instanceNumber, workingDirectory)
         channels[id] = controller
         channelOrder.append(id)
+        channelLabels[id] = effectiveRole
+        return controller
+    }
+
+    /// Create a new channel from a SessionProfile (V1.5).
+    func createChannel(from profile: SessionProfile) -> any ChannelController {
+        let id = UUID()
+        let instanceNumber = nextInstanceNumber(for: profile.label)
+
+        let controller: any ChannelController
+        switch profile.connection {
+        case .local:
+            if profile.command.contains("zsh") || profile.command.contains("bash") || profile.command == "/bin/zsh" || profile.command == "/bin/bash" {
+                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+            } else {
+                let dir = URL(fileURLWithPath: (profile.directory as NSString).expandingTildeInPath)
+                controller = AgentChannelController(
+                    id: id,
+                    authType: .oauth,
+                    workingDirectory: dir,
+                    userLabel: profile.label,
+                    instanceNumber: instanceNumber,
+                    useRawLabel: true
+                )
+            }
+        case .ssh:
+            controller = SSHChannelController(id: id, profile: profile, instanceNumber: instanceNumber)
+        }
+
+        channels[id] = controller
+        channelOrder.append(id)
+        channelLabels[id] = profile.label
         return controller
     }
 
@@ -40,6 +74,8 @@ class ChannelManager {
         }
         channels.removeValue(forKey: id)
         channelOrder.removeAll { $0 == id }
+        channelLabels.removeValue(forKey: id)
+        // Note: highWaterMarks are NOT decremented on close (no renumbering)
     }
 
     /// Get a channel by ID.
@@ -52,11 +88,10 @@ class ChannelManager {
         return channelOrder.compactMap { channels[$0] }
     }
 
-    /// Move an unread channel's tab to the leftmost position.
+    /// Move an unread channel's tab to the leftmost/topmost position.
     func moveUnreadToFront(id: UUID) {
         guard let index = channelOrder.firstIndex(of: id) else { return }
         channelOrder.remove(at: index)
-        // Insert at the leftmost position (index 0)
         channelOrder.insert(id, at: 0)
     }
 
@@ -65,13 +100,27 @@ class ChannelManager {
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
             guard let channel = channels[id] else { return nil }
+
+            // Extract SSH-specific fields
+            var host: String?
+            var user: String?
+            var command: String?
+            if let sshChannel = channel as? SSHChannelController {
+                host = sshChannel.profile.host
+                user = sshChannel.profile.user
+                command = sshChannel.profile.command
+            }
+
             return ChannelMetadata(
                 id: channel.channelId,
                 type: channel.channelType,
                 role: channel.displayLabel,
                 context: nil,
                 instanceNumber: nil,
-                workingDirectory: nil
+                workingDirectory: nil,
+                host: host,
+                user: user,
+                command: command
             )
         }
         configService.save(config)
@@ -86,21 +135,35 @@ class ChannelManager {
             if let controller = factory(metadata) {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
+                channelLabels[controller.channelId] = metadata.role
             }
         }
     }
 
     var count: Int { channels.count }
 
+    /// Get the stored label for a channel (used for profile resolution on duplicate).
+    func labelForChannel(id: UUID) -> String? {
+        return channelLabels[id]
+    }
+
     // MARK: - Private
 
-    private func nextInstanceNumber(for role: String) -> Int? {
-        let key = role.lowercased()
-        let current = instanceCounters[key, default: 0]
-        instanceCounters[key] = current + 1
-        // Only show instance number if there are multiple channels with this role
-        let count = channels.values.filter { $0.displayLabel.lowercased().hasPrefix(key) }.count
-        return count > 0 ? current + 1 : nil
+    private func nextInstanceNumber(for label: String) -> Int? {
+        let key = label.lowercased()
+        let activeCount = channelLabels.values.filter { $0.lowercased() == key }.count
+        let hwm = highWaterMarks[key, default: 0]
+
+        if activeCount == 0 {
+            // First channel with this label — no number
+            highWaterMarks[key] = 1
+            return nil
+        } else {
+            // Additional channel — assign next number
+            let next = max(hwm, activeCount) + 1
+            highWaterMarks[key] = next
+            return next
+        }
     }
 
     private func defaultRole(for type: ChannelType) -> String {
@@ -108,6 +171,7 @@ class ChannelManager {
         case .shell: return "Shell"
         case .agentDirect, .agentAPI: return "Agent"
         case .groupChat: return "Chat"
+        case .ssh: return "SSH"
         }
     }
 }

@@ -16,8 +16,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let userLabel: String?
     private var detectedRole: String?
     private let instanceNumber: Int?
+    private let useRawLabel: Bool
 
     var displayLabel: String {
+        if useRawLabel, let label = userLabel {
+            if let num = instanceNumber {
+                return "\(label) \(num)"
+            }
+            return label
+        }
         if let role = detectedRole ?? userLabel {
             let short = RoleDetector.shortLabel(for: role)
             if role.lowercased().contains("floor manager"),
@@ -42,7 +49,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         authType: AgentAuthType,
         workingDirectory: URL?,
         userLabel: String?,
-        instanceNumber: Int?
+        instanceNumber: Int?,
+        useRawLabel: Bool = false
     ) {
         self.channelId = id
         self.authType = authType
@@ -55,6 +63,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.workingDirectory = workingDirectory
         self.userLabel = userLabel
         self.instanceNumber = instanceNumber
+        self.useRawLabel = useRawLabel
         self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         terminalView.processDelegate = self

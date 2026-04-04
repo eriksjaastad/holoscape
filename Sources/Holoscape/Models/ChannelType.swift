@@ -5,4 +5,5 @@ enum ChannelType: String, Codable, Sendable {
     case agentDirect
     case agentAPI
     case groupChat
+    case ssh
 }
