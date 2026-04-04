@@ -26,6 +26,13 @@ class InputBoxView: NSTextView {
         setup()
     }
 
+    override var acceptsFirstResponder: Bool { true }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        return result
+    }
+
     private func setup() {
         font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0)
