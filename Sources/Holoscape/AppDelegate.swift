@@ -16,7 +16,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create channel manager and window
         let channelManager = ChannelManager(configService: configService)
-        windowController = MainWindowController(channelManager: channelManager)
+        windowController = MainWindowController(channelManager: channelManager, configService: configService)
+
+        // Set up session profile manager
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        windowController?.setProfileManager(profileManager)
 
         // Apply appearance
         applyAppearance(config.appearance)
@@ -41,7 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             windowController?.switchToChannel(first.channelId)
         }
 
-        windowController?.refreshTabBar()
+        windowController?.refreshAllTabs()
 
         // Show window
         windowController?.window.makeKeyAndOrderFront(nil)
