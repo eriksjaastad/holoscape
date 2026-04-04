@@ -44,6 +44,10 @@ class InputBoxView: NSTextView {
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
         isAutomaticSpellingCorrectionEnabled = false
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.textArea)
+        setAccessibilityIdentifier("input-box")
     }
 
     override func keyDown(with event: NSEvent) {

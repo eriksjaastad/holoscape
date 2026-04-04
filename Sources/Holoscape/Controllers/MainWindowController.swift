@@ -42,6 +42,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.inputContainer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1000, height: 40))
         self.inputBox = InputBoxView(frame: inputContainer.contentView.bounds)
         inputContainer.documentView = inputBox
+        inputContainer.setAccessibilityElement(false)
         inputBox.isVerticallyResizable = false
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 40)
         inputBox.textContainer?.widthTracksTextView = true
@@ -65,9 +66,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         setupLayout()
         setupKeyboardShortcuts()
-        applySidebarState()
 
         window.makeFirstResponder(inputBox)
+
+        // Defer sidebar state application until after layout
+        DispatchQueue.main.async { [self] in
+            self.applySidebarState()
+        }
     }
 
     /// Set the profile manager after services are initialized.
@@ -111,6 +116,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Right pane: tab bar (hidden when sidebar expanded) + terminal + input
         let rightPane = NSView()
         rightPane.translatesAutoresizingMaskIntoConstraints = false
+        rightPane.setAccessibilityElement(false)
+        rightPane.setAccessibilityRole(.group)
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         terminalContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -157,6 +164,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let newItem = NSMenuItem(title: "New Session", action: #selector(handleNewSession), keyEquivalent: "n")
         newItem.target = self
 
+        let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(showChannelPicker), keyEquivalent: "")
+        newChannelItem.target = self
+
         let closeItem = NSMenuItem(title: "Close Channel", action: #selector(closeActiveChannel), keyEquivalent: "w")
         closeItem.target = self
 
@@ -166,6 +176,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         if let fileMenu = NSApp.mainMenu?.item(withTitle: "File")?.submenu {
             fileMenu.addItem(newItem)
+            fileMenu.addItem(newChannelItem)
             fileMenu.addItem(closeItem)
             fileMenu.addItem(NSMenuItem.separator())
             fileMenu.addItem(toggleSidebarItem)
