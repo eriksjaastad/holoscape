@@ -8,6 +8,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let bugReportService = BugReportService()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ensure app activates as a foreground GUI application
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         // Build menu bar
         setupMenuBar()
 
