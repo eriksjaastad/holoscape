@@ -115,6 +115,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = GroupChatChannelController(id: metadata.id, apiURL: apiURL, apiKey: apiKey)
             controller.activate()
             return controller
+        case .ssh:
+            // SSH channel restoration — will be fully implemented in Phase 8
+            return nil
         }
     }
 
