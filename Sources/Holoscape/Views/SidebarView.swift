@@ -1,0 +1,204 @@
+import AppKit
+
+@MainActor
+protocol SidebarViewDelegate: AnyObject {
+    func sidebarView(_ sidebar: SidebarView, didSelectChannelWithId id: UUID)
+    func sidebarView(_ sidebar: SidebarView, contextMenuForChannelWithId id: UUID) -> NSMenu?
+}
+
+@MainActor
+class SidebarView: NSView {
+    weak var sidebarDelegate: SidebarViewDelegate?
+
+    private let scrollView = NSScrollView()
+    private let stackView = NSStackView()
+    private var tabEntries: [UUID: SidebarTabEntry] = [:]
+    private var activeChannelId: UUID?
+
+    private let entryHeight: CGFloat = 36
+    private let sidebarWidth: CGFloat = 220
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setupViews()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupViews()
+    }
+
+    private func setupViews() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+
+        stackView.orientation = .vertical
+        stackView.alignment = .leading
+        stackView.spacing = 2
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.documentView = stackView
+        addSubview(scrollView)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stackView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+        ])
+    }
+
+    func updateTabs(channels: [any ChannelController], activeId: UUID?) {
+        activeChannelId = activeId
+
+        // Remove all existing entries
+        for (_, entry) in tabEntries {
+            stackView.removeArrangedSubview(entry)
+            entry.removeFromSuperview()
+        }
+        tabEntries.removeAll()
+
+        // Add entries for each channel
+        for channel in channels {
+            let entry = SidebarTabEntry(frame: .zero)
+            entry.configure(
+                label: channel.displayLabel,
+                hasUnread: channel.hasUnread,
+                state: channel.state,
+                isActive: channel.channelId == activeId
+            )
+            entry.channelId = channel.channelId
+            entry.target = self
+            entry.action = #selector(entryClicked(_:))
+            entry.translatesAutoresizingMaskIntoConstraints = false
+
+            stackView.addArrangedSubview(entry)
+            NSLayoutConstraint.activate([
+                entry.heightAnchor.constraint(equalToConstant: entryHeight),
+                entry.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            ])
+
+            tabEntries[channel.channelId] = entry
+        }
+    }
+
+    @objc private func entryClicked(_ sender: SidebarTabEntry) {
+        guard let id = sender.channelId else { return }
+        sidebarDelegate?.sidebarView(self, didSelectChannelWithId: id)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        for (id, entry) in tabEntries {
+            if entry.frame.contains(convert(point, to: entry.superview ?? self)) {
+                return sidebarDelegate?.sidebarView(self, contextMenuForChannelWithId: id)
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - SidebarTabEntry
+
+@MainActor
+class SidebarTabEntry: NSControl {
+    var channelId: UUID?
+
+    private let labelField = NSTextField(labelWithString: "")
+    private let unreadDot = NSView()
+    private let statusIndicator = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setupViews()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupViews()
+    }
+
+    private func setupViews() {
+        wantsLayer = true
+        layer?.cornerRadius = 4
+
+        labelField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        labelField.textColor = NSColor.lightGray
+        labelField.lineBreakMode = .byTruncatingTail
+        labelField.translatesAutoresizingMaskIntoConstraints = false
+
+        unreadDot.wantsLayer = true
+        unreadDot.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        unreadDot.layer?.cornerRadius = 4
+        unreadDot.translatesAutoresizingMaskIntoConstraints = false
+        unreadDot.isHidden = true
+
+        statusIndicator.wantsLayer = true
+        statusIndicator.layer?.cornerRadius = 3
+        statusIndicator.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(unreadDot)
+        addSubview(statusIndicator)
+        addSubview(labelField)
+
+        NSLayoutConstraint.activate([
+            unreadDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            unreadDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            unreadDot.widthAnchor.constraint(equalToConstant: 8),
+            unreadDot.heightAnchor.constraint(equalToConstant: 8),
+
+            statusIndicator.leadingAnchor.constraint(equalTo: unreadDot.trailingAnchor, constant: 6),
+            statusIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusIndicator.widthAnchor.constraint(equalToConstant: 6),
+            statusIndicator.heightAnchor.constraint(equalToConstant: 6),
+
+            labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
+            labelField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            labelField.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool) {
+        labelField.stringValue = label
+        unreadDot.isHidden = !hasUnread
+
+        switch state {
+        case .active:
+            statusIndicator.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        case .connecting:
+            statusIndicator.layer?.backgroundColor = NSColor.systemYellow.cgColor
+        case .disconnected:
+            statusIndicator.layer?.backgroundColor = NSColor.systemRed.cgColor
+        }
+
+        if isActive {
+            layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+            labelField.textColor = NSColor.white
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+            labelField.textColor = hasUnread ? NSColor.white : NSColor.lightGray
+        }
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityTitle(label)
+        setAccessibilityIdentifier("sidebar-\(label)")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let action, let target {
+            NSApp.sendAction(action, to: target, from: self)
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        return superview?.superview?.superview?.menu(for: event)
+    }
+}
