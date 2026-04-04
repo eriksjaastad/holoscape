@@ -16,6 +16,13 @@ class TerminalContainerView: NSView {
         layer?.backgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0).cgColor
     }
 
+    override var acceptsFirstResponder: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Prevent clicks inside the terminal from stealing first responder
+        return nil
+    }
+
     func showContent(_ view: NSView) {
         currentContentView?.removeFromSuperview()
         currentContentView = view
