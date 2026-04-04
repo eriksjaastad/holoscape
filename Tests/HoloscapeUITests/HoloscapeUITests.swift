@@ -43,9 +43,9 @@ final class HoloscapeUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
 
         // Dialog should appear — click Shell
-        let shellButton = app.buttons["Shell"]
-        if shellButton.waitForExistence(timeout: 2) {
-            shellButton.click()
+        let dialog = app.dialogs.firstMatch
+        if dialog.waitForExistence(timeout: 2) {
+            dialog.buttons["Shell"].click()
         }
 
         // Input box should still accept keystrokes
@@ -112,11 +112,9 @@ final class HoloscapeUITests: XCTestCase {
         let recalled = inputBox.value as? String ?? ""
         XCTAssertEqual(recalled, "pwd", "Up arrow should recall previous command")
 
-        // TODO: Fix InputBoxView to handle down-arrow during history navigation
-        // Once fixed, uncomment:
-        // inputBox.typeKey(.downArrow, modifierFlags: [])
-        // let value = inputBox.value as? String ?? ""
-        // XCTAssertTrue(value.isEmpty, "Down arrow past end of history should clear input")
+        inputBox.typeKey(.downArrow, modifierFlags: [])
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Down arrow past end of history should clear input")
     }
 
     // MARK: - Tab Bar
@@ -140,10 +138,14 @@ final class HoloscapeUITests: XCTestCase {
 
         // Create a new shell channel via Cmd+N
         app.typeKey("n", modifierFlags: .command)
-        let dialogShellButton = app.buttons["Shell"]
-        if dialogShellButton.waitForExistence(timeout: 2) {
-            dialogShellButton.click()
-        }
+
+        // The NSAlert dialog has its own window — find the Shell button inside the dialog sheet,
+        // not the tab bar button. Sheets appear as a separate element from the main window.
+        let dialog = app.dialogs.firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 2), "New Channel dialog should appear")
+        let dialogShellButton = dialog.buttons["Shell"]
+        XCTAssertTrue(dialogShellButton.waitForExistence(timeout: 2), "Shell button in dialog should exist")
+        dialogShellButton.click()
 
         // The second shell tab should appear with an instance number
         let secondTab = window.buttons.matching(NSPredicate(format: "title CONTAINS 'Shell 2'")).firstMatch
@@ -155,10 +157,9 @@ final class HoloscapeUITests: XCTestCase {
     func testCmdWClosesChannel() throws {
         // Create a second channel so closing doesn't leave us empty
         app.typeKey("n", modifierFlags: .command)
-        let shellButton = app.buttons["Shell"]
-        if shellButton.waitForExistence(timeout: 2) {
-            shellButton.click()
-        }
+        let dialog = app.dialogs.firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 2), "New Channel dialog should appear")
+        dialog.buttons["Shell"].click()
 
         // Verify second tab appeared
         let window = app.windows["Holoscape"]
