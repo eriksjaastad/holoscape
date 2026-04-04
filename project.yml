@@ -21,11 +21,11 @@ targets:
       - Sources/Holoscape
     dependencies:
       - package: SwiftTerm
-    info:
-      path: Info.plist
     settings:
       SWIFT_VERSION: "6.0"
       PRODUCT_BUNDLE_IDENTIFIER: com.holoscape.app
+      INFOPLIST_FILE: Info.plist
+      GENERATE_INFOPLIST_FILE: NO
 
   HoloscapeTests:
     type: bundle.unit-test

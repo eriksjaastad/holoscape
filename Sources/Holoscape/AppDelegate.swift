@@ -8,6 +8,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let bugReportService = BugReportService()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ensure app activates as a foreground GUI application
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         // Build menu bar
         setupMenuBar()
 
@@ -16,7 +20,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create channel manager and window
         let channelManager = ChannelManager(configService: configService)
-        windowController = MainWindowController(channelManager: channelManager)
+        windowController = MainWindowController(channelManager: channelManager, configService: configService)
+
+        // Set up session profile manager
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        windowController?.setProfileManager(profileManager)
 
         // Apply appearance
         applyAppearance(config.appearance)
@@ -41,7 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             windowController?.switchToChannel(first.channelId)
         }
 
-        windowController?.refreshTabBar()
+        windowController?.refreshAllTabs()
 
         // Show window
         windowController?.window.makeKeyAndOrderFront(nil)
@@ -115,6 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = GroupChatChannelController(id: metadata.id, apiURL: apiURL, apiKey: apiKey)
             controller.activate()
             return controller
+        case .ssh:
+            // SSH channel restoration — will be fully implemented in Phase 8
+            return nil
         }
     }
 
