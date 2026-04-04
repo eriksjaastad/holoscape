@@ -165,7 +165,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
 
         // File menu
-        let fileMenuItem = NSMenuItem()
+        let fileMenuItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)

@@ -39,6 +39,8 @@ class TabBarView: NSView {
         addSubview(scrollView)
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.setAccessibilityElement(false)
+        contentView.setAccessibilityRole(.group)
         scrollView.documentView = contentView
 
         NSLayoutConstraint.activate([
@@ -96,6 +98,12 @@ class TabBarView: NSView {
 
         // Store channel ID as tag via identifier
         button.identifier = NSUserInterfaceItemIdentifier(channel.channelId.uuidString)
+
+        // Expose to accessibility / XCUITest
+        button.setAccessibilityElement(true)
+        button.setAccessibilityRole(.button)
+        button.setAccessibilityTitle(title)
+        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
         return button
     }
 
