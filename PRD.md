@@ -256,13 +256,105 @@ Right-clicking any tab (sidebar or top bar) opens a context menu:
 - **Copy Session Info** — copy connection details to clipboard
 - (More items can be added as needed — the menu is defined in one place)
 
-## CEO Connection (Future — after core sessions)
+## V2 Features
 
-Direct connection from Holoscape to the Auxesis CEO agent, similar to how OpenClaw used MCP connections for Discord/Slack. This is an MCP-style bridge where Holoscape connects directly to the CEO role in the Auxesis pipeline. Design TBD — depends on how Auxesis exposes the CEO for external communication. Deferred until SSH sessions and sidebar are stable.
+### CEO Connection via MCP Bridge
+
+Holoscape connects directly to the Auxesis CEO agent for bidirectional communication. This is similar to how OpenClaw used MCP (Model Context Protocol) connections for Discord/Slack — a structured message bridge between Holoscape and a specific agent role in the Auxesis pipeline.
+
+**How it works:**
+- Auxesis exposes the CEO role via an MCP server endpoint (HTTP or stdio)
+- Holoscape acts as an MCP client, connecting to the CEO's endpoint
+- Messages sent from the Holoscape CEO tab are delivered to the Auxesis CEO agent
+- Responses from the CEO agent appear in the Holoscape CEO tab
+- The CEO tab renders messages in terminal-style format: `[HH:MM PM] CEO: message body`
+
+**Connection config** (in session profiles):
+```json
+{"label": "CEO", "connection": "mcp", "endpoint": "http://localhost:8080/mcp/ceo"}
+```
+
+**What Auxesis needs to expose:**
+- An MCP server that routes messages to/from the CEO role
+- This could be a new endpoint on the Auxesis sidecar (already running on the Mac Mini)
+- Or a standalone MCP server process that bridges to Auxesis's internal messaging
+
+**What Holoscape needs:**
+- A new `MCPChannelController` that implements the MCP client protocol
+- Renders incoming messages in the terminal view
+- Sends outgoing messages via MCP tool calls or message protocol
+- Handles connection/disconnection gracefully (same pattern as SSH channels)
+
+### Group Chat Channel
+
+Connect to the Agent Chat API (existing Flask app on Cloud Run) for multi-participant messaging. This was originally in V1 scope but deferred.
+
+**How it works:**
+- Holoscape connects to the Agent Chat API via HTTP polling (poll every 2-3 seconds for new messages)
+- Messages rendered in terminal-style monospace: `[HH:MM PM] sender: message body`
+- Erik sends messages as "erik" sender
+- Displays messages from all participants: erik, claude-architect, mini-claude, ceo
+- Unread indicator when new messages arrive while viewing another channel
+
+**Connection config:**
+- API URL and API key loaded from `~/.claude/agent-chat.env` (existing config)
+- Or stored in session profile: `{"label": "Group Chat", "connection": "agent-chat", "api_url": "...", "api_key_env": "AGENT_CHAT_API_KEY"}`
+
+**Rendering:**
+- Uses a custom read-only NSTextView (monospace) — NOT SwiftTerm, since there's no PTY
+- Messages appended as they arrive, with scrollback buffer
+- Auto-scroll to bottom on new messages unless Erik has scrolled up
+
+### Running Process Indicator
+
+Each tab shows whether its backend process is running, and for how long.
+
+- **Active channels** show a green dot + elapsed time since activation (e.g., "Shell (2h 15m)")
+- **Disconnected channels** show a red dot + "disconnected"
+- **Connecting channels** show a yellow dot + "connecting..."
+- Elapsed time updates every minute (not every second — avoid unnecessary redraws)
+- Displayed in both the sidebar tab entries and the horizontal tab bar
+
+### Timestamps on Terminal Output
+
+Toggle-able timestamps prepended to every line of terminal output.
+
+- When enabled, each line of output gets a `[HH:MM:SS]` prefix in a dimmed color
+- Toggle via menu: View > Show Timestamps (Cmd+T)
+- Setting persists to config
+- Applies to all channel types (shell, agent, SSH, group chat, CEO)
+- Timestamps are local time
+- For group chat, the existing `[HH:MM PM] sender:` format remains — the timestamp toggle adds seconds precision
+
+### Color Theme Presets
+
+Pre-built color themes that set background color, text color, and ANSI color palette in one click.
+
+- **Dark (default):** Current dark blue/purple theme (#1a1a2e background)
+- **Monokai:** Dark background with Monokai ANSI colors
+- **Solarized Dark:** Solarized color scheme
+- **Solarized Light:** Light background variant
+- **Dracula:** Popular dark theme
+- **Nord:** Nordic blue-gray theme
+
+**UI:** Settings panel gets a theme dropdown. Selecting a theme applies all colors at once. Individual color settings still override theme values.
+
+**Config:** Theme name stored in appearance config. Custom overrides stored separately.
+
+### Keyboard Shortcuts for Channel Switching
+
+Quick-switch between the first 9 channels using Cmd+1 through Cmd+9.
+
+- **Cmd+1** switches to the first channel in tab order
+- **Cmd+2** switches to the second, etc.
+- **Cmd+9** switches to the ninth
+- Tab order matches the sidebar (or horizontal tab bar when collapsed)
+- Shortcuts are always active regardless of sidebar state
+- If fewer than N channels exist, Cmd+N (where N > channel count) does nothing
 
 ## MVP Scope
 
-**V1 — Ship in a sprint (current):**
+**V1 — SHIPPED:**
 - Native macOS window with SwiftTerm
 - Top tab bar for channels with role labels and unread indicators
 - Shell channel (local zsh with real text editing input)
@@ -272,7 +364,7 @@ Direct connection from Holoscape to the Auxesis CEO agent, similar to how OpenCl
 - Background color, transparency, font settings
 - Channel state persistence across restarts
 
-**V1.5 — Next sprint (session launcher + sidebar):**
+**V1.5 — SHIPPED:**
 - Session launcher with profile-driven combobox opener
 - SSH agent channel (SSH → remote machine → run claude)
 - Auto-discovery of project directories on MacBook
@@ -281,12 +373,12 @@ Direct connection from Holoscape to the Auxesis CEO agent, similar to how OpenCl
 - Consistent instance numbering (mini-claude 1, mini-claude 2 — both numbered)
 - Directory-based tab labeling for SSH project sessions
 
-**V2 — After V1.5 stable:**
-- CEO connection via MCP bridge to Auxesis
-- Group chat channel (agent chat API connection)
-- Running process indicator with elapsed time clock
-- Timestamps on all terminal output (toggle-able)
-- Color theme presets
+**V2 — Current sprint:**
+- CEO connection via MCP bridge to Auxesis (new MCPChannelController)
+- Group chat channel (Agent Chat API via HTTP polling, custom NSTextView rendering)
+- Running process indicator with elapsed time on tabs
+- Timestamps on terminal output (toggle via Cmd+T)
+- Color theme presets (Dark, Monokai, Solarized, Dracula, Nord)
 - Cmd+1-9 keyboard shortcuts for channel switching
 
 **V3 — Someday:**
@@ -324,11 +416,12 @@ Direct connection from Holoscape to the Auxesis CEO agent, similar to how OpenCl
 
 ## Open Questions
 
-1. ~~How should channel creation work in the UI?~~ **ANSWERED:** Session launcher combobox on top of left sidebar. Profile-driven, editable, one-click launch.
-2. ~~How does Holoscape detect the role of a spawned Claude session?~~ **ANSWERED:** Label comes from the session profile config, not runtime CLAUDE.md parsing. Profiles define the label.
-3. ~~What happens when a channel's process dies?~~ **ANSWERED (design doc):** Disconnected state, manual retry or close. No auto-restart.
-4. ~~Should Holoscape manage its own SSH key for Mac Mini, or use the system SSH agent?~~ **ANSWERED:** Use system SSH agent. Holoscape doesn't manage auth — SSH keys are already set up, Claude OAuth is already authenticated on each machine.
-5. Can SwiftTerm's TerminalViewDelegate handle WebSocket/API streaming for group chat, or does group chat need a separate rendering path? (Deferred to V2)
+1. ~~How should channel creation work in the UI?~~ **ANSWERED:** Session launcher combobox on top of left sidebar.
+2. ~~How does Holoscape detect the role of a spawned Claude session?~~ **ANSWERED:** Label from session profile config.
+3. ~~What happens when a channel's process dies?~~ **ANSWERED:** Disconnected state, manual retry or close.
+4. ~~Should Holoscape manage its own SSH key?~~ **ANSWERED:** Use system SSH agent.
+5. ~~How should Holoscape discover project directories?~~ **ANSWERED (V1.5):** `ssh ls ~/projects/` with in-memory cache and manual refresh.
 6. What's the right data format for the SIL bug report API?
-7. **NEW:** How should Holoscape discover project directories on the MacBook via SSH? `ls ~/projects/` over SSH on first connect? Cache the list? Refresh interval?
-8. **NEW:** How does the CEO MCP connection work? What interface does Auxesis expose for external agent communication? (Deferred until after SSH sessions)
+7. **V2:** Does the Auxesis sidecar need a new MCP endpoint for CEO communication, or should we build a standalone MCP server? The sidecar is already running on port 8080 on the Mac Mini — adding an `/mcp/ceo` route is the simplest path.
+8. **V2:** Should group chat use WebSocket or HTTP polling? HTTP polling is simpler (existing API supports it) but adds latency. WebSocket requires changes to the Agent Chat API (Flask on Cloud Run).
+9. **V2:** For timestamps on terminal output, should we modify SwiftTerm's output delegate to intercept lines, or overlay timestamps in a separate column? Intercepting is cleaner but may conflict with ANSI escape sequences.
