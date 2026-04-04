@@ -1,61 +1,7 @@
-# Hologram .gitignore
-
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Build outputs
-dist/
+.build/
 build/
-*.app
-*.dmg
-*.pkg
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+DerivedData/
 .DS_Store
-Thumbs.db
-
-# Logs
-logs/
-*.log
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Electron
-electron-builder.yml
-release/
-
-# User data (connection profiles, API keys)
-user_data/
-connections.json
-*.keychain
-
-# Testing
-coverage/
-.nyc_output/
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-
-# Skins (allow default skins, ignore user-installed)
-skins/user_installed/
-
-# Config overrides (allow defaults, ignore user customizations)
-config/user/
-
-.env.doppler-backup
-.env
