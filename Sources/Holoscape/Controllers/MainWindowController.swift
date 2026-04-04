@@ -42,6 +42,9 @@ class MainWindowController: NSObject, NSWindowDelegate, TabBarViewDelegate, Inpu
 
         setupLayout(inputContainer: inputContainer)
         setupKeyboardShortcuts()
+
+        // Set input box as first responder so keyboard works immediately
+        window.makeFirstResponder(inputBox)
     }
 
     private func setupLayout(inputContainer: NSScrollView) {
@@ -89,6 +92,12 @@ class MainWindowController: NSObject, NSWindowDelegate, TabBarViewDelegate, Inpu
             fileMenu.addItem(newItem)
             fileMenu.addItem(closeItem)
         }
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        window.makeFirstResponder(inputBox)
     }
 
     // MARK: - Channel Operations
