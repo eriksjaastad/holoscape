@@ -166,22 +166,124 @@ The secondary problem: existing terminals are someone else's product. They can't
 - Text input feels like a normal text editor, not a 1970s terminal
 - Holoscape becomes Erik's primary terminal within 1 week of V1
 
+## Session Launcher
+
+The primary way to open new sessions. Replaces the Cmd+N modal picker with a smarter, profile-driven launcher.
+
+### Session Profiles
+
+A session profile defines everything needed to open a connection in one click:
+
+| Field | Description |
+|-------|-------------|
+| label | Tab display name (e.g., "mini-claude", "architect", "holoscape") |
+| connection | `local` (PTY on this machine) or `ssh` (SSH to remote host) |
+| host | SSH hostname (e.g., MacBook.local) — only for SSH connections |
+| user | SSH username — only for SSH connections |
+| directory | Working directory on the target machine |
+| command | What to run: `claude` or `/bin/zsh` |
+
+**Preconfigured sessions (from config):**
+
+| Session | Connection | Directory | Command | Notes |
+|---------|-----------|-----------|---------|-------|
+| mini-claude | local | `~` | `claude` | This machine's local Claude agent |
+| architect | ssh → MacBook | `~/projects` | `claude` | The Architect agent on Erik's laptop |
+| shell | local | `~` | `/bin/zsh` | Plain local terminal |
+
+**Auto-discovered sessions:** Holoscape scans a configurable `project_root` on the MacBook (via SSH) to discover project directories. Each project directory becomes a launchable session that opens a floor manager Claude agent in that directory. Example: `~/projects/holoscape/` → session labeled "holoscape".
+
+### Session Opener UI
+
+- **Location:** Button at the top of the left sidebar ("Open Session" or "+" icon)
+- **Behavior:** Click → dropdown/combobox appears
+- **Dropdown contents:**
+  - Preconfigured sessions (mini-claude, architect, shell, etc.)
+  - Auto-discovered project sessions
+  - Recently used sessions (sorted by recency)
+- **Combobox:** The dropdown is editable — Erik can type over it to enter a new project name or custom path. Typing a new name opens a floor manager `claude` session in `~/projects/<typed-name>/` on the MacBook.
+- **One-click launch:** Selecting any item immediately opens the session and creates a tab.
+
+### Session Config Format
+
+Stored in `~/.holoscape/config.json` alongside appearance and channel state:
+
+```json
+{
+  "session_profiles": [
+    {"label": "mini-claude", "connection": "local", "command": "claude", "directory": "~"},
+    {"label": "architect", "connection": "ssh", "host": "MacBook.local", "user": "erik", "command": "claude", "directory": "~/projects"},
+    {"label": "shell", "connection": "local", "command": "/bin/zsh", "directory": "~"}
+  ],
+  "ssh_defaults": {
+    "host": "MacBook.local",
+    "user": "erik"
+  },
+  "project_discovery": {
+    "enabled": true,
+    "root": "~/projects",
+    "connection": "ssh",
+    "command": "claude"
+  }
+}
+```
+
+## Collapsible Sidebar
+
+### Default: Left sidebar with tabs
+
+- Tabs are displayed vertically in a left sidebar panel
+- Each tab shows: role label, unread dot, connection status
+- Sidebar is scrollable when many tabs are open
+- Active tab is visually distinct
+- Unread tabs auto-move to the top of the sidebar and are highlighted
+
+### Collapsed: Top tab bar
+
+- A toggle button (or drag handle) collapses the sidebar
+- When collapsed, tabs shift to a horizontal bar across the top of the window (current behavior)
+- The top bar is scrollable when tabs overflow
+- Sidebar state (open/collapsed) persists across restarts
+
+### Right-Click Context Menu on Tabs
+
+Right-clicking any tab (sidebar or top bar) opens a context menu:
+
+- **Close** — close this tab (with confirmation if process is running)
+- **Rename** — change the tab's display label
+- **Duplicate** — open a new session with the same profile
+- **Reconnect** — restart a disconnected session
+- **Copy Session Info** — copy connection details to clipboard
+- (More items can be added as needed — the menu is defined in one place)
+
+## CEO Connection (Future — after core sessions)
+
+Direct connection from Holoscape to the Auxesis CEO agent, similar to how OpenClaw used MCP connections for Discord/Slack. This is an MCP-style bridge where Holoscape connects directly to the CEO role in the Auxesis pipeline. Design TBD — depends on how Auxesis exposes the CEO for external communication. Deferred until SSH sessions and sidebar are stable.
+
 ## MVP Scope
 
-**V1 — Ship in a sprint:**
+**V1 — Ship in a sprint (current):**
 - Native macOS window with SwiftTerm
-- Tab bar for channels with role labels and unread indicators
+- Top tab bar for channels with role labels and unread indicators
 - Shell channel (local zsh with real text editing input)
 - Agent channel (spawn claude process with auth isolation)
-- Group chat channel (agent chat API connection)
 - Cmd+B bug reporting with SIL API integration
 - Crash detection and one-click reporting on launch
 - Background color, transparency, font settings
 - Channel state persistence across restarts
 
-**V2 — After V1 stable:**
-- SSH channel to Mac Mini
-- Collapsible sidebar with mini labels (2-3 char abbreviations)
+**V1.5 — Next sprint (session launcher + sidebar):**
+- Session launcher with profile-driven combobox opener
+- SSH agent channel (SSH → remote machine → run claude)
+- Auto-discovery of project directories on MacBook
+- Left sidebar tab panel (collapsible → falls back to top bar)
+- Right-click context menu on tabs (close, rename, duplicate, reconnect)
+- Consistent instance numbering (mini-claude 1, mini-claude 2 — both numbered)
+- Directory-based tab labeling for SSH project sessions
+
+**V2 — After V1.5 stable:**
+- CEO connection via MCP bridge to Auxesis
+- Group chat channel (agent chat API connection)
 - Running process indicator with elapsed time clock
 - Timestamps on all terminal output (toggle-able)
 - Color theme presets
@@ -211,18 +313,22 @@ The secondary problem: existing terminals are someone else's product. They can't
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| SwiftTerm delegate can't handle WebSocket/API streaming for group chat | Medium | High | Prototype group chat channel first. Fallback: render group chat in a custom NSTextView instead of SwiftTerm. |
+| SwiftTerm delegate can't handle WebSocket/API streaming for group chat | Medium | High | Deferred to V2. Prototype when we get there. Fallback: custom NSTextView. |
 | OAuth Claude sessions don't spawn correctly as child processes of Holoscape | Low | High | Test early: can `claude` inherit OAuth from a clean PTY environment? If not, research how Claude Code manages OAuth token storage. |
 | No Swift/AppKit experience on the team (Mini Claude writes all Swift) | Medium | Medium | SwiftTerm sample app is a working reference. Start from their sample, modify. Don't architect from scratch. |
-| Mac Mini SSH auth flow is complex (Screen Share → OAuth → SSH tunnel) | Low | Medium | V1 doesn't include SSH channel. Solve in V2 after core is stable. |
+| SSH PTY latency makes remote sessions feel sluggish | Medium | Medium | Test early with real SSH to MacBook. SwiftTerm should handle SSH PTY natively — it's still a PTY, just over SSH. Fallback: use NMSSH or libssh2 Swift wrapper. |
+| SSH key auth not set up between machines | Low | Low | Erik confirms SSH keys already configured. Use system SSH agent. |
+| Project directory discovery over SSH is slow or unreliable | Low | Medium | Cache discovered projects. Refresh on demand (pull-to-refresh in session opener) or on a long interval. |
 | Crash report API on SIL needs to be built before Holoscape can ship | Low | Low | Simple REST endpoint — POST to receive, GET to list unprocessed. Could be a single Cloud Run function. |
-| Scope creep into skin engine, plugins, notifications | Medium | Medium | V1 scope is locked. No skins, no plugins, no notifications. Ship the terminal first. |
+| Scope creep into skin engine, plugins, notifications | Medium | Medium | V1.5 scope is locked to sessions + sidebar. No skins, no plugins, no notifications. |
 
-## Open Questions for Kiro
+## Open Questions
 
-1. Can SwiftTerm's TerminalViewDelegate handle WebSocket/HTTP streaming for group chat, or does group chat need a separate rendering path?
-2. How should channel creation work in the UI? Menu bar? Cmd+N with type picker? Right-click on tab bar?
-3. What's the right data format for the SIL bug report API?
-4. How does Holoscape detect the role of a spawned Claude session? Parse CLAUDE.md? User labels at creation? Both?
-5. What happens when a channel's process dies? Auto-restart? Show "disconnected" state? Prompt?
-6. Should Holoscape manage its own SSH key for Mac Mini, or use the system SSH agent?
+1. ~~How should channel creation work in the UI?~~ **ANSWERED:** Session launcher combobox on top of left sidebar. Profile-driven, editable, one-click launch.
+2. ~~How does Holoscape detect the role of a spawned Claude session?~~ **ANSWERED:** Label comes from the session profile config, not runtime CLAUDE.md parsing. Profiles define the label.
+3. ~~What happens when a channel's process dies?~~ **ANSWERED (design doc):** Disconnected state, manual retry or close. No auto-restart.
+4. ~~Should Holoscape manage its own SSH key for Mac Mini, or use the system SSH agent?~~ **ANSWERED:** Use system SSH agent. Holoscape doesn't manage auth — SSH keys are already set up, Claude OAuth is already authenticated on each machine.
+5. Can SwiftTerm's TerminalViewDelegate handle WebSocket/API streaming for group chat, or does group chat need a separate rendering path? (Deferred to V2)
+6. What's the right data format for the SIL bug report API?
+7. **NEW:** How should Holoscape discover project directories on the MacBook via SSH? `ls ~/projects/` over SSH on first connect? Cache the list? Refresh interval?
+8. **NEW:** How does the CEO MCP connection work? What interface does Auxesis expose for external agent communication? (Deferred until after SSH sessions)
