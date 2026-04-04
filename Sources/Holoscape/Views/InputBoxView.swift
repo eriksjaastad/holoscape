@@ -10,6 +10,7 @@ protocol InputBoxViewDelegate: AnyObject {
 @MainActor
 class InputBoxView: NSTextView {
     weak var inputDelegate: InputBoxViewDelegate?
+    private var isNavigatingHistory = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -52,26 +53,30 @@ class InputBoxView: NSTextView {
             guard !text.isEmpty else { return }
             inputDelegate?.inputBoxView(self, didSubmitText: text)
             self.string = ""
+            isNavigatingHistory = false
             return
         }
 
-        // Up arrow in empty input — previous history
-        if event.keyCode == 126 && string.isEmpty {
+        // Up arrow — previous history (when empty or already navigating)
+        if event.keyCode == 126 && (string.isEmpty || isNavigatingHistory) {
+            isNavigatingHistory = true
             inputDelegate?.inputBoxViewDidRequestPreviousHistory(self)
             return
         }
 
-        // Down arrow — next history
-        if event.keyCode == 125 && string.isEmpty {
+        // Down arrow — next history (when empty or already navigating)
+        if event.keyCode == 125 && (string.isEmpty || isNavigatingHistory) {
             inputDelegate?.inputBoxViewDidRequestNextHistory(self)
             return
         }
 
+        isNavigatingHistory = false
         super.keyDown(with: event)
     }
 
     func setHistoryText(_ text: String) {
         self.string = text
+        isNavigatingHistory = !text.isEmpty
         setSelectedRange(NSRange(location: text.count, length: 0))
     }
 }

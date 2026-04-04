@@ -1,0 +1,62 @@
+name: Holoscape
+options:
+  bundleIdPrefix: com.holoscape
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "16.0"
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: "1.0.0"
+  SwiftCheck:
+    url: https://github.com/typelift/SwiftCheck.git
+    from: "0.12.0"
+
+targets:
+  Holoscape:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/Holoscape
+    dependencies:
+      - package: SwiftTerm
+    info:
+      path: Info.plist
+    settings:
+      SWIFT_VERSION: "6.0"
+      PRODUCT_BUNDLE_IDENTIFIER: com.holoscape.app
+
+  HoloscapeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/HoloscapeTests
+    dependencies:
+      - target: Holoscape
+    settings:
+      SWIFT_VERSION: "6.0"
+      GENERATE_INFOPLIST_FILE: YES
+
+  HoloscapePropertyTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/HoloscapePropertyTests
+    dependencies:
+      - target: Holoscape
+      - package: SwiftCheck
+    settings:
+      SWIFT_VERSION: "6.0"
+      GENERATE_INFOPLIST_FILE: YES
+
+  HoloscapeUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - Tests/HoloscapeUITests
+    dependencies:
+      - target: Holoscape
+    settings:
+      SWIFT_VERSION: "6.0"
+      GENERATE_INFOPLIST_FILE: YES
