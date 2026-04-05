@@ -12,6 +12,9 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
     var sidebarExpanded: Bool?
     var recentSessions: [RecentSession]?
 
+    // V2 fields
+    var showTimestamps: Bool?
+
     static let `default` = HoloscapeConfig(
         appearance: AppearanceConfig.default,
         channels: [],
@@ -30,6 +33,8 @@ struct AppearanceConfig: Codable, Equatable, Sendable {
     var fontFamily: String
     var fontSize: Double
     var ansiColors: [String: String]?
+    var themeName: String?
+    var themeOverrides: [String: String]?
 
     static let `default` = AppearanceConfig(
         backgroundColor: "#1a1a2e",

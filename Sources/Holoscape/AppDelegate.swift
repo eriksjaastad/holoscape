@@ -125,8 +125,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             controller.activate()
             return controller
         case .ssh:
-            // SSH channel restoration — will be fully implemented in Phase 8
-            return nil
+            guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
+            let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
+            let controller = SSHChannelController(id: metadata.id, profile: profile, instanceNumber: metadata.instanceNumber)
+            controller.activate()
+            return controller
+        case .mcp:
+            guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
+            let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
+            controller.activate()
+            return controller
         }
     }
 
@@ -191,6 +199,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
+
+        // View menu
+        let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
 
         NSApp.mainMenu = mainMenu
     }

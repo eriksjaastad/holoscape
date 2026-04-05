@@ -72,7 +72,8 @@ class SidebarView: NSView {
                 label: channel.displayLabel,
                 hasUnread: channel.hasUnread,
                 state: channel.state,
-                isActive: channel.channelId == activeId
+                isActive: channel.channelId == activeId,
+                elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt)
             )
             entry.channelId = channel.channelId
             entry.target = self
@@ -112,6 +113,7 @@ class SidebarTabEntry: NSControl {
     var channelId: UUID?
 
     private let labelField = NSTextField(labelWithString: "")
+    private let statusTextField = NSTextField(labelWithString: "")
     private let unreadDot = NSView()
     private let statusIndicator = NSView()
 
@@ -144,9 +146,15 @@ class SidebarTabEntry: NSControl {
         statusIndicator.layer?.cornerRadius = 3
         statusIndicator.translatesAutoresizingMaskIntoConstraints = false
 
+        statusTextField.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        statusTextField.textColor = NSColor.gray
+        statusTextField.lineBreakMode = .byTruncatingTail
+        statusTextField.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(unreadDot)
         addSubview(statusIndicator)
         addSubview(labelField)
+        addSubview(statusTextField)
 
         NSLayoutConstraint.activate([
             unreadDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
@@ -160,22 +168,28 @@ class SidebarTabEntry: NSControl {
             statusIndicator.heightAnchor.constraint(equalToConstant: 6),
 
             labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
-            labelField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
             labelField.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            statusTextField.leadingAnchor.constraint(equalTo: labelField.trailingAnchor, constant: 4),
+            statusTextField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            statusTextField.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
-    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool) {
+    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil) {
         labelField.stringValue = label
         unreadDot.isHidden = !hasUnread
 
         switch state {
         case .active:
             statusIndicator.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            statusTextField.stringValue = elapsedTime ?? ""
         case .connecting:
             statusIndicator.layer?.backgroundColor = NSColor.systemYellow.cgColor
+            statusTextField.stringValue = "connecting..."
         case .disconnected:
             statusIndicator.layer?.backgroundColor = NSColor.systemRed.cgColor
+            statusTextField.stringValue = "disconnected"
         }
 
         if isActive {
