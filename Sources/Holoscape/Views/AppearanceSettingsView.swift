@@ -18,13 +18,19 @@ class AppearanceSettingsWindowController: NSWindowController {
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
     private let skinEngine = SkinEngine()
+    private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
+    private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
+    private let notifAgentCheckbox = NSButton(checkboxWithTitle: "Agent", target: nil, action: nil)
+    private let notifSSHCheckbox = NSButton(checkboxWithTitle: "SSH", target: nil, action: nil)
+    private let notifMCPCheckbox = NSButton(checkboxWithTitle: "MCP", target: nil, action: nil)
+    private let notifGroupChatCheckbox = NSButton(checkboxWithTitle: "Group Chat", target: nil, action: nil)
 
     init(config: AppearanceConfig, configService: ConfigService) {
         self.config = config
         self.configService = configService
 
         let window = NSWindow(
-            contentRect: NSRect(x: 200, y: 200, width: 400, height: 300),
+            contentRect: NSRect(x: 200, y: 200, width: 400, height: 480),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -98,6 +104,32 @@ class AppearanceSettingsWindowController: NSWindowController {
         fontSizeField.target = self
         fontSizeField.action = #selector(fontSizeChanged(_:))
         stack.addArrangedSubview(sizeRow)
+
+        // Notifications section
+        let notifHeader = NSTextField(labelWithString: "Notifications")
+        notifHeader.font = NSFont.boldSystemFont(ofSize: 13)
+        stack.addArrangedSubview(notifHeader)
+
+        notifEnabledCheckbox.target = self
+        notifEnabledCheckbox.action = #selector(notificationToggled(_:))
+        stack.addArrangedSubview(notifEnabledCheckbox)
+
+        let channelTypeStack = NSStackView()
+        channelTypeStack.orientation = .vertical
+        channelTypeStack.alignment = .leading
+        channelTypeStack.spacing = 4
+        for checkbox in [notifShellCheckbox, notifAgentCheckbox, notifSSHCheckbox, notifMCPCheckbox, notifGroupChatCheckbox] {
+            checkbox.target = self
+            checkbox.action = #selector(notificationToggled(_:))
+            channelTypeStack.addArrangedSubview(checkbox)
+        }
+        let indentedRow = NSStackView()
+        indentedRow.orientation = .horizontal
+        let spacer = NSView()
+        spacer.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        indentedRow.addArrangedSubview(spacer)
+        indentedRow.addArrangedSubview(channelTypeStack)
+        stack.addArrangedSubview(indentedRow)
     }
 
     private func makeRow(label: String, control: NSView) -> NSStackView {
@@ -126,6 +158,22 @@ class AppearanceSettingsWindowController: NSWindowController {
         transparencySlider.doubleValue = config.transparency
         fontFamilyPopup.selectItem(withTitle: config.fontFamily)
         fontSizeField.stringValue = String(config.fontSize)
+
+        // Notification state
+        let fullConfig = configService.load()
+        let notifConfig = fullConfig.notifications ?? .default
+        notifEnabledCheckbox.state = notifConfig.enabled ? .on : .off
+        let perType = notifConfig.perChannelType ?? [:]
+        notifShellCheckbox.state = (perType["shell"] ?? false) ? .on : .off
+        notifAgentCheckbox.state = (perType["agent"] ?? true) ? .on : .off
+        notifSSHCheckbox.state = (perType["ssh"] ?? true) ? .on : .off
+        notifMCPCheckbox.state = (perType["mcp"] ?? true) ? .on : .off
+        notifGroupChatCheckbox.state = (perType["groupChat"] ?? true) ? .on : .off
+
+        let notifEnabled = notifConfig.enabled
+        for cb in [notifShellCheckbox, notifAgentCheckbox, notifSSHCheckbox, notifMCPCheckbox, notifGroupChatCheckbox] {
+            cb.isEnabled = notifEnabled
+        }
     }
 
     @objc private func skinChanged(_ sender: NSPopUpButton) {
@@ -170,6 +218,27 @@ class AppearanceSettingsWindowController: NSWindowController {
     @objc private func fontSizeChanged(_ sender: NSTextField) {
         config.fontSize = sender.doubleValue
         applyAndSave()
+    }
+
+    @objc private func notificationToggled(_ sender: NSButton) {
+        var fullConfig = configService.load()
+        var notifConfig = fullConfig.notifications ?? .default
+        notifConfig.enabled = notifEnabledCheckbox.state == .on
+        notifConfig.perChannelType = [
+            "shell": notifShellCheckbox.state == .on,
+            "agent": notifAgentCheckbox.state == .on,
+            "ssh": notifSSHCheckbox.state == .on,
+            "mcp": notifMCPCheckbox.state == .on,
+            "groupChat": notifGroupChatCheckbox.state == .on,
+        ]
+        fullConfig.notifications = notifConfig
+        configService.save(fullConfig)
+
+        // Enable/disable per-type checkboxes based on master toggle
+        let enabled = notifConfig.enabled
+        for cb in [notifShellCheckbox, notifAgentCheckbox, notifSSHCheckbox, notifMCPCheckbox, notifGroupChatCheckbox] {
+            cb.isEnabled = enabled
+        }
     }
 
     private func applyAndSave() {
