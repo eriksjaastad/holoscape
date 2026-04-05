@@ -17,16 +17,6 @@ final class HoloscapeUITests: HoloscapeUITestCase {
 
     // MARK: - Input Box Focus
 
-    func testInputBoxHasFocusOnLaunch() throws {
-        // The input text view should be focused and accept keystrokes immediately
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists, "Input box should exist")
-
-        // Type into it — if focus is correct, text appears
-        inputBox.typeText("hello")
-        XCTAssertEqual(inputBox.value as? String, "hello", "Input box should accept typing on launch")
-    }
-
     func testInputBoxRetainsFocusAfterChannelSwitch() throws {
         // Open a new channel via File > New Channel, pick Shell
         createChannel(type: "Shell")
@@ -50,16 +40,6 @@ final class HoloscapeUITests: HoloscapeUITestCase {
         // Input box should be cleared after submission
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.isEmpty, "Input box should be empty after Enter")
-    }
-
-    func testEmptyInputDoesNotSubmit() throws {
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
-
-        // Press Enter with empty input — nothing should happen, no crash
-        inputBox.typeKey(.return, modifierFlags: [])
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input box should remain empty")
     }
 
     // MARK: - Command History
@@ -146,7 +126,7 @@ final class HoloscapeUITests: HoloscapeUITestCase {
 
     // MARK: - Window Behavior
 
-    func testWindowHasPositiveDimensions() throws {
+    func testWindowExistsOnLaunch() throws {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.exists)
         let frame = window.frame

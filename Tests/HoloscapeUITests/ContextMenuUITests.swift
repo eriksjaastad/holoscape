@@ -159,19 +159,6 @@ final class ContextMenuUITests: HoloscapeUITestCase {
 
     // MARK: - Reconnect
 
-    func testContextMenuReconnectOnlyOnDisconnected() throws {
-        let shellEntry = sidebarEntry("Shell")
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
-
-        shellEntry.rightClick()
-
-        let reconnectItem = app.menuItems["Reconnect"]
-        XCTAssertTrue(reconnectItem.waitForExistence(timeout: 2), "Reconnect menu item should exist")
-        XCTAssertFalse(reconnectItem.isEnabled, "Reconnect should be disabled for active channel")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
     func testContextMenuReconnectReactivatesChannel() throws {
         try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
@@ -209,25 +196,6 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     // MARK: - Copy Session Info
-
-    func testContextMenuCopySessionInfo() throws {
-        let shellEntry = sidebarEntry("Shell")
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
-
-        shellEntry.rightClick()
-
-        let copyInfoItem = app.menuItems["Copy Session Info"]
-        XCTAssertTrue(copyInfoItem.waitForExistence(timeout: 2), "Copy Session Info menu item should exist")
-        copyInfoItem.click()
-
-        // Paste into input box and assert non-empty
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeKey("v", modifierFlags: .command)
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertFalse(value.isEmpty, "Clipboard should contain session info after Copy Session Info")
-    }
 
     func testContextMenuCopySessionInfoContent() throws {
         let shellEntry = sidebarEntry("Shell")

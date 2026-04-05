@@ -30,11 +30,15 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         let labelAfter = searchMatchCountText()
 
-        if let before = labelBefore, let after = labelAfter {
-            XCTAssertNotEqual(before, after, "Match label should change after clicking next")
-        } else {
-            XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking next")
+        guard let before = labelBefore else {
+            XCTFail("Match count label not found")
+            return
         }
+        guard let after = labelAfter else {
+            XCTFail("Match count label not found")
+            return
+        }
+        XCTAssertNotEqual(before, after, "Match label should change after clicking next")
 
         closeSearch()
     }
@@ -71,11 +75,15 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         searchField.typeKey(.return, modifierFlags: [])
         let labelAfter = searchMatchCountText()
 
-        if let before = labelBefore, let after = labelAfter {
-            XCTAssertNotEqual(before, after, "Enter should advance match position")
-        } else {
-            XCTAssertTrue(searchBar.exists, "Search bar should remain functional after Enter")
+        guard let before = labelBefore else {
+            XCTFail("Match count label not found")
+            return
         }
+        guard let after = labelAfter else {
+            XCTFail("Match count label not found")
+            return
+        }
+        XCTAssertNotEqual(before, after, "Enter should advance match position")
 
         closeSearch()
     }
