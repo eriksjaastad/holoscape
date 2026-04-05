@@ -146,10 +146,9 @@ final class HoloscapeUITests: HoloscapeUITestCase {
 
     // MARK: - Window Behavior
 
-    func testWindowIsResizable() throws {
+    func testWindowHasPositiveDimensions() throws {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.exists)
-        // Verify the window has resize capability by checking it's not a fixed-size sheet
         let frame = window.frame
         XCTAssertGreaterThan(frame.width, 0)
         XCTAssertGreaterThan(frame.height, 0)

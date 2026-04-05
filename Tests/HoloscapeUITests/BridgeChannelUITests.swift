@@ -64,13 +64,15 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
 
     // MARK: - Broadcast Behavior
 
-    func testBridgeChannelBroadcastsToAllAgents() throws {
+    func testBridgeChannelSubmitsWithMultipleAgents() throws {
         try skipUnlessClaudeCLIInstalled()
 
         // Create 2 agent channels first
         createChannel(type: "Agent (OAuth)")
         XCTAssertTrue(sidebarEntry("Agent").waitForExistence(timeout: 3))
         createChannel(type: "Agent (OAuth)")
+
+        let countBefore = sidebarEntryCount()
 
         // Create bridge channel
         createChannel(type: "Bridge")
@@ -88,10 +90,10 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
         waitForExpectations(timeout: 2)
 
-        // Both agent sidebar entries should still exist
-        XCTAssertGreaterThanOrEqual(
-            sidebarEntryCount(), 3,
-            "Both agent channels and bridge should still exist in sidebar after broadcast"
+        // All channels should still exist (no crash, no channel loss)
+        XCTAssertEqual(
+            sidebarEntryCount(), countBefore + 1,
+            "All agent channels and bridge should still exist after bridge submit"
         )
     }
 
@@ -138,15 +140,4 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         waitForExpectations(timeout: 2)
     }
 
-    func testBridgeChannelIgnoresNonAgentChannels() throws {
-        throw XCTSkip("Cannot verify broadcast routing to specific channel types via XCUITest")
-    }
-
-    func testBridgeChannelHandlesAgentDisconnect() throws {
-        throw XCTSkip("Cannot verify disconnect handling during broadcast via XCUITest")
-    }
-
-    func testBridgeChannelShowsConfirmation() throws {
-        throw XCTSkip("Cannot verify bridge confirmation message content via XCUITest")
-    }
 }

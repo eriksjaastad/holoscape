@@ -45,10 +45,6 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
         XCTAssertTrue(agentEntry.waitForExistence(timeout: 3), "Agent sidebar entry should remain after cancel")
     }
 
-    func testCloseDisconnectedChannelNoConfirmation() throws {
-        throw XCTSkip("Cannot reliably create a disconnected channel in XCUITest to verify no-confirmation behavior")
-    }
-
     // MARK: - Dialog Behavior
 
     func testConfirmationDialogHasButtons() throws {

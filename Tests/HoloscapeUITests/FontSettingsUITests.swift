@@ -91,23 +91,21 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testFontSizeMinimum() throws {
+    func testFontSizeExtremeLowAccepted() throws {
         openSettings()
         setFontSize("1")
         let value = currentFontSizeValue()
-        // The app may accept 1 or clamp it to a minimum -- either way assert it is not empty
-        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting minimum")
-        // If clamped, it should be a number
+        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting size 1")
         XCTAssertNotNil(Int(value), "Font size field should contain a numeric value, got: \(value)")
         setFontSize("13")
         closeSettings()
     }
 
-    func testFontSizeMaximum() throws {
+    func testFontSizeExtremeHighAccepted() throws {
         openSettings()
         setFontSize("200")
         let value = currentFontSizeValue()
-        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting maximum")
+        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting size 200")
         XCTAssertNotNil(Int(value), "Font size field should contain a numeric value, got: \(value)")
         setFontSize("13")
         closeSettings()
@@ -168,7 +166,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
 
     // MARK: - Application Scope
 
-    func testFontAppliedToAllChannels() throws {
+    func testChannelsSwitchableAfterFontChange() throws {
         openSettings()
         selectFont("Menlo")
         XCTAssertEqual(currentFontValue(), "Menlo")
@@ -190,7 +188,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testFontAppliedToInputBox() throws {
+    func testInputBoxAcceptsTextAfterFontChange() throws {
         openSettings()
         selectFont("Monaco")
         closeSettings()
@@ -200,16 +198,16 @@ final class FontSettingsUITests: HoloscapeUITestCase {
 
         inputBox.typeText("font-test")
         let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "font-test", "Input box should accept text with new font")
+        XCTAssertEqual(value, "font-test", "Input box should accept text after font change")
 
         openSettings()
         selectFont("SF Mono")
         closeSettings()
     }
 
-    func testFontAppliedToOutputView() throws {
+    func testOutputViewExistsAfterFontChange() throws {
         openSettings()
-        selectFont("JetBrains Mono")
+        selectFont("Menlo")
         closeSettings()
 
         // Generate output
@@ -218,17 +216,16 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         inputBox.typeText("echo font-output-test")
         inputBox.typeKey(.return, modifierFlags: [])
 
-        // Verify the output area exists within the window
         let window = app.windows["Holoscape"]
         let scrollViews = window.scrollViews
-        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Output scroll view should exist with selected font")
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Output scroll view should exist after font change")
 
         openSettings()
         selectFont("SF Mono")
         closeSettings()
     }
 
-    func testFontAppliedInSplitPanes() throws {
+    func testSplitPanesWorkAfterFontChange() throws {
         // Create split
         app.typeKey("d", modifierFlags: .command)
 
@@ -239,7 +236,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
 
         let window = app.windows["Holoscape"]
         let scrollViews = window.scrollViews
-        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should exist with selected font")
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should still exist after font change")
 
         openSettings()
         selectFont("SF Mono")

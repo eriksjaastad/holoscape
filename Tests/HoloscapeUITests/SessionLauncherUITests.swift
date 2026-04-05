@@ -149,7 +149,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         XCTAssertTrue(comboBox.isEnabled, "Combo box should be enabled after refresh")
     }
 
-    func testRefreshDoesNotDuplicateEntries() throws {
+    func testMultipleRefreshesDoNotCrash() throws {
         let refreshButton = app.buttons["refresh-sessions"]
         XCTAssertTrue(refreshButton.waitForExistence(timeout: 2))
 

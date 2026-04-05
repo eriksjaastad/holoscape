@@ -2,20 +2,6 @@ import XCTest
 
 final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
 
-    // MARK: - Active Pane Indicator
-
-    func testActivePaneHasBlueBorder() throws {
-        throw XCTSkip("Cannot verify border color via XCUITest")
-    }
-
-    func testClickingPaneMakesItActive() throws {
-        throw XCTSkip("Cannot verify active pane state via XCUITest — no accessibility property for active pane")
-    }
-
-    func testActivePaneChangesOnClick() throws {
-        throw XCTSkip("Cannot verify active pane state via XCUITest — no accessibility property for active pane")
-    }
-
     // MARK: - Channel-to-Pane Routing
 
     func testDifferentChannelsInDifferentPanes() throws {
@@ -64,23 +50,9 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
-    // MARK: - Layout Persistence
-
-    func testSplitLayoutPersistsAcrossRestart() throws {
-        throw XCTSkip("Cannot verify split pane count via XCUITest — pane containers are not individually accessible")
-    }
-
-    func testSplitLayoutExport() throws {
-        throw XCTSkip("Layout export is internal API, not testable via XCUITest")
-    }
-
-    func testPaneChannelAssignmentPersists() throws {
-        throw XCTSkip("Cannot verify split pane count via XCUITest — pane containers are not individually accessible")
-    }
-
     // MARK: - Channel Removal
 
-    func testClosingChannelClearsPaneContent() throws {
+    func testClosingChannelInSplitDoesNotCrash() throws {
         createChannel(type: "Shell")
 
         app.typeKey("d", modifierFlags: .command)
@@ -95,7 +67,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after closing channel in pane")
     }
 
-    func testRemoveChannelFromSpecificPane() throws {
+    func testClosePaneAfterClosingChannel() throws {
         app.typeKey("d", modifierFlags: .command)
 
         app.typeKey("w", modifierFlags: .command)

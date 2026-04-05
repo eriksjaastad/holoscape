@@ -62,12 +62,14 @@ final class TerminalDisplayUITests: HoloscapeUITestCase {
 
     // MARK: - Channel Types
 
-    func testBridgeChannelShowsSystemMessage() throws {
-        // Open channel picker and select Bridge
+    func testBridgeChannelViewLoads() throws {
         createChannel(type: "Bridge")
 
-        // Bridge channel should be active with system message
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist in bridge channel")
+
+        // Verify output area loaded
+        let window = app.windows["Holoscape"]
+        XCTAssertGreaterThanOrEqual(window.scrollViews.count, 1, "Bridge channel should have an output scroll view")
     }
 }
