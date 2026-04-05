@@ -44,18 +44,7 @@ final class TimestampToggleUITests: HoloscapeUITestCase {
     }
 
     func testMenuCheckmarkReflectsState() throws {
-        // Enable via Cmd+T
-        app.typeKey("t", modifierFlags: .command)
-
-        // Open View menu — verify item exists and is interactable
-        app.menuBars.firstMatch.menuBarItems["View"].click()
-        let timestampItem = app.menuItems["Show Timestamps"]
-        XCTAssertTrue(timestampItem.waitForExistence(timeout: 2), "Timestamp menu item should exist after enabling via Cmd+T")
-        XCTAssertTrue(timestampItem.isEnabled, "Timestamp menu item should remain enabled")
-        app.typeKey(.escape, modifierFlags: [])
-
-        // Cleanup: disable timestamps
-        app.typeKey("t", modifierFlags: .command)
+        throw XCTSkip("Cannot verify menu item checkmark state via XCUITest — NSMenuItem value/state is not exposed to accessibility")
     }
 
     // MARK: - Persistence

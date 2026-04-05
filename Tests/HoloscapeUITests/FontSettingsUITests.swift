@@ -60,6 +60,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
     }
 
     func testApplyFiraCodeFont() throws {
+        try skipUnlessFontAvailable("Fira Code")
         openSettings()
         selectFont("Fira Code")
         XCTAssertEqual(currentFontValue(), "Fira Code", "Font popup should reflect Fira Code")
@@ -70,6 +71,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
     }
 
     func testApplyJetBrainsMonoFont() throws {
+        try skipUnlessFontAvailable("JetBrains Mono")
         openSettings()
         selectFont("JetBrains Mono")
         XCTAssertEqual(currentFontValue(), "JetBrains Mono", "Font popup should reflect JetBrains Mono")
@@ -176,11 +178,11 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         createChannel(type: "Shell")
 
         app.typeKey("1", modifierFlags: .command)
-        let first = sidebarEntry("")
+        let first = sidebarEntry("Shell")
         XCTAssertTrue(first.waitForExistence(timeout: 2), "First channel should be accessible after font change")
 
         app.typeKey("2", modifierFlags: .command)
-        let second = sidebarEntry("")
+        let second = sidebarEntry("Shell 2")
         XCTAssertTrue(second.waitForExistence(timeout: 2), "Second channel should be accessible after font change")
 
         openSettings()

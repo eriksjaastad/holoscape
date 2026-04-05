@@ -10,28 +10,6 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         inputBox.typeKey(.return, modifierFlags: [])
     }
 
-    /// Read the match count label from the search bar. Returns the label text or nil.
-    private func matchCountLabel() -> String? {
-        let searchBar = app.toolbars["Search Bar"]
-        // Look for static texts containing "of" or "No matches"
-        let texts = searchBar.staticTexts
-        for i in 0..<texts.count {
-            let text = texts.element(boundBy: i).label
-            if text.contains("of") || text.contains("No matches") || text.contains("0") {
-                return text
-            }
-        }
-        // Fall back to checking text fields
-        let fields = searchBar.textFields
-        for i in 0..<fields.count {
-            let val = fields.element(boundBy: i).value as? String ?? ""
-            if val.contains("of") || val.contains("No matches") {
-                return val
-            }
-        }
-        return nil
-    }
-
     // MARK: - Match Navigation
 
     func testSearchNextButtonAdvancesMatch() throws {
@@ -44,21 +22,17 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("searchword")
 
-        let labelBefore = matchCountLabel()
+        let labelBefore = searchMatchCountText()
 
-        // Click next — try buttons by index since icons may not have text titles
-        let buttons = searchBar.buttons
-        if buttons.count > 0 {
-            buttons.element(boundBy: 0).click()
-            }
+        let nextButton = searchBar.buttons["search-next"]
+        XCTAssertTrue(nextButton.waitForExistence(timeout: 2), "Next button should exist")
+        nextButton.click()
 
-        let labelAfter = matchCountLabel()
+        let labelAfter = searchMatchCountText()
 
-        // If we found labels, verify they changed; otherwise verify search bar is still functional
         if let before = labelBefore, let after = labelAfter {
             XCTAssertNotEqual(before, after, "Match label should change after clicking next")
         } else {
-            // At minimum, search bar should still be present
             XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking next")
         }
 
@@ -75,13 +49,9 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("findme")
 
-        // Click previous — try second button or last button
-        let buttons = searchBar.buttons
-        if buttons.count > 1 {
-            buttons.element(boundBy: 1).click()
-        } else if buttons.count > 0 {
-            buttons.element(boundBy: 0).click()
-        }
+        let previousButton = searchBar.buttons["search-previous"]
+        XCTAssertTrue(previousButton.waitForExistence(timeout: 2), "Previous button should exist")
+        previousButton.click()
 
         XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking previous")
         closeSearch()
@@ -97,9 +67,9 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("enter-test")
 
-        let labelBefore = matchCountLabel()
+        let labelBefore = searchMatchCountText()
         searchField.typeKey(.return, modifierFlags: [])
-        let labelAfter = matchCountLabel()
+        let labelAfter = searchMatchCountText()
 
         if let before = labelBefore, let after = labelAfter {
             XCTAssertNotEqual(before, after, "Enter should advance match position")
@@ -138,10 +108,9 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("prevwrap")
 
-        // Click previous to wrap backwards
-        let buttons = searchBar.buttons
-        if buttons.count > 1 {
-            buttons.element(boundBy: 1).click()
+        let previousButton = searchBar.buttons["search-previous"]
+        if previousButton.waitForExistence(timeout: 2) {
+            previousButton.click()
         }
 
         XCTAssertTrue(searchBar.exists, "Previous should wrap without crashing")
@@ -160,7 +129,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("multi")
 
-        let label = matchCountLabel()
+        let label = searchMatchCountText()
         XCTAssertNotNil(label, "Match count label should be visible for multiple matches")
         if let label = label {
             XCTAssertTrue(label.contains("of"), "Match count should show 'X of Y' format, got: \(label)")
@@ -177,17 +146,14 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("zzz_nonexistent_string_xyz")
 
-        // Look for "0" or "No matches" in the search bar
-        let allTexts = searchBar.staticTexts
-        var foundZeroIndicator = false
-        for i in 0..<allTexts.count {
-            let text = allTexts.element(boundBy: i).label
-            if text.contains("0") || text.lowercased().contains("no match") {
-                foundZeroIndicator = true
-                break
-            }
+        let label = searchMatchCountText()
+        XCTAssertNotNil(label, "Match count label should be visible for no-match search")
+        if let label = label {
+            XCTAssertTrue(
+                label.contains("0") || label.lowercased().contains("no match"),
+                "No-match search should show zero count or 'No matches', got: \(label)"
+            )
         }
-        XCTAssertTrue(foundZeroIndicator, "No-match search should show zero count or 'No matches' label")
 
         closeSearch()
     }
@@ -202,16 +168,11 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("uniqueterm12345")
 
-        let allTexts = searchBar.staticTexts
-        var foundOneOfOne = false
-        for i in 0..<allTexts.count {
-            let text = allTexts.element(boundBy: i).label
-            if text.contains("1 of 1") {
-                foundOneOfOne = true
-                break
-            }
+        let label = searchMatchCountText()
+        XCTAssertNotNil(label, "Match count label should be visible for single match")
+        if let label = label {
+            XCTAssertTrue(label.contains("1 of 1"), "Single match should show '1 of 1', got: \(label)")
         }
-        XCTAssertTrue(foundOneOfOne, "Single match should show '1 of 1' in match count label")
 
         closeSearch()
     }
@@ -315,10 +276,10 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("navfocus")
 
-        // Click next button
-        let buttons = searchBar.buttons
-        if buttons.count > 0 {
-            buttons.element(boundBy: 0).click()
+        // Click next button by identifier
+        let nextButton = searchBar.buttons["search-next"]
+        if nextButton.waitForExistence(timeout: 2) {
+            nextButton.click()
         }
 
         // Search field should still accept input after navigation

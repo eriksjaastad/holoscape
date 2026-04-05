@@ -32,9 +32,21 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Find a sidebar entry by partial identifier match.
-    func sidebarEntry(_ identifier: String) -> XCUIElement {
+    func sidebarEntry(_ label: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
-        return window.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "sidebar-\(identifier)")).firstMatch
+        return window.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "sidebar-\(label)")).firstMatch
+    }
+
+    /// Find a sidebar entry by exact identifier match.
+    func sidebarEntryExact(_ label: String) -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier == %@", "sidebar-\(label)")).firstMatch
+    }
+
+    /// Count sidebar entries.
+    func sidebarEntryCount() -> Int {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).count
     }
 
     /// Find a tab bar entry by partial identifier match.
@@ -62,7 +74,10 @@ class HoloscapeUITestCase: XCTestCase {
     func selectTheme(_ name: String) {
         let settingsWindow = app.windows["Appearance Settings"]
         let popups = settingsWindow.popUpButtons
-        guard popups.count > 0 else { return }
+        guard popups.count > 0 else {
+            XCTFail("No popup buttons found in settings — cannot select theme '\(name)'")
+            return
+        }
         let themePopup = popups.element(boundBy: 0)
         themePopup.click()
         let themeItem = app.menuItems[name]
@@ -70,6 +85,7 @@ class HoloscapeUITestCase: XCTestCase {
             themeItem.click()
         } else {
             app.typeKey(.escape, modifierFlags: [])
+            XCTFail("Theme '\(name)' not found in theme popup")
         }
     }
 
@@ -77,7 +93,10 @@ class HoloscapeUITestCase: XCTestCase {
     func selectFont(_ name: String) {
         let settingsWindow = app.windows["Appearance Settings"]
         let popups = settingsWindow.popUpButtons
-        guard popups.count >= 3 else { return }
+        guard popups.count >= 3 else {
+            XCTFail("Font popup not found in settings — need at least 3 popups, found \(popups.count)")
+            return
+        }
         let fontPopup = popups.element(boundBy: 2)
         fontPopup.click()
         let fontItem = app.menuItems[name]
@@ -85,6 +104,7 @@ class HoloscapeUITestCase: XCTestCase {
             fontItem.click()
         } else {
             app.typeKey(.escape, modifierFlags: [])
+            XCTFail("Font '\(name)' not found in font popup — may not be installed")
         }
     }
 
@@ -92,7 +112,10 @@ class HoloscapeUITestCase: XCTestCase {
     func setFontSize(_ size: String) {
         let settingsWindow = app.windows["Appearance Settings"]
         let textFields = settingsWindow.textFields
-        guard textFields.count >= 1 else { return }
+        guard textFields.count >= 1 else {
+            XCTFail("Font size text field not found in settings")
+            return
+        }
         let sizeField = textFields.element(boundBy: 0)
         sizeField.click()
         sizeField.typeKey("a", modifierFlags: .command)
@@ -112,6 +135,16 @@ class HoloscapeUITestCase: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
+    /// Read the match count label text from the search bar.
+    func searchMatchCountText() -> String? {
+        let searchBar = app.toolbars["Search Bar"]
+        let label = searchBar.staticTexts["search-match-count"]
+        if label.exists {
+            return label.label
+        }
+        return nil
+    }
+
     // MARK: - Dependency Checks
 
     /// Skip test if the Claude CLI binary is not installed.
@@ -120,5 +153,11 @@ class HoloscapeUITestCase: XCTestCase {
             FileManager.default.fileExists(atPath: "/opt/homebrew/bin/claude"),
             "Claude CLI not installed at /opt/homebrew/bin/claude"
         )
+    }
+
+    /// Skip test if a font family is not available on this system.
+    func skipUnlessFontAvailable(_ fontName: String) throws {
+        let available = NSFontManager.shared.availableFontFamilies.contains(fontName)
+        try XCTSkipUnless(available, "Font '\(fontName)' not installed on this system")
     }
 }

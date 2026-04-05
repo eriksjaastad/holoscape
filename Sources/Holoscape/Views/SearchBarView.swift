@@ -92,6 +92,12 @@ class SearchBarView: NSView, NSTextFieldDelegate {
         setAccessibilityElement(true)
         setAccessibilityRole(.toolbar)
         setAccessibilityTitle("Search Bar")
+        setAccessibilityIdentifier("search-bar")
+
+        prevButton.setAccessibilityIdentifier("search-previous")
+        nextButton.setAccessibilityIdentifier("search-next")
+        closeButton.setAccessibilityIdentifier("search-close")
+        matchCountLabel.setAccessibilityIdentifier("search-match-count")
     }
 
     func focus() {
