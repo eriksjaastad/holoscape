@@ -51,15 +51,8 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             return
         }
 
-        let escapedDir = shellEscape(profile.directory)
-        let remoteCommand = "cd \(escapedDir) && \(profile.command)"
-        let sshArgs = ["-t", "\(user)@\(host)", remoteCommand]
-
-        // Pass through SSH_AUTH_SOCK for system SSH agent + minimal env
-        let allowedKeys: Set<String> = ["PATH", "HOME", "SHELL", "TERM", "LANG", "SSH_AUTH_SOCK"]
-        let env = ProcessInfo.processInfo.environment
-            .filter { allowedKeys.contains($0.key) }
-            .map { "\($0.key)=\($0.value)" }
+        let sshArgs = buildSSHArgs(host: host, user: user, directory: profile.directory, command: profile.command)
+        let env = buildSSHEnvironment()
 
         terminalView.startProcess(
             executable: "/usr/bin/ssh",
@@ -108,7 +101,22 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     /// Shell-escape a string for safe use in a remote command.
-    private func shellEscape(_ s: String) -> String {
+    func shellEscape(_ s: String) -> String {
         return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Build a filtered environment for the SSH subprocess.
+    func buildSSHEnvironment() -> [String] {
+        let allowedKeys: Set<String> = ["PATH", "HOME", "SHELL", "TERM", "LANG", "SSH_AUTH_SOCK"]
+        return ProcessInfo.processInfo.environment
+            .filter { allowedKeys.contains($0.key) }
+            .map { "\($0.key)=\($0.value)" }
+    }
+
+    /// Build SSH command-line arguments for connecting to a remote host.
+    func buildSSHArgs(host: String, user: String, directory: String, command: String) -> [String] {
+        let escapedDir = shellEscape(directory)
+        let remoteCommand = "cd \(escapedDir) && \(command)"
+        return ["-t", "\(user)@\(host)", remoteCommand]
     }
 }
