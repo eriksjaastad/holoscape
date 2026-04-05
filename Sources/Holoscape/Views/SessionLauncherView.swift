@@ -36,6 +36,7 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.delegate = self
         comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         comboBox.placeholderString = "Open session..."
+        comboBox.setAccessibilityIdentifier("session-launcher-combo")
         comboBox.translatesAutoresizingMaskIntoConstraints = false
 
         refreshButton.bezelStyle = .recessed
@@ -44,6 +45,7 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         refreshButton.target = self
         refreshButton.action = #selector(refreshClicked)
         refreshButton.toolTip = "Refresh project list"
+        refreshButton.setAccessibilityIdentifier("refresh-sessions")
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(comboBox)
