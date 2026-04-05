@@ -61,8 +61,7 @@ class ChannelManager {
             }
             controller = MCPChannelController(id: id, endpoint: endpoint, label: profile.label, instanceNumber: instanceNumber)
         case .bridge:
-            // V3: Bridge channel — placeholder until BridgeChannelController is built
-            controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+            controller = BridgeChannelController(id: id, channelManager: self, instanceNumber: instanceNumber)
         case .agentChat:
             guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
                 NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
@@ -108,6 +107,12 @@ class ChannelManager {
     /// Return all channels in tab order.
     func allChannels() -> [any ChannelController] {
         return channelOrder.compactMap { channels[$0] }
+    }
+
+    /// Return all active agent channels (for bridge broadcasting).
+    func agentChannels() -> [any ChannelController] {
+        let agentTypes: Set<ChannelType> = [.agentDirect, .agentAPI, .ssh, .mcp]
+        return allChannels().filter { agentTypes.contains($0.channelType) && $0.state == .active }
     }
 
     /// Move an unread channel's tab to the leftmost/topmost position.
