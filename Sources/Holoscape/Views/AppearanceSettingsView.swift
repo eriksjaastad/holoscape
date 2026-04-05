@@ -11,6 +11,7 @@ class AppearanceSettingsWindowController: NSWindowController {
     private var config: AppearanceConfig
     private let configService: ConfigService
 
+    private let themePopup = NSPopUpButton()
     private let colorWell = NSColorWell()
     private let transparencySlider = NSSlider()
     private let fontFamilyPopup = NSPopUpButton()
@@ -53,6 +54,13 @@ class AppearanceSettingsWindowController: NSWindowController {
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
         ])
+
+        // Theme
+        let themeRow = makeRow(label: "Theme:", control: themePopup)
+        themePopup.addItems(withTitles: ColorTheme.allThemes.map(\.name))
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged(_:))
+        stack.addArrangedSubview(themeRow)
 
         // Background color
         let colorRow = makeRow(label: "Background Color:", control: colorWell)
@@ -99,6 +107,8 @@ class AppearanceSettingsWindowController: NSWindowController {
     }
 
     private func loadCurrentValues() {
+        let themeName = config.themeName ?? "Dark"
+        themePopup.selectItem(withTitle: themeName)
         if let color = NSColor(hexString: config.backgroundColor) {
             colorWell.color = color
         }
@@ -107,8 +117,22 @@ class AppearanceSettingsWindowController: NSWindowController {
         fontSizeField.stringValue = String(config.fontSize)
     }
 
+    @objc private func themeChanged(_ sender: NSPopUpButton) {
+        let themeName = sender.titleOfSelectedItem ?? "Dark"
+        guard let theme = ColorTheme.named(themeName) else { return }
+        config.themeName = themeName
+        config.themeOverrides = nil  // Clear overrides on theme switch
+        config = theme.apply(to: config, overrides: nil)
+        loadCurrentValues()
+        applyAndSave()
+    }
+
     @objc private func colorChanged(_ sender: NSColorWell) {
         config.backgroundColor = sender.color.hexString
+        // Store as theme override
+        var overrides = config.themeOverrides ?? [:]
+        overrides["backgroundColor"] = sender.color.hexString
+        config.themeOverrides = overrides
         applyAndSave()
     }
 
