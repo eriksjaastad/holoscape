@@ -13,11 +13,13 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let endpoint: String?     // MCP
     let apiURL: String?       // Agent Chat
     let apiKeyEnv: String?    // Agent Chat
+    let pinnedAt: Date?       // Tab pinning
 
     init(id: UUID, type: ChannelType, role: String, context: String? = nil,
          instanceNumber: Int? = nil, workingDirectory: String? = nil,
          host: String? = nil, user: String? = nil, command: String? = nil,
-         endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil) {
+         endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil,
+         pinnedAt: Date? = nil) {
         self.id = id
         self.type = type
         self.role = role
@@ -30,5 +32,6 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.endpoint = endpoint
         self.apiURL = apiURL
         self.apiKeyEnv = apiKeyEnv
+        self.pinnedAt = pinnedAt
     }
 }

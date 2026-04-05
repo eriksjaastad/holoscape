@@ -54,7 +54,7 @@ class TabBarView: NSView {
         ])
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?) {
+    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = []) {
         activeChannelId = activeId
 
         // Remove old buttons

@@ -15,6 +15,10 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
     // V2 fields
     var showTimestamps: Bool?
 
+    // V3 fields
+    var notifications: NotificationConfig?
+    var splitLayout: SplitLayoutConfig?
+
     static let `default` = HoloscapeConfig(
         appearance: AppearanceConfig.default,
         channels: [],
@@ -35,6 +39,7 @@ struct AppearanceConfig: Codable, Equatable, Sendable {
     var ansiColors: [String: String]?
     var themeName: String?
     var themeOverrides: [String: String]?
+    var skinName: String?
 
     static let `default` = AppearanceConfig(
         backgroundColor: "#1a1a2e",
