@@ -2,24 +2,6 @@ import XCTest
 
 final class FontSettingsUITests: HoloscapeUITestCase {
 
-    // MARK: - Helpers
-
-    /// Read the current font popup value from the settings window.
-    private func currentFontValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 3 else { return "" }
-        return popups.element(boundBy: 2).value as? String ?? ""
-    }
-
-    /// Read the current font size text field value from the settings window.
-    private func currentFontSizeValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let textFields = settingsWindow.textFields
-        guard textFields.count >= 1 else { return "" }
-        return textFields.element(boundBy: 0).value as? String ?? ""
-    }
-
     // MARK: - Font Family Application
 
     func testApplySFMonoFont() throws {
@@ -127,6 +109,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
     // MARK: - Persistence
 
     func testFontFamilyPersistsAcrossRestart() throws {
+        try skipUnlessFontAvailable("Fira Code")
         openSettings()
         selectFont("Fira Code")
         XCTAssertEqual(currentFontValue(), "Fira Code")

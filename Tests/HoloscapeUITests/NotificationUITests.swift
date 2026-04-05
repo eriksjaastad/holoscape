@@ -38,7 +38,10 @@ final class NotificationUITests: HoloscapeUITestCase {
         let settingsWindow = app.windows["Appearance Settings"]
 
         let enableCheckbox = settingsWindow.checkBoxes["Enable Notifications"]
-        guard enableCheckbox.waitForExistence(timeout: 2) else { return }
+        guard enableCheckbox.waitForExistence(timeout: 2) else {
+            XCTFail("Enable Notifications checkbox not found")
+            return
+        }
 
         // Ensure enabled first
         if enableCheckbox.value as? Int == 0 {
@@ -66,7 +69,10 @@ final class NotificationUITests: HoloscapeUITestCase {
         let settingsWindow = app.windows["Appearance Settings"]
 
         let shellCheckbox = settingsWindow.checkBoxes["Shell"]
-        guard shellCheckbox.waitForExistence(timeout: 2) else { return }
+        guard shellCheckbox.waitForExistence(timeout: 2) else {
+            XCTFail("Shell checkbox not found")
+            return
+        }
 
         // Toggle shell on if off
         if shellCheckbox.value as? Int == 0 {

@@ -30,31 +30,22 @@ final class SettingsUITests: HoloscapeUITestCase {
     func testThemeDropdownExists() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
-
-        // Look for the theme popup button
-        let themePopup = settingsWindow.popUpButtons.firstMatch
-        XCTAssertTrue(themePopup.exists, "Theme dropdown should exist in settings")
+        let popup = themePopup()
+        XCTAssertTrue(popup.exists, "Theme dropdown should exist in settings")
     }
 
     func testThemeDropdownHasOptions() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
+        let popup = themePopup()
+        popup.click()
 
-        // Click the first popup to see options
-        let popups = settingsWindow.popUpButtons
-        if popups.count > 0 {
-            let themePopup = popups.element(boundBy: 0)
-            themePopup.click()
+        // Check for theme names
+        let darkItem = app.menuItems["Dark"]
+        XCTAssertTrue(darkItem.waitForExistence(timeout: 2), "Dark theme should be available")
 
-            // Check for theme names
-            let darkItem = app.menuItems["Dark"]
-            XCTAssertTrue(darkItem.waitForExistence(timeout: 2), "Dark theme should be available")
-
-            // Dismiss
-            app.typeKey(.escape, modifierFlags: [])
-        }
+        // Dismiss
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     // MARK: - Skin Picker
@@ -62,28 +53,20 @@ final class SettingsUITests: HoloscapeUITestCase {
     func testSkinPickerExists() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
-
-        // Second popup should be the skin picker
-        let popups = settingsWindow.popUpButtons
-        XCTAssertGreaterThanOrEqual(popups.count, 2, "Should have at least theme and skin dropdowns")
+        let skinPopup = app.windows["Appearance Settings"].popUpButtons["skin-popup"]
+        XCTAssertTrue(skinPopup.exists, "Skin picker dropdown should exist in settings")
     }
 
     func testSkinPickerHasDefault() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
+        let skinPopup = app.windows["Appearance Settings"].popUpButtons["skin-popup"]
+        skinPopup.click()
 
-        let popups = settingsWindow.popUpButtons
-        if popups.count >= 2 {
-            let skinPopup = popups.element(boundBy: 1)
-            skinPopup.click()
+        let defaultItem = app.menuItems["Default"]
+        XCTAssertTrue(defaultItem.waitForExistence(timeout: 2), "Default skin should always be available")
 
-            let defaultItem = app.menuItems["Default"]
-            XCTAssertTrue(defaultItem.waitForExistence(timeout: 2), "Default skin should always be available")
-
-            app.typeKey(.escape, modifierFlags: [])
-        }
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     // MARK: - Font Controls
@@ -91,20 +74,15 @@ final class SettingsUITests: HoloscapeUITestCase {
     func testFontFamilyDropdownExists() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
-
-        // Third popup is font family
-        let popups = settingsWindow.popUpButtons
-        XCTAssertGreaterThanOrEqual(popups.count, 3, "Should have theme, skin, and font dropdowns")
+        let popup = fontFamilyPopup()
+        XCTAssertTrue(popup.exists, "Font family dropdown should exist in settings")
     }
 
     func testFontSizeFieldExists() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
-
-        let textFields = settingsWindow.textFields
-        XCTAssertGreaterThanOrEqual(textFields.count, 1, "Font size text field should exist")
+        let field = fontSizeField()
+        XCTAssertTrue(field.exists, "Font size text field should exist in settings")
     }
 
     // MARK: - Transparency Slider
@@ -112,10 +90,8 @@ final class SettingsUITests: HoloscapeUITestCase {
     func testTransparencySliderExists() throws {
         openSettings()
 
-        let settingsWindow = app.windows["Appearance Settings"]
-
-        let sliders = settingsWindow.sliders
-        XCTAssertGreaterThanOrEqual(sliders.count, 1, "Transparency slider should exist")
+        let slider = transparencySlider()
+        XCTAssertTrue(slider.exists, "Transparency slider should exist in settings")
     }
 
     // MARK: - Background Color Picker
@@ -158,7 +134,10 @@ final class SettingsUITests: HoloscapeUITestCase {
         let settingsWindow = app.windows["Appearance Settings"]
 
         let enableNotif = settingsWindow.checkBoxes["Enable Notifications"]
-        guard enableNotif.waitForExistence(timeout: 2) else { return }
+        guard enableNotif.waitForExistence(timeout: 2) else {
+            XCTFail("Enable Notifications checkbox not found")
+            return
+        }
 
         // If currently enabled, toggle off
         if enableNotif.value as? Int == 1 {

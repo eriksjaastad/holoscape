@@ -31,7 +31,7 @@ class HoloscapeUITestCase: XCTestCase {
         button.click()
     }
 
-    /// Find a sidebar entry by partial identifier match.
+    /// Find a sidebar entry by partial identifier match (CONTAINS).
     func sidebarEntry(_ label: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
         return window.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "sidebar-\(label)")).firstMatch
@@ -41,6 +41,15 @@ class HoloscapeUITestCase: XCTestCase {
     func sidebarEntryExact(_ label: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
         return window.buttons.matching(NSPredicate(format: "identifier == %@", "sidebar-\(label)")).firstMatch
+    }
+
+    /// Find a pinned sidebar entry by label. Queries accessibility title for pin emoji.
+    func pinnedSidebarEntry(_ label: String) -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(
+            format: "title CONTAINS %@ AND title CONTAINS %@",
+            "\u{1F4CC}", label
+        )).firstMatch
     }
 
     /// Count sidebar entries.
@@ -70,16 +79,34 @@ class HoloscapeUITestCase: XCTestCase {
         }
     }
 
-    /// Select a theme from the settings theme popup (index 0).
+    /// Get the settings window's theme popup by accessibility identifier.
+    func themePopup() -> XCUIElement {
+        return app.windows["Appearance Settings"].popUpButtons["theme-popup"]
+    }
+
+    /// Get the settings window's font family popup by accessibility identifier.
+    func fontFamilyPopup() -> XCUIElement {
+        return app.windows["Appearance Settings"].popUpButtons["font-family-popup"]
+    }
+
+    /// Get the settings window's font size field by accessibility identifier.
+    func fontSizeField() -> XCUIElement {
+        return app.windows["Appearance Settings"].textFields["font-size-field"]
+    }
+
+    /// Get the settings window's transparency slider by accessibility identifier.
+    func transparencySlider() -> XCUIElement {
+        return app.windows["Appearance Settings"].sliders["transparency-slider"]
+    }
+
+    /// Select a theme from the settings theme popup.
     func selectTheme(_ name: String) {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count > 0 else {
-            XCTFail("No popup buttons found in settings — cannot select theme '\(name)'")
+        let popup = themePopup()
+        guard popup.waitForExistence(timeout: 2) else {
+            XCTFail("Theme popup not found — cannot select '\(name)'")
             return
         }
-        let themePopup = popups.element(boundBy: 0)
-        themePopup.click()
+        popup.click()
         let themeItem = app.menuItems[name]
         if themeItem.waitForExistence(timeout: 1) {
             themeItem.click()
@@ -89,16 +116,14 @@ class HoloscapeUITestCase: XCTestCase {
         }
     }
 
-    /// Select a font from the settings font popup (index 2).
+    /// Select a font from the settings font family popup.
     func selectFont(_ name: String) {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 3 else {
-            XCTFail("Font popup not found in settings — need at least 3 popups, found \(popups.count)")
+        let popup = fontFamilyPopup()
+        guard popup.waitForExistence(timeout: 2) else {
+            XCTFail("Font popup not found — cannot select '\(name)'")
             return
         }
-        let fontPopup = popups.element(boundBy: 2)
-        fontPopup.click()
+        popup.click()
         let fontItem = app.menuItems[name]
         if fontItem.waitForExistence(timeout: 1) {
             fontItem.click()
@@ -108,19 +133,47 @@ class HoloscapeUITestCase: XCTestCase {
         }
     }
 
-    /// Set font size in the settings text field (index 0).
+    /// Set font size in the settings text field.
     func setFontSize(_ size: String) {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let textFields = settingsWindow.textFields
-        guard textFields.count >= 1 else {
-            XCTFail("Font size text field not found in settings")
+        let field = fontSizeField()
+        guard field.waitForExistence(timeout: 2) else {
+            XCTFail("Font size field not found in settings")
             return
         }
-        let sizeField = textFields.element(boundBy: 0)
-        sizeField.click()
-        sizeField.typeKey("a", modifierFlags: .command)
-        sizeField.typeText(size)
-        sizeField.typeKey(.return, modifierFlags: [])
+        field.click()
+        field.typeKey("a", modifierFlags: .command)
+        field.typeText(size)
+        field.typeKey(.return, modifierFlags: [])
+    }
+
+    /// Read current theme popup value.
+    func currentThemeValue() -> String {
+        let popup = themePopup()
+        guard popup.waitForExistence(timeout: 2) else {
+            XCTFail("Theme popup not found")
+            return ""
+        }
+        return popup.value as? String ?? ""
+    }
+
+    /// Read current font family popup value.
+    func currentFontValue() -> String {
+        let popup = fontFamilyPopup()
+        guard popup.waitForExistence(timeout: 2) else {
+            XCTFail("Font popup not found")
+            return ""
+        }
+        return popup.value as? String ?? ""
+    }
+
+    /// Read current font size field value.
+    func currentFontSizeValue() -> String {
+        let field = fontSizeField()
+        guard field.waitForExistence(timeout: 2) else {
+            XCTFail("Font size field not found")
+            return ""
+        }
+        return field.value as? String ?? ""
     }
 
     // MARK: - Search Helpers

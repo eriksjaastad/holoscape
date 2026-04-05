@@ -21,7 +21,7 @@ final class ChannelStateIndicatorUITests: HoloscapeUITestCase {
         // Collapse sidebar to show tab bar — tab titles contain elapsed time
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        let tabButton = tabEntry("")
+        let tabButton = tabEntry("Shell")
         if tabButton.waitForExistence(timeout: 3) {
             let title = tabButton.title
             XCTAssertTrue(

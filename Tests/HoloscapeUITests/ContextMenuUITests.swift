@@ -117,6 +117,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuDuplicateAgentChannel() throws {
+        try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
 
         let window = app.windows["Holoscape"]
@@ -172,6 +173,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuReconnectReactivatesChannel() throws {
+        try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
 
         let window = app.windows["Holoscape"]
