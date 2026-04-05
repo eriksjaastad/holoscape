@@ -3,7 +3,7 @@ import AppKit
 @MainActor
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
-    InputBoxViewDelegate, ChannelControllerDelegate {
+    InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -24,6 +24,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var elapsedTimeTimer: Timer?
     private var pinnedChannelIds: Set<UUID> = []
     private var pinnedTimestamps: [UUID: Date] = [:]
+    private var notificationService: NotificationService?
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -83,6 +84,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 self?.refreshAllTabs()
             }
         }
+    }
+
+    /// Set the notification service after initialization.
+    func setNotificationService(_ service: NotificationService) {
+        self.notificationService = service
     }
 
     /// Set the profile manager after services are initialized.
@@ -613,6 +619,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 self.channelManager.moveUnreadToFront(id: channel.channelId)
             }
             self.refreshAllTabs()
+
+            // Send desktop notification
+            let firstLine = channel.lastLines(1).first ?? ""
+            notificationService?.notifyIfNeeded(channel: channel, firstLine: firstLine)
         }
     }
 

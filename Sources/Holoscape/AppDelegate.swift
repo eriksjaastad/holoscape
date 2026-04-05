@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let configService = ConfigService()
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
+    private var notificationService: NotificationService?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
@@ -26,6 +27,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let discoveryService = ProjectDiscoveryService(configService: configService)
         let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
         windowController?.setProfileManager(profileManager)
+
+        // Set up notifications
+        notificationService = NotificationService(configService: configService)
+        notificationService?.channelSwitchDelegate = windowController
+        notificationService?.requestAuthorization()
+        windowController?.setNotificationService(notificationService!)
 
         // Apply appearance
         applyAppearance(config.appearance)
