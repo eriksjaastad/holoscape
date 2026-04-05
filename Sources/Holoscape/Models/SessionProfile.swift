@@ -5,6 +5,7 @@ enum ConnectionType: String, Codable, Sendable {
     case ssh
     case mcp
     case agentChat
+    case bridge
 }
 
 struct SessionProfile: Codable, Equatable, Sendable {

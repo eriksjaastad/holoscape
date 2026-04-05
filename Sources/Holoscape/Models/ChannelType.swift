@@ -7,4 +7,5 @@ enum ChannelType: String, Codable, Sendable {
     case groupChat
     case ssh
     case mcp
+    case bridge
 }

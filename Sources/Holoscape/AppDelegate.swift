@@ -135,6 +135,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
             controller.activate()
             return controller
+        case .bridge:
+            // V3: Bridge channel restoration — placeholder
+            return nil
         }
     }
 
