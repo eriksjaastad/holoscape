@@ -13,6 +13,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let terminalView: LocalProcessTerminalView
     private let instanceNumber: Int?
     private var outputLines: [String] = []
+    private(set) var activatedAt: Date?
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -53,6 +54,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: "zsh"
         )
         state = .active
+        activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
     }
 

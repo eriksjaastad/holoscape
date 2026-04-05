@@ -53,6 +53,25 @@ class ChannelManager {
             }
         case .ssh:
             controller = SSHChannelController(id: id, profile: profile, instanceNumber: instanceNumber)
+        case .mcp:
+            guard let endpointStr = profile.endpoint, let endpoint = URL(string: endpointStr) else {
+                NSLog("ChannelManager: MCP profile '\(profile.label)' missing valid endpoint, skipping")
+                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+                break
+            }
+            controller = MCPChannelController(id: id, endpoint: endpoint, label: profile.label, instanceNumber: instanceNumber)
+        case .agentChat:
+            guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
+                NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
+                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+                break
+            }
+            let apiKey = loadAPIKey(envVarName: profile.apiKeyEnv)
+            controller = GroupChatChannelController(
+                id: id, apiURL: apiURL, apiKey: apiKey,
+                label: profile.label, instanceNumber: instanceNumber,
+                apiKeyEnv: profile.apiKeyEnv
+            )
         }
 
         channels[id] = controller
@@ -101,14 +120,23 @@ class ChannelManager {
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
             guard let channel = channels[id] else { return nil }
 
-            // Extract SSH-specific fields
+            // Extract type-specific fields for persistence
             var host: String?
             var user: String?
             var command: String?
+            var endpoint: String?
+            var apiURL: String?
+            var apiKeyEnv: String?
+
             if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
                 command = sshChannel.profile.command
+            } else if let mcpChannel = channel as? MCPChannelController {
+                endpoint = mcpChannel.endpoint.absoluteString
+            } else if let chatChannel = channel as? GroupChatChannelController {
+                apiURL = chatChannel.apiURL
+                apiKeyEnv = chatChannel.apiKeyEnv
             }
 
             return ChannelMetadata(
@@ -120,7 +148,10 @@ class ChannelManager {
                 workingDirectory: nil,
                 host: host,
                 user: user,
-                command: command
+                command: command,
+                endpoint: endpoint,
+                apiURL: apiURL,
+                apiKeyEnv: apiKeyEnv
             )
         }
         configService.save(config)
@@ -172,6 +203,28 @@ class ChannelManager {
         case .agentDirect, .agentAPI: return "Agent"
         case .groupChat: return "Chat"
         case .ssh: return "SSH"
+        case .mcp: return "MCP"
         }
+    }
+
+    /// Load API key from environment variable or fallback to agent-chat.env file.
+    private func loadAPIKey(envVarName: String?) -> String {
+        // Try environment variable first
+        if let envName = envVarName, !envName.isEmpty,
+           let value = ProcessInfo.processInfo.environment[envName], !value.isEmpty {
+            return value
+        }
+
+        // Fallback to ~/.claude/agent-chat.env
+        let envPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/agent-chat.env")
+        if let content = try? String(contentsOf: envPath, encoding: .utf8) {
+            for line in content.components(separatedBy: "\n") {
+                if line.hasPrefix("AGENT_CHAT_API_KEY=") {
+                    return String(line.dropFirst("AGENT_CHAT_API_KEY=".count))
+                }
+            }
+        }
+        return ""
     }
 }
