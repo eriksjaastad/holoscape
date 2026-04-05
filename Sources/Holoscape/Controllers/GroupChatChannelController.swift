@@ -12,24 +12,37 @@ class GroupChatChannelController: NSObject, ChannelController {
 
     private let textView: NSTextView
     private let scrollView: NSScrollView
-    private let apiURL: String
-    private let apiKey: String
+    let apiURL: String
+    let apiKey: String
+    let apiKeyEnv: String?
     private let sender: String = "erik"
     private var lastTimestamp: String?
     private var pollTimer: Timer?
     private var reconnectDelay: TimeInterval = 1.0
     private let maxReconnectDelay: TimeInterval = 30.0
+    private let profileLabel: String
+    private let instanceNumber: Int?
 
-    var displayLabel: String { "Chat" }
+    private(set) var activatedAt: Date?
+
+    var displayLabel: String {
+        if let num = instanceNumber {
+            return "\(profileLabel) \(num)"
+        }
+        return profileLabel
+    }
 
     var contentView: NSView { scrollView }
 
-    init(id: UUID, apiURL: String, apiKey: String) {
+    /// V2 initializer: constructed from SessionProfile fields.
+    init(id: UUID, apiURL: String, apiKey: String, label: String, instanceNumber: Int?, apiKeyEnv: String? = nil) {
         self.channelId = id
         self.apiURL = apiURL.hasSuffix("/") ? String(apiURL.dropLast()) : apiURL
         self.apiKey = apiKey
+        self.apiKeyEnv = apiKeyEnv
+        self.profileLabel = label
+        self.instanceNumber = instanceNumber
 
-        // Set up scroll view with text view
         self.scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.textView = NSTextView(frame: scrollView.contentView.bounds)
 
@@ -47,6 +60,11 @@ class GroupChatChannelController: NSObject, ChannelController {
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.autoresizingMask = [.width, .height]
+    }
+
+    /// V1 convenience initializer (backward compat).
+    convenience init(id: UUID, apiURL: String, apiKey: String) {
+        self.init(id: id, apiURL: apiURL, apiKey: apiKey, label: "Chat", instanceNumber: nil)
     }
 
     func sendInput(_ text: String) {
@@ -83,6 +101,7 @@ class GroupChatChannelController: NSObject, ChannelController {
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)
         reconnectDelay = 1.0
+        activatedAt = nil
         startPolling()
     }
 
@@ -90,6 +109,7 @@ class GroupChatChannelController: NSObject, ChannelController {
         pollTimer?.invalidate()
         pollTimer = nil
         state = .disconnected
+        activatedAt = nil
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
 
@@ -157,9 +177,13 @@ class GroupChatChannelController: NSObject, ChannelController {
 
                 if self.state != .active {
                     self.state = .active
+                    self.activatedAt = Date()
                     self.delegate?.channelStateDidChange(self, to: .active)
                     self.reconnectDelay = 1.0
                 }
+
+                // Auto-scroll only if at bottom
+                let isAtBottom = self.isScrolledToBottom()
 
                 for msg in messages {
                     guard let msgSender = msg["sender"] as? String,
@@ -176,7 +200,7 @@ class GroupChatChannelController: NSObject, ChannelController {
                     timeFormatter.dateFormat = "h:mm a"
                     let timeString = timeFormatter.string(from: date)
 
-                    self.appendMessage("[\(timeString)] \(msgSender): \(body)")
+                    self.appendMessage("[\(timeString)] \(msgSender): \(body)", autoScroll: isAtBottom)
 
                     if self.hasUnread == false {
                         self.hasUnread = true
@@ -201,7 +225,7 @@ class GroupChatChannelController: NSObject, ChannelController {
         reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
     }
 
-    private func appendMessage(_ text: String) {
+    private func appendMessage(_ text: String, autoScroll: Bool = true) {
         let attributed = NSAttributedString(
             string: text + "\n",
             attributes: [
@@ -210,6 +234,16 @@ class GroupChatChannelController: NSObject, ChannelController {
             ]
         )
         textView.textStorage?.append(attributed)
-        textView.scrollToEndOfDocument(nil)
+        if autoScroll {
+            textView.scrollToEndOfDocument(nil)
+        }
+    }
+
+    private func isScrolledToBottom() -> Bool {
+        let clipView = scrollView.contentView
+        let documentHeight = textView.frame.height
+        let clipHeight = clipView.bounds.height
+        let scrollPosition = clipView.bounds.origin.y
+        return scrollPosition + clipHeight >= documentHeight - 20
     }
 }
