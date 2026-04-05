@@ -118,8 +118,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        // TODO: Extract from SwiftTerm buffer
-        return []
+        let terminal = terminalView.terminal!
+        let text = terminal.getText(
+            start: Position(col: 0, row: 0),
+            end: Position(col: terminal.cols - 1, row: Int.max / 2)
+        )
+        let lines = text.components(separatedBy: "\n")
+        return Array(lines.suffix(count))
     }
 
     // MARK: - LocalProcessTerminalViewDelegate

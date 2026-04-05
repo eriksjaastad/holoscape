@@ -71,27 +71,42 @@ class ProjectDiscoveryService {
     }
 
     private func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = ["\(user)@\(host)", "ls -1 \(root)"]
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = [
+                    "-o", "ConnectTimeout=10",
+                    "\(user)@\(host)",
+                    "ls -1 \(root)"
+                ]
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = Pipe()
 
-        try process.run()
-        process.waitUntilExit()
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                process.waitUntilExit()
 
-        guard process.terminationStatus == 0 else {
-            throw DiscoveryError.sshFailed(exitCode: process.terminationStatus)
+                guard process.terminationStatus == 0 else {
+                    continuation.resume(throwing: DiscoveryError.sshFailed(exitCode: process.terminationStatus))
+                    return
+                }
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                let dirs = output.components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                    .sorted()
+                continuation.resume(returning: dirs)
+            }
         }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return output.components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .sorted()
     }
 
     enum DiscoveryError: Error {
