@@ -56,7 +56,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         XCTAssertTrue(shell2.waitForExistence(timeout: 2), "Shell 2 should still exist after switching")
     }
 
-    func testUnreadOrderingRespectsPins() throws {
+    func testPinnedChannelHasEmojiInSidebar() throws {
         createChannel(type: "Shell")
 
         let shell1 = sidebarEntry("Shell")

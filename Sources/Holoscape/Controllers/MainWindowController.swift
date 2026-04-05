@@ -607,6 +607,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
         }
         refreshAllTabs()
+        channelManager.saveState()
     }
 
     // MARK: - Context Menu
@@ -687,6 +688,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = sender.representedObject as? UUID else { return }
         channelManager.togglePin(id: id)
         refreshAllTabs()
+        channelManager.saveState()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
@@ -807,6 +809,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
         refreshAllTabs()
+        channelManager.saveState()
     }
 
     // MARK: - SplitPaneManagerDelegate
@@ -815,6 +818,26 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         if let channelId {
             activeChannelId = channelId
             refreshAllTabs()
+        }
+    }
+
+    func recordAppearanceChange(_ settings: AppearanceConfig) {
+        let config = configService.load()
+        let old = config.appearance
+        if old.themeName != settings.themeName {
+            historyBuffer.recordSettingsChange(setting: "theme", oldValue: old.themeName ?? "Dark", newValue: settings.themeName ?? "Dark")
+        }
+        if old.fontFamily != settings.fontFamily {
+            historyBuffer.recordSettingsChange(setting: "fontFamily", oldValue: old.fontFamily, newValue: settings.fontFamily)
+        }
+        if old.fontSize != settings.fontSize {
+            historyBuffer.recordSettingsChange(setting: "fontSize", oldValue: "\(old.fontSize)", newValue: "\(settings.fontSize)")
+        }
+        if old.transparency != settings.transparency {
+            historyBuffer.recordSettingsChange(setting: "transparency", oldValue: "\(old.transparency)", newValue: "\(settings.transparency)")
+        }
+        if old.skinName != settings.skinName {
+            historyBuffer.recordSettingsChange(setting: "skin", oldValue: old.skinName ?? "Default", newValue: settings.skinName ?? "Default")
         }
     }
 
