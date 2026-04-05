@@ -125,7 +125,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             controller.activate()
             return controller
         case .ssh:
-            // SSH channel restoration — will be fully implemented in Phase 8
+            // SSH channel restoration — placeholder
+            return nil
+        case .mcp:
+            // V2: MCP channel restoration — placeholder until MCPChannelController is built
             return nil
         }
     }

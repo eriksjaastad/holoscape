@@ -53,6 +53,12 @@ class ChannelManager {
             }
         case .ssh:
             controller = SSHChannelController(id: id, profile: profile, instanceNumber: instanceNumber)
+        case .mcp:
+            // V2: MCP channel — placeholder until MCPChannelController is built
+            controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+        case .agentChat:
+            // V2: Agent Chat channel — placeholder until GroupChat V2 refactor
+            controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
         }
 
         channels[id] = controller
@@ -172,6 +178,7 @@ class ChannelManager {
         case .agentDirect, .agentAPI: return "Agent"
         case .groupChat: return "Chat"
         case .ssh: return "SSH"
+        case .mcp: return "MCP"
         }
     }
 }

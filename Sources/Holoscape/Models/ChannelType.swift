@@ -6,4 +6,5 @@ enum ChannelType: String, Codable, Sendable {
     case agentAPI
     case groupChat
     case ssh
+    case mcp
 }
