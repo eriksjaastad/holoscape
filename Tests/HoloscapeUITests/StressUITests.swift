@@ -1,7 +1,7 @@
 import XCTest
 import AppKit
 
-final class StressAndMemoryUITests: HoloscapeUITestCase {
+final class StressUITests: HoloscapeUITestCase {
 
     // MARK: - Rapid Operations
 

@@ -70,11 +70,7 @@ final class TabBarUITests: HoloscapeUITestCase {
 
     // MARK: - Active Tab
 
-    func testActiveTabVisuallyDistinct() throws {
-        throw XCTSkip("Cannot verify visual distinction via XCUITest")
-    }
-
-    // MARK: - Unread Indicator on Tabs
+    // MARK: - Tab Count
 
     func testMultipleTabsExistAfterChannelCreation() throws {
         // Create second channel and switch away from it
