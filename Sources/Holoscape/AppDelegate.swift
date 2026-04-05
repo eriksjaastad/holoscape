@@ -81,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         windowController?.channelManager.saveState()
+        windowController?.historyBuffer.stopPeriodicFlush()
         windowController?.historyBuffer.flush()
     }
 
@@ -89,6 +90,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func appearanceSettingsDidChange(_ settings: AppearanceConfig) {
+        windowController?.recordAppearanceChange(settings)
         applyAppearance(settings)
     }
 

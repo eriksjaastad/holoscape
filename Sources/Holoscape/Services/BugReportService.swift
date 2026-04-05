@@ -72,8 +72,17 @@ final class BugReportService: Sendable {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 3600)
 
         for file in files where file.pathExtension == "json" {
+            // Delete pending reports older than 30 days
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+               let created = attrs[.creationDate] as? Date,
+               created < thirtyDaysAgo {
+                try? FileManager.default.removeItem(at: file)
+                continue
+            }
+
             guard let data = try? Data(contentsOf: file) else { continue }
 
             if file.lastPathComponent.hasPrefix("bug-") {
@@ -85,7 +94,7 @@ final class BugReportService: Sendable {
                             try? FileManager.default.removeItem(at: file)
                         }
                     } catch {
-                        // Leave for next retry
+                        print("[BugReportService] Retry failed for \(file.lastPathComponent): \(error.localizedDescription)")
                     }
                 }
             } else if file.lastPathComponent.hasPrefix("crash-") {
@@ -97,7 +106,7 @@ final class BugReportService: Sendable {
                             try? FileManager.default.removeItem(at: file)
                         }
                     } catch {
-                        // Leave for next retry
+                        print("[BugReportService] Retry failed for \(file.lastPathComponent): \(error.localizedDescription)")
                     }
                 }
             }
