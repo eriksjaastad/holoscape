@@ -173,4 +173,33 @@ final class BugReportUITests: HoloscapeUITestCase {
         XCTAssertTrue(value.contains("First line of bug report"), "Description should contain first line")
         XCTAssertTrue(value.contains("Second line with more details"), "Description should contain second line")
     }
+
+    // MARK: - Submit Path
+
+    func testSubmitWithDescriptionShowsConfirmation() throws {
+        openBugReportDialog()
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 3), "Bug report sheet should appear")
+
+        // Type description
+        let descField = sheet.textViews["bug-description-field"]
+        if descField.waitForExistence(timeout: 2) {
+            descField.click()
+            descField.typeText("Test bug report from UI test")
+        } else {
+            let textField = sheet.textFields["bug-description-field"]
+            XCTAssertTrue(textField.waitForExistence(timeout: 2), "Description field should exist")
+            textField.click()
+            textField.typeText("Test bug report from UI test")
+        }
+
+        // Submit
+        let submitButton = sheet.buttons["bug-submit-button"]
+        XCTAssertTrue(submitButton.waitForExistence(timeout: 2), "Submit button should exist")
+        submitButton.click()
+
+        // Should see confirmation alert (success or network failure — either means path executed)
+        let alert = app.dialogs.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "Confirmation alert should appear after submission")
+    }
 }
