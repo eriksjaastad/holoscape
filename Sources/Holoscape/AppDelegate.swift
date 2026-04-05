@@ -125,11 +125,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             controller.activate()
             return controller
         case .ssh:
-            // SSH channel restoration — placeholder
-            return nil
+            guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
+            let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
+            let controller = SSHChannelController(id: metadata.id, profile: profile, instanceNumber: metadata.instanceNumber)
+            controller.activate()
+            return controller
         case .mcp:
-            // V2: MCP channel restoration — placeholder until MCPChannelController is built
-            return nil
+            guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
+            let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
+            controller.activate()
+            return controller
         }
     }
 
