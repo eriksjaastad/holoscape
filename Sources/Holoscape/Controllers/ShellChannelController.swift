@@ -12,7 +12,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private let terminalView: LocalProcessTerminalView
     private let instanceNumber: Int?
-    private var outputLines: [String] = []
     private(set) var activatedAt: Date?
 
     var displayLabel: String {
@@ -68,7 +67,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        return Array(outputLines.suffix(count))
+        let terminal = terminalView.terminal!
+        // getText clamps end.row to buffer size, so use Int.max as upper bound
+        let text = terminal.getText(
+            start: Position(col: 0, row: 0),
+            end: Position(col: terminal.cols - 1, row: Int.max / 2)
+        )
+        let lines = text.components(separatedBy: "\n")
+        return Array(lines.suffix(count))
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
