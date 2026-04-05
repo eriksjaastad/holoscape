@@ -55,7 +55,7 @@ class SidebarView: NSView {
         ])
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?) {
+    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = []) {
         activeChannelId = activeId
 
         // Remove all existing entries
@@ -68,12 +68,14 @@ class SidebarView: NSView {
         // Add entries for each channel
         for channel in channels {
             let entry = SidebarTabEntry(frame: .zero)
+            let isPinned = pinnedIds.contains(channel.channelId)
             entry.configure(
                 label: channel.displayLabel,
                 hasUnread: channel.hasUnread,
                 state: channel.state,
                 isActive: channel.channelId == activeId,
-                elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt)
+                elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                isPinned: isPinned
             )
             entry.channelId = channel.channelId
             entry.target = self
@@ -176,8 +178,8 @@ class SidebarTabEntry: NSControl {
         ])
     }
 
-    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil) {
-        labelField.stringValue = label
+    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false) {
+        labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = !hasUnread
 
         switch state {

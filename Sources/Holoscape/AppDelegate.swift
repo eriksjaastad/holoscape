@@ -6,6 +6,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let configService = ConfigService()
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
+    private var notificationService: NotificationService?
+    private var channelManagerRef: ChannelManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
@@ -20,12 +22,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create channel manager and window
         let channelManager = ChannelManager(configService: configService)
+        self.channelManagerRef = channelManager
         windowController = MainWindowController(channelManager: channelManager, configService: configService)
 
         // Set up session profile manager
         let discoveryService = ProjectDiscoveryService(configService: configService)
         let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
         windowController?.setProfileManager(profileManager)
+
+        // Set up notifications
+        notificationService = NotificationService(configService: configService)
+        notificationService?.channelSwitchDelegate = windowController
+        notificationService?.requestAuthorization()
+        windowController?.setNotificationService(notificationService!)
 
         // Apply appearance
         applyAppearance(config.appearance)
@@ -134,6 +143,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
             let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
             controller.activate()
+            return controller
+        case .bridge:
+            guard let cm = channelManagerRef else { return nil }
+            let controller = BridgeChannelController(id: metadata.id, channelManager: cm, instanceNumber: metadata.instanceNumber)
             return controller
         }
     }

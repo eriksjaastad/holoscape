@@ -3,7 +3,8 @@ import AppKit
 @MainActor
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
-    InputBoxViewDelegate, ChannelControllerDelegate {
+    InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
+    SearchBarDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -16,12 +17,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let sidebarView = SidebarView(frame: .zero)
     private let tabBar = TabBarView(frame: .zero)
     private let terminalContainer = TerminalContainerView(frame: .zero)
+    private let splitPaneManager = SplitPaneManager(frame: .zero)
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
     private var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
     private var elapsedTimeTimer: Timer?
+    private var pinnedChannelIds: Set<UUID> = []
+    private var pinnedTimestamps: [UUID: Date] = [:]
+    private var notificationService: NotificationService?
+    private let searchBar = SearchBarView(frame: .zero)
+    private var searchBarVisible: Bool = false
+    private var searchBarHeightConstraint: NSLayoutConstraint?
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -83,6 +91,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
+    /// Set the notification service after initialization.
+    func setNotificationService(_ service: NotificationService) {
+        self.notificationService = service
+    }
+
     /// Set the profile manager after services are initialized.
     func setProfileManager(_ manager: SessionProfileManager) {
         self.profileManager = manager
@@ -131,9 +144,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         terminalContainer.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
 
+        searchBar.translatesAutoresizingMaskIntoConstraints = false
+        searchBar.searchDelegate = self
+        searchBar.isHidden = true
+
         rightPane.addSubview(tabBar)
+        rightPane.addSubview(searchBar)
         rightPane.addSubview(terminalContainer)
         rightPane.addSubview(inputContainer)
+
+        let sbHeight = searchBar.heightAnchor.constraint(equalToConstant: 0)
+        searchBarHeightConstraint = sbHeight
 
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: rightPane.topAnchor),
@@ -141,7 +162,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             tabBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: 32),
 
-            terminalContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            searchBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            searchBar.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            searchBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            sbHeight,
+
+            terminalContainer.topAnchor.constraint(equalTo: searchBar.bottomAnchor),
             terminalContainer.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
             terminalContainer.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             terminalContainer.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
@@ -190,11 +216,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             fileMenu.addItem(toggleSidebarItem)
         }
 
-        // View menu with timestamp toggle
+        // View menu with timestamp toggle and search
         if let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu {
             let timestampItem = NSMenuItem(title: "Show Timestamps", action: #selector(toggleTimestamps), keyEquivalent: "t")
             timestampItem.target = self
             viewMenu.addItem(timestampItem)
+
+            let findItem = NSMenuItem(title: "Find", action: #selector(toggleSearch), keyEquivalent: "f")
+            findItem.target = self
+            viewMenu.addItem(findItem)
         }
 
         // Cmd+1-9 channel switching via local event monitor
@@ -206,6 +236,25 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private func setupChannelSwitchShortcuts() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.modifierFlags.contains(.command) else { return event }
+
+            let hasShift = event.modifierFlags.contains(.shift)
+
+            // Cmd+D → split horizontal, Cmd+Shift+D → split vertical
+            if event.keyCode == 2 {  // 'd'
+                if hasShift {
+                    self.splitPaneManager.splitVertical()
+                } else {
+                    self.splitPaneManager.splitHorizontal()
+                }
+                return nil
+            }
+
+            // Cmd+Shift+W → close split pane (only when multiple panes)
+            if event.keyCode == 13 && hasShift && self.splitPaneManager.paneCount > 1 {
+                self.splitPaneManager.closeActivePane()
+                return nil
+            }
+
             // Key codes 18-26 map to digits 1-9
             let digitKeyCodes: [UInt16: Int] = [
                 18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9,
@@ -214,10 +263,78 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             let channels = self.channelManager.allChannels()
             if position <= channels.count {
                 self.switchToChannel(channels[position - 1].channelId)
-                return nil  // consume event
+                return nil
             }
             return event
         }
+    }
+
+    @objc func toggleSearch() {
+        searchBarVisible.toggle()
+        if searchBarVisible {
+            searchBar.isHidden = false
+            searchBarHeightConstraint?.constant = 32
+            searchBar.focus()
+        } else {
+            searchBar.isHidden = true
+            searchBarHeightConstraint?.constant = 0
+            searchBar.clear()
+            window.makeFirstResponder(inputBox)
+        }
+    }
+
+    // MARK: - SearchBarDelegate
+
+    func searchBar(_ searchBar: SearchBarView, didChangeQuery query: String) {
+        guard !query.isEmpty else {
+            searchBar.updateMatchInfo(total: 0, current: 0)
+            return
+        }
+        // Search the active channel's content
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else { return }
+
+        if let textViewChannel = channel as? MCPChannelController {
+            let count = searchTextView(query: query, in: textViewChannel.contentView)
+            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+        } else if let textViewChannel = channel as? GroupChatChannelController {
+            let count = searchTextView(query: query, in: textViewChannel.contentView)
+            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+        } else {
+            // PTY channels — search last lines
+            let lines = channel.lastLines(10000)
+            let count = lines.filter { $0.localizedCaseInsensitiveContains(query) }.count
+            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+        }
+    }
+
+    func searchBarDidRequestNext(_ searchBar: SearchBarView) {
+        // Navigate to next match — simplified for V3
+    }
+
+    func searchBarDidRequestPrevious(_ searchBar: SearchBarView) {
+        // Navigate to previous match — simplified for V3
+    }
+
+    func searchBarDidClose(_ searchBar: SearchBarView) {
+        searchBarVisible = false
+        searchBar.isHidden = true
+        searchBarHeightConstraint?.constant = 0
+        searchBar.clear()
+        window.makeFirstResponder(inputBox)
+    }
+
+    private func searchTextView(query: String, in view: NSView) -> Int {
+        guard let scrollView = view as? NSScrollView,
+              let textView = scrollView.documentView as? NSTextView else { return 0 }
+        let content = textView.string
+        var count = 0
+        var searchRange = content.startIndex..<content.endIndex
+        while let range = content.range(of: query, options: .caseInsensitive, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+        return count
     }
 
     @objc func toggleTimestamps() {
@@ -274,13 +391,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         activeChannelId = id
         channel.hasUnread = false
         terminalContainer.showContent(channel.contentView)
+        splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
     }
 
     func refreshAllTabs() {
         let channels = channelManager.allChannels()
-        tabBar.updateTabs(channels: channels, activeId: activeChannelId)
-        sidebarView.updateTabs(channels: channels, activeId: activeChannelId)
+        // Sort: pinned first (by pinnedAt), then unpinned
+        let pinned = channels.filter { pinnedChannelIds.contains($0.channelId) }
+            .sorted { (pinnedTimestamps[$0.channelId] ?? .distantPast) < (pinnedTimestamps[$1.channelId] ?? .distantPast) }
+        let unpinned = channels.filter { !pinnedChannelIds.contains($0.channelId) }
+        let sorted = pinned + unpinned
+
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
     }
 
     func refreshLauncher() {
@@ -458,6 +582,16 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         menu.addItem(NSMenuItem.separator())
 
+        // Pin/Unpin
+        let isPinned = pinnedChannelIds.contains(channelId)
+        let pinTitle = isPinned ? "Unpin" : "Pin"
+        let pinItem = NSMenuItem(title: pinTitle, action: #selector(contextMenuTogglePin(_:)), keyEquivalent: "")
+        pinItem.target = self
+        pinItem.representedObject = channelId
+        menu.addItem(pinItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let copyInfoItem = NSMenuItem(title: "Copy Session Info", action: #selector(contextMenuCopyInfo(_:)), keyEquivalent: "")
         copyInfoItem.target = self
         copyInfoItem.representedObject = channelId
@@ -488,6 +622,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
         channel.retry()
+    }
+
+    @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        if pinnedChannelIds.contains(id) {
+            pinnedChannelIds.remove(id)
+            pinnedTimestamps.removeValue(forKey: id)
+        } else {
+            pinnedChannelIds.insert(id)
+            pinnedTimestamps[id] = Date()
+        }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
@@ -578,8 +724,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func channelDidReceiveOutput(_ channel: any ChannelController) {
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
-            self.channelManager.moveUnreadToFront(id: channel.channelId)
+            // Only reorder unpinned channels
+            if !pinnedChannelIds.contains(channel.channelId) {
+                self.channelManager.moveUnreadToFront(id: channel.channelId)
+            }
             self.refreshAllTabs()
+
+            // Send desktop notification
+            let firstLine = channel.lastLines(1).first ?? ""
+            notificationService?.notifyIfNeeded(channel: channel, firstLine: firstLine)
         }
     }
 
