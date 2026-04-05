@@ -11,9 +11,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         }
 
         // Verify we have channels
-        let window = app.windows["Holoscape"]
-        let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
-        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 3, "Should have 3 sidebar entries before quit")
+        XCTAssertGreaterThanOrEqual(sidebarEntryCount(), 3, "Should have 3 sidebar entries before quit")
 
         // Quit the app (triggers applicationWillTerminate -> saveState)
         app.terminate()
@@ -25,6 +23,8 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be present after restoration")
+
+        XCTAssertGreaterThanOrEqual(sidebarEntryCount(), 3, "All 3 channels should be restored")
     }
 
     // MARK: - State Persistence
@@ -68,10 +68,9 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         XCTAssertTrue(pinItem.waitForExistence(timeout: 2))
         pinItem.click()
 
-        // Verify pin emoji appeared
-        let window = app.windows["Holoscape"]
-        let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
-        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear after pinning")
+        // Verify pin emoji appeared in sidebar accessibility title
+        let pinnedEntry = sidebarEntryExact("\u{1F4CC} Shell 2")
+        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear in sidebar entry identifier after pinning")
 
         // Quit and relaunch
         app.terminate()
@@ -81,7 +80,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let restoredWindow = app.windows["Holoscape"]
         XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5))
 
-        let restoredPinnedEntry = restoredWindow.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        let restoredPinnedEntry = sidebarEntryExact("\u{1F4CC} Shell 2")
         XCTAssertTrue(restoredPinnedEntry.waitForExistence(timeout: 3), "Pinned channel should retain pin state after restart")
     }
 

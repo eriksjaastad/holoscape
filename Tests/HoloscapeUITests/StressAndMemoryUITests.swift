@@ -79,7 +79,7 @@ final class StressAndMemoryUITests: HoloscapeUITestCase {
 
     // MARK: - Channel Accumulation
 
-    func testCreate20ChannelsNoSlowdown() throws {
+    func testCreate20ChannelsNoCrash() throws {
         for _ in 0..<19 {
             createChannel(type: "Shell")
         }

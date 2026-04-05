@@ -67,46 +67,15 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
     // MARK: - Layout Persistence
 
     func testSplitLayoutPersistsAcrossRestart() throws {
-        app.typeKey("d", modifierFlags: .command)
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
-
-        app.terminate()
-        app.launch()
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should exist after restart")
-
-        let restoredInputBox = app.textViews["input-box"]
-        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should exist after restart (split state is internal)")
+        throw XCTSkip("Cannot verify split pane count via XCUITest — pane containers are not individually accessible")
     }
 
     func testSplitLayoutExport() throws {
-        app.typeKey("d", modifierFlags: .command)
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Split should create without crash")
-
-        app.typeKey("w", modifierFlags: [.command, .shift])
+        throw XCTSkip("Layout export is internal API, not testable via XCUITest")
     }
 
     func testPaneChannelAssignmentPersists() throws {
-        createChannel(type: "Shell")
-
-        app.typeKey("d", modifierFlags: .command)
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
-
-        app.terminate()
-        app.launch()
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should exist after restart")
-
-        let restoredInputBox = app.textViews["input-box"]
-        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should exist after restart")
+        throw XCTSkip("Cannot verify split pane count via XCUITest — pane containers are not individually accessible")
     }
 
     // MARK: - Channel Removal

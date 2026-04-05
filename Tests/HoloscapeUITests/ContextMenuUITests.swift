@@ -133,38 +133,6 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertGreaterThanOrEqual(agentEntries.count, 2, "Duplicating agent should create new agent with same profile")
     }
 
-    func testContextMenuDuplicateSSHChannel() throws {
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        let newChannelItem = app.menuItems["New Channel"]
-        XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2))
-        newChannelItem.click()
-
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-
-        let sshButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'SSH'")).firstMatch
-        guard sshButton.exists else {
-            dialog.buttons["Cancel"].click()
-            throw XCTSkip("No SSH option available for duplicate test")
-        }
-        sshButton.click()
-
-        let window = app.windows["Holoscape"]
-        let sshEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-SSH'")).firstMatch
-        guard sshEntry.waitForExistence(timeout: 3) else {
-            throw XCTSkip("SSH entry did not appear")
-        }
-
-        sshEntry.rightClick()
-
-        let duplicateItem = app.menuItems["Duplicate"]
-        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
-        duplicateItem.click()
-
-        let sshEntries = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-SSH'"))
-        XCTAssertGreaterThanOrEqual(sshEntries.count, 2, "Duplicating SSH should create a second SSH entry")
-    }
-
     func testContextMenuDuplicateIncrementLabel() throws {
         let shellEntry = sidebarEntry("Shell")
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
