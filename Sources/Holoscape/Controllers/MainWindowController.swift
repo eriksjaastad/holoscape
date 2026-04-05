@@ -17,6 +17,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let sidebarView = SidebarView(frame: .zero)
     private let tabBar = TabBarView(frame: .zero)
     private let terminalContainer = TerminalContainerView(frame: .zero)
+    private let splitPaneManager = SplitPaneManager(frame: .zero)
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
@@ -235,6 +236,25 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private func setupChannelSwitchShortcuts() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.modifierFlags.contains(.command) else { return event }
+
+            let hasShift = event.modifierFlags.contains(.shift)
+
+            // Cmd+D → split horizontal, Cmd+Shift+D → split vertical
+            if event.keyCode == 2 {  // 'd'
+                if hasShift {
+                    self.splitPaneManager.splitVertical()
+                } else {
+                    self.splitPaneManager.splitHorizontal()
+                }
+                return nil
+            }
+
+            // Cmd+Shift+W → close split pane (only when multiple panes)
+            if event.keyCode == 13 && hasShift && self.splitPaneManager.paneCount > 1 {
+                self.splitPaneManager.closeActivePane()
+                return nil
+            }
+
             // Key codes 18-26 map to digits 1-9
             let digitKeyCodes: [UInt16: Int] = [
                 18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9,
@@ -243,7 +263,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             let channels = self.channelManager.allChannels()
             if position <= channels.count {
                 self.switchToChannel(channels[position - 1].channelId)
-                return nil  // consume event
+                return nil
             }
             return event
         }
@@ -371,6 +391,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         activeChannelId = id
         channel.hasUnread = false
         terminalContainer.showContent(channel.contentView)
+        splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
     }
 
