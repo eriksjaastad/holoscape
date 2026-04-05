@@ -1,13 +1,14 @@
 import AppKit
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var windowController: MainWindowController?
     private let configService = ConfigService()
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
     private var channelManagerRef: ChannelManager?
+    private var settingsWindowController: AppearanceSettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
@@ -41,7 +42,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Restore channels from saved state
         channelManager.restoreState { [weak self] metadata in
-            self?.createChannelFromMetadata(metadata)
+            guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
+            controller.delegate = self.windowController
+            return controller
         }
 
         // If no channels restored, create a default shell
@@ -74,14 +77,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Save channel state
-        Task { @MainActor in
-            windowController?.channelManager.saveState()
-        }
+        windowController?.channelManager.saveState()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
+    }
+
+    func appearanceSettingsDidChange(_ settings: AppearanceConfig) {
+        applyAppearance(settings)
+    }
+
+    @objc func openSettings() {
+        let config = configService.load()
+        let controller = AppearanceSettingsWindowController(config: config.appearance, configService: configService)
+        controller.settingsDelegate = self
+        controller.showWindow(nil)
+        controller.window?.center()
+        settingsWindowController = controller  // retain
     }
 
     // MARK: - Private
@@ -190,8 +203,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // App menu
         let appMenuItem = NSMenuItem()
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: "Holoscape")
         appMenu.addItem(withTitle: "About Holoscape", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Holoscape", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu

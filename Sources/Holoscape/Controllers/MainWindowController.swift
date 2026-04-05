@@ -4,7 +4,7 @@ import AppKit
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
-    SearchBarDelegate {
+    SearchBarDelegate, SplitPaneManagerDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -16,7 +16,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let sessionLauncher = SessionLauncherView(frame: .zero)
     private let sidebarView = SidebarView(frame: .zero)
     private let tabBar = TabBarView(frame: .zero)
-    private let terminalContainer = TerminalContainerView(frame: .zero)
     private let splitPaneManager = SplitPaneManager(frame: .zero)
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
@@ -30,6 +29,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let searchBar = SearchBarView(frame: .zero)
     private var searchBarVisible: Bool = false
     private var searchBarHeightConstraint: NSLayoutConstraint?
+    private var inputHeightConstraint: NSLayoutConstraint?
+    private let inputMinHeight: CGFloat = 40
+    private let inputMaxHeight: CGFloat = 120
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -52,8 +54,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.inputBox = InputBoxView(frame: inputContainer.contentView.bounds)
         inputContainer.documentView = inputBox
         inputContainer.setAccessibilityElement(false)
-        inputBox.isVerticallyResizable = false
-        inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 40)
+        inputBox.isVerticallyResizable = true
+        inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         inputBox.textContainer?.widthTracksTextView = true
 
         // Load sidebar state
@@ -72,6 +74,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         sidebarView.sidebarDelegate = self
         sessionLauncher.launcherDelegate = self
         inputBox.inputDelegate = self
+        splitPaneManager.splitDelegate = self
 
         setupLayout()
         setupKeyboardShortcuts()
@@ -85,9 +88,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         // Refresh elapsed time on tabs every 60 seconds
         elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshAllTabs()
-            }
+            Task { @MainActor in self?.refreshAllTabs() }
         }
     }
 
@@ -141,7 +142,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         rightPane.setAccessibilityRole(.group)
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
-        terminalContainer.translatesAutoresizingMaskIntoConstraints = false
+        splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
 
         searchBar.translatesAutoresizingMaskIntoConstraints = false
@@ -150,7 +151,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         rightPane.addSubview(tabBar)
         rightPane.addSubview(searchBar)
-        rightPane.addSubview(terminalContainer)
+        rightPane.addSubview(splitPaneManager)
         rightPane.addSubview(inputContainer)
 
         let sbHeight = searchBar.heightAnchor.constraint(equalToConstant: 0)
@@ -167,16 +168,27 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             searchBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             sbHeight,
 
-            terminalContainer.topAnchor.constraint(equalTo: searchBar.bottomAnchor),
-            terminalContainer.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            terminalContainer.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            terminalContainer.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
+            splitPaneManager.topAnchor.constraint(equalTo: searchBar.bottomAnchor),
+            splitPaneManager.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            splitPaneManager.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            splitPaneManager.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
 
             inputContainer.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
             inputContainer.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             inputContainer.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
-            inputContainer.heightAnchor.constraint(equalToConstant: 40),
         ])
+
+        // Input box auto-grow: start at min height, grow up to max
+        let ihc = inputContainer.heightAnchor.constraint(equalToConstant: inputMinHeight)
+        ihc.isActive = true
+        inputHeightConstraint = ihc
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(inputTextDidChange(_:)),
+            name: NSText.didChangeNotification,
+            object: inputBox
+        )
 
         // Add panes to split view
         splitView.addArrangedSubview(sidebarContainer)
@@ -250,9 +262,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
 
             // Cmd+Shift+W → close split pane (only when multiple panes)
-            if event.keyCode == 13 && hasShift && self.splitPaneManager.paneCount > 1 {
-                self.splitPaneManager.closeActivePane()
-                return nil
+            if event.keyCode == 13 && hasShift {
+                if self.splitPaneManager.paneCount > 1 {
+                    self.splitPaneManager.closeActivePane()
+                }
+                return nil  // consume even with 1 pane to prevent system handling
             }
 
             // Key codes 18-26 map to digits 1-9
@@ -346,12 +360,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private func applySidebarState() {
         if sidebarExpanded {
-            sidebarContainer.isHidden = false
             splitView.setPosition(sidebarWidth, ofDividerAt: 0)
+            sidebarContainer.isHidden = false
             tabBar.isHidden = true
         } else {
-            sidebarContainer.isHidden = true
             splitView.setPosition(0, ofDividerAt: 0)
+            sidebarContainer.isHidden = true
             tabBar.isHidden = false
         }
     }
@@ -376,12 +390,21 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - NSSplitViewDelegate
 
+    nonisolated func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        // Allow the sidebar (first subview at index 0) to collapse
+        return splitView.subviews.first === subview
+    }
+
     nonisolated func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        return 150  // minimum sidebar width
+        return 0  // allow full collapse; canCollapseSubview handles the rest
     }
 
     nonisolated func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         return 350  // maximum sidebar width
+    }
+
+    nonisolated func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
+        return splitView.subviews.first === subview
     }
 
     // MARK: - Channel Operations
@@ -390,7 +413,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let channel = channelManager.channel(for: id) else { return }
         activeChannelId = id
         channel.hasUnread = false
-        terminalContainer.showContent(channel.contentView)
         splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
     }
@@ -540,9 +562,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
         channelManager.closeChannel(id: id)
 
+        splitPaneManager.removeChannel(channelId: id)
         if activeChannelId == id {
             activeChannelId = nil
-            terminalContainer.clearContent()
             if let first = channelManager.allChannels().first {
                 switchToChannel(first.channelId)
             }
@@ -700,6 +722,21 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = activeChannelId,
               let channel = channelManager.channel(for: id) else { return }
         channel.sendInput(text)
+        resizeInputBox()
+    }
+
+    @objc private func inputTextDidChange(_ notification: Notification) {
+        resizeInputBox()
+    }
+
+    private func resizeInputBox() {
+        guard let layoutManager = inputBox.layoutManager,
+              let textContainer = inputBox.textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let usedHeight = layoutManager.usedRect(for: textContainer).height
+        let padding: CGFloat = 12  // top + bottom inset
+        let newHeight = min(max(usedHeight + padding, inputMinHeight), inputMaxHeight)
+        inputHeightConstraint?.constant = newHeight
     }
 
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView) {
@@ -738,5 +775,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
         refreshAllTabs()
+    }
+
+    // MARK: - SplitPaneManagerDelegate
+
+    func splitPaneManager(_ manager: SplitPaneManager, activePaneDidChange channelId: UUID?) {
+        if let channelId {
+            activeChannelId = channelId
+            refreshAllTabs()
+        }
     }
 }
