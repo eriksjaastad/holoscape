@@ -5,4 +5,9 @@ struct CrashReport: Codable, Sendable {
     let lastChannelState: [ChannelMetadata]?
     let timestamp: Date
     let macOSVersion: String
+
+    // V4 fields
+    let appVersion: String?
+    let hardwareModel: String?
+    let historySnapshot: HistorySnapshot?
 }
