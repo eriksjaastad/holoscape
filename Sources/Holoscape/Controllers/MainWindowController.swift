@@ -23,8 +23,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
     private var elapsedTimeTimer: Timer?
-    private var pinnedChannelIds: Set<UUID> = []
-    private var pinnedTimestamps: [UUID: Date] = [:]
     private var notificationService: NotificationService?
     private let searchBar = SearchBarView(frame: .zero)
     private var searchBarVisible: Bool = false
@@ -420,13 +418,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func refreshAllTabs() {
         let channels = channelManager.allChannels()
         // Sort: pinned first (by pinnedAt), then unpinned
-        let pinned = channels.filter { pinnedChannelIds.contains($0.channelId) }
-            .sorted { (pinnedTimestamps[$0.channelId] ?? .distantPast) < (pinnedTimestamps[$1.channelId] ?? .distantPast) }
-        let unpinned = channels.filter { !pinnedChannelIds.contains($0.channelId) }
+        let pinned = channels.filter { channelManager.pinnedChannelIds.contains($0.channelId) }
+            .sorted { (channelManager.pinnedTimestamps[$0.channelId] ?? .distantPast) < (channelManager.pinnedTimestamps[$1.channelId] ?? .distantPast) }
+        let unpinned = channels.filter { !channelManager.pinnedChannelIds.contains($0.channelId) }
         let sorted = pinned + unpinned
 
-        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
-        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds)
     }
 
     func refreshLauncher() {
@@ -451,6 +449,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         alert.addButton(withTitle: "Agent (OAuth)")
         alert.addButton(withTitle: "Agent (API Key)")
         alert.addButton(withTitle: "Group Chat")
+        alert.addButton(withTitle: "Bridge")
         alert.addButton(withTitle: "Cancel")
 
         let response = alert.runModal()
@@ -463,6 +462,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             createAgentChannel(authType: .apiKey(""))
         case NSApplication.ModalResponse(rawValue: 1002):
             createGroupChatChannel()
+        case NSApplication.ModalResponse(rawValue: 1003):
+            createBridgeChannel()
         default:
             break
         }
@@ -529,6 +530,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             workingDirectory: nil
         ) { id, _, _, _, _ in
             GroupChatChannelController(id: id, apiURL: apiURL, apiKey: apiKey)
+        }
+        channel.delegate = self
+        channel.activate()
+        switchToChannel(channel.channelId)
+    }
+
+    private func createBridgeChannel() {
+        let cm = channelManager
+        let channel = channelManager.createChannel(
+            type: .bridge,
+            role: "Bridge",
+            workingDirectory: nil
+        ) { id, _, _, instanceNum, _ in
+            BridgeChannelController(id: id, channelManager: cm, instanceNumber: instanceNum)
         }
         channel.delegate = self
         channel.activate()
@@ -605,7 +620,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         menu.addItem(NSMenuItem.separator())
 
         // Pin/Unpin
-        let isPinned = pinnedChannelIds.contains(channelId)
+        let isPinned = channelManager.pinnedChannelIds.contains(channelId)
         let pinTitle = isPinned ? "Unpin" : "Pin"
         let pinItem = NSMenuItem(title: pinTitle, action: #selector(contextMenuTogglePin(_:)), keyEquivalent: "")
         pinItem.target = self
@@ -648,13 +663,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
-        if pinnedChannelIds.contains(id) {
-            pinnedChannelIds.remove(id)
-            pinnedTimestamps.removeValue(forKey: id)
-        } else {
-            pinnedChannelIds.insert(id)
-            pinnedTimestamps[id] = Date()
-        }
+        channelManager.togglePin(id: id)
         refreshAllTabs()
     }
 
@@ -762,7 +771,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Only reorder unpinned channels
-            if !pinnedChannelIds.contains(channel.channelId) {
+            if !channelManager.pinnedChannelIds.contains(channel.channelId) {
                 self.channelManager.moveUnreadToFront(id: channel.channelId)
             }
             self.refreshAllTabs()
