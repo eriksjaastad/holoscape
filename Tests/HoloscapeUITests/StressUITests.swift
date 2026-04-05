@@ -167,12 +167,12 @@ final class StressUITests: HoloscapeUITestCase {
         inputBox.typeKey("v", modifierFlags: .command)
 
         let value = inputBox.value as? String ?? ""
-        XCTAssertFalse(value.isEmpty, "Input box should contain text after pasting large input")
+        XCTAssertGreaterThan(value.count, 100, "Input box should contain substantial text after pasting large input")
     }
 
     // MARK: - Long-Running
 
-    func testChannelActiveFor3Seconds() throws {
+    func testChannelEntryPersistsInSidebar() throws {
         let window = app.windows["Holoscape"]
         let shellEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'")).firstMatch
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))

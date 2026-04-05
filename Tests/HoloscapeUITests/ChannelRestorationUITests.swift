@@ -86,7 +86,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
     // MARK: - Empty State
 
-    func testFreshLaunchCreatesDefaultShell() throws {
+    func testDefaultShellExistsOnLaunch() throws {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
 

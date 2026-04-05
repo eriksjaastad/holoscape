@@ -8,6 +8,8 @@ final class InputBoxUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.exists)
 
+        let baselineHeight = inputBox.frame.height
+
         // Insert multiple lines with Shift+Enter
         inputBox.typeText("line 1")
         inputBox.typeKey(.return, modifierFlags: .shift)
@@ -19,11 +21,17 @@ final class InputBoxUITests: HoloscapeUITestCase {
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.contains("line 1"), "Input should contain first line")
         XCTAssertTrue(value.contains("line 3"), "Input should contain third line")
+
+        let grownHeight = inputBox.frame.height
+        XCTAssertGreaterThan(grownHeight, baselineHeight, "Input box height should increase with multiple lines")
+        XCTAssertGreaterThan(grownHeight, 30, "Input box height should be greater than 30 points with multiple lines")
     }
 
     func testInputBoxShrinksAfterSend() throws {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.exists)
+
+        let baselineHeight = inputBox.frame.height
 
         // Type multiple lines
         inputBox.typeText("multi")
@@ -32,12 +40,18 @@ final class InputBoxUITests: HoloscapeUITestCase {
         inputBox.typeKey(.return, modifierFlags: .shift)
         inputBox.typeText("input")
 
+        let expandedHeight = inputBox.frame.height
+
         // Send
         inputBox.typeKey(.return, modifierFlags: [])
 
         // Should be empty after send
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.isEmpty, "Input should be empty after send")
+
+        let shrunkHeight = inputBox.frame.height
+        XCTAssertLessThan(shrunkHeight, expandedHeight, "Input box height should decrease after sending multi-line input")
+        XCTAssertLessThanOrEqual(shrunkHeight, baselineHeight + 2, "Input box height should return to approximately baseline after send")
     }
 
     // MARK: - Shift+Enter
