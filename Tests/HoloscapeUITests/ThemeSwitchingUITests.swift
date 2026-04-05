@@ -1,122 +1,79 @@
 import XCTest
 
-final class ThemeSwitchingUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class ThemeSwitchingUITests: HoloscapeUITestCase {
 
     // MARK: - Helpers
 
-    private func openSettings() {
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
-    }
-
-    private func closeSettings() {
-        let settingsWindow = app.windows["Appearance Settings"]
-        if settingsWindow.exists {
-            settingsWindow.buttons[XCUIIdentifierCloseWindow].click()
-            Thread.sleep(forTimeInterval: 0.3)
-        }
-    }
-
-    private func selectTheme(_ name: String) {
+    /// Read the current theme popup value from the settings window.
+    private func currentThemeValue() -> String {
         let settingsWindow = app.windows["Appearance Settings"]
         let popups = settingsWindow.popUpButtons
-        guard popups.count > 0 else { return }
+        guard popups.count > 0 else { return "" }
+        return popups.element(boundBy: 0).value as? String ?? ""
+    }
 
-        let themePopup = popups.element(boundBy: 0)
-        themePopup.click()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let themeItem = app.menuItems[name]
-        if themeItem.waitForExistence(timeout: 1) {
-            themeItem.click()
-        } else {
-            app.typeKey(.escape, modifierFlags: [])
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+    /// Read the skin popup element from the settings window.
+    private func skinPopup() -> XCUIElement {
+        let settingsWindow = app.windows["Appearance Settings"]
+        return settingsWindow.popUpButtons.element(boundBy: 1)
     }
 
     // MARK: - Theme Application
 
     func testApplyDarkTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Dark")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Dark theme")
+        XCTAssertEqual(currentThemeValue(), "Dark", "Theme popup should reflect Dark")
         closeSettings()
     }
 
     func testApplyMonokaiTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Monokai")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Monokai theme")
+        XCTAssertEqual(currentThemeValue(), "Monokai", "Theme popup should reflect Monokai")
+        closeSettings()
+        openSettings()
+        selectTheme("Dark")
         closeSettings()
     }
 
     func testApplySolarizedDarkTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Solarized Dark")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Solarized Dark theme")
+        XCTAssertEqual(currentThemeValue(), "Solarized Dark", "Theme popup should reflect Solarized Dark")
+        closeSettings()
+        openSettings()
+        selectTheme("Dark")
         closeSettings()
     }
 
     func testApplySolarizedLightTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Solarized Light")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Solarized Light theme")
+        XCTAssertEqual(currentThemeValue(), "Solarized Light", "Theme popup should reflect Solarized Light")
+        closeSettings()
+        openSettings()
+        selectTheme("Dark")
         closeSettings()
     }
 
     func testApplyDraculaTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Dracula")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Dracula theme")
+        XCTAssertEqual(currentThemeValue(), "Dracula", "Theme popup should reflect Dracula")
+        closeSettings()
+        openSettings()
+        selectTheme("Dark")
         closeSettings()
     }
 
     func testApplyNordTheme() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Nord")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after applying Nord theme")
+        XCTAssertEqual(currentThemeValue(), "Nord", "Theme popup should reflect Nord")
+        closeSettings()
+        openSettings()
+        selectTheme("Dark")
         closeSettings()
     }
 
@@ -124,29 +81,18 @@ final class ThemeSwitchingUITests: XCTestCase {
 
     func testThemePersistsAcrossRestart() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectTheme("Monokai")
+        XCTAssertEqual(currentThemeValue(), "Monokai")
         closeSettings()
 
         // Quit and relaunch
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
+        app = XCUIApplication()
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
-        // Verify Monokai is still selected
+        // Verify Monokai persisted
         openSettings()
-        let settingsWindow2 = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow2.waitForExistence(timeout: 3))
-
-        let popups = settingsWindow2.popUpButtons
-        if popups.count > 0 {
-            let themePopup = popups.element(boundBy: 0)
-            let currentValue = themePopup.value as? String ?? ""
-            XCTAssertEqual(currentValue, "Monokai", "Theme should persist across restart")
-        }
+        XCTAssertEqual(currentThemeValue(), "Monokai", "Theme should persist across restart")
 
         // Reset to Dark
         selectTheme("Dark")
@@ -155,30 +101,26 @@ final class ThemeSwitchingUITests: XCTestCase {
 
     func testThemePersistsAcrossChannelSwitch() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectTheme("Nord")
+        XCTAssertEqual(currentThemeValue(), "Nord")
         closeSettings()
 
-        // Create second channel and switch
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        // Create second channel and switch between them
+        createChannel(type: "Shell")
 
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-        app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        let firstSidebar = sidebarEntry("")
+        XCTAssertTrue(firstSidebar.waitForExistence(timeout: 2), "First channel sidebar entry should exist after switch")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Theme should apply to all channels")
+        app.typeKey("2", modifierFlags: .command)
+        let secondSidebar = sidebarEntry("")
+        XCTAssertTrue(secondSidebar.waitForExistence(timeout: 2), "Second channel sidebar entry should exist after switch")
+
+        // Verify theme still set
+        openSettings()
+        XCTAssertEqual(currentThemeValue(), "Nord", "Theme should apply across channel switches")
 
         // Reset
-        openSettings()
         selectTheme("Dark")
         closeSettings()
     }
@@ -187,67 +129,53 @@ final class ThemeSwitchingUITests: XCTestCase {
 
     func testSkinOverridesThemeColors() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
-        // Select a theme then a custom skin
         selectTheme("Dark")
-        Thread.sleep(forTimeInterval: 0.2)
 
-        let popups = settingsWindow.popUpButtons
-        if popups.count >= 2 {
-            let skinPopup = popups.element(boundBy: 1)
-            skinPopup.click()
-            Thread.sleep(forTimeInterval: 0.3)
-            // Select any available skin
-            let items = app.menuItems
-            if items.count > 0 {
-                app.typeKey(.escape, modifierFlags: [])
-            }
+        let skin = skinPopup()
+        guard skin.waitForExistence(timeout: 2) else {
+            closeSettings()
+            throw XCTSkip("Skin popup not found in settings")
         }
+        XCTAssertTrue(skin.isHittable, "Skin popup should be interactable")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Custom skin should override theme colors without crash")
+        skin.click()
+        // Dismiss without selecting -- just verify popup opens
+        let menuItems = app.menuItems
+        XCTAssertGreaterThan(menuItems.count, 0, "Skin popup should have menu items")
+        app.typeKey(.escape, modifierFlags: [])
+
         closeSettings()
     }
 
     func testDefaultSkinUsesThemeColors() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
-        let popups = settingsWindow.popUpButtons
-        if popups.count >= 2 {
-            let skinPopup = popups.element(boundBy: 1)
-            skinPopup.click()
-            Thread.sleep(forTimeInterval: 0.3)
-            let defaultItem = app.menuItems["Default"]
-            if defaultItem.waitForExistence(timeout: 1) {
-                defaultItem.click()
-            } else {
-                app.typeKey(.escape, modifierFlags: [])
-            }
+        let skin = skinPopup()
+        guard skin.waitForExistence(timeout: 2) else {
+            closeSettings()
+            throw XCTSkip("Skin popup not found in settings")
         }
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Default skin should defer to theme colors")
+        skin.click()
+        let defaultItem = app.menuItems["Default"]
+        if defaultItem.waitForExistence(timeout: 1) {
+            defaultItem.click()
+        } else {
+            app.typeKey(.escape, modifierFlags: [])
+        }
+
+        let skinValue = skin.value as? String ?? ""
+        XCTAssertEqual(skinValue, "Default", "Skin popup should show Default")
         closeSettings()
     }
 
     func testSwitchingThemeWithCustomSkin() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
-        // Switch theme while skin is active
         selectTheme("Monokai")
-        Thread.sleep(forTimeInterval: 0.2)
-        selectTheme("Nord")
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(currentThemeValue(), "Monokai")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Switching theme with custom skin should not crash")
+        selectTheme("Nord")
+        XCTAssertEqual(currentThemeValue(), "Nord", "Theme should switch while skin is active")
 
         selectTheme("Dark")
         closeSettings()
@@ -258,28 +186,31 @@ final class ThemeSwitchingUITests: XCTestCase {
     func testThemeAppliedToAllPanes() throws {
         // Create split pane
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectTheme("Dracula")
+        XCTAssertEqual(currentThemeValue(), "Dracula")
         closeSettings()
 
+        // Verify the main window has scrollable content (panes exist)
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Theme should apply to all split panes")
+        let scrollViews = window.scrollViews
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should exist and be themed")
+
+        // Reset
+        openSettings()
+        selectTheme("Dark")
+        closeSettings()
     }
 
     func testThemeAppliedToSidebar() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectTheme("Solarized Dark")
         closeSettings()
 
-        let window = app.windows["Holoscape"]
-        let sidebarEntry = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).firstMatch
-        XCTAssertTrue(sidebarEntry.exists, "Sidebar should be visible and respect theme")
+        let sidebar = sidebarEntry("")
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 3), "Sidebar entry should exist and be visible with theme applied")
+        XCTAssertTrue(sidebar.isHittable, "Sidebar entry should be hittable after theme change")
 
         openSettings()
         selectTheme("Dark")
@@ -288,13 +219,14 @@ final class ThemeSwitchingUITests: XCTestCase {
 
     func testThemeAppliedToInputBox() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectTheme("Monokai")
         closeSettings()
 
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists, "Input box should be functional with theme applied")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist with theme applied")
+        inputBox.typeText("theme-test")
+        let value = inputBox.value as? String ?? ""
+        XCTAssertEqual(value, "theme-test", "Input box should accept text with theme applied")
 
         openSettings()
         selectTheme("Dark")
@@ -304,17 +236,14 @@ final class ThemeSwitchingUITests: XCTestCase {
     func testThemeAppliedToTabBar() throws {
         // Collapse sidebar to show tab bar
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectTheme("Nord")
         closeSettings()
 
-        let window = app.windows["Holoscape"]
-        let tabButton = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
-        XCTAssertTrue(tabButton.exists, "Tab bar should respect theme")
+        let tabButton = tabEntry("")
+        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar entry should exist with theme applied")
+        XCTAssertTrue(tabButton.isHittable, "Tab bar entry should be hittable after theme change")
 
         // Re-expand sidebar and reset theme
         app.typeKey("s", modifierFlags: [.command, .shift])
