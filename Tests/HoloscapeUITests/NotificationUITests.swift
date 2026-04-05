@@ -1,17 +1,6 @@
 import XCTest
 
-final class NotificationUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class NotificationUITests: HoloscapeUITestCase {
 
     // MARK: - Permission Request
     // Note: The actual system notification permission dialog is managed by macOS
@@ -19,11 +8,9 @@ final class NotificationUITests: XCTestCase {
     // These tests verify the app-level notification UI components.
 
     func testNotificationTogglesInSettings() throws {
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
+        openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         // Verify all notification checkboxes exist
         let enableCheckbox = settingsWindow.checkBoxes["Enable Notifications"]
@@ -46,11 +33,9 @@ final class NotificationUITests: XCTestCase {
     }
 
     func testTogglingMasterDisablesPerType() throws {
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
+        openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let enableCheckbox = settingsWindow.checkBoxes["Enable Notifications"]
         guard enableCheckbox.waitForExistence(timeout: 2) else { return }
@@ -58,7 +43,6 @@ final class NotificationUITests: XCTestCase {
         // Ensure enabled first
         if enableCheckbox.value as? Int == 0 {
             enableCheckbox.click()
-            Thread.sleep(forTimeInterval: 0.2)
         }
 
         let agentCheckbox = settingsWindow.checkBoxes["Agent"]
@@ -66,24 +50,20 @@ final class NotificationUITests: XCTestCase {
 
         // Disable master
         enableCheckbox.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         XCTAssertFalse(agentCheckbox.isEnabled, "Per-type toggles should be disabled when master is off")
 
         // Re-enable
         enableCheckbox.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         XCTAssertTrue(agentCheckbox.isEnabled, "Per-type toggles should re-enable when master is turned back on")
     }
 
     func testPerTypeTogglesPersist() throws {
         // Open settings, toggle shell notifications on
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
+        openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let shellCheckbox = settingsWindow.checkBoxes["Shell"]
         guard shellCheckbox.waitForExistence(timeout: 2) else { return }
@@ -91,20 +71,15 @@ final class NotificationUITests: XCTestCase {
         // Toggle shell on if off
         if shellCheckbox.value as? Int == 0 {
             shellCheckbox.click()
-            Thread.sleep(forTimeInterval: 0.2)
         }
 
         // Close settings
-        settingsWindow.buttons[XCUIIdentifierCloseWindow].click()
-        Thread.sleep(forTimeInterval: 0.3)
+        closeSettings()
 
         // Reopen settings
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
+        openSettings()
 
         let reopened = app.windows["Appearance Settings"]
-        XCTAssertTrue(reopened.waitForExistence(timeout: 3))
-
         let shellAgain = reopened.checkBoxes["Shell"]
         XCTAssertTrue(shellAgain.waitForExistence(timeout: 2))
         XCTAssertEqual(shellAgain.value as? Int, 1, "Shell notification toggle should persist after close/reopen")

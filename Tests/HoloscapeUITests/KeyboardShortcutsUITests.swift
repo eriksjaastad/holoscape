@@ -1,58 +1,45 @@
 import XCTest
 
-final class KeyboardShortcutsUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class KeyboardShortcutsUITests: HoloscapeUITestCase {
 
     // MARK: - All Shortcuts Verified
 
     func testCmdN() throws {
         app.typeKey("n", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Should focus session launcher or show dialog
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+N should trigger New Session")
+        // Should show combo box or dialog for new session
+        let dialog = app.dialogs.firstMatch
+        let comboBox = app.comboBoxes.firstMatch
+        let appeared = dialog.waitForExistence(timeout: 3) || comboBox.waitForExistence(timeout: 1)
+        XCTAssertTrue(appeared, "Cmd+N should show new session dialog or combo box")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testCmdW() throws {
-        // Create second channel first
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
+
+        let shell2 = sidebarEntry("Shell 2")
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3))
+        shell2.click()
 
         app.typeKey("w", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let closeButton = app.buttons["Close"]
-        if closeButton.waitForExistence(timeout: 1) {
+        if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+W should close channel")
+        XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Cmd+W should remove channel from sidebar")
     }
 
     func testCmdShiftS() throws {
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
+        // Tab bar should appear when sidebar is collapsed
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+Shift+S should toggle sidebar")
+        let tabButton = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Cmd+Shift+S should collapse sidebar and show tab bar")
 
         // Toggle back
         app.typeKey("s", modifierFlags: [.command, .shift])
@@ -60,10 +47,12 @@ final class KeyboardShortcutsUITests: XCTestCase {
 
     func testCmdT() throws {
         app.typeKey("t", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+T should toggle timestamps")
+        // Verify menu item is still interactable (toggle worked without crash)
+        app.menuBars.firstMatch.menuBarItems["View"].click()
+        let timestampItem = app.menuItems["Show Timestamps"]
+        XCTAssertTrue(timestampItem.waitForExistence(timeout: 2), "Show Timestamps menu item should still be interactable after Cmd+T")
+        app.typeKey(.escape, modifierFlags: [])
 
         // Toggle back
         app.typeKey("t", modifierFlags: .command)
@@ -71,30 +60,33 @@ final class KeyboardShortcutsUITests: XCTestCase {
 
     func testCmdF() throws {
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Cmd+F should open search")
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Cmd+F should open search bar")
 
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testCmdD() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+D should split horizontal")
+        // After split, input box should still work
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still work after Cmd+D split")
+        inputBox.typeText("split-test")
+        inputBox.typeKey(.return, modifierFlags: [])
+
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input should clear after submit in split pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testCmdShiftD() throws {
         app.typeKey("d", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+Shift+D should split vertical")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still work after Cmd+Shift+D vertical split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -102,226 +94,167 @@ final class KeyboardShortcutsUITests: XCTestCase {
     func testCmdShiftW() throws {
         // Create split first
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         app.typeKey("w", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+Shift+W should close split pane")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after Cmd+Shift+W closes split pane")
     }
 
     func testCmdComma() throws {
         app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
 
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3), "Cmd+, should open settings")
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3), "Cmd+, should open settings window")
 
         settingsWindow.buttons[XCUIIdentifierCloseWindow].click()
     }
 
     func testCmdQ() throws {
-        // Verify quit shortcut exists — don't actually quit
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let quitItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Quit'")).firstMatch
-        XCTAssertTrue(quitItem.exists, "Cmd+Q should be bound to Quit")
+        XCTAssertTrue(quitItem.waitForExistence(timeout: 2), "Cmd+Q should be bound to Quit")
+        XCTAssertTrue(quitItem.isEnabled, "Quit should be enabled")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testCmd1Through9() throws {
-        // Create 3 channels
+        // Create 3 channels total
         for _ in 0..<2 {
-            app.menuBars.firstMatch.menuBarItems["File"].click()
-            app.menuItems["New Channel"].click()
-            let dialog = app.dialogs.firstMatch
-            if dialog.waitForExistence(timeout: 2) {
-                dialog.buttons["Shell"].click()
-            }
-            Thread.sleep(forTimeInterval: 0.5)
+            createChannel(type: "Shell")
         }
+
+        let inputBox = app.textViews["input-box"]
 
         // Switch between channels
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+1")
+
         app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+2")
+
         app.typeKey("3", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+1-9 should switch between channels")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+3")
     }
 
-    func testCmdC() throws {
+    func testCmdCVXA() throws {
         let inputBox = app.textViews["input-box"]
-        inputBox.typeText("copy-shortcut-test")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+
+        // Type, select all, copy
+        inputBox.typeText("clipboard-test")
         inputBox.typeKey("a", modifierFlags: .command)
         inputBox.typeKey("c", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Cmd+C should copy")
-    }
-
-    func testCmdV() throws {
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("paste-source")
-        inputBox.typeKey("a", modifierFlags: .command)
-        inputBox.typeKey("c", modifierFlags: .command)
-        inputBox.typeKey(.delete, modifierFlags: [])
-        inputBox.typeKey("v", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "paste-source", "Cmd+V should paste")
-    }
-
-    func testCmdX() throws {
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("cut-test")
+        // Cut (should clear)
         inputBox.typeKey("a", modifierFlags: .command)
         inputBox.typeKey("x", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
 
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Cmd+X should cut text")
-    }
+        let afterCut = inputBox.value as? String ?? ""
+        XCTAssertTrue(afterCut.isEmpty, "Cmd+X should cut text from input box")
 
-    func testCmdA() throws {
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("select-all")
-        inputBox.typeKey("a", modifierFlags: .command)
-        inputBox.typeText("replaced")
-        Thread.sleep(forTimeInterval: 0.2)
+        // Paste back
+        inputBox.typeKey("v", modifierFlags: .command)
 
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "replaced", "Cmd+A should select all")
+        let afterPaste = inputBox.value as? String ?? ""
+        XCTAssertEqual(afterPaste, "clipboard-test", "Cmd+V should paste back the copied text")
     }
 
     // MARK: - Conflict Detection
 
     func testNoShortcutConflicts() throws {
-        // Run through all shortcuts in sequence — none should crash or conflict
+        // Run through all shortcuts in sequence
         app.typeKey("n", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey(.escape, modifierFlags: [])
 
         app.typeKey("t", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
-        app.typeKey("t", modifierFlags: .command) // Toggle back
+        app.typeKey("t", modifierFlags: .command)
 
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey(.escape, modifierFlags: [])
 
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("w", modifierFlags: [.command, .shift])
 
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "No shortcuts should conflict with each other")
+        // Window should still be functional
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be functional after rapid shortcut sequence")
+        inputBox.typeText("post-conflict-test")
+        let value = inputBox.value as? String ?? ""
+        XCTAssertFalse(value.isEmpty, "Input box should accept text after rapid shortcut sequence")
     }
 
     func testShortcutsWorkFromInputBox() throws {
-        // Ensure input box has focus
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
-        // Shortcuts should fire from input box
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Shortcuts should fire from input box")
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from input box")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testShortcutsWorkFromOutputView() throws {
-        // Generate output then click it
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.typeText("echo output-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Shortcuts should still work
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Shortcuts should fire from output view")
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from output view")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testShortcutsWorkWithSearchBarOpen() throws {
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        let searchBar = app.toolbars["Search Bar"]
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3))
 
         // Toggle sidebar while search is open
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Shortcuts should work with search bar open")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain functional with search bar open")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     // MARK: - Shortcut Context
 
-    func testEscapeContextSensitive() throws {
-        // Open search
+    func testEscapeClosesSearch() throws {
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3))
 
-        // Escape should close search bar
         app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Escape again should do nothing (no search bar open)
-        app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Escape should be context-sensitive")
+        // Search bar should be gone
+        XCTAssertFalse(searchBar.waitForExistence(timeout: 2), "Escape should close search bar")
     }
 
-    func testEnterContextSensitive() throws {
-        // In input box, Enter submits
+    func testEnterSubmitsInput() throws {
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.typeText("enter-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
 
         let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Enter should submit input when input focused")
-
-        // In search bar, Enter advances match
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("test")
-            searchField.typeKey(.return, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Enter should be context-sensitive")
-        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(value.isEmpty, "Enter should submit input and clear the input box")
     }
 }
