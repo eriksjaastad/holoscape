@@ -60,6 +60,9 @@ class ChannelManager {
                 break
             }
             controller = MCPChannelController(id: id, endpoint: endpoint, label: profile.label, instanceNumber: instanceNumber)
+        case .bridge:
+            // V3: Bridge channel — placeholder until BridgeChannelController is built
+            controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
         case .agentChat:
             guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
                 NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
@@ -204,6 +207,7 @@ class ChannelManager {
         case .groupChat: return "Chat"
         case .ssh: return "SSH"
         case .mcp: return "MCP"
+        case .bridge: return "Bridge"
         }
     }
 
