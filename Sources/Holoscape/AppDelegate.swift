@@ -67,6 +67,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // Show window
         windowController?.window.makeKeyAndOrderFront(nil)
 
+        // Retry any pending reports from previous failed submissions
+        bugReportService.retryPendingReports()
+
         // Check for crashes on previous launch
         checkForCrashes(lastLaunch: config.lastLaunchTimestamp)
 
@@ -78,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         windowController?.channelManager.saveState()
+        windowController?.historyBuffer.flush()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -95,6 +99,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         controller.showWindow(nil)
         controller.window?.center()
         settingsWindowController = controller  // retain
+    }
+
+    @objc func showBugReportDialog() {
+        windowController?.showBugReportDialog()
     }
 
     // MARK: - Private
@@ -177,9 +185,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let crashes = crashScanner.scanForCrashes(since: since)
         guard let crash = crashes.first else { return }
 
+        // Load persisted state for context
+        let config = configService.load()
+        let persistedHistory = HistoryBuffer.loadPersistedSnapshot()
+
         let alert = NSAlert()
         alert.messageText = "Holoscape Crashed"
-        alert.informativeText = "A crash was detected from a previous session. File a report?"
+
+        var contextLines: [String] = ["A crash was detected from a previous session."]
+        if let history = persistedHistory {
+            let cmdCount = history.recentCommands.count
+            let errorCount = history.recentErrors.count
+            if cmdCount > 0 { contextLines.append("Last \(cmdCount) commands captured.") }
+            if errorCount > 0 { contextLines.append("\(errorCount) errors logged before crash.") }
+        }
+        if !config.channels.isEmpty {
+            contextLines.append("\(config.channels.count) channels were active.")
+        }
+        contextLines.append("\nSubmit a crash report?")
+        alert.informativeText = contextLines.joined(separator: " ")
+
         alert.addButton(withTitle: "Submit Report")
         alert.addButton(withTitle: "Dismiss")
         alert.alertStyle = .warning
@@ -187,13 +212,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             let report = CrashReport(
                 crashTrace: String(crash.content.prefix(10000)),
-                lastChannelState: nil,
+                lastChannelState: config.channels.isEmpty ? nil : config.channels,
                 timestamp: crash.creationDate,
-                macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString
+                macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+                appVersion: appVersion(),
+                hardwareModel: hardwareModel(),
+                historySnapshot: persistedHistory
             )
             let service = self.bugReportService
             Task {
-                _ = try? await service.submitCrashReport(report)
+                do {
+                    let response = try await service.submitCrashReport(report)
+                    if !response.success {
+                        service.savePendingCrashReport(report)
+                    }
+                } catch {
+                    service.savePendingCrashReport(report)
+                }
             }
         }
     }
@@ -236,7 +271,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
+        // Help menu
+        let helpMenuItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+        let reportBugItem = NSMenuItem(title: "Report Bug", action: #selector(showBugReportDialog), keyEquivalent: "b")
+        reportBugItem.keyEquivalentModifierMask = [.command, .shift]
+        reportBugItem.target = self
+        helpMenu.addItem(reportBugItem)
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+
         NSApp.mainMenu = mainMenu
+    }
+}
+
+// MARK: - System Info Helpers
+
+extension AppDelegate {
+    func appVersion() -> String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
+
+    func hardwareModel() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var model = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &model, &size, nil, 0)
+        return String(cString: model)
     }
 }
 

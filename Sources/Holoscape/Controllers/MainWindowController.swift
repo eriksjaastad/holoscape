@@ -24,6 +24,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var sidebarExpanded: Bool = true
     private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
+    let historyBuffer = HistoryBuffer()
+    private let bugReportService = BugReportService()
+    private var bugReportDialog: BugReportDialog?
+    private let launchTime = Date()
     private let searchBar = SearchBarView(frame: .zero)
     private var searchBarVisible: Bool = false
     private var searchBarHeightConstraint: NSLayoutConstraint?
@@ -425,10 +429,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func switchToChannel(_ id: UUID) {
         guard let channel = channelManager.channel(for: id) else { return }
+        let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         activeChannelId = id
         channel.hasUnread = false
         splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
+        historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
     }
 
     func refreshAllTabs() {
@@ -747,6 +753,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = activeChannelId,
               let channel = channelManager.channel(for: id) else { return }
         channel.sendInput(text)
+        historyBuffer.recordCommand(text, channelName: channel.displayLabel)
         resizeInputBox()
     }
 
@@ -809,5 +816,125 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             activeChannelId = channelId
             refreshAllTabs()
         }
+    }
+
+    // MARK: - Bug Report
+
+    func showBugReportDialog() {
+        guard let activeId = activeChannelId,
+              let activeChannel = channelManager.channel(for: activeId) else { return }
+
+        let allChannels = channelManager.allChannels()
+        let channelStates = allChannels.map {
+            ChannelStateInfo(
+                channelName: $0.displayLabel,
+                channelType: $0.channelType,
+                state: "\($0.state)"
+            )
+        }
+
+        let config = configService.load()
+        let appearanceSummary = "Theme: \(config.appearance.themeName ?? "Dark"), Font: \(config.appearance.fontFamily) \(config.appearance.fontSize)pt, Transparency: \(config.appearance.transparency)"
+
+        let context = BugReportDialog.Context(
+            activeChannelName: activeChannel.displayLabel,
+            activeChannelType: activeChannel.channelType.rawValue,
+            allChannelStates: channelStates,
+            lastOutputLines: activeChannel.lastLines(50),
+            appearanceConfig: appearanceSummary,
+            splitLayout: config.splitLayout.map { "\($0)" },
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            hardwareModel: Self.hardwareModel(),
+            uptime: Date().timeIntervalSince(launchTime)
+        )
+
+        let dialog = BugReportDialog()
+        dialog.delegate = self
+        dialog.show(in: window, context: context)
+        bugReportDialog = dialog
+    }
+
+    private static func hardwareModel() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var model = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &model, &size, nil, 0)
+        return String(decoding: model.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+}
+
+// MARK: - BugReportDialogDelegate
+
+extension MainWindowController: BugReportDialogDelegate {
+    func bugReportDialog(_ dialog: BugReportDialog, didSubmitDescription description: String, screenshot: Data?) {
+        guard let activeId = activeChannelId,
+              let activeChannel = channelManager.channel(for: activeId) else { return }
+
+        let allChannels = channelManager.allChannels()
+        let channelStates = allChannels.map {
+            ChannelStateInfo(
+                channelName: $0.displayLabel,
+                channelType: $0.channelType,
+                state: "\($0.state)"
+            )
+        }
+
+        let config = configService.load()
+        let appearanceSummary = "Theme: \(config.appearance.themeName ?? "Dark"), Font: \(config.appearance.fontFamily) \(config.appearance.fontSize)pt"
+
+        let report = BugReport(
+            channelName: activeChannel.displayLabel,
+            channelType: activeChannel.channelType,
+            lastOutputLines: activeChannel.lastLines(100),
+            timestamp: Date(),
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            description: description,
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            hardwareModel: Self.hardwareModel(),
+            allChannelStates: channelStates,
+            appearanceConfig: appearanceSummary,
+            splitLayout: config.splitLayout.map { "\($0)" },
+            uptime: Date().timeIntervalSince(launchTime),
+            historyBuffer: historyBuffer.snapshot(),
+            screenshotData: screenshot
+        )
+
+        let service = bugReportService
+        Task {
+            do {
+                let response = try await service.submitBugReport(report)
+                await MainActor.run {
+                    if response.success {
+                        self.showSubmitConfirmation(success: true, message: response.message)
+                    } else {
+                        service.savePendingBugReport(report)
+                        self.showSubmitConfirmation(success: false, message: response.message)
+                    }
+                }
+            } catch {
+                service.savePendingBugReport(report)
+                await MainActor.run {
+                    self.showSubmitConfirmation(success: false, message: "Network error — report saved locally for retry.")
+                }
+            }
+        }
+
+        bugReportDialog = nil
+    }
+
+    private func showSubmitConfirmation(success: Bool, message: String?) {
+        let alert = NSAlert()
+        if success {
+            alert.messageText = "Report Submitted"
+            alert.informativeText = message ?? "Thank you! Your bug report has been submitted."
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "Submission Issue"
+            alert.informativeText = message ?? "Report saved locally and will be retried on next launch."
+            alert.alertStyle = .warning
+        }
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
     }
 }
