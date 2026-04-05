@@ -27,6 +27,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let searchBar = SearchBarView(frame: .zero)
     private var searchBarVisible: Bool = false
     private var searchBarHeightConstraint: NSLayoutConstraint?
+    private var currentSearchQuery: String = ""
+    private var currentSearchMatchIndex: Int = 0
+    private var currentSearchMatchTotal: Int = 0
     private var inputHeightConstraint: NSLayoutConstraint?
     private let inputMinHeight: CGFloat = 40
     private let inputMaxHeight: CGFloat = 120
@@ -308,24 +311,37 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         if let textViewChannel = channel as? MCPChannelController {
             let count = searchTextView(query: query, in: textViewChannel.contentView)
-            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+            currentSearchQuery = query
+            currentSearchMatchTotal = count
+            currentSearchMatchIndex = count > 0 ? 1 : 0
+            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
         } else if let textViewChannel = channel as? GroupChatChannelController {
             let count = searchTextView(query: query, in: textViewChannel.contentView)
-            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+            currentSearchQuery = query
+            currentSearchMatchTotal = count
+            currentSearchMatchIndex = count > 0 ? 1 : 0
+            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
         } else {
             // PTY channels — search last lines
             let lines = channel.lastLines(10000)
             let count = lines.filter { $0.localizedCaseInsensitiveContains(query) }.count
-            searchBar.updateMatchInfo(total: count, current: count > 0 ? 1 : 0)
+            currentSearchQuery = query
+            currentSearchMatchTotal = count
+            currentSearchMatchIndex = count > 0 ? 1 : 0
+            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
         }
     }
 
     func searchBarDidRequestNext(_ searchBar: SearchBarView) {
-        // Navigate to next match — simplified for V3
+        guard currentSearchMatchTotal > 0 else { return }
+        currentSearchMatchIndex = currentSearchMatchIndex >= currentSearchMatchTotal ? 1 : currentSearchMatchIndex + 1
+        searchBar.updateMatchInfo(total: currentSearchMatchTotal, current: currentSearchMatchIndex)
     }
 
     func searchBarDidRequestPrevious(_ searchBar: SearchBarView) {
-        // Navigate to previous match — simplified for V3
+        guard currentSearchMatchTotal > 0 else { return }
+        currentSearchMatchIndex = currentSearchMatchIndex <= 1 ? currentSearchMatchTotal : currentSearchMatchIndex - 1
+        searchBar.updateMatchInfo(total: currentSearchMatchTotal, current: currentSearchMatchIndex)
     }
 
     func searchBarDidClose(_ searchBar: SearchBarView) {

@@ -68,6 +68,7 @@ class AppearanceSettingsWindowController: NSWindowController {
         themePopup.addItems(withTitles: ColorTheme.allThemes.map(\.name))
         themePopup.target = self
         themePopup.action = #selector(themeChanged(_:))
+        themePopup.setAccessibilityIdentifier("theme-popup")
         stack.addArrangedSubview(themeRow)
 
         // Skin
@@ -75,6 +76,7 @@ class AppearanceSettingsWindowController: NSWindowController {
         skinPopup.addItems(withTitles: skinEngine.availableSkins())
         skinPopup.target = self
         skinPopup.action = #selector(skinChanged(_:))
+        skinPopup.setAccessibilityIdentifier("skin-popup")
         stack.addArrangedSubview(skinRow)
 
         // Background color
@@ -89,6 +91,7 @@ class AppearanceSettingsWindowController: NSWindowController {
         transparencySlider.maxValue = 1.0
         transparencySlider.target = self
         transparencySlider.action = #selector(transparencyChanged(_:))
+        transparencySlider.setAccessibilityIdentifier("transparency-slider")
         stack.addArrangedSubview(transRow)
 
         // Font family
@@ -97,12 +100,14 @@ class AppearanceSettingsWindowController: NSWindowController {
         fontFamilyPopup.addItems(withTitles: monoFonts)
         fontFamilyPopup.target = self
         fontFamilyPopup.action = #selector(fontChanged(_:))
+        fontFamilyPopup.setAccessibilityIdentifier("font-family-popup")
         stack.addArrangedSubview(fontRow)
 
         // Font size
         let sizeRow = makeRow(label: "Font Size:", control: fontSizeField)
         fontSizeField.target = self
         fontSizeField.action = #selector(fontSizeChanged(_:))
+        fontSizeField.setAccessibilityIdentifier("font-size-field")
         stack.addArrangedSubview(sizeRow)
 
         // Notifications section

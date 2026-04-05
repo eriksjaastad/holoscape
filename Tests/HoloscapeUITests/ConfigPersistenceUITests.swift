@@ -2,40 +2,6 @@ import XCTest
 
 final class ConfigPersistenceUITests: HoloscapeUITestCase {
 
-    // MARK: - Helpers
-
-    /// Read the current theme popup value from the settings window.
-    private func currentThemeValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count > 0 else { return "" }
-        return popups.element(boundBy: 0).value as? String ?? ""
-    }
-
-    /// Read the current font popup value from the settings window.
-    private func currentFontValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 3 else { return "" }
-        return popups.element(boundBy: 2).value as? String ?? ""
-    }
-
-    /// Read the current font size text field value from the settings window.
-    private func currentFontSizeValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let textFields = settingsWindow.textFields
-        guard textFields.count >= 1 else { return "" }
-        return textFields.element(boundBy: 0).value as? String ?? ""
-    }
-
-    /// Read the current slider value from the settings window.
-    private func currentSliderValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let sliders = settingsWindow.sliders
-        guard sliders.count >= 1 else { return "" }
-        return sliders.element(boundBy: 0).value as? String ?? ""
-    }
-
     // MARK: - Full Config Round-Trip
 
     func testAllSettingsSurviveRestart() throws {
@@ -54,11 +20,7 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         XCTAssertEqual(currentFontSizeValue(), "15", "Font size should be set to 15")
 
         // Set transparency
-        let settingsWindow = app.windows["Appearance Settings"]
-        let sliders = settingsWindow.sliders
-        if sliders.count >= 1 {
-            sliders.element(boundBy: 0).adjust(toNormalizedSliderPosition: 0.8)
-        }
+        transparencySlider().adjust(toNormalizedSliderPosition: 0.8)
 
         closeSettings()
 
@@ -79,11 +41,7 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         selectTheme("Dark")
         selectFont("SF Mono")
         setFontSize("13")
-        let settingsWindow2 = app.windows["Appearance Settings"]
-        let sliders2 = settingsWindow2.sliders
-        if sliders2.count >= 1 {
-            sliders2.element(boundBy: 0).adjust(toNormalizedSliderPosition: 1.0)
-        }
+        transparencySlider().adjust(toNormalizedSliderPosition: 1.0)
         closeSettings()
     }
 
@@ -123,17 +81,13 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         XCTAssertEqual(currentThemeValue(), lastTheme, "After rapid changes, theme should reflect the last selection: \(lastTheme)")
 
         // Rapidly change slider
-        let settingsWindow = app.windows["Appearance Settings"]
-        let sliders = settingsWindow.sliders
-        if sliders.count >= 1 {
-            let slider = sliders.element(boundBy: 0)
-            for pos in stride(from: 0.5, through: 1.0, by: 0.1) {
-                slider.adjust(toNormalizedSliderPosition: CGFloat(pos))
-            }
-            // Assert slider ended at approximately 1.0
-            let finalValue = slider.value as? String ?? ""
-            XCTAssertFalse(finalValue.isEmpty, "Slider should have a value after rapid adjustments")
+        let slider = transparencySlider()
+        for pos in stride(from: 0.5, through: 1.0, by: 0.1) {
+            slider.adjust(toNormalizedSliderPosition: CGFloat(pos))
         }
+        // Assert slider ended at approximately 1.0
+        let finalValue = slider.value as? String ?? ""
+        XCTAssertFalse(finalValue.isEmpty, "Slider should have a value after rapid adjustments")
 
         // Verify the app is still functional
         closeSettings()

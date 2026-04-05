@@ -4,18 +4,9 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
 
     // MARK: - Helpers
 
-    /// Read the current theme popup value from the settings window.
-    private func currentThemeValue() -> String {
-        let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count > 0 else { return "" }
-        return popups.element(boundBy: 0).value as? String ?? ""
-    }
-
     /// Read the skin popup element from the settings window.
     private func skinPopup() -> XCUIElement {
-        let settingsWindow = app.windows["Appearance Settings"]
-        return settingsWindow.popUpButtons.element(boundBy: 1)
+        return app.windows["Appearance Settings"].popUpButtons["skin-popup"]
     }
 
     // MARK: - Theme Application
