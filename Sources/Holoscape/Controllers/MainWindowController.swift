@@ -22,6 +22,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
     private var elapsedTimeTimer: Timer?
+    private var pinnedChannelIds: Set<UUID> = []
+    private var pinnedTimestamps: [UUID: Date] = [:]
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -279,8 +281,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func refreshAllTabs() {
         let channels = channelManager.allChannels()
-        tabBar.updateTabs(channels: channels, activeId: activeChannelId)
-        sidebarView.updateTabs(channels: channels, activeId: activeChannelId)
+        // Sort: pinned first (by pinnedAt), then unpinned
+        let pinned = channels.filter { pinnedChannelIds.contains($0.channelId) }
+            .sorted { (pinnedTimestamps[$0.channelId] ?? .distantPast) < (pinnedTimestamps[$1.channelId] ?? .distantPast) }
+        let unpinned = channels.filter { !pinnedChannelIds.contains($0.channelId) }
+        let sorted = pinned + unpinned
+
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: pinnedChannelIds)
     }
 
     func refreshLauncher() {
@@ -458,6 +466,16 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         menu.addItem(NSMenuItem.separator())
 
+        // Pin/Unpin
+        let isPinned = pinnedChannelIds.contains(channelId)
+        let pinTitle = isPinned ? "Unpin" : "Pin"
+        let pinItem = NSMenuItem(title: pinTitle, action: #selector(contextMenuTogglePin(_:)), keyEquivalent: "")
+        pinItem.target = self
+        pinItem.representedObject = channelId
+        menu.addItem(pinItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let copyInfoItem = NSMenuItem(title: "Copy Session Info", action: #selector(contextMenuCopyInfo(_:)), keyEquivalent: "")
         copyInfoItem.target = self
         copyInfoItem.representedObject = channelId
@@ -488,6 +506,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
         channel.retry()
+    }
+
+    @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        if pinnedChannelIds.contains(id) {
+            pinnedChannelIds.remove(id)
+            pinnedTimestamps.removeValue(forKey: id)
+        } else {
+            pinnedChannelIds.insert(id)
+            pinnedTimestamps[id] = Date()
+        }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
@@ -578,7 +608,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func channelDidReceiveOutput(_ channel: any ChannelController) {
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
-            self.channelManager.moveUnreadToFront(id: channel.channelId)
+            // Only reorder unpinned channels
+            if !pinnedChannelIds.contains(channel.channelId) {
+                self.channelManager.moveUnreadToFront(id: channel.channelId)
+            }
             self.refreshAllTabs()
         }
     }
