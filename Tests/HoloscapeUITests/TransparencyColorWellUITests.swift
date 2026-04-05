@@ -4,12 +4,6 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
 
     // MARK: - Helpers
 
-    /// Get the transparency slider from a freshly-queried settings window.
-    private func transparencySlider() -> XCUIElement {
-        let settingsWindow = app.windows["Appearance Settings"]
-        return settingsWindow.sliders.element(boundBy: 0)
-    }
-
     /// Read the current slider value as a normalized string.
     private func sliderValue() -> String {
         return transparencySlider().value as? String ?? ""
@@ -166,11 +160,10 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         selectTheme("Monokai")
 
         let settingsWindow = app.windows["Appearance Settings"]
-        let themePopup = settingsWindow.popUpButtons.element(boundBy: 0)
-        XCTAssertEqual(themePopup.value as? String, "Monokai", "Theme should be Monokai")
+        XCTAssertEqual(currentThemeValue(), "Monokai", "Theme should be Monokai")
 
         selectTheme("Dark")
-        XCTAssertEqual(themePopup.value as? String, "Dark", "Theme should reset to Dark")
+        XCTAssertEqual(currentThemeValue(), "Dark", "Theme should reset to Dark")
         closeSettings()
     }
 
