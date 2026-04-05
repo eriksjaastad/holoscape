@@ -21,6 +21,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
+    private var elapsedTimeTimer: Timer?
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -72,6 +73,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Defer sidebar state application until after layout
         DispatchQueue.main.async { [self] in
             self.applySidebarState()
+        }
+
+        // Refresh elapsed time on tabs every 60 seconds
+        elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshAllTabs()
+            }
         }
     }
 
