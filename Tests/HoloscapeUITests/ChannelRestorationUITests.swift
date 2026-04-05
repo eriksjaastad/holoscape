@@ -69,7 +69,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         pinItem.click()
 
         // Verify pin emoji appeared in sidebar accessibility title
-        let pinnedEntry = sidebarEntryExact("\u{1F4CC} Shell 2")
+        let pinnedEntry = pinnedSidebarEntry("Shell 2")
         XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear in sidebar entry identifier after pinning")
 
         // Quit and relaunch
@@ -80,7 +80,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let restoredWindow = app.windows["Holoscape"]
         XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5))
 
-        let restoredPinnedEntry = sidebarEntryExact("\u{1F4CC} Shell 2")
+        let restoredPinnedEntry = pinnedSidebarEntry("Shell 2")
         XCTAssertTrue(restoredPinnedEntry.waitForExistence(timeout: 3), "Pinned channel should retain pin state after restart")
     }
 

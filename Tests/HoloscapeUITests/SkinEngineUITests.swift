@@ -41,14 +41,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
 
         let settingsWindow = app.windows["Appearance Settings"]
 
-        // Skin popup is the second popup button
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 2 else {
-            XCTFail("Settings should have at least 2 popup buttons")
-            return
-        }
-
-        let skinPopup = popups.element(boundBy: 1)
+        let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
         let testSkinItem = app.menuItems["test-skin"]
@@ -63,10 +56,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 2 else { return }
-
-        let skinPopup = popups.element(boundBy: 1)
+        let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
         let defaultItem = app.menuItems["Default"]
@@ -81,10 +71,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 2 else { return }
-
-        let skinPopup = popups.element(boundBy: 1)
+        let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
         let testSkinItem = app.menuItems["test-skin"]
@@ -124,10 +111,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         openSettings()
 
         let settingsWindow = app.windows["Appearance Settings"]
-        let popups = settingsWindow.popUpButtons
-        guard popups.count >= 2 else { return }
-
-        let skinPopup = popups.element(boundBy: 1)
+        let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
         // bad-skin should NOT appear (invalid JSON)
