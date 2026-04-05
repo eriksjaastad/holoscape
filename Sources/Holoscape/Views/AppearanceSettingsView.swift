@@ -12,10 +12,12 @@ class AppearanceSettingsWindowController: NSWindowController {
     private let configService: ConfigService
 
     private let themePopup = NSPopUpButton()
+    private let skinPopup = NSPopUpButton()
     private let colorWell = NSColorWell()
     private let transparencySlider = NSSlider()
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
+    private let skinEngine = SkinEngine()
 
     init(config: AppearanceConfig, configService: ConfigService) {
         self.config = config
@@ -61,6 +63,13 @@ class AppearanceSettingsWindowController: NSWindowController {
         themePopup.target = self
         themePopup.action = #selector(themeChanged(_:))
         stack.addArrangedSubview(themeRow)
+
+        // Skin
+        let skinRow = makeRow(label: "Skin:", control: skinPopup)
+        skinPopup.addItems(withTitles: skinEngine.availableSkins())
+        skinPopup.target = self
+        skinPopup.action = #selector(skinChanged(_:))
+        stack.addArrangedSubview(skinRow)
 
         // Background color
         let colorRow = makeRow(label: "Background Color:", control: colorWell)
@@ -109,12 +118,24 @@ class AppearanceSettingsWindowController: NSWindowController {
     private func loadCurrentValues() {
         let themeName = config.themeName ?? "Dark"
         themePopup.selectItem(withTitle: themeName)
+        let skinName = config.skinName ?? "Default"
+        skinPopup.selectItem(withTitle: skinName)
         if let color = NSColor(hexString: config.backgroundColor) {
             colorWell.color = color
         }
         transparencySlider.doubleValue = config.transparency
         fontFamilyPopup.selectItem(withTitle: config.fontFamily)
         fontSizeField.stringValue = String(config.fontSize)
+    }
+
+    @objc private func skinChanged(_ sender: NSPopUpButton) {
+        let skinName = sender.titleOfSelectedItem ?? "Default"
+        config.skinName = skinName
+        if skinName != "Default", let skin = skinEngine.loadSkin(named: skinName) {
+            config = skinEngine.apply(skin: skin, to: config)
+        }
+        loadCurrentValues()
+        applyAndSave()
     }
 
     @objc private func themeChanged(_ sender: NSPopUpButton) {
