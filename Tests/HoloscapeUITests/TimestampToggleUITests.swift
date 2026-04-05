@@ -18,14 +18,6 @@ final class TimestampToggleUITests: HoloscapeUITestCase {
         app.typeKey("t", modifierFlags: .command)
     }
 
-    func testTimestampsVisibleAfterEnable() throws {
-        throw XCTSkip("Cannot verify timestamp text in NSTextView via XCUITest")
-    }
-
-    func testTimestampsHiddenAfterDisable() throws {
-        throw XCTSkip("Cannot verify timestamp text in NSTextView via XCUITest")
-    }
-
     // MARK: - Menu Item
 
     func testViewMenuShowTimestamps() throws {
@@ -43,13 +35,9 @@ final class TimestampToggleUITests: HoloscapeUITestCase {
         timestampItem2.click()
     }
 
-    func testMenuCheckmarkReflectsState() throws {
-        throw XCTSkip("Cannot verify menu item checkmark state via XCUITest — NSMenuItem value/state is not exposed to accessibility")
-    }
-
     // MARK: - Persistence
 
-    func testTimestampSettingPersistsAcrossRestart() throws {
+    func testTimestampMenuItemExistsAfterRestart() throws {
         // Enable timestamps
         app.typeKey("t", modifierFlags: .command)
 
@@ -92,19 +80,5 @@ final class TimestampToggleUITests: HoloscapeUITestCase {
 
         // Cleanup
         app.typeKey("t", modifierFlags: .command)
-    }
-
-    // MARK: - Display
-
-    func testTimestampFormatIsCorrect() throws {
-        throw XCTSkip("Cannot verify timestamp text in NSTextView via XCUITest")
-    }
-
-    func testTimestampsOnNewOutput() throws {
-        throw XCTSkip("Cannot verify timestamp text in NSTextView via XCUITest")
-    }
-
-    func testTimestampsOnExistingOutput() throws {
-        throw XCTSkip("Cannot verify timestamp text in NSTextView via XCUITest")
     }
 }

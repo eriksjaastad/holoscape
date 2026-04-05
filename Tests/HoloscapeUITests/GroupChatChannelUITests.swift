@@ -46,7 +46,7 @@ final class GroupChatChannelUITests: HoloscapeUITestCase {
 
     // MARK: - Message Display
 
-    func testGroupChatChannelShowsMessages() throws {
+    func testGroupChatChannelViewLoads() throws {
         try XCTSkipUnless(
             FileManager.default.fileExists(atPath: envPath),
             "Agent chat env not configured"
@@ -55,37 +55,14 @@ final class GroupChatChannelUITests: HoloscapeUITestCase {
         let entry = sidebarEntry("Chat")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
         entry.click()
-        // Verify the input box is present, meaning the chat view loaded
+
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be visible in group chat view")
-    }
+        XCTAssertTrue(inputBox.isEnabled, "Input box should be enabled in group chat view")
 
-    func testGroupChatChannelAutoScrolls() throws {
-        try XCTSkipUnless(
-            FileManager.default.fileExists(atPath: envPath),
-            "Agent chat env not configured"
-        )
-        createChannel(type: "Group Chat")
-        let entry = sidebarEntry("Chat")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after selecting chat channel")
-        XCTAssertTrue(inputBox.isEnabled, "Input box should be enabled, indicating chat view is functional")
-    }
-
-    func testGroupChatChannelPreservesScrollPosition() throws {
-        try XCTSkipUnless(
-            FileManager.default.fileExists(atPath: envPath),
-            "Agent chat env not configured"
-        )
-        createChannel(type: "Group Chat")
-        let entry = sidebarEntry("Chat")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist for scroll position test")
-        XCTAssertTrue(entry.isHittable, "Sidebar entry should remain hittable after scroll interactions")
+        // Verify the output scroll view also loaded
+        let window = app.windows["Holoscape"]
+        XCTAssertGreaterThanOrEqual(window.scrollViews.count, 1, "Group chat should have an output scroll view")
     }
 
     // MARK: - Input
@@ -139,44 +116,6 @@ final class GroupChatChannelUITests: HoloscapeUITestCase {
 
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "gc-history-test", "Up arrow should recall previous group chat message")
-    }
-
-    // MARK: - Reconnection
-
-    func testGroupChatChannelReconnectsOnFailure() throws {
-        try XCTSkipUnless(
-            FileManager.default.fileExists(atPath: envPath),
-            "Agent chat env not configured"
-        )
-        createChannel(type: "Group Chat")
-        let entry = sidebarEntry("Chat")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should exist before reconnection test")
-        // After a potential failure cycle, the entry should still be visible
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should persist through reconnection")
-    }
-
-    func testGroupChatChannelStateUpdatesOnDisconnect() throws {
-        try XCTSkipUnless(
-            FileManager.default.fileExists(atPath: envPath),
-            "Agent chat env not configured"
-        )
-        createChannel(type: "Group Chat")
-        let entry = sidebarEntry("Chat")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should remain visible with updated state")
-        XCTAssertTrue(entry.isEnabled, "Chat entry should be enabled even during disconnect")
-    }
-
-    func testGroupChatChannelResumesAfterReconnect() throws {
-        try XCTSkipUnless(
-            FileManager.default.fileExists(atPath: envPath),
-            "Agent chat env not configured"
-        )
-        createChannel(type: "Group Chat")
-        let entry = sidebarEntry("Chat")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be functional after reconnection resume")
     }
 
     // MARK: - Lifecycle

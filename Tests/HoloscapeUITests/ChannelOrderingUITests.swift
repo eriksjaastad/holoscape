@@ -21,7 +21,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         XCTAssertGreaterThanOrEqual(count, 2, "Should have at least 2 sidebar entries")
     }
 
-    func testMultipleUnreadChannelsOrdered() throws {
+    func testThreeChannelsAllVisibleInSidebar() throws {
         createChannel(type: "Shell")
         createChannel(type: "Shell")
 
@@ -36,7 +36,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         XCTAssertGreaterThanOrEqual(sidebarButtons.count, 3, "Should have at least 3 sidebar entries")
     }
 
-    func testReadChannelMovesBack() throws {
+    func testChannelsSurviveSwitching() throws {
         createChannel(type: "Shell")
 
         let shell1 = sidebarEntry("Shell")
@@ -141,7 +141,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         app.typeKey("s", modifierFlags: [.command, .shift])
     }
 
-    func testTabBarUpdatesOnReorder() throws {
+    func testTabBarShowsAllChannels() throws {
         createChannel(type: "Shell")
 
         // Collapse sidebar
@@ -149,7 +149,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
 
         let window = app.windows["Holoscape"]
         let tabButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'"))
-        XCTAssertGreaterThanOrEqual(tabButtons.count, 2, "Tab bar should update on reorder")
+        XCTAssertGreaterThanOrEqual(tabButtons.count, 2, "Tab bar should show all channels when sidebar collapsed")
 
         // Re-expand sidebar
         app.typeKey("s", modifierFlags: [.command, .shift])

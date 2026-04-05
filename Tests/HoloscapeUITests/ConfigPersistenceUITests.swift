@@ -87,10 +87,9 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testConfigFileCreatedOnFirstLaunch() throws {
-        // Verify the app launched successfully with a functional main window
+    func testAppLaunchesSuccessfully() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "App should create config and launch with functional input box")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "App should launch with functional input box")
     }
 
     func testConfigFileUpdatedOnChange() throws {
@@ -105,26 +104,6 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         XCTAssertEqual(currentThemeValue(), "Dark", "Config should update immediately on change back to Dark")
 
         closeSettings()
-    }
-
-    // MARK: - Config Corruption
-
-    func testCorruptConfigHandledGracefully() throws {
-        throw XCTSkip("Config corruption cannot be reliably simulated via XCUITest -- requires injecting a malformed file before launch, which is outside UI test scope")
-    }
-
-    func testMissingConfigFieldsGetDefaults() throws {
-        throw XCTSkip("Missing config fields cannot be reliably simulated via XCUITest -- requires editing the config file on disk before launch, which is outside UI test scope")
-    }
-
-    func testEmptyConfigFileHandled() throws {
-        throw XCTSkip("Empty config file cannot be reliably simulated via XCUITest -- requires replacing the config file on disk before launch, which is outside UI test scope")
-    }
-
-    // MARK: - Config Migration
-
-    func testOldConfigVersionHandled() throws {
-        throw XCTSkip("Config migration cannot be tested via XCUITest -- requires writing a legacy-format config file before launch, which is outside UI test scope")
     }
 
     // MARK: - Concurrent Access

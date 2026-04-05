@@ -67,10 +67,14 @@ final class SearchBarUITests: HoloscapeUITestCase {
         // Type search query
         let searchBar = app.toolbars["Search Bar"]
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 2) {
-            searchField.typeText("searchable")
-            // The match count label should show something other than empty
-            // We can't directly read it, but the search mechanism should not crash
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+        searchField.typeText("searchable")
+
+        // Verify match count label is present and shows matches
+        let label = searchMatchCountText()
+        XCTAssertNotNil(label, "Match count label should be visible after typing a search query")
+        if let label = label {
+            XCTAssertFalse(label.isEmpty, "Match count label should not be empty after searching for existing text")
         }
 
         // Close search
@@ -79,13 +83,20 @@ final class SearchBarUITests: HoloscapeUITestCase {
 
     // MARK: - Empty Query
 
-    func testEmptyQueryShowsNoMatches() throws {
+    func testEmptyQueryShowsNoMatchLabel() throws {
         openSearch()
 
-        // Don't type anything — match count should be empty/zero
-        // Verify the search bar opened without crashing
         let searchBar = app.toolbars["Search Bar"]
         XCTAssertTrue(searchBar.exists, "Search bar should be visible with empty query")
+
+        // With an empty query, match count should be nil or empty
+        let label = searchMatchCountText()
+        if let label = label {
+            XCTAssertTrue(
+                label.isEmpty || label.contains("0") || label.lowercased().contains("no"),
+                "Empty query should show no matches or empty label, got: \(label)"
+            )
+        }
 
         closeSearch()
     }
