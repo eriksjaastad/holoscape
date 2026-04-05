@@ -189,6 +189,42 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             fileMenu.addItem(NSMenuItem.separator())
             fileMenu.addItem(toggleSidebarItem)
         }
+
+        // View menu with timestamp toggle
+        if let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu {
+            let timestampItem = NSMenuItem(title: "Show Timestamps", action: #selector(toggleTimestamps), keyEquivalent: "t")
+            timestampItem.target = self
+            viewMenu.addItem(timestampItem)
+        }
+
+        // Cmd+1-9 channel switching via local event monitor
+        setupChannelSwitchShortcuts()
+    }
+
+    private var keyMonitor: Any?
+
+    private func setupChannelSwitchShortcuts() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.modifierFlags.contains(.command) else { return event }
+            // Key codes 18-26 map to digits 1-9
+            let digitKeyCodes: [UInt16: Int] = [
+                18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9,
+            ]
+            guard let position = digitKeyCodes[event.keyCode] else { return event }
+            let channels = self.channelManager.allChannels()
+            if position <= channels.count {
+                self.switchToChannel(channels[position - 1].channelId)
+                return nil  // consume event
+            }
+            return event
+        }
+    }
+
+    @objc func toggleTimestamps() {
+        var config = configService.load()
+        let current = config.showTimestamps ?? false
+        config.showTimestamps = !current
+        configService.save(config)
     }
 
     private func applySidebarState() {
