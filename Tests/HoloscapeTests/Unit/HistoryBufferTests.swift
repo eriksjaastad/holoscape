@@ -4,6 +4,13 @@ import XCTest
 @MainActor
 final class HistoryBufferTests: XCTestCase {
 
+    override func tearDown() {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".holoscape/history-buffer.json")
+        try? FileManager.default.removeItem(at: url)
+        super.tearDown()
+    }
+
     func testRecordCommandAddsEntry() {
         let buffer = HistoryBuffer()
         buffer.recordCommand("ls -la", channelName: "Shell")
