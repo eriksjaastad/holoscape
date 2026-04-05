@@ -80,7 +80,7 @@ class MCPChannelController: NSObject, ChannelController {
         commandHistory.add(text)
 
         let timeString = formatTime(Date())
-        appendMessage("[\(timeString)] erik: \(text)")
+        appendMessage("[\(timeString)] you: \(text)")
 
         Task { [weak self] in
             guard let self else { return }
@@ -109,10 +109,14 @@ class MCPChannelController: NSObject, ChannelController {
         return Array(lines.suffix(count))
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
     private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: date)
+        Self.timeFormatter.string(from: date)
     }
 
     private func appendMessage(_ text: String) {

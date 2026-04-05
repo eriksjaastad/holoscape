@@ -51,7 +51,8 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             return
         }
 
-        let remoteCommand = "cd \(profile.directory) && \(profile.command)"
+        let escapedDir = shellEscape(profile.directory)
+        let remoteCommand = "cd \(escapedDir) && \(profile.command)"
         let sshArgs = ["-t", "\(user)@\(host)", remoteCommand]
 
         // Pass through SSH_AUTH_SOCK for system SSH agent + minimal env
@@ -81,7 +82,13 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func lastLines(_ count: Int) -> [String] {
-        return []
+        let terminal = terminalView.terminal!
+        let text = terminal.getText(
+            start: Position(col: 0, row: 0),
+            end: Position(col: terminal.cols - 1, row: Int.max / 2)
+        )
+        let lines = text.components(separatedBy: "\n")
+        return Array(lines.suffix(count))
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
@@ -99,4 +106,9 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
 
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+
+    /// Shell-escape a string for safe use in a remote command.
+    private func shellEscape(_ s: String) -> String {
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
