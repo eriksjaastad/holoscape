@@ -352,6 +352,115 @@ Quick-switch between the first 9 channels using Cmd+1 through Cmd+9.
 - Shortcuts are always active regardless of sidebar state
 - If fewer than N channels exist, Cmd+N (where N > channel count) does nothing
 
+## V3 Features
+
+### Desktop Notifications for Unread Channels
+
+When Holoscape is not the frontmost app and a channel receives new content, show a macOS notification.
+
+**How it works:**
+- Uses `UNUserNotificationCenter` for native macOS notifications
+- Notification shows: channel label, first line of new content (truncated to 100 chars)
+- Clicking the notification brings Holoscape to front and switches to that channel
+- Notifications are only sent when Holoscape is NOT the active app (no notifications while focused)
+- Notification grouping: one notification per channel, updated on subsequent messages (not spammed)
+- Setting to enable/disable notifications per channel type (shell, agent, SSH, MCP, group chat)
+- Global toggle: Settings > Notifications > Enable Desktop Notifications
+
+**Config:**
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "perChannelType": {
+      "shell": false,
+      "agent": true,
+      "ssh": true,
+      "mcp": true,
+      "groupChat": true
+    }
+  }
+}
+```
+
+### Window Splitting (Side-by-Side Channels)
+
+View two channels simultaneously in a split terminal area.
+
+**How it works:**
+- **Cmd+D** splits the terminal area horizontally (left/right)
+- **Cmd+Shift+D** splits vertically (top/bottom)
+- Each split pane shows a different channel's content view
+- The active pane has a subtle border highlight
+- Click a pane to make it active — input goes to the active pane's channel
+- **Cmd+Shift+W** closes the current split pane (returns to single view)
+- Maximum 4 panes (2x2 grid)
+- Split state persists across restarts
+
+**Implementation:**
+- Replace the single `TerminalContainerView` with an `NSSplitView` that can be recursively split
+- Each split pane wraps a channel's content view
+- The active pane ID is tracked separately from the sidebar selection
+
+### Bridge Channel (Broadcast to All Agents)
+
+A special channel type that sends messages to ALL open agent channels simultaneously.
+
+**How it works:**
+- Bridge channel appears in the session launcher as a preconfigured option
+- When Erik types in the bridge channel and hits Enter, the message is sent to every active agent channel (Agent Direct, Agent API, SSH running claude, MCP)
+- Shell channels are excluded (not agents)
+- Group chat channels are excluded (not agents)
+- Responses appear in each individual agent's channel, not in the bridge
+- The bridge channel's content view shows a log of what was broadcast: `[H:MM PM] → broadcast: message`
+- Useful for: "everyone stop what you're doing", "status report from all agents", "new priority"
+
+**Connection config:**
+```json
+{"label": "Bridge", "connection": "bridge"}
+```
+
+### Tab Pinning
+
+Pin important tabs so they don't move when other channels get unread indicators.
+
+**How it works:**
+- Right-click a tab → "Pin" (added to context menu)
+- Pinned tabs stay at the top of the sidebar / left of the tab bar
+- Pinned tabs show a small pin icon next to the label
+- Unread reordering only affects unpinned tabs
+- Pinned tabs are ordered by pin time (first pinned = first position)
+- "Unpin" option in right-click menu to remove the pin
+- Pin state persists in channel metadata
+
+### Search Across Channel Output (Cmd+F)
+
+Search the scrollback buffer of the active channel.
+
+**How it works:**
+- **Cmd+F** opens a search bar at the top of the terminal area (below the tab bar)
+- Type to search — matches highlighted in the scrollback
+- **Enter** or **Cmd+G** jumps to next match
+- **Cmd+Shift+G** jumps to previous match
+- **Escape** closes the search bar
+- Search applies to the active channel only
+- For PTY channels (SwiftTerm): search the terminal buffer text
+- For NSTextView channels (MCP, group chat): search the text storage
+
+### Winamp-Style Skin Engine
+
+Fully customizable window chrome and UI elements via skin packages.
+
+**How it works:**
+- A skin is a directory containing: `skin.json` (layout + color definitions) and image assets (PNG)
+- `skin.json` defines: window background, title bar, sidebar background, tab active/inactive colors, button images, border styles, font overrides
+- Skins are loaded from `~/.holoscape/skins/<skin-name>/`
+- Settings panel gets a skin picker dropdown (similar to theme picker but more comprehensive)
+- Default skin is the built-in Dark theme
+- Community skins can be shared as zip files
+
+**This is a large feature — defer detailed design until V3 implementation.**
+
 ## MVP Scope
 
 **V1 — SHIPPED:**
@@ -373,20 +482,26 @@ Quick-switch between the first 9 channels using Cmd+1 through Cmd+9.
 - Consistent instance numbering (mini-claude 1, mini-claude 2 — both numbered)
 - Directory-based tab labeling for SSH project sessions
 
-**V2 — Current sprint:**
-- CEO connection via MCP bridge to Auxesis (new MCPChannelController)
-- Group chat channel (Agent Chat API via HTTP polling, custom NSTextView rendering)
-- Running process indicator with elapsed time on tabs
-- Timestamps on terminal output (toggle via Cmd+T)
-- Color theme presets (Dark, Monokai, Solarized, Dracula, Nord)
-- Cmd+1-9 keyboard shortcuts for channel switching
+**V2 — SHIPPED:**
+- CEO connection via MCP bridge to Auxesis (MCPClient actor + MCPChannelController)
+- Group chat channel (Agent Chat API via HTTP polling, custom NSTextView, auto-scroll)
+- Running process indicator with elapsed time on tabs (green/yellow/red dots + "2h 15m")
+- Timestamps on terminal output (toggle via Cmd+T, [HH:MM:SS] prefix)
+- Color theme presets (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) with override support
+- Cmd+1-9 keyboard shortcuts for channel switching via NSEvent local monitor
 
-**V3 — Someday:**
-- Full Winamp-style skin engine
-- Desktop notifications for unread channels
+**V3 — Next sprint:**
+- Desktop notifications for unread channels (macOS UNUserNotificationCenter)
+- Window splitting (side-by-side channels in the terminal area)
+- Bridge channel (broadcast a message to all open agent channels simultaneously)
+- Tab pinning (pin important tabs so they don't reorder on unread)
+- Search across channel output (Cmd+F to search scrollback in active channel)
+- Full Winamp-style skin engine (custom window chrome, skinnable UI elements)
+
+**V4 — Someday:**
 - Plugin/extension model
-- Window splitting (side-by-side channels)
-- Bridge channel (broadcast to all agents)
+- Scriptable actions (AppleScript or custom scripting for automation)
+- Multi-window support (detach a channel into its own window)
 
 ## Constraints / Technical Stack
 
@@ -405,23 +520,26 @@ Quick-switch between the first 9 channels using Cmd+1 through Cmd+9.
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| SwiftTerm delegate can't handle WebSocket/API streaming for group chat | Medium | High | Deferred to V2. Prototype when we get there. Fallback: custom NSTextView. |
-| OAuth Claude sessions don't spawn correctly as child processes of Holoscape | Low | High | Test early: can `claude` inherit OAuth from a clean PTY environment? If not, research how Claude Code manages OAuth token storage. |
-| No Swift/AppKit experience on the team (Mini Claude writes all Swift) | Medium | Medium | SwiftTerm sample app is a working reference. Start from their sample, modify. Don't architect from scratch. |
-| SSH PTY latency makes remote sessions feel sluggish | Medium | Medium | Test early with real SSH to MacBook. SwiftTerm should handle SSH PTY natively — it's still a PTY, just over SSH. Fallback: use NMSSH or libssh2 Swift wrapper. |
-| SSH key auth not set up between machines | Low | Low | Erik confirms SSH keys already configured. Use system SSH agent. |
-| Project directory discovery over SSH is slow or unreliable | Low | Medium | Cache discovered projects. Refresh on demand (pull-to-refresh in session opener) or on a long interval. |
-| Crash report API on SIL needs to be built before Holoscape can ship | Low | Low | Simple REST endpoint — POST to receive, GET to list unprocessed. Could be a single Cloud Run function. |
-| Scope creep into skin engine, plugins, notifications | Medium | Medium | V1.5 scope is locked to sessions + sidebar. No skins, no plugins, no notifications. |
+| ~~SwiftTerm + group chat~~ | — | — | **RESOLVED (V2):** Group chat uses custom NSTextView, not SwiftTerm. Works cleanly. |
+| ~~SSH PTY latency~~ | — | — | **RESOLVED (V1.5):** SSH via system `ssh` binary + SwiftTerm PTY works well. |
+| UNUserNotificationCenter permission denied | Low | Medium | Request permission on first launch. Gracefully degrade if denied — no notifications, no crash. |
+| NSSplitView recursive splitting for window split | Medium | Medium | Test with 2-pane first. 4-pane (2x2) may need custom layout. Defer 4-pane to V3.1 if complex. |
+| Bridge channel message delivery order | Low | Medium | Send to all agents in tab order. No guarantee of simultaneous delivery — document this. |
+| Skin engine scope creep | High | High | Define a minimal skin spec first (colors + images only). No layout changes in V3. Full layout engine deferred to V4. |
+| Cmd+F search performance on large scrollback | Low | Medium | Limit search to last 10,000 lines. SwiftTerm buffer search may need custom implementation. |
+| Crash report API on SIL needs to be built | Low | Low | Simple REST endpoint — POST to receive, GET to list. Could be a single Cloud Run function. |
 
 ## Open Questions
 
-1. ~~How should channel creation work in the UI?~~ **ANSWERED:** Session launcher combobox on top of left sidebar.
-2. ~~How does Holoscape detect the role of a spawned Claude session?~~ **ANSWERED:** Label from session profile config.
-3. ~~What happens when a channel's process dies?~~ **ANSWERED:** Disconnected state, manual retry or close.
-4. ~~Should Holoscape manage its own SSH key?~~ **ANSWERED:** Use system SSH agent.
-5. ~~How should Holoscape discover project directories?~~ **ANSWERED (V1.5):** `ssh ls ~/projects/` with in-memory cache and manual refresh.
-6. What's the right data format for the SIL bug report API?
-7. **V2:** Does the Auxesis sidecar need a new MCP endpoint for CEO communication, or should we build a standalone MCP server? The sidecar is already running on port 8080 on the Mac Mini — adding an `/mcp/ceo` route is the simplest path.
-8. **V2:** Should group chat use WebSocket or HTTP polling? HTTP polling is simpler (existing API supports it) but adds latency. WebSocket requires changes to the Agent Chat API (Flask on Cloud Run).
-9. **V2:** For timestamps on terminal output, should we modify SwiftTerm's output delegate to intercept lines, or overlay timestamps in a separate column? Intercepting is cleaner but may conflict with ANSI escape sequences.
+1. ~~How should channel creation work?~~ **ANSWERED:** Session launcher combobox.
+2. ~~How does Holoscape detect roles?~~ **ANSWERED:** Labels from session profiles.
+3. ~~What happens when a process dies?~~ **ANSWERED:** Disconnected state, manual retry.
+4. ~~SSH key management?~~ **ANSWERED:** System SSH agent.
+5. ~~Project directory discovery?~~ **ANSWERED:** SSH ls with cache.
+6. ~~Group chat: WebSocket or HTTP polling?~~ **ANSWERED (V2):** HTTP polling, 3-second interval.
+7. ~~Timestamps: intercept or overlay?~~ **ANSWERED (V2):** Intercept via output delegate for PTY, appendMessage for NSTextView.
+8. What's the right data format for the SIL bug report API?
+9. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
+10. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
+11. **V3:** For the bridge channel, should responses from agents be echoed back into the bridge view, or only in individual channels?
+12. **V3:** For the skin engine, what's the minimum viable skin spec? Colors-only? Colors + images? Full layout?
