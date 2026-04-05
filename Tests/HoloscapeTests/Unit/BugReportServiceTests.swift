@@ -11,12 +11,12 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     override func tearDown() {
-        // Clean up test files but leave the directory
         if let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil) {
-            for file in files where file.lastPathComponent.hasPrefix("test-") || file.lastPathComponent.contains("test") {
+            for file in files where file.pathExtension == "json" {
                 try? FileManager.default.removeItem(at: file)
             }
         }
+        super.tearDown()
     }
 
     private func makeBugReport() -> BugReport {
@@ -89,7 +89,10 @@ final class BugReportServiceTests: XCTestCase {
             return
         }
 
-        let data = try! Data(contentsOf: file)
+        guard let data = try? Data(contentsOf: file) else {
+            XCTFail("Failed to read saved report file")
+            return
+        }
         XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data), "Saved report should be valid JSON")
     }
 
@@ -105,10 +108,16 @@ final class BugReportServiceTests: XCTestCase {
             return
         }
 
-        let data = try! Data(contentsOf: file)
+        guard let data = try? Data(contentsOf: file) else {
+            XCTFail("Failed to read saved report file")
+            return
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let decoded = try! decoder.decode(BugReport.self, from: data)
+        guard let decoded = try? decoder.decode(BugReport.self, from: data) else {
+            XCTFail("Failed to decode saved report")
+            return
+        }
         XCTAssertEqual(decoded.channelName, "Shell")
         XCTAssertEqual(decoded.description, "test bug")
     }
@@ -122,5 +131,32 @@ final class BugReportServiceTests: XCTestCase {
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let reportFiles = files?.filter { $0.pathExtension == "json" } ?? []
         XCTAssertGreaterThanOrEqual(reportFiles.count, 3, "Each save should create a separate file")
+    }
+
+    func testAgingDeletesOldReports() throws {
+        let service = BugReportService()
+        service.savePendingBugReport(makeBugReport())
+
+        let files = try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
+        guard let bugFile = files.first(where: { $0.lastPathComponent.hasPrefix("bug-") }) else {
+            XCTFail("No bug report file found")
+            return
+        }
+
+        // Backdate the file to 31 days ago
+        let oldDate = Date().addingTimeInterval(-31 * 24 * 60 * 60)
+        try FileManager.default.setAttributes([.creationDate: oldDate], ofItemAtPath: bugFile.path)
+
+        // Run retry (which should age out the old file)
+        service.retryPendingReports()
+
+        // Give async retry a moment to process
+        let expectation = XCTestExpectation(description: "Aging should delete old file")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let exists = FileManager.default.fileExists(atPath: bugFile.path)
+            XCTAssertFalse(exists, "Report older than 30 days should be deleted")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 3)
     }
 }
