@@ -204,7 +204,7 @@ class SidebarTabEntry: NSControl {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityTitle(label)
+        setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
     }
 

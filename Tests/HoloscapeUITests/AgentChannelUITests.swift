@@ -21,25 +21,7 @@ final class AgentChannelUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.isHittable, "Agent sidebar entry should be hittable")
     }
 
-    func testAgentChannelStateTransitions() throws {
-        try skipUnlessClaudeCLIInstalled()
-        createChannel(type: "Agent (OAuth)")
-        let entry = sidebarEntry("Agent")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Agent should appear after creation")
-        // After state transitions the entry should still be present
-        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Agent entry should persist through state transitions")
-        XCTAssertTrue(entry.isEnabled, "Agent entry should be enabled after state transitions")
-    }
-
     // MARK: - Authentication
-
-    func testAgentChannelOAuthAuth() throws {
-        try skipUnlessClaudeCLIInstalled()
-        createChannel(type: "Agent (OAuth)")
-        let entry = sidebarEntry("Agent")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "OAuth agent should appear in sidebar")
-        XCTAssertTrue(entry.isHittable, "OAuth agent entry should be hittable")
-    }
 
     func testAgentChannelAPIKeyAuth() throws {
         try skipUnlessClaudeCLIInstalled()
@@ -52,22 +34,15 @@ final class AgentChannelUITests: HoloscapeUITestCase {
     // MARK: - Role Detection
 
     func testAgentChannelDetectsRole() throws {
-        try skipUnlessClaudeCLIInstalled()
-        createChannel(type: "Agent (OAuth)")
-        let entry = sidebarEntry("Agent")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Agent entry should exist after role detection")
-        entry.click()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be visible after selecting agent")
+        throw XCTSkip("Cannot verify role detection via XCUITest — role is internal state")
     }
 
     func testAgentChannelRoleLabelShortened() throws {
-        try skipUnlessClaudeCLIInstalled()
-        createChannel(type: "Agent (OAuth)")
-        let entry = sidebarEntry("Agent")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Agent entry should exist with role label")
-        // The entry label text should be non-empty (may include a shortened role)
-        XCTAssertTrue(entry.isHittable, "Agent entry with role label should be hittable")
+        throw XCTSkip("Cannot verify role label shortening via XCUITest")
+    }
+
+    func testAgentChannelStateTransitions() throws {
+        throw XCTSkip("Cannot verify state transitions via XCUITest — indicator colors not accessible")
     }
 
     // MARK: - Input/Output

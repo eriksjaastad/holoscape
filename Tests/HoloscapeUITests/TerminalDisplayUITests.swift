@@ -39,7 +39,7 @@ final class TerminalDisplayUITests: HoloscapeUITestCase {
 
     // MARK: - Window Resizing
 
-    func testContentProperlyResizesWithWindow() throws {
+    func testWindowHasPositiveDimensions() throws {
         let window = app.windows["Holoscape"]
         let initialFrame = window.frame
         XCTAssertGreaterThan(initialFrame.width, 0, "Window should have positive width")
