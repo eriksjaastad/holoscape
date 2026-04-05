@@ -1,17 +1,6 @@
 import XCTest
 
-final class SidebarUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class SidebarUITests: HoloscapeUITestCase {
 
     // MARK: - Toggle
 
@@ -21,7 +10,6 @@ final class SidebarUITests: XCTestCase {
         // Sidebar should be visible on launch (default expanded)
         // Toggle sidebar off with Cmd+Shift+S
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Tab bar should appear when sidebar is collapsed
         let tabBar = window.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'Shell'")).firstMatch
@@ -29,12 +17,10 @@ final class SidebarUITests: XCTestCase {
 
         // Toggle sidebar back on
         app.typeKey("s", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Sidebar entry should be visible again
-        let sidebarEntry = window.groups.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-'")).firstMatch
-        // Verify the window still has content
-        XCTAssertTrue(window.exists)
+        let entry = sidebarEntry("Shell")
+        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Sidebar Shell entry should reappear after toggling back")
     }
 
     func testToggleSidebarViaMenu() throws {
@@ -44,40 +30,39 @@ final class SidebarUITests: XCTestCase {
         XCTAssertTrue(toggleItem.exists, "Toggle Sidebar menu item should exist")
         toggleItem.click()
 
-        Thread.sleep(forTimeInterval: 0.3)
+        // Tab bar should appear when sidebar is collapsed
+        let window = app.windows["Holoscape"]
+        let tabBar = window.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'Shell'")).firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should show when sidebar collapsed")
 
         // Toggle back
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["Toggle Sidebar"].click()
+
+        let entry = sidebarEntry("Shell")
+        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Sidebar should reappear after toggling back via menu")
     }
 
     // MARK: - Pinned Channels
 
     func testPinnedChannelsRenderAboveUnpinned() throws {
         // Create a second shell channel
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
-        dialog.buttons["Shell"].click()
-
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         // We should now have Shell and Shell 2
-        let window = app.windows["Holoscape"]
-        let shell2 = window.buttons.matching(NSPredicate(format: "identifier == 'sidebar-Shell 2'")).firstMatch
+        let shell2 = sidebarEntry("Shell 2")
         if shell2.waitForExistence(timeout: 2) {
             // Right-click to pin Shell 2
             shell2.rightClick()
             let pinItem = app.menuItems["Pin"]
             if pinItem.waitForExistence(timeout: 1) {
                 pinItem.click()
-                Thread.sleep(forTimeInterval: 0.3)
             }
         }
 
         // After pinning, Shell 2 should appear before Shell in the sidebar
         // The pinned channel gets a pin emoji prefix
+        let window = app.windows["Holoscape"]
         let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
         XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 2), "Pinned channel should show pin indicator")
     }
@@ -86,33 +71,28 @@ final class SidebarUITests: XCTestCase {
 
     func testUnreadIndicatorAppearsOnInactiveChannel() throws {
         // Create a second shell channel
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
-        dialog.buttons["Shell"].click()
-
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         // Switch back to first channel
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         // The second channel should eventually get output (shell prompt) and show unread
-        // This is timing-dependent; verify the mechanism exists
+        // This is timing-dependent and unread state cannot be reliably verified in UI tests
+        // Verify that at least 2 sidebar entries exist after creating a second channel
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'"))
+        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Should have at least 2 sidebar entries after creating a second channel")
     }
 
     // MARK: - Context Menu
 
     func testContextMenuAppearsOnRightClick() throws {
-        let window = app.windows["Holoscape"]
-        let shellEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'")).firstMatch
+        let shellEntry = sidebarEntry("Shell")
         guard shellEntry.waitForExistence(timeout: 2) else {
             // Sidebar might be collapsed, toggle it on
             app.typeKey("s", modifierFlags: [.command, .shift])
-            Thread.sleep(forTimeInterval: 0.3)
+            let retried = sidebarEntry("Shell")
+            XCTAssertTrue(retried.waitForExistence(timeout: 2), "Sidebar Shell entry should exist after toggling sidebar on")
             return
         }
 
@@ -137,8 +117,7 @@ final class SidebarUITests: XCTestCase {
     // MARK: - Channel Labels
 
     func testChannelLabelNotTruncatedAtDefaultWidth() throws {
-        let window = app.windows["Holoscape"]
-        let shellEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'")).firstMatch
+        let shellEntry = sidebarEntry("Shell")
 
         if shellEntry.waitForExistence(timeout: 2) {
             // The label should be fully visible — not clipped

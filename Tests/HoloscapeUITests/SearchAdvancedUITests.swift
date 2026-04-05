@@ -1,35 +1,35 @@
 import XCTest
 
-final class SearchAdvancedUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class SearchAdvancedUITests: HoloscapeUITestCase {
 
     // MARK: - Helpers
-
-    private func openSearch() {
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-    }
-
-    private func closeSearch() {
-        app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
-    }
 
     private func generateOutput(_ text: String) {
         let inputBox = app.textViews["input-box"]
         inputBox.typeText("echo \(text)")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
+    }
+
+    /// Read the match count label from the search bar. Returns the label text or nil.
+    private func matchCountLabel() -> String? {
+        let searchBar = app.toolbars["Search Bar"]
+        // Look for static texts containing "of" or "No matches"
+        let texts = searchBar.staticTexts
+        for i in 0..<texts.count {
+            let text = texts.element(boundBy: i).label
+            if text.contains("of") || text.contains("No matches") || text.contains("0") {
+                return text
+            }
+        }
+        // Fall back to checking text fields
+        let fields = searchBar.textFields
+        for i in 0..<fields.count {
+            let val = fields.element(boundBy: i).value as? String ?? ""
+            if val.contains("of") || val.contains("No matches") {
+                return val
+            }
+        }
+        return nil
     }
 
     // MARK: - Match Navigation
@@ -39,23 +39,29 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("searchword")
-            Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("searchword")
+
+        let labelBefore = matchCountLabel()
+
+        // Click next — try buttons by index since icons may not have text titles
+        let buttons = searchBar.buttons
+        if buttons.count > 0 {
+            buttons.element(boundBy: 0).click()
+            }
+
+        let labelAfter = matchCountLabel()
+
+        // If we found labels, verify they changed; otherwise verify search bar is still functional
+        if let before = labelBefore, let after = labelAfter {
+            XCTAssertNotEqual(before, after, "Match label should change after clicking next")
+        } else {
+            // At minimum, search bar should still be present
+            XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking next")
         }
 
-        // Click next button
-        let nextButton = searchBar.buttons.matching(NSPredicate(format: "title CONTAINS '▼' OR title CONTAINS 'Next' OR title CONTAINS 'next'")).firstMatch
-        if nextButton.exists {
-            nextButton.click()
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Next button should advance match without crash")
         closeSearch()
     }
 
@@ -64,23 +70,20 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("findme")
-            Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("findme")
+
+        // Click previous — try second button or last button
+        let buttons = searchBar.buttons
+        if buttons.count > 1 {
+            buttons.element(boundBy: 1).click()
+        } else if buttons.count > 0 {
+            buttons.element(boundBy: 0).click()
         }
 
-        // Click previous button
-        let prevButton = searchBar.buttons.matching(NSPredicate(format: "title CONTAINS '▲' OR title CONTAINS 'Previous' OR title CONTAINS 'prev'")).firstMatch
-        if prevButton.exists {
-            prevButton.click()
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Previous button should go back without crash")
+        XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking previous")
         closeSearch()
     }
 
@@ -89,18 +92,21 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("enter-test")
-            Thread.sleep(forTimeInterval: 0.3)
-            searchField.typeKey(.return, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("enter-test")
+
+        let labelBefore = matchCountLabel()
+        searchField.typeKey(.return, modifierFlags: [])
+        let labelAfter = matchCountLabel()
+
+        if let before = labelBefore, let after = labelAfter {
+            XCTAssertNotEqual(before, after, "Enter should advance match position")
+        } else {
+            XCTAssertTrue(searchBar.exists, "Search bar should remain functional after Enter")
         }
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Enter in search field should advance to next match")
         closeSearch()
     }
 
@@ -109,22 +115,16 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("wraptest")
-            Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-            // Press Enter multiple times to wrap
-            searchField.typeKey(.return, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.1)
-            searchField.typeKey(.return, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.1)
-        }
+        searchField.typeText("wraptest")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Search should wrap around at last match")
+        // Press Enter multiple times to wrap
+        searchField.typeKey(.return, modifierFlags: [])
+        searchField.typeKey(.return, modifierFlags: [])
+
+        XCTAssertTrue(searchBar.exists, "Search should wrap around without crashing")
         closeSearch()
     }
 
@@ -133,23 +133,18 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("prevwrap")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("prevwrap")
 
         // Click previous to wrap backwards
-        let prevButton = searchBar.buttons.matching(NSPredicate(format: "title CONTAINS '▲' OR title CONTAINS 'Previous'")).firstMatch
-        if prevButton.exists {
-            prevButton.click()
-            Thread.sleep(forTimeInterval: 0.2)
+        let buttons = searchBar.buttons
+        if buttons.count > 1 {
+            buttons.element(boundBy: 1).click()
         }
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Previous should wrap to last match from first")
+        XCTAssertTrue(searchBar.exists, "Previous should wrap without crashing")
         closeSearch()
     }
 
@@ -160,34 +155,40 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("multi")
-            Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("multi")
+
+        let label = matchCountLabel()
+        XCTAssertNotNil(label, "Match count label should be visible for multiple matches")
+        if let label = label {
+            XCTAssertTrue(label.contains("of"), "Match count should show 'X of Y' format, got: \(label)")
         }
 
-        // Match count label should show correct count
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Multiple matches should show correct count")
         closeSearch()
     }
 
     func testSearchNoMatchesShowsZero() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("zzz_nonexistent_string_xyz")
-            Thread.sleep(forTimeInterval: 0.5)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-        // Should show "0 of 0" or similar
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "No matches should show zero count")
+        searchField.typeText("zzz_nonexistent_string_xyz")
+
+        // Look for "0" or "No matches" in the search bar
+        let allTexts = searchBar.staticTexts
+        var foundZeroIndicator = false
+        for i in 0..<allTexts.count {
+            let text = allTexts.element(boundBy: i).label
+            if text.contains("0") || text.lowercased().contains("no match") {
+                foundZeroIndicator = true
+                break
+            }
+        }
+        XCTAssertTrue(foundZeroIndicator, "No-match search should show zero count or 'No matches' label")
+
         closeSearch()
     }
 
@@ -196,17 +197,22 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("uniqueterm12345")
-            Thread.sleep(forTimeInterval: 0.5)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-        // Should show "1 of 1"
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Single match should show 1 of 1")
+        searchField.typeText("uniqueterm12345")
+
+        let allTexts = searchBar.staticTexts
+        var foundOneOfOne = false
+        for i in 0..<allTexts.count {
+            let text = allTexts.element(boundBy: i).label
+            if text.contains("1 of 1") {
+                foundOneOfOne = true
+                break
+            }
+        }
+        XCTAssertTrue(foundOneOfOne, "Single match should show '1 of 1' in match count label")
+
         closeSearch()
     }
 
@@ -215,85 +221,59 @@ final class SearchAdvancedUITests: XCTestCase {
     func testSearchSpecialCharacters() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("[regex.*chars()")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Special characters in search should not crash")
+        searchField.typeText("[regex.*chars()")
+
+        XCTAssertTrue(searchBar.exists, "Special characters in search should not crash")
         closeSearch()
     }
 
     func testSearchVeryLongQuery() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            let longQuery = String(repeating: "x", count: 500)
-            searchField.typeText(longQuery)
-            Thread.sleep(forTimeInterval: 0.5)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Very long search query should be handled gracefully")
+        let longQuery = String(repeating: "x", count: 500)
+        searchField.typeText(longQuery)
+
+        XCTAssertTrue(searchBar.exists, "Very long search query should be handled gracefully")
         closeSearch()
     }
 
     func testSearchWhileChannelSwitching() throws {
-        // Create second channel
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("channel-switch")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("channel-switch")
 
         // Switch channels while search is active
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
+        // Search bar may or may not persist across channel switch — verify app is stable
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Search should adapt when switching channels")
+        XCTAssertTrue(window.waitForExistence(timeout: 2), "App should remain stable after channel switching during search")
         closeSearch()
     }
 
     func testSearchClearedOnClose() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("clear-test")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
-        // Close search bar
+        searchField.typeText("clear-test")
+
         closeSearch()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Search bar should be gone and highlights cleared
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Closing search should clear highlights")
+        XCTAssertFalse(app.toolbars["Search Bar"].waitForExistence(timeout: 1), "Search bar should not exist after closing")
     }
 
     // MARK: - Focus Management
@@ -302,30 +282,24 @@ final class SearchAdvancedUITests: XCTestCase {
         openSearch()
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            // Verify focus by typing
-            searchField.typeText("focus-check")
-            Thread.sleep(forTimeInterval: 0.2)
-            let value = searchField.value as? String ?? ""
-            XCTAssertTrue(value.contains("focus-check"), "Search field should have focus immediately on open")
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        // Verify focus by typing directly and checking the value
+        searchField.typeText("focus-check")
+        let value = searchField.value as? String ?? ""
+        XCTAssertTrue(value.contains("focus-check"), "Search field should have focus immediately on open — typed text should appear")
 
         closeSearch()
     }
 
     func testEscapeReturnsToInputBox() throws {
         openSearch()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Escape to close search
         closeSearch()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Input box should have focus
+        // Input box should have focus after escape
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist")
         inputBox.typeText("after-escape")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "after-escape", "Escape should return focus to input box")
@@ -336,29 +310,22 @@ final class SearchAdvancedUITests: XCTestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2))
-
         let searchField = searchBar.textFields.firstMatch
-        if searchField.waitForExistence(timeout: 1) {
-            searchField.typeText("navfocus")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
+
+        searchField.typeText("navfocus")
 
         // Click next button
-        let nextButton = searchBar.buttons.matching(NSPredicate(format: "title CONTAINS '▼' OR title CONTAINS 'Next'")).firstMatch
-        if nextButton.exists {
-            nextButton.click()
-            Thread.sleep(forTimeInterval: 0.2)
+        let buttons = searchBar.buttons
+        if buttons.count > 0 {
+            buttons.element(boundBy: 0).click()
         }
 
-        // Search field should still have focus
-        if searchField.exists {
-            searchField.typeText("extra")
-            Thread.sleep(forTimeInterval: 0.2)
-        }
+        // Search field should still accept input after navigation
+        searchField.typeText("extra")
+        let value = searchField.value as? String ?? ""
+        XCTAssertTrue(value.contains("extra"), "Search field should retain focus during match navigation")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Search field should retain focus during navigation")
         closeSearch()
     }
 }

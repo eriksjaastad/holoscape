@@ -1,150 +1,127 @@
 import XCTest
 
-final class WindowManagementUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class WindowManagementUITests: HoloscapeUITestCase {
 
     // MARK: - Window Operations
 
     func testWindowMinimize() throws {
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
 
-        // Minimize
         window.buttons[XCUIIdentifierMinimizeWindow].click()
-        Thread.sleep(forTimeInterval: 0.5)
 
-        // Window should be minimized (not hittable but exists in hierarchy)
-        // Restore by clicking dock icon or reactivating
+        // Restore by reactivating
         app.activate()
-        Thread.sleep(forTimeInterval: 0.5)
 
-        XCTAssertTrue(window.waitForExistence(timeout: 3), "Window should be restorable after minimize")
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
     }
 
     func testWindowZoom() throws {
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
 
         let initialFrame = window.frame
 
         // Zoom (green button)
         window.buttons[XCUIIdentifierZoomWindow].click()
-        Thread.sleep(forTimeInterval: 0.5)
 
-        // Window should have resized
-        let window2 = app.windows["Holoscape"]
-        XCTAssertTrue(window2.exists, "Window should remain functional after zoom")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after zoom")
+
+        let zoomedFrame = window.frame
+        XCTAssertNotEqual(initialFrame, zoomedFrame, "Window frame should change after zoom")
     }
 
     func testWindowFullScreen() throws {
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
 
-        // Enter full screen via menu or button
-        window.buttons[XCUIIdentifierFullScreenWindow].click()
-        Thread.sleep(forTimeInterval: 1.0)
+        let initialFrame = window.frame
 
-        // Verify window still functional
+        // Enter full screen via Ctrl+Cmd+F
+        app.typeKey("f", modifierFlags: [.control, .command])
+
+        // Verify window still functional in full screen
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist in full screen")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 5), "Input box should exist in full screen")
 
-        // Exit full screen
-        app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 1.0)
+        // Exit full screen via Ctrl+Cmd+F (NOT Escape)
+        app.typeKey("f", modifierFlags: [.control, .command])
+
+        // Wait for fullscreen animation to complete and verify frame changed back
+        let restoredInputBox = app.textViews["input-box"]
+        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 5), "Input box should exist after exiting full screen")
     }
 
     func testWindowRestoreAfterMinimize() throws {
         let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
 
-        // Type something first
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("before-minimize")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Minimize and restore
         window.buttons[XCUIIdentifierMinimizeWindow].click()
-        Thread.sleep(forTimeInterval: 0.5)
         app.activate()
-        Thread.sleep(forTimeInterval: 0.5)
 
-        // Window content should be intact
-        XCTAssertTrue(window.waitForExistence(timeout: 3), "Content should be intact after minimize/restore")
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
+
+        let restoredInputBox = app.textViews["input-box"]
+        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should be present after minimize/restore")
     }
 
     // MARK: - Application Menu
 
     func testAboutDialogOpens() throws {
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
-        XCTAssertTrue(appMenu.exists)
+        XCTAssertTrue(appMenu.waitForExistence(timeout: 2))
         appMenu.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
-        if aboutItem.waitForExistence(timeout: 1) {
-            aboutItem.click()
-            Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
+        aboutItem.click()
 
-            // About dialog/window should appear
-            let window = app.windows["Holoscape"]
-            XCTAssertTrue(window.exists, "About dialog should open without crash")
-        } else {
-            app.typeKey(.escape, modifierFlags: [])
-        }
+        // Main window should still be functional
+        let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
     }
 
     func testAboutDialogCloses() throws {
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
-        if aboutItem.waitForExistence(timeout: 1) {
+        if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
-            Thread.sleep(forTimeInterval: 0.5)
-
-            // Close about dialog
             app.typeKey(.escape, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.3)
         } else {
             app.typeKey(.escape, modifierFlags: [])
         }
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Main window should remain after closing About dialog")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after closing About dialog")
     }
 
     func testQuitViaMenu() throws {
-        // Verify quit menu item exists (don't actually quit during test)
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let quitItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Quit'")).firstMatch
-        XCTAssertTrue(quitItem.waitForExistence(timeout: 1), "Quit menu item should exist")
+        XCTAssertTrue(quitItem.waitForExistence(timeout: 2), "Quit menu item should exist")
+        XCTAssertTrue(quitItem.isEnabled, "Quit menu item should be enabled")
 
-        // Don't actually click quit — just verify it exists
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testQuitViaCmdQ() throws {
-        // Verify Cmd+Q binding exists via menu
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let quitItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Quit'")).firstMatch
-        XCTAssertTrue(quitItem.exists, "Quit should be accessible via Cmd+Q")
+        XCTAssertTrue(quitItem.waitForExistence(timeout: 2), "Quit should be accessible via Cmd+Q")
+        XCTAssertTrue(quitItem.isEnabled, "Quit should be enabled")
 
         app.typeKey(.escape, modifierFlags: [])
     }
@@ -153,59 +130,54 @@ final class WindowManagementUITests: XCTestCase {
 
     func testFileMenuNewSession() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let newSessionItem = app.menuItems["New Session"]
-        XCTAssertTrue(newSessionItem.waitForExistence(timeout: 1), "New Session menu item should exist")
+        XCTAssertTrue(newSessionItem.waitForExistence(timeout: 2), "New Session menu item should exist")
         newSessionItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Should focus session launcher
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "File > New Session should work")
+        // Should focus session launcher — verify input box still works
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be functional after New Session")
     }
 
     func testFileMenuNewChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let newChannelItem = app.menuItems["New Channel"]
-        XCTAssertTrue(newChannelItem.waitForExistence(timeout: 1), "New Channel menu item should exist")
+        XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2), "New Channel menu item should exist")
         newChannelItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Dialog should appear
         let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Cancel"].click()
-        }
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "New Channel dialog should appear")
+        dialog.buttons["Cancel"].click()
     }
 
     func testFileMenuCloseChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let closeItem = app.menuItems["Close Channel"]
-        XCTAssertTrue(closeItem.waitForExistence(timeout: 1), "Close Channel menu item should exist")
+        XCTAssertTrue(closeItem.waitForExistence(timeout: 2), "Close Channel menu item should exist")
+        XCTAssertTrue(closeItem.isEnabled, "Close Channel should be enabled when a channel exists")
 
-        // Don't click — just verify existence
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testFileMenuToggleSidebar() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let toggleItem = app.menuItems["Toggle Sidebar"]
-        XCTAssertTrue(toggleItem.waitForExistence(timeout: 1), "Toggle Sidebar menu item should exist")
+        XCTAssertTrue(toggleItem.waitForExistence(timeout: 2), "Toggle Sidebar menu item should exist")
         toggleItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
+
+        // Tab bar should appear when sidebar is collapsed
+        let window = app.windows["Holoscape"]
+        let tabButton = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar should appear when sidebar is toggled off")
 
         // Toggle back
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        Thread.sleep(forTimeInterval: 0.2)
         let toggleItem2 = app.menuItems["Toggle Sidebar"]
-        if toggleItem2.waitForExistence(timeout: 1) {
+        if toggleItem2.waitForExistence(timeout: 2) {
             toggleItem2.click()
         }
     }
@@ -214,61 +186,55 @@ final class WindowManagementUITests: XCTestCase {
 
     func testViewMenuShowTimestamps() throws {
         app.menuBars.firstMatch.menuBarItems["View"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let timestampItem = app.menuItems["Show Timestamps"]
-        XCTAssertTrue(timestampItem.waitForExistence(timeout: 1), "Show Timestamps should be in View menu")
+        XCTAssertTrue(timestampItem.waitForExistence(timeout: 2), "Show Timestamps should be in View menu")
+        XCTAssertTrue(timestampItem.isEnabled, "Show Timestamps should be enabled")
+
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testViewMenuFind() throws {
         app.menuBars.firstMatch.menuBarItems["View"].click()
-        Thread.sleep(forTimeInterval: 0.2)
 
         let findItem = app.menuItems["Find"]
-        XCTAssertTrue(findItem.waitForExistence(timeout: 1), "Find should be in View menu")
+        XCTAssertTrue(findItem.waitForExistence(timeout: 2), "Find should be in View menu")
         findItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Search bar should open
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Search bar should open from View > Find")
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Search bar should open from View > Find")
 
-        // Close search
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    // MARK: - Window State
+    // MARK: - Window State Persistence
 
     func testWindowPositionPersists() throws {
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        let initialFrame = window.frame
 
-        // Quit and relaunch
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
         let window2 = app.windows["Holoscape"]
-        XCTAssertTrue(window2.waitForExistence(timeout: 3), "Window position should be restored after restart")
+        XCTAssertTrue(window2.waitForExistence(timeout: 5), "Window should exist after restart")
+
+        let restoredFrame = window2.frame
+        XCTAssertEqual(restoredFrame.origin.x, initialFrame.origin.x, accuracy: 10, "Window X position should persist")
+        XCTAssertEqual(restoredFrame.origin.y, initialFrame.origin.y, accuracy: 10, "Window Y position should persist")
     }
 
     func testWindowSizePersists() throws {
         let window = app.windows["Holoscape"]
         let initialFrame = window.frame
 
-        // Quit and relaunch
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
         let window2 = app.windows["Holoscape"]
-        XCTAssertTrue(window2.waitForExistence(timeout: 3))
+        XCTAssertTrue(window2.waitForExistence(timeout: 5))
 
         let restoredFrame = window2.frame
-        // Size should be approximately the same
         XCTAssertEqual(restoredFrame.width, initialFrame.width, accuracy: 10, "Window width should persist")
         XCTAssertEqual(restoredFrame.height, initialFrame.height, accuracy: 10, "Window height should persist")
     }

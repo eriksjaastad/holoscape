@@ -1,41 +1,25 @@
 import XCTest
 
-final class SearchBarUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class SearchBarUITests: HoloscapeUITestCase {
 
     // MARK: - Open/Close
 
     func testCmdFOpensSearchBar() throws {
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        openSearch()
 
-        // Search bar should be visible — look for the search field
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Search bar should appear on Cmd+F")
+        XCTAssertTrue(searchBar.exists, "Search bar should appear on Cmd+F")
     }
 
     func testEscapeClosesSearchBar() throws {
-        // Open search
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        openSearch()
 
         // Close with Escape
-        app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
+        closeSearch()
 
         // Focus should return to input box
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("after-search")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "after-search", "Focus should return to input box after closing search")
@@ -43,15 +27,14 @@ final class SearchBarUITests: XCTestCase {
 
     func testCmdFTogglesSearchBar() throws {
         // Open
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        openSearch()
 
         // Toggle off
         app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Input box should have focus
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("toggled")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "toggled", "Input box should have focus after toggling search off")
@@ -65,8 +48,6 @@ final class SearchBarUITests: XCTestCase {
         XCTAssertTrue(findItem.exists, "Find menu item should exist in View menu")
         findItem.click()
 
-        Thread.sleep(forTimeInterval: 0.3)
-
         let searchBar = app.toolbars["Search Bar"]
         XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Search bar should appear from View > Find")
     }
@@ -79,39 +60,33 @@ final class SearchBarUITests: XCTestCase {
         XCTAssertTrue(inputBox.exists)
         inputBox.typeText("echo searchable-text-123")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.5)
 
         // Open search
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        openSearch()
 
         // Type search query
         let searchBar = app.toolbars["Search Bar"]
-        if searchBar.waitForExistence(timeout: 2) {
-            let searchField = searchBar.textFields.firstMatch
-            if searchField.waitForExistence(timeout: 1) {
-                searchField.typeText("searchable")
-                Thread.sleep(forTimeInterval: 0.5)
-                // The match count label should show something other than empty
-                // We can't directly read it, but the search mechanism should not crash
-            }
+        let searchField = searchBar.textFields.firstMatch
+        if searchField.waitForExistence(timeout: 2) {
+            searchField.typeText("searchable")
+            // The match count label should show something other than empty
+            // We can't directly read it, but the search mechanism should not crash
         }
 
         // Close search
-        app.typeKey(.escape, modifierFlags: [])
+        closeSearch()
     }
 
     // MARK: - Empty Query
 
     func testEmptyQueryShowsNoMatches() throws {
-        app.typeKey("f", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        openSearch()
 
         // Don't type anything — match count should be empty/zero
-        // Just verify the search bar opened without crashing
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
+        // Verify the search bar opened without crashing
+        let searchBar = app.toolbars["Search Bar"]
+        XCTAssertTrue(searchBar.exists, "Search bar should be visible with empty query")
 
-        app.typeKey(.escape, modifierFlags: [])
+        closeSearch()
     }
 }

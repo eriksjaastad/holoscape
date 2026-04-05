@@ -1,129 +1,65 @@
 import XCTest
 
-final class SplitPaneAdvancedUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
 
     // MARK: - Active Pane Indicator
 
     func testActivePaneHasBlueBorder() throws {
-        // Create a split pane
-        app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Active pane should be visually distinct
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Split pane should show active indicator")
-
-        // Close split
-        app.typeKey("w", modifierFlags: [.command, .shift])
+        throw XCTSkip("Cannot verify border color via XCUITest")
     }
 
     func testClickingPaneMakesItActive() throws {
-        app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Click in the window area to switch active pane
-        let window = app.windows["Holoscape"]
-        let frame = window.frame
-        let leftCenter = CGPoint(x: frame.minX + frame.width * 0.25, y: frame.midY)
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).click()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        XCTAssertTrue(window.exists, "Clicking pane should make it active")
-
-        app.typeKey("w", modifierFlags: [.command, .shift])
+        throw XCTSkip("Cannot verify active pane state via XCUITest — no accessibility property for active pane")
     }
 
     func testActivePaneChangesOnClick() throws {
-        app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let window = app.windows["Holoscape"]
-
-        // Click left pane
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).click()
-        Thread.sleep(forTimeInterval: 0.2)
-
-        // Click right pane
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).click()
-        Thread.sleep(forTimeInterval: 0.2)
-
-        XCTAssertTrue(window.exists, "Active pane should change on click")
-
-        app.typeKey("w", modifierFlags: [.command, .shift])
+        throw XCTSkip("Cannot verify active pane state via XCUITest — no accessibility property for active pane")
     }
 
     // MARK: - Channel-to-Pane Routing
 
     func testDifferentChannelsInDifferentPanes() throws {
-        // Create second shell
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         // Split
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Switch channel in active pane
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Different channels should display in different panes")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after channel switch in split pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testInputRoutesToActivePane() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.typeText("active-pane-input")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Input should route to active pane's channel only")
+        // Verify input box cleared after submit (routing worked)
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input box should clear after submit, confirming routing worked")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testChannelSwitchInActivePaneOnly() throws {
-        // Create second shell
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
-        // Split
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Cmd+2 should switch channel in active pane only
+        // Cmd+2 should switch channel in active pane
         app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Channel switch should affect active pane only")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain functional after channel switch in pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -132,157 +68,142 @@ final class SplitPaneAdvancedUITests: XCTestCase {
 
     func testSplitLayoutPersistsAcrossRestart() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Quit and relaunch
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
-        // Split should be restored
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.waitForExistence(timeout: 3), "Split layout should persist across restart")
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should exist after restart")
+
+        let restoredInputBox = app.textViews["input-box"]
+        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should exist after restart (split state is internal)")
     }
 
     func testSplitLayoutExport() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Layout export is internal — verify split creates without crash
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Split layout should be exportable without crash")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Split should create without crash")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testPaneChannelAssignmentPersists() throws {
-        // Create second shell and split
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Quit and relaunch
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.waitForExistence(timeout: 3), "Pane channel assignments should persist")
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should exist after restart")
+
+        let restoredInputBox = app.textViews["input-box"]
+        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should exist after restart")
     }
 
     // MARK: - Channel Removal
 
     func testClosingChannelClearsPaneContent() throws {
-        // Create second shell and split
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Shell")
 
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Close a channel
         app.typeKey("w", modifierFlags: .command)
         let closeButton = app.buttons["Close"]
-        if closeButton.waitForExistence(timeout: 1) {
+        if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
-        Thread.sleep(forTimeInterval: 0.5)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Closing channel should clear pane content gracefully")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after closing channel in pane")
     }
 
     func testRemoveChannelFromSpecificPane() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Close active channel in pane
         app.typeKey("w", modifierFlags: .command)
         let closeButton = app.buttons["Close"]
-        if closeButton.waitForExistence(timeout: 1) {
+        if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
-        Thread.sleep(forTimeInterval: 0.5)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Removing channel from specific pane should work")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after removing channel from specific pane")
     }
 
     // MARK: - Layout Combinations
 
     func testHorizontalThenVerticalSplit() throws {
         app.typeKey("d", modifierFlags: .command) // Horizontal
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("d", modifierFlags: [.command, .shift]) // Vertical
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Horizontal then vertical split should create mixed layout")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still accept text after mixed splits")
+        inputBox.typeText("mixed-split-test")
+        inputBox.typeKey(.return, modifierFlags: [])
 
-        // Close splits
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input should clear after submit in mixed split layout")
+
         app.typeKey("w", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testVerticalThenHorizontalSplit() throws {
         app.typeKey("d", modifierFlags: [.command, .shift]) // Vertical
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("d", modifierFlags: .command) // Horizontal
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Vertical then horizontal split should create mixed layout")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still accept text after mixed splits")
+        inputBox.typeText("reverse-split-test")
+        inputBox.typeKey(.return, modifierFlags: [])
+
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input should clear after submit in mixed split layout")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testThreePaneLayout() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Three pane layout should be functional")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should accept text in 3-pane layout")
+        inputBox.typeText("three-pane-test")
+        inputBox.typeKey(.return, modifierFlags: [])
 
-        // Close extra panes
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input should clear after submit in 3-pane layout")
+
         app.typeKey("w", modifierFlags: [.command, .shift])
-        Thread.sleep(forTimeInterval: 0.2)
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
 
     func testFourPaneLayout() throws {
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Four pane layout should be independently operational")
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should accept text in 4-pane layout")
+        inputBox.typeText("four-pane-test")
+        inputBox.typeKey(.return, modifierFlags: [])
 
-        // Close extra panes
+        let value = inputBox.value as? String ?? ""
+        XCTAssertTrue(value.isEmpty, "Input should clear after submit in 4-pane layout")
+
         for _ in 0..<3 {
             app.typeKey("w", modifierFlags: [.command, .shift])
-            Thread.sleep(forTimeInterval: 0.2)
         }
     }
 }

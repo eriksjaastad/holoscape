@@ -1,25 +1,12 @@
 import XCTest
 
-final class InputBoxUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class InputBoxUITests: HoloscapeUITestCase {
 
     // MARK: - Auto-Grow
 
     func testInputBoxGrowsWithMultipleLines() throws {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.exists)
-
-        let initialFrame = inputBox.frame
 
         // Insert multiple lines with Shift+Enter
         inputBox.typeText("line 1")
@@ -28,11 +15,7 @@ final class InputBoxUITests: XCTestCase {
         inputBox.typeKey(.return, modifierFlags: .shift)
         inputBox.typeText("line 3")
 
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let grownFrame = inputBox.frame
-        // The input container (parent scroll view) should have grown
-        // We can't directly measure the scroll view, but the text view should have content
+        // The input should contain all lines
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.contains("line 1"), "Input should contain first line")
         XCTAssertTrue(value.contains("line 3"), "Input should contain third line")
@@ -51,9 +34,8 @@ final class InputBoxUITests: XCTestCase {
 
         // Send
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Should be empty and back to single-line height
+        // Should be empty after send
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.isEmpty, "Input should be empty after send")
     }
@@ -84,11 +66,9 @@ final class InputBoxUITests: XCTestCase {
         // Submit a command
         inputBox.typeText("echo test-history")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
 
         // Up arrow
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.1)
 
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "echo test-history", "Up arrow should recall previous command")
@@ -101,13 +81,10 @@ final class InputBoxUITests: XCTestCase {
         // Submit
         inputBox.typeText("history-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
 
         // Up to recall, then down to clear
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.1)
         inputBox.typeKey(.downArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.1)
 
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.isEmpty, "Down arrow past end of history should clear input")
@@ -121,16 +98,12 @@ final class InputBoxUITests: XCTestCase {
         for cmd in ["cmd-a", "cmd-b", "cmd-c"] {
             inputBox.typeText(cmd)
             inputBox.typeKey(.return, modifierFlags: [])
-            Thread.sleep(forTimeInterval: 0.1)
         }
 
         // Up arrow 3 times should recall cmd-a
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.05)
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.05)
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.05)
 
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "cmd-a", "Three up arrows should reach the first command")
@@ -149,19 +122,14 @@ final class InputBoxUITests: XCTestCase {
 
     func testInputBoxRetainsFocusAfterChannelSwitch() throws {
         // Create second channel
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
-        dialog.buttons["Shell"].click()
-        Thread.sleep(forTimeInterval: 0.3)
+        createChannel(type: "Shell")
 
         // Switch back
         app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
 
         // Type
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("still-focused")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "still-focused", "Input box should retain focus after channel switch")
@@ -175,7 +143,6 @@ final class InputBoxUITests: XCTestCase {
 
         // Press Enter with no text — should not crash
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.1)
 
         let value = inputBox.value as? String ?? ""
         XCTAssertTrue(value.isEmpty, "Empty input should remain empty after Enter")
