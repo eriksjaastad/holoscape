@@ -48,13 +48,18 @@ final class SplitPaneUITests: HoloscapeUITestCase {
     // MARK: - Max Panes
 
     func testMaxFourPanesEnforced() throws {
-        // Split 4 times (first split creates 2, then 3, then 4, then should stop)
+        // Split 5 times — max should be 4 panes
         for _ in 0..<5 {
             app.typeKey("d", modifierFlags: .command)
         }
 
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist at max pane limit")
+
+        // Count scroll views in the window — each pane has a scroll view
+        let window = app.windows["Holoscape"]
+        let scrollViews = window.scrollViews
+        XCTAssertLessThanOrEqual(scrollViews.count, 6, "Max 4 panes should be enforced (scroll views include input + search)")
     }
 
     // MARK: - Active Pane

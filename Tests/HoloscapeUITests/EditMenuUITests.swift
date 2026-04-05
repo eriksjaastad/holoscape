@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 final class EditMenuUITests: HoloscapeUITestCase {
@@ -174,17 +175,16 @@ final class EditMenuUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist")
 
-        // Clear clipboard by copying empty selection
-        inputBox.typeKey("a", modifierFlags: .command)
-        inputBox.typeKey("c", modifierFlags: .command)
-        inputBox.typeKey(.delete, modifierFlags: [])
-
-        // Type known text, then paste empty clipboard
         inputBox.typeText("unchanged")
+
+        // Clear system clipboard
+        NSPasteboard.general.clearContents()
+
+        // Paste (nothing should happen)
         inputBox.typeKey("v", modifierFlags: .command)
 
         let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.contains("unchanged"), "Pasting empty clipboard should leave existing text unchanged")
+        XCTAssertEqual(value, "unchanged", "Pasting empty clipboard should not modify input")
     }
 
     func testPasteLargeText() throws {
@@ -195,7 +195,7 @@ final class EditMenuUITests: HoloscapeUITestCase {
         inputBox.typeText(largeText)
 
         let value = inputBox.value as? String ?? ""
-        XCTAssertFalse(value.isEmpty, "Input box should accept large text without freezing")
+        XCTAssertGreaterThanOrEqual(value.count, 1000, "Large text should not be truncated")
     }
 
     func testCopyPasteAcrossChannels() throws {
