@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
+    private var channelManagerRef: ChannelManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
@@ -21,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create channel manager and window
         let channelManager = ChannelManager(configService: configService)
+        self.channelManagerRef = channelManager
         windowController = MainWindowController(channelManager: channelManager, configService: configService)
 
         // Set up session profile manager
@@ -143,8 +145,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             controller.activate()
             return controller
         case .bridge:
-            // V3: Bridge channel restoration — placeholder
-            return nil
+            guard let cm = channelManagerRef else { return nil }
+            let controller = BridgeChannelController(id: metadata.id, channelManager: cm, instanceNumber: metadata.instanceNumber)
+            return controller
         }
     }
 

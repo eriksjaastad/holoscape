@@ -11,9 +11,15 @@ class SessionProfileManager {
     }
 
     /// Returns all sessions grouped by source.
+    /// Built-in profiles always available.
+    static let builtInProfiles: [SessionProfile] = [
+        SessionProfile(label: "Bridge", connection: .bridge, command: "", directory: ""),
+    ]
+
     func allSessions() -> (preconfigured: [SessionProfile], discovered: [SessionProfile], recent: [RecentSession]) {
         let config = configService.load()
-        let preconfigured = config.sessionProfiles ?? []
+        let userProfiles = config.sessionProfiles ?? []
+        let preconfigured = userProfiles + Self.builtInProfiles
         let discovered = discoveryService.cached()
         let recent = config.recentSessions ?? []
         return (preconfigured, discovered, recent)
@@ -23,6 +29,11 @@ class SessionProfileManager {
     /// Checks preconfigured → discovered → creates new SSH project session from ssh_defaults.
     func resolve(label: String) -> SessionProfile {
         let config = configService.load()
+
+        // Check built-in profiles
+        if let match = Self.builtInProfiles.first(where: { $0.label == label }) {
+            return match
+        }
 
         // Check preconfigured profiles
         if let match = (config.sessionProfiles ?? []).first(where: { $0.label == label }) {
