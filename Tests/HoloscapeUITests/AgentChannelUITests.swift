@@ -31,20 +31,6 @@ final class AgentChannelUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.isHittable, "API Key agent entry should be hittable")
     }
 
-    // MARK: - Role Detection
-
-    func testAgentChannelDetectsRole() throws {
-        throw XCTSkip("Cannot verify role detection via XCUITest — role is internal state")
-    }
-
-    func testAgentChannelRoleLabelShortened() throws {
-        throw XCTSkip("Cannot verify role label shortening via XCUITest")
-    }
-
-    func testAgentChannelStateTransitions() throws {
-        throw XCTSkip("Cannot verify state transitions via XCUITest — indicator colors not accessible")
-    }
-
     // MARK: - Input/Output
 
     func testAgentChannelAcceptsInput() throws {
@@ -65,15 +51,19 @@ final class AgentChannelUITests: HoloscapeUITestCase {
         waitForExpectations(timeout: 2)
     }
 
-    func testAgentChannelShowsOutput() throws {
+    func testAgentChannelViewLoadsWithInputBox() throws {
         try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
         let entry = sidebarEntry("Agent")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
         entry.click()
-        // Agent view should have an input box, confirming the output pane loaded
+
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Agent output view should load with input box")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Agent view should load with input box")
+
+        // Verify the output scroll view also exists
+        let window = app.windows["Holoscape"]
+        XCTAssertGreaterThanOrEqual(window.scrollViews.count, 1, "Agent view should have an output scroll view")
     }
 
     func testAgentChannelCommandHistory() throws {

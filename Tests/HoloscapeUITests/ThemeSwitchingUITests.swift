@@ -127,7 +127,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
 
     // MARK: - Theme + Skin Interaction
 
-    func testSkinOverridesThemeColors() throws {
+    func testSkinPopupInteractableWithThemeSet() throws {
         openSettings()
         selectTheme("Dark")
 
@@ -139,7 +139,6 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         XCTAssertTrue(skin.isHittable, "Skin popup should be interactable")
 
         skin.click()
-        // Dismiss without selecting -- just verify popup opens
         let menuItems = app.menuItems
         XCTAssertGreaterThan(menuItems.count, 0, "Skin popup should have menu items")
         app.typeKey(.escape, modifierFlags: [])
@@ -183,7 +182,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
 
     // MARK: - Visual Consistency
 
-    func testThemeAppliedToAllPanes() throws {
+    func testSplitPanesSurviveThemeChange() throws {
         // Create split pane
         app.typeKey("d", modifierFlags: .command)
 
@@ -192,10 +191,10 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         XCTAssertEqual(currentThemeValue(), "Dracula")
         closeSettings()
 
-        // Verify the main window has scrollable content (panes exist)
+        // Verify the main window has scrollable content (panes still exist)
         let window = app.windows["Holoscape"]
         let scrollViews = window.scrollViews
-        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should exist and be themed")
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should still exist after theme change")
 
         // Reset
         openSettings()
@@ -203,13 +202,13 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testThemeAppliedToSidebar() throws {
+    func testSidebarFunctionalAfterThemeChange() throws {
         openSettings()
         selectTheme("Solarized Dark")
         closeSettings()
 
         let sidebar = sidebarEntry("Shell")
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 3), "Sidebar entry should exist and be visible with theme applied")
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 3), "Sidebar entry should exist after theme change")
         XCTAssertTrue(sidebar.isHittable, "Sidebar entry should be hittable after theme change")
 
         openSettings()
@@ -217,23 +216,23 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testThemeAppliedToInputBox() throws {
+    func testInputBoxAcceptsTextAfterThemeChange() throws {
         openSettings()
         selectTheme("Monokai")
         closeSettings()
 
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist with theme applied")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after theme change")
         inputBox.typeText("theme-test")
         let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "theme-test", "Input box should accept text with theme applied")
+        XCTAssertEqual(value, "theme-test", "Input box should accept text after theme change")
 
         openSettings()
         selectTheme("Dark")
         closeSettings()
     }
 
-    func testThemeAppliedToTabBar() throws {
+    func testTabBarFunctionalAfterThemeChange() throws {
         // Collapse sidebar to show tab bar
         app.typeKey("s", modifierFlags: [.command, .shift])
 
@@ -242,7 +241,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         closeSettings()
 
         let tabButton = tabEntry("Shell")
-        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar entry should exist with theme applied")
+        XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar entry should exist after theme change")
         XCTAssertTrue(tabButton.isHittable, "Tab bar entry should be hittable after theme change")
 
         // Re-expand sidebar and reset theme

@@ -69,19 +69,17 @@ final class SidebarUITests: HoloscapeUITestCase {
 
     // MARK: - Unread Indicators
 
-    func testUnreadIndicatorAppearsOnInactiveChannel() throws {
+    func testInactiveChannelStillVisibleInSidebar() throws {
         // Create a second shell channel
         createChannel(type: "Shell")
 
         // Switch back to first channel
         app.typeKey("1", modifierFlags: .command)
 
-        // The second channel should eventually get output (shell prompt) and show unread
-        // This is timing-dependent and unread state cannot be reliably verified in UI tests
-        // Verify that at least 2 sidebar entries exist after creating a second channel
+        // Verify that both sidebar entries remain visible
         let window = app.windows["Holoscape"]
         let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'"))
-        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Should have at least 2 sidebar entries after creating a second channel")
+        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Both sidebar entries should remain visible when switching channels")
     }
 
     // MARK: - Context Menu

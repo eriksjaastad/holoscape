@@ -139,14 +139,6 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testBackgroundColorChangeApplied() throws {
-        throw XCTSkip("Cannot verify background color change via XCUITest")
-    }
-
-    func testBackgroundColorPersistsAcrossRestart() throws {
-        throw XCTSkip("Cannot verify background color change via XCUITest")
-    }
-
     func testBackgroundColorInteractionWithTheme() throws {
         openSettings()
         selectTheme("Nord")
