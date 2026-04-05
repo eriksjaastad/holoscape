@@ -7,6 +7,8 @@ class ChannelManager {
     private var instanceCounters: [String: Int] = [:]
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
+    private(set) var pinnedChannelIds: Set<UUID> = []
+    private(set) var pinnedTimestamps: [UUID: Date] = [:]
     private let configService: ConfigService
 
     init(configService: ConfigService) {
@@ -159,7 +161,8 @@ class ChannelManager {
                 command: command,
                 endpoint: endpoint,
                 apiURL: apiURL,
-                apiKeyEnv: apiKeyEnv
+                apiKeyEnv: apiKeyEnv,
+                pinnedAt: pinnedTimestamps[id]
             )
         }
         configService.save(config)
@@ -175,7 +178,22 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
+                if let pinnedAt = metadata.pinnedAt {
+                    pinnedChannelIds.insert(controller.channelId)
+                    pinnedTimestamps[controller.channelId] = pinnedAt
+                }
             }
+        }
+    }
+
+    /// Toggle pin state for a channel.
+    func togglePin(id: UUID) {
+        if pinnedChannelIds.contains(id) {
+            pinnedChannelIds.remove(id)
+            pinnedTimestamps.removeValue(forKey: id)
+        } else {
+            pinnedChannelIds.insert(id)
+            pinnedTimestamps[id] = Date()
         }
     }
 
