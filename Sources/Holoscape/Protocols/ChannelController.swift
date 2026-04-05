@@ -18,4 +18,9 @@ protocol ChannelController: AnyObject {
 
     var commandHistory: CommandHistory { get }
     var delegate: ChannelControllerDelegate? { get set }
+    var activatedAt: Date? { get }
+}
+
+extension ChannelController {
+    var activatedAt: Date? { nil }
 }

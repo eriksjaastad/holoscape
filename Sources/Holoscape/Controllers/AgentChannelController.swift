@@ -17,6 +17,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private var detectedRole: String?
     private let instanceNumber: Int?
     private let useRawLabel: Bool
+    private(set) var activatedAt: Date?
 
     var displayLabel: String {
         if useRawLabel, let label = userLabel {
@@ -103,6 +104,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             currentDirectory: workingDirectory?.path
         )
         state = .active
+        activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
     }
 

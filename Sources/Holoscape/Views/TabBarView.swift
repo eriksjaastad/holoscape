@@ -78,6 +78,12 @@ class TabBarView: NSView {
 
     private func makeTabButton(for channel: any ChannelController) -> NSButton {
         var title = channel.displayLabel
+        // Add elapsed time or state text
+        if let elapsed = ElapsedTimeFormatter.format(since: channel.activatedAt) {
+            title += " (\(elapsed))"
+        } else if channel.state == .connecting {
+            title += " ..."
+        }
         if channel.hasUnread {
             title = "\u{25CF} " + title  // Bullet dot for unread
         }

@@ -13,6 +13,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     private let terminalView: LocalProcessTerminalView
     let profile: SessionProfile
     private let instanceNumber: Int?
+    private(set) var activatedAt: Date?
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -66,6 +67,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             execName: "ssh"
         )
         state = .active
+        activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
     }
 
