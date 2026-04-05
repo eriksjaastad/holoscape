@@ -56,7 +56,8 @@ final class SplitPaneUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist at max pane limit")
 
-        // Count scroll views in the window — each pane has a scroll view
+        // 4 panes max + input scroll view + potential search scroll view = 6
+        // If this threshold needs updating, check SplitPaneManager for new scroll views
         let window = app.windows["Holoscape"]
         let scrollViews = window.scrollViews
         XCTAssertLessThanOrEqual(scrollViews.count, 6, "Max 4 panes should be enforced (scroll views include input + search)")
