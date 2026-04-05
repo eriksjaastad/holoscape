@@ -19,20 +19,54 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.isHittable, "Bridge sidebar entry should be hittable")
     }
 
-    func testBridgeChannelShowsSystemMessage() throws {
+    // MARK: - Input/Output
+
+    func testBridgeChannelAcceptsInput() throws {
         createChannel(type: "Bridge")
-        let entry = sidebarEntry("Bridge")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        // Bridge view should load with an input box, confirming the system message view rendered
+        let bridgeEntry = sidebarEntry("Bridge")
+        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
+        bridgeEntry.click()
+
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Bridge view should load with input box")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
+        inputBox.typeText("bridge-input-test")
+        inputBox.typeKey(.return, modifierFlags: [])
+
+        let cleared = NSPredicate(format: "value == '' OR value == nil")
+        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
+    }
+
+    func testBridgeChannelCommandHistory() throws {
+        createChannel(type: "Bridge")
+        let bridgeEntry = sidebarEntry("Bridge")
+        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
+        bridgeEntry.click()
+
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
+        inputBox.typeText("bridge-history-test")
+        inputBox.typeKey(.return, modifierFlags: [])
+
+        let cleared = NSPredicate(format: "value == '' OR value == nil")
+        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
+
+        inputBox.typeKey(.upArrow, modifierFlags: [])
+
+        let recalled = NSPredicate(format: "value == 'bridge-history-test'")
+        expectation(for: recalled, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
+
+        let value = inputBox.value as? String ?? ""
+        XCTAssertEqual(value, "bridge-history-test", "Up arrow should recall previous bridge broadcast")
     }
 
     // MARK: - Broadcast Behavior
 
     func testBridgeChannelBroadcastsToAllAgents() throws {
         try skipUnlessClaudeCLIInstalled()
+
         // Create 2 agent channels first
         createChannel(type: "Agent (OAuth)")
         XCTAssertTrue(sidebarEntry("Agent").waitForExistence(timeout: 3))
@@ -53,26 +87,16 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         let cleared = NSPredicate(format: "value == '' OR value == nil")
         expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
         waitForExpectations(timeout: 2)
-    }
 
-    func testBridgeChannelIgnoresNonAgentChannels() throws {
-        createChannel(type: "Bridge")
-        let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
-        bridgeEntry.click()
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("bridge-ignore-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Input should clear — bridge accepted the command without crash
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
+        // Both agent sidebar entries should still exist
+        XCTAssertGreaterThanOrEqual(
+            sidebarEntryCount(), 3,
+            "Both agent channels and bridge should still exist in sidebar after broadcast"
+        )
     }
 
     func testBridgeChannelWithNoAgents() throws {
+        // Submit text in bridge with no agent channels created
         createChannel(type: "Bridge")
         let bridgeEntry = sidebarEntry("Bridge")
         XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
@@ -83,99 +107,18 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         inputBox.typeText("no-agents-test")
         inputBox.typeKey(.return, modifierFlags: [])
 
-        // Input should clear even with no agent targets
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-    }
-
-    // MARK: - Input/Output
-
-    func testBridgeChannelAcceptsInput() throws {
-        createChannel(type: "Bridge")
-        let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
-        bridgeEntry.click()
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("bridge-input-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // After submit the input box should clear
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-    }
-
-    func testBridgeChannelShowsConfirmation() throws {
-        createChannel(type: "Bridge")
-        let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
-        bridgeEntry.click()
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("confirm-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Input should clear, confirming the broadcast was accepted
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-    }
-
-    func testBridgeChannelCommandHistory() throws {
-        createChannel(type: "Bridge")
-        let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
-        bridgeEntry.click()
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("bridge-history-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Wait for input to clear after submit
+        // Input should clear even with no agent targets — no crash
         let cleared = NSPredicate(format: "value == '' OR value == nil")
         expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
         waitForExpectations(timeout: 2)
 
-        inputBox.typeKey(.upArrow, modifierFlags: [])
-
-        let recalled = NSPredicate(format: "value == 'bridge-history-test'")
-        expectation(for: recalled, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "bridge-history-test", "Up arrow should recall previous bridge broadcast")
-    }
-
-    // MARK: - Edge Cases
-
-    func testBridgeChannelHandlesAgentDisconnect() throws {
-        try skipUnlessClaudeCLIInstalled()
-        createChannel(type: "Agent (OAuth)")
-        XCTAssertTrue(sidebarEntry("Agent").waitForExistence(timeout: 3))
-
-        createChannel(type: "Bridge")
-        let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 3))
-        bridgeEntry.click()
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("disconnect-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Input should clear even when agent may be disconnecting
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
+        // App should still be running with window present
+        XCTAssertTrue(app.windows["Holoscape"].exists, "App should not crash when broadcasting with no agents")
     }
 
     func testBridgeChannelWithSingleAgent() throws {
         try skipUnlessClaudeCLIInstalled()
+
         createChannel(type: "Agent (OAuth)")
         XCTAssertTrue(sidebarEntry("Agent").waitForExistence(timeout: 3))
 
@@ -193,5 +136,17 @@ final class BridgeChannelUITests: HoloscapeUITestCase {
         let cleared = NSPredicate(format: "value == '' OR value == nil")
         expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
         waitForExpectations(timeout: 2)
+    }
+
+    func testBridgeChannelIgnoresNonAgentChannels() throws {
+        throw XCTSkip("Cannot verify broadcast routing to specific channel types via XCUITest")
+    }
+
+    func testBridgeChannelHandlesAgentDisconnect() throws {
+        throw XCTSkip("Cannot verify disconnect handling during broadcast via XCUITest")
+    }
+
+    func testBridgeChannelShowsConfirmation() throws {
+        throw XCTSkip("Cannot verify bridge confirmation message content via XCUITest")
     }
 }

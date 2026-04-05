@@ -4,7 +4,8 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
 
     // MARK: - Unread Ordering
 
-    func testUnreadChannelMovesToFront() throws {
+    /// XCUITest cannot verify sidebar ordering — we can only assert that multiple entries exist.
+    func testMultipleChannelsExistAfterCreation() throws {
         createChannel(type: "Shell")
 
         let shell2 = sidebarEntry("Shell 2")
@@ -16,9 +17,8 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
-        let window = app.windows["Holoscape"]
-        let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
-        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Should have at least 2 sidebar entries")
+        let count = sidebarEntryCount()
+        XCTAssertGreaterThanOrEqual(count, 2, "Should have at least 2 sidebar entries")
     }
 
     func testMultipleUnreadChannelsOrdered() throws {
