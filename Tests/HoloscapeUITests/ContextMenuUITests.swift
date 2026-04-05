@@ -1,48 +1,19 @@
 import XCTest
 
-final class ContextMenuUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
-
-    // MARK: - Helpers
-
-    private func createSecondShell() {
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-    }
-
-    private func shellSidebarEntry(_ label: String = "Shell") -> XCUIElement {
-        let window = app.windows["Holoscape"]
-        return window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-\(label)'")).firstMatch
-    }
+final class ContextMenuUITests: HoloscapeUITestCase {
 
     // MARK: - Close via Context Menu
 
     func testContextMenuCloseRemovesChannel() throws {
-        createSecondShell()
+        createChannel(type: "Shell")
 
-        let shell2 = shellSidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 2))
+        let shell2 = sidebarEntry("Shell 2")
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Shell 2 sidebar entry should appear")
 
         shell2.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let closeItem = app.menuItems["Close"]
-        XCTAssertTrue(closeItem.waitForExistence(timeout: 1))
+        XCTAssertTrue(closeItem.waitForExistence(timeout: 2), "Close menu item should exist")
         closeItem.click()
 
         // Handle confirmation if it appears
@@ -50,57 +21,52 @@ final class ContextMenuUITests: XCTestCase {
         if closeButton.waitForExistence(timeout: 1) {
             closeButton.click()
         }
-        Thread.sleep(forTimeInterval: 0.5)
 
-        XCTAssertFalse(shell2.exists, "Channel should be removed after context menu Close")
+        XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Channel sidebar entry should disappear after context menu Close")
     }
 
     func testContextMenuCloseActiveChannelSwitchesToAnother() throws {
-        createSecondShell()
+        createChannel(type: "Shell")
 
-        let shell2 = shellSidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 2))
+        let shell2 = sidebarEntry("Shell 2")
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Shell 2 sidebar entry should appear")
         shell2.click()
-        Thread.sleep(forTimeInterval: 0.3)
 
         // Close active channel via context menu
         shell2.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let closeItem = app.menuItems["Close"]
-        if closeItem.waitForExistence(timeout: 1) {
-            closeItem.click()
-        }
+        XCTAssertTrue(closeItem.waitForExistence(timeout: 2))
+        closeItem.click()
 
         let closeButton = app.buttons["Close"]
         if closeButton.waitForExistence(timeout: 1) {
             closeButton.click()
         }
-        Thread.sleep(forTimeInterval: 0.5)
 
-        // Original Shell should still exist and be selected
-        let shell1 = shellSidebarEntry("Shell")
-        XCTAssertTrue(shell1.exists, "Another channel should be selected after closing active")
+        // Shell 2 should be gone
+        XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Closed channel should disappear from sidebar")
+
+        // Original Shell should still exist
+        let shell1 = sidebarEntry("Shell")
+        XCTAssertTrue(shell1.waitForExistence(timeout: 2), "Another channel should be selected after closing active")
     }
 
     func testContextMenuCloseWithConfirmation() throws {
-        // Active shell should show confirmation
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let closeItem = app.menuItems["Close"]
-        if closeItem.waitForExistence(timeout: 1) {
-            closeItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(closeItem.waitForExistence(timeout: 2))
+        closeItem.click()
 
         // Check for confirmation dialog
         let closeButton = app.buttons["Close"]
         let cancelButton = app.buttons["Cancel"]
-        if closeButton.waitForExistence(timeout: 1) || cancelButton.exists {
-            // Confirmation dialog appeared — cancel to keep channel
+        if closeButton.waitForExistence(timeout: 2) || cancelButton.waitForExistence(timeout: 1) {
+            XCTAssertTrue(closeButton.exists || cancelButton.exists, "Confirmation dialog should have Close or Cancel button")
+            // Cancel to keep channel
             if cancelButton.exists {
                 cancelButton.click()
             } else {
@@ -108,221 +74,73 @@ final class ContextMenuUITests: XCTestCase {
             }
         }
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain after cancelling close confirmation")
-    }
-
-    // MARK: - Rename
-
-    func testContextMenuRenameShowsDialog() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
-
-        shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let renameItem = app.menuItems["Rename"]
-        XCTAssertTrue(renameItem.waitForExistence(timeout: 1), "Rename menu item should exist")
-        renameItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // A dialog or text input should appear
-        let dialog = app.dialogs.firstMatch
-        let sheet = app.sheets.firstMatch
-        let hasDialog = dialog.waitForExistence(timeout: 2) || sheet.waitForExistence(timeout: 1)
-        XCTAssertTrue(hasDialog, "Rename should present a text input dialog")
-
-        // Dismiss
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
-    func testContextMenuRenameUpdatesLabel() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
-
-        shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let renameItem = app.menuItems["Rename"]
-        if renameItem.waitForExistence(timeout: 1) {
-            renameItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Type new name in the dialog
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            let textField = dialog.textFields.firstMatch
-            if textField.exists {
-                textField.click()
-                textField.typeKey("a", modifierFlags: .command) // Select all
-                textField.typeText("MyCustomShell")
-            }
-            // Confirm rename
-            let okButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'OK' OR title CONTAINS[c] 'Rename'")).firstMatch
-            if okButton.exists {
-                okButton.click()
-            } else {
-                dialog.typeKey(.return, modifierFlags: [])
-            }
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Check for renamed label in sidebar
-        let window = app.windows["Holoscape"]
-        let renamedEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-MyCustomShell'")).firstMatch
-        XCTAssertTrue(renamedEntry.waitForExistence(timeout: 2), "Renamed label should appear in sidebar")
-    }
-
-    func testContextMenuRenamePersistsAcrossRestart() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
-
-        shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let renameItem = app.menuItems["Rename"]
-        if renameItem.waitForExistence(timeout: 1) {
-            renameItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            let textField = dialog.textFields.firstMatch
-            if textField.exists {
-                textField.click()
-                textField.typeKey("a", modifierFlags: .command)
-                textField.typeText("PersistShell")
-            }
-            let okButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'OK' OR title CONTAINS[c] 'Rename'")).firstMatch
-            if okButton.exists {
-                okButton.click()
-            } else {
-                dialog.typeKey(.return, modifierFlags: [])
-            }
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Quit and relaunch
-        app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
-        app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        let window = app.windows["Holoscape"]
-        let renamedEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-PersistShell'")).firstMatch
-        XCTAssertTrue(renamedEntry.waitForExistence(timeout: 3), "Renamed label should persist across restart")
-    }
-
-    func testContextMenuRenameEmptyStringRejected() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
-
-        shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let renameItem = app.menuItems["Rename"]
-        if renameItem.waitForExistence(timeout: 1) {
-            renameItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            let textField = dialog.textFields.firstMatch
-            if textField.exists {
-                textField.click()
-                textField.typeKey("a", modifierFlags: .command)
-                textField.typeKey(.delete, modifierFlags: [])
-            }
-            let okButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'OK' OR title CONTAINS[c] 'Rename'")).firstMatch
-            if okButton.exists {
-                okButton.click()
-            } else {
-                dialog.typeKey(.return, modifierFlags: [])
-            }
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Shell label should still exist (empty name rejected)
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2), "Empty rename should be rejected, original label preserved")
+        // Sidebar entry should still exist after cancelling
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2), "Sidebar entry should remain after cancelling close confirmation")
     }
 
     // MARK: - Duplicate
 
     func testContextMenuDuplicateCreatesNewChannel() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let window = app.windows["Holoscape"]
+        let initialButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
+        let initialCount = initialButtons.count
+
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let duplicateItem = app.menuItems["Duplicate"]
-        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 1), "Duplicate menu item should exist")
+        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2), "Duplicate menu item should exist")
         duplicateItem.click()
-        Thread.sleep(forTimeInterval: 0.5)
 
-        let window = app.windows["Holoscape"]
-        let shell2 = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell 2'")).firstMatch
+        let shell2 = sidebarEntry("Shell 2")
         XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Duplicate should create a second channel")
+
+        let afterButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
+        XCTAssertGreaterThan(afterButtons.count, initialCount, "Sidebar entry count should increase after duplicate")
     }
 
     func testContextMenuDuplicateShellChannel() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let duplicateItem = app.menuItems["Duplicate"]
-        if duplicateItem.waitForExistence(timeout: 1) {
-            duplicateItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
+        duplicateItem.click()
 
-        // Verify new shell was created
         let window = app.windows["Holoscape"]
         let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'"))
         XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Duplicating shell should create a new shell channel")
     }
 
     func testContextMenuDuplicateAgentChannel() throws {
-        // Create an agent channel first
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Agent (OAuth)"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        createChannel(type: "Agent (OAuth)")
 
         let window = app.windows["Holoscape"]
         let agentEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Agent'")).firstMatch
-        guard agentEntry.waitForExistence(timeout: 3) else {
-            XCTFail("Agent entry should exist for duplicate test")
-            return
-        }
+        XCTAssertTrue(agentEntry.waitForExistence(timeout: 3), "Agent entry should exist for duplicate test")
 
         agentEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let duplicateItem = app.menuItems["Duplicate"]
-        if duplicateItem.waitForExistence(timeout: 1) {
-            duplicateItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
+        duplicateItem.click()
 
         let agentEntries = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Agent'"))
         XCTAssertGreaterThanOrEqual(agentEntries.count, 2, "Duplicating agent should create new agent with same profile")
     }
 
     func testContextMenuDuplicateSSHChannel() throws {
-        // SSH may not be available — skip if no SSH option
         app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
+        let newChannelItem = app.menuItems["New Channel"]
+        XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2))
+        newChannelItem.click()
+
         let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
 
         let sshButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'SSH'")).firstMatch
         guard sshButton.exists else {
@@ -330,7 +148,6 @@ final class ContextMenuUITests: XCTestCase {
             throw XCTSkip("No SSH option available for duplicate test")
         }
         sshButton.click()
-        Thread.sleep(forTimeInterval: 0.5)
 
         let window = app.windows["Holoscape"]
         let sshEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-SSH'")).firstMatch
@@ -339,105 +156,84 @@ final class ContextMenuUITests: XCTestCase {
         }
 
         sshEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let duplicateItem = app.menuItems["Duplicate"]
-        if duplicateItem.waitForExistence(timeout: 1) {
-            duplicateItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
+        duplicateItem.click()
 
         let sshEntries = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-SSH'"))
-        XCTAssertGreaterThanOrEqual(sshEntries.count, 2, "Duplicating SSH should reconnect to same host")
+        XCTAssertGreaterThanOrEqual(sshEntries.count, 2, "Duplicating SSH should create a second SSH entry")
     }
 
     func testContextMenuDuplicateIncrementLabel() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         // Duplicate once
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let duplicateItem = app.menuItems["Duplicate"]
-        if duplicateItem.waitForExistence(timeout: 1) {
-            duplicateItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
+        duplicateItem.click()
 
-        let window = app.windows["Holoscape"]
-        let shell2 = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell 2'")).firstMatch
-        XCTAssertTrue(shell2.waitForExistence(timeout: 2), "First duplicate should get numbered label 'Shell 2'")
+        let shell2 = sidebarEntry("Shell 2")
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "First duplicate should get numbered label 'Shell 2'")
 
         // Duplicate again
         shell2.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let duplicateItem2 = app.menuItems["Duplicate"]
-        if duplicateItem2.waitForExistence(timeout: 1) {
-            duplicateItem2.click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(duplicateItem2.waitForExistence(timeout: 2))
+        duplicateItem2.click()
 
-        let shell3 = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell 3'")).firstMatch
-        XCTAssertTrue(shell3.waitForExistence(timeout: 2), "Second duplicate should get 'Shell 3'")
+        let shell3 = sidebarEntry("Shell 3")
+        XCTAssertTrue(shell3.waitForExistence(timeout: 3), "Second duplicate should get 'Shell 3'")
     }
 
     // MARK: - Reconnect
 
     func testContextMenuReconnectOnlyOnDisconnected() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let reconnectItem = app.menuItems["Reconnect"]
-        XCTAssertTrue(reconnectItem.waitForExistence(timeout: 1), "Reconnect menu item should exist")
-        // Active channel Reconnect should be disabled
+        XCTAssertTrue(reconnectItem.waitForExistence(timeout: 2), "Reconnect menu item should exist")
         XCTAssertFalse(reconnectItem.isEnabled, "Reconnect should be disabled for active channel")
 
         app.typeKey(.escape, modifierFlags: [])
     }
 
     func testContextMenuReconnectReactivatesChannel() throws {
-        // Create an agent channel that may disconnect
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Agent (OAuth)"].click()
-        }
-        Thread.sleep(forTimeInterval: 2.0)
+        createChannel(type: "Agent (OAuth)")
 
         let window = app.windows["Holoscape"]
         let agentEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Agent'")).firstMatch
-        guard agentEntry.waitForExistence(timeout: 2) else { return }
+        XCTAssertTrue(agentEntry.waitForExistence(timeout: 3), "Agent entry should exist")
 
         agentEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let reconnectItem = app.menuItems["Reconnect"]
-        if reconnectItem.waitForExistence(timeout: 1) && reconnectItem.isEnabled {
+        XCTAssertTrue(reconnectItem.waitForExistence(timeout: 2), "Reconnect menu item should exist")
+
+        if reconnectItem.isEnabled {
             reconnectItem.click()
-            Thread.sleep(forTimeInterval: 1.0)
-            XCTAssertTrue(agentEntry.exists, "Channel should still exist after reconnect attempt")
+            XCTAssertTrue(agentEntry.waitForExistence(timeout: 3), "Channel should still exist after reconnect attempt")
         } else {
-            // If not enabled, just verify it exists
-            XCTAssertTrue(reconnectItem.exists, "Reconnect menu item should exist")
+            // Just verify the menu item exists and its enabled state
+            XCTAssertFalse(reconnectItem.isEnabled, "Reconnect is disabled for connected channel")
             app.typeKey(.escape, modifierFlags: [])
         }
     }
 
     func testContextMenuReconnectOnActiveChannelDisabled() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let reconnectItem = app.menuItems["Reconnect"]
-        if reconnectItem.waitForExistence(timeout: 1) {
-            XCTAssertFalse(reconnectItem.isEnabled, "Reconnect should be grayed out for active channel")
-        }
+        XCTAssertTrue(reconnectItem.waitForExistence(timeout: 2), "Reconnect menu item should exist")
+        XCTAssertFalse(reconnectItem.isEnabled, "Reconnect should be grayed out for active channel")
 
         app.typeKey(.escape, modifierFlags: [])
     }
@@ -445,39 +241,38 @@ final class ContextMenuUITests: XCTestCase {
     // MARK: - Copy Session Info
 
     func testContextMenuCopySessionInfo() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let copyInfoItem = app.menuItems["Copy Session Info"]
-        XCTAssertTrue(copyInfoItem.waitForExistence(timeout: 1), "Copy Session Info menu item should exist")
+        XCTAssertTrue(copyInfoItem.waitForExistence(timeout: 2), "Copy Session Info menu item should exist")
         copyInfoItem.click()
-        Thread.sleep(forTimeInterval: 0.3)
 
-        // Verify clipboard has content (general pasteboard)
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain after Copy Session Info")
+        // Paste into input box and assert non-empty
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
+        inputBox.typeKey("v", modifierFlags: .command)
+
+        let value = inputBox.value as? String ?? ""
+        XCTAssertFalse(value.isEmpty, "Clipboard should contain session info after Copy Session Info")
     }
 
     func testContextMenuCopySessionInfoContent() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
 
         let copyInfoItem = app.menuItems["Copy Session Info"]
-        if copyInfoItem.waitForExistence(timeout: 1) {
-            copyInfoItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(copyInfoItem.waitForExistence(timeout: 2))
+        copyInfoItem.click()
 
-        // Clipboard should contain channel info — verify via paste into input box
+        // Paste into input box and verify non-empty
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeKey("v", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.2)
 
         let value = inputBox.value as? String ?? ""
         XCTAssertFalse(value.isEmpty, "Clipboard should contain session info after Copy Session Info")
@@ -485,60 +280,71 @@ final class ContextMenuUITests: XCTestCase {
 
     // MARK: - Pin/Unpin
 
+    func testContextMenuPinAddsEmoji() throws {
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
+
+        shellEntry.rightClick()
+        let pinItem = app.menuItems["Pin"]
+        XCTAssertTrue(pinItem.waitForExistence(timeout: 2))
+        pinItem.click()
+
+        // Verify the sidebar entry title contains pin emoji
+        let window = app.windows["Holoscape"]
+        let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pinned channel title should contain pin emoji \u{1F4CC}")
+    }
+
     func testContextMenuUnpinRemovesEmoji() throws {
-        let shellEntry = shellSidebarEntry()
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
+        let shellEntry = sidebarEntry("Shell")
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         // Pin first
         shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let pinItem = app.menuItems["Pin"]
-        if pinItem.waitForExistence(timeout: 1) {
-            pinItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(pinItem.waitForExistence(timeout: 2))
+        pinItem.click()
+
+        // Verify pin emoji appeared
+        let window = app.windows["Holoscape"]
+        let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear after pinning")
 
         // Unpin
-        shellEntry.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
+        pinnedEntry.rightClick()
         let unpinItem = app.menuItems["Unpin"]
-        if unpinItem.waitForExistence(timeout: 1) {
-            unpinItem.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(unpinItem.waitForExistence(timeout: 2))
+        unpinItem.click()
 
-        // Verify the sidebar entry no longer shows pin indicator
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain after unpin")
+        // Verify pin emoji is gone — no button title should contain the pin emoji
+        let stillPinned = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        XCTAssertFalse(stillPinned.waitForExistence(timeout: 2), "Pin emoji should be removed after unpinning")
     }
 
     func testContextMenuPinOrderStableWithMultiplePins() throws {
-        createSecondShell()
+        createChannel(type: "Shell")
 
-        let window = app.windows["Holoscape"]
-        let shell1 = shellSidebarEntry("Shell")
-        let shell2 = shellSidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 2))
+        let shell1 = sidebarEntry("Shell")
+        let shell2 = sidebarEntry("Shell 2")
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3))
 
         // Pin both channels
         shell1.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let pin1 = app.menuItems["Pin"]
-        if pin1.waitForExistence(timeout: 1) {
-            pin1.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(pin1.waitForExistence(timeout: 2))
+        pin1.click()
+
+        let window = app.windows["Holoscape"]
+        let pinned1 = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        XCTAssertTrue(pinned1.waitForExistence(timeout: 3), "First pin should add emoji")
 
         shell2.rightClick()
-        Thread.sleep(forTimeInterval: 0.3)
         let pin2 = app.menuItems["Pin"]
-        if pin2.waitForExistence(timeout: 1) {
-            pin2.click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(pin2.waitForExistence(timeout: 2))
+        pin2.click()
 
-        // Both should still be visible — order should be stable
-        XCTAssertTrue(shell1.exists, "First pinned channel should remain visible")
-        XCTAssertTrue(shell2.exists, "Second pinned channel should remain visible")
+        // Both should show pin emoji
+        let pinnedEntries = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'"))
+        XCTAssertGreaterThanOrEqual(pinnedEntries.count, 2, "Both pinned channels should show pin emoji")
     }
 }

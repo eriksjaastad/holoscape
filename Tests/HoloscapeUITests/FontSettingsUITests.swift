@@ -1,135 +1,81 @@
 import XCTest
 
-final class FontSettingsUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class FontSettingsUITests: HoloscapeUITestCase {
 
     // MARK: - Helpers
 
-    private func openSettings() {
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
-    }
-
-    private func closeSettings() {
-        let settingsWindow = app.windows["Appearance Settings"]
-        if settingsWindow.exists {
-            settingsWindow.buttons[XCUIIdentifierCloseWindow].click()
-            Thread.sleep(forTimeInterval: 0.3)
-        }
-    }
-
-    private func selectFont(_ name: String) {
+    /// Read the current font popup value from the settings window.
+    private func currentFontValue() -> String {
         let settingsWindow = app.windows["Appearance Settings"]
         let popups = settingsWindow.popUpButtons
-        guard popups.count >= 3 else { return }
-
-        let fontPopup = popups.element(boundBy: 2)
-        fontPopup.click()
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let fontItem = app.menuItems[name]
-        if fontItem.waitForExistence(timeout: 1) {
-            fontItem.click()
-        } else {
-            app.typeKey(.escape, modifierFlags: [])
-        }
-        Thread.sleep(forTimeInterval: 0.3)
+        guard popups.count >= 3 else { return "" }
+        return popups.element(boundBy: 2).value as? String ?? ""
     }
 
-    private func setFontSize(_ size: String) {
+    /// Read the current font size text field value from the settings window.
+    private func currentFontSizeValue() -> String {
         let settingsWindow = app.windows["Appearance Settings"]
         let textFields = settingsWindow.textFields
-        guard textFields.count >= 1 else { return }
-
-        let sizeField = textFields.element(boundBy: 0)
-        sizeField.click()
-        sizeField.typeKey("a", modifierFlags: .command)
-        sizeField.typeText(size)
-        sizeField.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
+        guard textFields.count >= 1 else { return "" }
+        return textFields.element(boundBy: 0).value as? String ?? ""
     }
 
     // MARK: - Font Family Application
 
     func testApplySFMonoFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("SF Mono")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with SF Mono font")
+        XCTAssertEqual(currentFontValue(), "SF Mono", "Font popup should reflect SF Mono")
         closeSettings()
     }
 
     func testApplyMenloFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("Menlo")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with Menlo font")
+        XCTAssertEqual(currentFontValue(), "Menlo", "Font popup should reflect Menlo")
+        closeSettings()
+        openSettings()
+        selectFont("SF Mono")
         closeSettings()
     }
 
     func testApplyMonacoFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("Monaco")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with Monaco font")
+        XCTAssertEqual(currentFontValue(), "Monaco", "Font popup should reflect Monaco")
+        closeSettings()
+        openSettings()
+        selectFont("SF Mono")
         closeSettings()
     }
 
     func testApplyCourierNewFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("Courier New")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with Courier New font")
+        XCTAssertEqual(currentFontValue(), "Courier New", "Font popup should reflect Courier New")
+        closeSettings()
+        openSettings()
+        selectFont("SF Mono")
         closeSettings()
     }
 
     func testApplyFiraCodeFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("Fira Code")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with Fira Code font")
+        XCTAssertEqual(currentFontValue(), "Fira Code", "Font popup should reflect Fira Code")
+        closeSettings()
+        openSettings()
+        selectFont("SF Mono")
         closeSettings()
     }
 
     func testApplyJetBrainsMonoFont() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("JetBrains Mono")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should remain functional with JetBrains Mono font")
+        XCTAssertEqual(currentFontValue(), "JetBrains Mono", "Font popup should reflect JetBrains Mono")
+        closeSettings()
+        openSettings()
+        selectFont("SF Mono")
         closeSettings()
     }
 
@@ -137,56 +83,44 @@ final class FontSettingsUITests: XCTestCase {
 
     func testFontSizeChange() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         setFontSize("14")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Font size change should not crash")
+        XCTAssertEqual(currentFontSizeValue(), "14", "Font size field should reflect 14")
+        setFontSize("13")
         closeSettings()
     }
 
     func testFontSizeMinimum() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         setFontSize("1")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Very small font size should be handled gracefully")
-
-        // Reset to reasonable size
+        let value = currentFontSizeValue()
+        // The app may accept 1 or clamp it to a minimum -- either way assert it is not empty
+        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting minimum")
+        // If clamped, it should be a number
+        XCTAssertNotNil(Int(value), "Font size field should contain a numeric value, got: \(value)")
         setFontSize("13")
         closeSettings()
     }
 
     func testFontSizeMaximum() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         setFontSize("200")
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Very large font size should be handled gracefully")
-
-        // Reset
+        let value = currentFontSizeValue()
+        XCTAssertFalse(value.isEmpty, "Font size field should have a value after setting maximum")
+        XCTAssertNotNil(Int(value), "Font size field should contain a numeric value, got: \(value)")
         setFontSize("13")
         closeSettings()
     }
 
     func testFontSizeNonNumericRejected() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
+        // Record current size before attempting invalid input
+        let before = currentFontSizeValue()
         setFontSize("abc")
-
-        // App should not crash and should reject non-numeric input
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Non-numeric font size should be rejected gracefully")
+        let after = currentFontSizeValue()
+        XCTAssertNotEqual(after, "abc", "Non-numeric input should be rejected")
+        // It should either revert to the previous value or be empty
+        XCTAssertTrue(after == before || after.isEmpty || Int(after) != nil,
+                       "Font size should revert or be numeric after rejecting non-numeric input, got: \(after)")
         closeSettings()
     }
 
@@ -194,28 +128,17 @@ final class FontSettingsUITests: XCTestCase {
 
     func testFontFamilyPersistsAcrossRestart() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         selectFont("Fira Code")
+        XCTAssertEqual(currentFontValue(), "Fira Code")
         closeSettings()
 
         // Quit and relaunch
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
+        app = XCUIApplication()
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
         openSettings()
-        let settingsWindow2 = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow2.waitForExistence(timeout: 3))
-
-        let popups = settingsWindow2.popUpButtons
-        if popups.count >= 3 {
-            let fontPopup = popups.element(boundBy: 2)
-            let currentValue = fontPopup.value as? String ?? ""
-            XCTAssertEqual(currentValue, "Fira Code", "Font family should persist across restart")
-        }
+        XCTAssertEqual(currentFontValue(), "Fira Code", "Font family should persist across restart")
 
         // Reset
         selectFont("SF Mono")
@@ -224,28 +147,17 @@ final class FontSettingsUITests: XCTestCase {
 
     func testFontSizePersistsAcrossRestart() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
         setFontSize("16")
+        XCTAssertEqual(currentFontSizeValue(), "16")
         closeSettings()
 
         // Quit and relaunch
         app.terminate()
-        Thread.sleep(forTimeInterval: 1.0)
+        app = XCUIApplication()
         app.launch()
-        Thread.sleep(forTimeInterval: 1.0)
 
         openSettings()
-        let settingsWindow2 = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow2.waitForExistence(timeout: 3))
-
-        let textFields = settingsWindow2.textFields
-        if textFields.count >= 1 {
-            let sizeField = textFields.element(boundBy: 0)
-            let currentValue = sizeField.value as? String ?? ""
-            XCTAssertEqual(currentValue, "16", "Font size should persist across restart")
-        }
+        XCTAssertEqual(currentFontSizeValue(), "16", "Font size should persist across restart")
 
         // Reset
         setFontSize("13")
@@ -255,29 +167,21 @@ final class FontSettingsUITests: XCTestCase {
     // MARK: - Application Scope
 
     func testFontAppliedToAllChannels() throws {
-        // Create second channel
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectFont("Menlo")
+        XCTAssertEqual(currentFontValue(), "Menlo")
         closeSettings()
 
-        // Switch between channels
-        app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-        app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
+        // Create second channel and switch between them
+        createChannel(type: "Shell")
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Font should apply to all channels")
+        app.typeKey("1", modifierFlags: .command)
+        let first = sidebarEntry("")
+        XCTAssertTrue(first.waitForExistence(timeout: 2), "First channel should be accessible after font change")
+
+        app.typeKey("2", modifierFlags: .command)
+        let second = sidebarEntry("")
+        XCTAssertTrue(second.waitForExistence(timeout: 2), "Second channel should be accessible after font change")
 
         openSettings()
         selectFont("SF Mono")
@@ -286,15 +190,12 @@ final class FontSettingsUITests: XCTestCase {
 
     func testFontAppliedToInputBox() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectFont("Monaco")
         closeSettings()
 
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists, "Input box should be functional with changed font")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist with changed font")
 
-        // Type to verify
         inputBox.typeText("font-test")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "font-test", "Input box should accept text with new font")
@@ -306,19 +207,19 @@ final class FontSettingsUITests: XCTestCase {
 
     func testFontAppliedToOutputView() throws {
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectFont("JetBrains Mono")
         closeSettings()
 
         // Generate output
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist")
         inputBox.typeText("echo font-output-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.5)
 
+        // Verify the output area exists within the window
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Output view should display with selected font")
+        let scrollViews = window.scrollViews
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Output scroll view should exist with selected font")
 
         openSettings()
         selectFont("SF Mono")
@@ -328,16 +229,15 @@ final class FontSettingsUITests: XCTestCase {
     func testFontAppliedInSplitPanes() throws {
         // Create split
         app.typeKey("d", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
 
         openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
         selectFont("Courier New")
+        XCTAssertEqual(currentFontValue(), "Courier New")
         closeSettings()
 
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "All split panes should use selected font")
+        let scrollViews = window.scrollViews
+        XCTAssertGreaterThanOrEqual(scrollViews.count, 1, "Split panes should exist with selected font")
 
         openSettings()
         selectFont("SF Mono")

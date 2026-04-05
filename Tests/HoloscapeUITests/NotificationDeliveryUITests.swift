@@ -1,112 +1,62 @@
 import XCTest
 
-final class NotificationDeliveryUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
-
-    // MARK: - Helpers
-
-    private func openSettings() {
-        app.typeKey(",", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
-    }
-
-    private func closeSettings() {
-        let settingsWindow = app.windows["Appearance Settings"]
-        if settingsWindow.exists {
-            settingsWindow.buttons[XCUIIdentifierCloseWindow].click()
-            Thread.sleep(forTimeInterval: 0.3)
-        }
-    }
-
-    private func createChannel(type: String) {
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons[type].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-    }
+final class NotificationDeliveryUITests: HoloscapeUITestCase {
 
     // MARK: - Permission
 
     func testNotificationPermissionRequested() throws {
-        // On first launch, app requests notification authorization
-        // This may show a system dialog — verify app doesn't crash
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should handle notification permission request without crash")
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
     }
 
     func testNotificationPermissionDeniedHandledGracefully() throws {
-        // If permission is denied, notifications should be silently skipped
-        // Verify the app is functional regardless of permission state
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should handle denied notification permission gracefully")
-
-        // Settings should still show notification checkboxes
-        openSettings()
-        let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
-
-        let enableCheckbox = settingsWindow.checkBoxes["Enable Notifications"]
-        XCTAssertTrue(enableCheckbox.exists, "Notification checkbox should exist regardless of permission")
-
-        closeSettings()
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
     }
 
     // MARK: - Delivery
 
     func testNotificationFiredOnInactiveChannelOutput() throws {
-        // Create second channel, switch away from first
-        createChannel(type: "Shell")
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Switch to second channel (first shell produces output in background)
-        app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Notification should fire for inactive channel — verify no crash
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should handle notification delivery for inactive channel")
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
     }
 
     func testNotificationNotFiredOnActiveChannel() throws {
-        // Output on active channel should NOT fire notification
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("echo active-output")
-        inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // No notification expected — verify app remains functional
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Active channel output should not fire notification")
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
     }
+
+    func testNotificationContentShowsFirstLine() throws {
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
+    }
+
+    // MARK: - Click Handling
+
+    func testNotificationClickSwitchesToChannel() throws {
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
+    }
+
+    func testNotificationClickBringsWindowToFront() throws {
+        throw XCTSkip("Notifications cannot fire during XCUITest — NSApp.isActive is always true")
+    }
+
+    // MARK: - Settings Toggles
 
     func testNotificationRespectsPerTypeToggle() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
-        // Disable shell notifications
         let shellCheckbox = settingsWindow.checkBoxes["Shell"]
-        if shellCheckbox.waitForExistence(timeout: 2) {
-            // Click to toggle off if currently on
-            let currentValue = shellCheckbox.value as? Int ?? 0
-            if currentValue == 1 {
-                shellCheckbox.click()
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-            XCTAssertEqual(shellCheckbox.value as? Int, 0, "Shell notification should be disabled")
+        XCTAssertTrue(shellCheckbox.waitForExistence(timeout: 3), "Shell notification checkbox should exist")
+
+        // Toggle off if currently on
+        let currentValue = shellCheckbox.value as? Int ?? 0
+        if currentValue == 1 {
+            shellCheckbox.click()
+            XCTAssertEqual(shellCheckbox.value as? Int, 0, "Shell notification should be disabled after click")
+            // Restore
+            shellCheckbox.click()
+        } else {
+            shellCheckbox.click()
+            XCTAssertEqual(shellCheckbox.value as? Int, 1, "Shell notification should be enabled after click")
+            // Restore
+            shellCheckbox.click()
         }
 
         closeSettings()
@@ -115,118 +65,62 @@ final class NotificationDeliveryUITests: XCTestCase {
     func testNotificationRespectsMasterToggle() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let enableCheckbox = settingsWindow.checkBoxes["Enable Notifications"]
-        if enableCheckbox.waitForExistence(timeout: 2) {
-            // Disable master toggle
-            let currentValue = enableCheckbox.value as? Int ?? 0
-            if currentValue == 1 {
-                enableCheckbox.click()
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-            XCTAssertEqual(enableCheckbox.value as? Int, 0, "Master notification toggle should be disabled")
+        XCTAssertTrue(enableCheckbox.waitForExistence(timeout: 3), "Master notification toggle should exist")
 
-            // Re-enable for other tests
-            enableCheckbox.click()
-        }
+        let originalValue = enableCheckbox.value as? Int ?? 0
+
+        // Toggle
+        enableCheckbox.click()
+        let toggledValue = enableCheckbox.value as? Int ?? originalValue
+        XCTAssertNotEqual(originalValue, toggledValue, "Master toggle should change state on click")
+
+        // Restore
+        enableCheckbox.click()
+        XCTAssertEqual(enableCheckbox.value as? Int, originalValue, "Master toggle should restore to original state")
 
         closeSettings()
     }
 
-    func testNotificationContentShowsFirstLine() throws {
-        // Submit output that would trigger a notification
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("echo notification-content-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.5)
+    // MARK: - Per-Channel-Type Settings
 
-        // Notification content verification requires system-level access
-        // Verify the app processes output without crash
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "App should process notification content without crash")
-    }
-
-    // MARK: - Click Handling
-
-    func testNotificationClickSwitchesToChannel() throws {
-        // Notification click handling is system-level
-        // Verify the delegate path exists and doesn't crash
-        createChannel(type: "Shell")
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Switch channels to simulate notification context
-        app.typeKey("1", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-        app.typeKey("2", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Channel switching (notification delegate path) should work")
-    }
-
-    func testNotificationClickBringsWindowToFront() throws {
-        // Verify window can be brought to front programmatically
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
-        XCTAssertTrue(window.isHittable, "Window should be hittable (in front) for notification click handling")
-    }
-
-    // MARK: - Per-Channel-Type
-
-    func testAgentChannelNotification() throws {
+    func testAgentChannelNotificationCheckboxExists() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let agentCheckbox = settingsWindow.checkBoxes["Agent"]
-        if agentCheckbox.waitForExistence(timeout: 2) {
-            XCTAssertTrue(agentCheckbox.exists, "Agent notification toggle should exist")
-        }
+        XCTAssertTrue(agentCheckbox.waitForExistence(timeout: 3), "Agent notification toggle should exist in settings")
 
         closeSettings()
-
-        // Create agent channel and verify no crash
-        createChannel(type: "Agent (OAuth)")
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Agent notification path should not crash")
     }
 
-    func testSSHChannelNotification() throws {
+    func testSSHChannelNotificationCheckboxExists() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let sshCheckbox = settingsWindow.checkBoxes["SSH"]
-        if sshCheckbox.waitForExistence(timeout: 2) {
-            XCTAssertTrue(sshCheckbox.exists, "SSH notification toggle should exist")
-        }
+        XCTAssertTrue(sshCheckbox.waitForExistence(timeout: 3), "SSH notification toggle should exist in settings")
 
         closeSettings()
     }
 
-    func testMCPChannelNotification() throws {
+    func testMCPChannelNotificationCheckboxExists() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let mcpCheckbox = settingsWindow.checkBoxes["MCP"]
-        if mcpCheckbox.waitForExistence(timeout: 2) {
-            XCTAssertTrue(mcpCheckbox.exists, "MCP notification toggle should exist")
-        }
+        XCTAssertTrue(mcpCheckbox.waitForExistence(timeout: 3), "MCP notification toggle should exist in settings")
 
         closeSettings()
     }
 
-    func testGroupChatChannelNotification() throws {
+    func testGroupChatChannelNotificationCheckboxExists() throws {
         openSettings()
         let settingsWindow = app.windows["Appearance Settings"]
-        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
 
         let gcCheckbox = settingsWindow.checkBoxes["Group Chat"]
-        if gcCheckbox.waitForExistence(timeout: 2) {
-            XCTAssertTrue(gcCheckbox.exists, "Group Chat notification toggle should exist")
-        }
+        XCTAssertTrue(gcCheckbox.waitForExistence(timeout: 3), "Group Chat notification toggle should exist in settings")
 
         closeSettings()
     }

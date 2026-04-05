@@ -1,124 +1,142 @@
 import XCTest
 
-final class GroupChatChannelUITests: XCTestCase {
-    var app: XCUIApplication!
+final class GroupChatChannelUITests: HoloscapeUITestCase {
 
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
-
-    // MARK: - Helpers
-
-    private func createGroupChatChannel() {
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Group Chat"].click()
-        }
-        Thread.sleep(forTimeInterval: 0.5)
-    }
+    private let envPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude/agent-chat.env").path
 
     // MARK: - Channel Creation
 
     func testGroupChatChannelCreatesSuccessfully() throws {
-        createGroupChatChannel()
-
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Group'")).firstMatch
-        XCTAssertTrue(gcEntry.waitForExistence(timeout: 3), "Group Chat channel should appear in sidebar")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        XCTAssertTrue(
+            sidebarEntry("Chat").waitForExistence(timeout: 3),
+            "Chat channel should appear in sidebar"
+        )
     }
 
     func testGroupChatChannelDisplaysLabel() throws {
-        createGroupChatChannel()
-
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-Group'")).firstMatch
-        XCTAssertTrue(gcEntry.waitForExistence(timeout: 3), "Group Chat sidebar entry should display label")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat sidebar entry should display label")
+        XCTAssertTrue(entry.isHittable, "Chat sidebar entry should be hittable")
     }
 
     func testGroupChatChannelStartsPolling() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        // Polling should start — verify channel exists and no crash
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Group'")).firstMatch
-        XCTAssertTrue(gcEntry.exists, "Group Chat should exist after polling starts")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat should appear after creation")
+        // Allow polling to start, then verify the entry is still present and enabled
+        let stillExists = entry.waitForExistence(timeout: 2)
+        XCTAssertTrue(stillExists, "Chat entry should remain after polling starts")
+        XCTAssertTrue(entry.isEnabled, "Chat entry should be enabled while polling")
     }
 
     // MARK: - Message Display
 
     func testGroupChatChannelShowsMessages() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should display group chat messages without crash")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
+        // Verify the input box is present, meaning the chat view loaded
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be visible in group chat view")
     }
 
     func testGroupChatChannelAutoScrolls() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        // Auto-scroll behavior — new messages should scroll to bottom
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional with auto-scroll")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after selecting chat channel")
+        XCTAssertTrue(inputBox.isEnabled, "Input box should be enabled, indicating chat view is functional")
     }
 
     func testGroupChatChannelPreservesScrollPosition() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 1.0)
-
-        // If scrolled up, new messages shouldn't force scroll
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should preserve scroll position without crash")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist for scroll position test")
+        XCTAssertTrue(entry.isHittable, "Sidebar entry should remain hittable after scroll interactions")
     }
 
     // MARK: - Input
 
     func testGroupChatChannelSendsMessage() throws {
-        createGroupChatChannel()
-
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Group'")).firstMatch
-        if gcEntry.waitForExistence(timeout: 2) {
-            gcEntry.click()
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
 
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("group-chat-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
 
-        XCTAssertTrue(window.exists, "Window should remain after group chat message submission")
+        // After submit the input box should clear
+        let cleared = NSPredicate(format: "value == '' OR value == nil")
+        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
     }
 
     func testGroupChatChannelCommandHistory() throws {
-        createGroupChatChannel()
-
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Group'")).firstMatch
-        if gcEntry.waitForExistence(timeout: 2) {
-            gcEntry.click()
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
 
         let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("gc-history-test")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.3)
+
+        // Wait for input to clear after submit
+        let cleared = NSPredicate(format: "value == '' OR value == nil")
+        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
 
         inputBox.typeKey(.upArrow, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.1)
+
+        let recalled = NSPredicate(format: "value == 'gc-history-test'")
+        expectation(for: recalled, evaluatedWith: inputBox, handler: nil)
+        waitForExpectations(timeout: 2)
+
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "gc-history-test", "Up arrow should recall previous group chat message")
     }
@@ -126,67 +144,94 @@ final class GroupChatChannelUITests: XCTestCase {
     // MARK: - Reconnection
 
     func testGroupChatChannelReconnectsOnFailure() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 2.0)
-
-        // API failure should trigger reconnect — verify no crash
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain after reconnection attempt")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should exist before reconnection test")
+        // After a potential failure cycle, the entry should still be visible
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should persist through reconnection")
     }
 
     func testGroupChatChannelStateUpdatesOnDisconnect() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 2.0)
-
-        let window = app.windows["Holoscape"]
-        let gcEntry = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Group'")).firstMatch
-        XCTAssertTrue(gcEntry.exists, "Group Chat entry should remain visible with updated state")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Chat entry should remain visible with updated state")
+        XCTAssertTrue(entry.isEnabled, "Chat entry should be enabled even during disconnect")
     }
 
     func testGroupChatChannelResumesAfterReconnect() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 2.0)
-
-        // Reconnection should resume polling — verify app stability
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain functional after reconnection resume")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        entry.click()
+        let inputBox = app.textViews["input-box"]
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be functional after reconnection resume")
     }
 
     // MARK: - Lifecycle
 
     func testGroupChatChannelStopsPollingOnDeactivate() throws {
-        createGroupChatChannel()
-        Thread.sleep(forTimeInterval: 0.5)
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+        createChannel(type: "Group Chat")
+        let entry = sidebarEntry("Chat")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
-        // Close channel — polling should stop
+        // Close channel
         app.typeKey("w", modifierFlags: .command)
-
         let closeButton = app.buttons["Close"]
         if closeButton.waitForExistence(timeout: 1) {
             closeButton.click()
         }
-        Thread.sleep(forTimeInterval: 0.5)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain after group chat close")
+        // Sidebar entry should disappear after close
+        let gone = NSPredicate(format: "exists == false")
+        expectation(for: gone, evaluatedWith: entry, handler: nil)
+        waitForExpectations(timeout: 3)
     }
 
     func testGroupChatChannelNoLeakedTimers() throws {
-        // Create and close group chat channels multiple times
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: envPath),
+            "Agent chat env not configured"
+        )
+
         for _ in 0..<3 {
-            createGroupChatChannel()
-            Thread.sleep(forTimeInterval: 0.5)
+            createChannel(type: "Group Chat")
+            let entry = sidebarEntry("Chat")
+            XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
             app.typeKey("w", modifierFlags: .command)
             let closeButton = app.buttons["Close"]
             if closeButton.waitForExistence(timeout: 1) {
                 closeButton.click()
             }
-            Thread.sleep(forTimeInterval: 0.3)
+
+            // Wait for entry to disappear before next cycle
+            let gone = NSPredicate(format: "exists == false")
+            expectation(for: gone, evaluatedWith: entry, handler: nil)
+            waitForExpectations(timeout: 3)
         }
 
-        // App should remain functional with no leaked timers
+        // After all cycles, the sidebar should still be functional
         let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists, "Window should remain stable after multiple group chat create/close cycles")
+        XCTAssertTrue(window.waitForExistence(timeout: 2), "Window should remain after timer leak test")
+        // Verify the sidebar is still interactive by checking the session launcher
+        let comboBox = app.comboBoxes["session-launcher-combo"]
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Session launcher should remain functional after cycles")
+        XCTAssertTrue(comboBox.isEnabled, "Session launcher should be enabled after create/close cycles")
     }
 }

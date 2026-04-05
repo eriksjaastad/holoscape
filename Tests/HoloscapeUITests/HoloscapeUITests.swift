@@ -1,17 +1,6 @@
 import XCTest
 
-final class HoloscapeUITests: XCTestCase {
-    var app: XCUIApplication!
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launch()
-    }
-
-    override func tearDownWithError() throws {
-        app.terminate()
-    }
+final class HoloscapeUITests: HoloscapeUITestCase {
 
     // MARK: - Window Launch
 
@@ -40,16 +29,11 @@ final class HoloscapeUITests: XCTestCase {
 
     func testInputBoxRetainsFocusAfterChannelSwitch() throws {
         // Open a new channel via File > New Channel, pick Shell
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            dialog.buttons["Shell"].click()
-        }
+        createChannel(type: "Shell")
 
         // Input box should still accept keystrokes
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("test")
         XCTAssertEqual(inputBox.value as? String, "test")
     }
@@ -105,7 +89,6 @@ final class HoloscapeUITests: XCTestCase {
         // Submit, then up, then down
         inputBox.typeText("pwd")
         inputBox.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.2)
 
         inputBox.typeKey(.upArrow, modifierFlags: [])
         let recalled = inputBox.value as? String ?? ""
@@ -120,51 +103,32 @@ final class HoloscapeUITests: XCTestCase {
 
     func testDefaultShellTabExists() throws {
         // On launch, there should be at least one tab button (the default shell)
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.exists)
-
-        // Tab bar uses NSButton elements — look for any button containing "Shell"
-        let shellTab = window.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'Shell'")).firstMatch
-        XCTAssertTrue(shellTab.waitForExistence(timeout: 2), "Default Shell tab should be visible")
+        let entry = sidebarEntry("Shell")
+        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Default Shell entry should be visible")
     }
 
     func testNewChannelCreatesTab() throws {
-        let window = app.windows["Holoscape"]
+        // On launch we should have one Shell entry
+        let firstEntry = sidebarEntry("Shell")
+        XCTAssertTrue(firstEntry.waitForExistence(timeout: 2), "Should have initial Shell entry")
 
-        // On launch we should have one Shell tab (visible in both sidebar and tab bar)
-        let firstTab = window.buttons.matching(NSPredicate(format: "title == 'Shell'")).firstMatch
-        XCTAssertTrue(firstTab.waitForExistence(timeout: 2), "Should have initial Shell tab")
+        // Create a new shell channel
+        createChannel(type: "Shell")
 
-        // Create a new shell channel via File > New Channel menu
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-
-        // The NSAlert dialog should appear
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2), "New Channel dialog should appear")
-        let dialogShellButton = dialog.buttons["Shell"]
-        XCTAssertTrue(dialogShellButton.waitForExistence(timeout: 2), "Shell button in dialog should exist")
-        dialogShellButton.click()
-
-        // The second shell tab should appear with an instance number
-        let secondTab = window.buttons.matching(NSPredicate(format: "title CONTAINS 'Shell 2'")).firstMatch
-        XCTAssertTrue(secondTab.waitForExistence(timeout: 3), "Second Shell tab should appear after creating new channel")
+        // The second shell entry should appear with an instance number
+        let secondEntry = sidebarEntry("Shell 2")
+        XCTAssertTrue(secondEntry.waitForExistence(timeout: 3), "Second Shell entry should appear after creating new channel")
     }
 
     // MARK: - Keyboard Shortcuts
 
     func testCmdWClosesChannel() throws {
-        // Create a second channel via File > New Channel menu
-        app.menuBars.firstMatch.menuBarItems["File"].click()
-        app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2), "New Channel dialog should appear")
-        dialog.buttons["Shell"].click()
+        // Create a second channel
+        createChannel(type: "Shell")
 
-        // Verify second tab appeared
-        let window = app.windows["Holoscape"]
-        let secondTab = window.buttons.matching(NSPredicate(format: "title CONTAINS 'Shell 2'")).firstMatch
-        XCTAssertTrue(secondTab.waitForExistence(timeout: 3), "Second tab should exist before close test")
+        // Verify second entry appeared
+        let secondEntry = sidebarEntry("Shell 2")
+        XCTAssertTrue(secondEntry.waitForExistence(timeout: 3), "Second entry should exist before close test")
 
         // Close active channel
         app.typeKey("w", modifierFlags: .command)
@@ -175,9 +139,9 @@ final class HoloscapeUITests: XCTestCase {
             closeButton.click()
         }
 
-        // The second tab should be gone
-        Thread.sleep(forTimeInterval: 0.5)
-        XCTAssertFalse(secondTab.exists, "Cmd+W should close the channel and remove its tab")
+        // The second entry should be gone
+        let gone = secondEntry.waitForNonExistence(timeout: 2)
+        XCTAssertTrue(gone, "Cmd+W should close the channel and remove its entry")
     }
 
     // MARK: - Window Behavior
