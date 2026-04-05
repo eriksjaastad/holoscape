@@ -53,11 +53,22 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("findme")
 
+        let labelBefore = searchMatchCountText()
         let previousButton = searchBar.buttons["search-previous"]
         XCTAssertTrue(previousButton.waitForExistence(timeout: 2), "Previous button should exist")
         previousButton.click()
+        let labelAfter = searchMatchCountText()
 
-        XCTAssertTrue(searchBar.exists, "Search bar should remain after clicking previous")
+        guard let before = labelBefore else {
+            XCTFail("Match count label not found before click")
+            return
+        }
+        guard let after = labelAfter else {
+            XCTFail("Match count label not found after click")
+            return
+        }
+        XCTAssertNotEqual(before, after, "Match label should change after clicking previous")
+
         closeSearch()
     }
 
@@ -98,11 +109,18 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("wraptest")
 
-        // Press Enter multiple times to wrap
+        let labelBefore = searchMatchCountText()
         searchField.typeKey(.return, modifierFlags: [])
         searchField.typeKey(.return, modifierFlags: [])
+        let labelAfter = searchMatchCountText()
 
-        XCTAssertTrue(searchBar.exists, "Search should wrap around without crashing")
+        guard let before = labelBefore else {
+            XCTFail("Match count label not found")
+            return
+        }
+        // After wrapping, label should show position (may be same as start if single match)
+        XCTAssertNotNil(labelAfter, "Match count label should exist after wrap")
+
         closeSearch()
     }
 
@@ -116,12 +134,19 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         searchField.typeText("prevwrap")
 
+        let labelBefore = searchMatchCountText()
         let previousButton = searchBar.buttons["search-previous"]
         if previousButton.waitForExistence(timeout: 2) {
             previousButton.click()
         }
+        let labelAfter = searchMatchCountText()
 
-        XCTAssertTrue(searchBar.exists, "Previous should wrap without crashing")
+        guard labelBefore != nil else {
+            XCTFail("Match count label not found before click")
+            return
+        }
+        XCTAssertNotNil(labelAfter, "Match count label should exist after previous wrap")
+
         closeSearch()
     }
 
