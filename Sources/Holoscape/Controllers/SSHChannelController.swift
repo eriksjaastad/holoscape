@@ -39,7 +39,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
-        self.terminal = terminal ?? LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self

@@ -10,11 +10,17 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: LocalProcessTerminalView
+    private let terminalView: HoloscapeTerminalView
     private let instanceNumber: Int?
+    let customLabel: String?
+    private(set) var workingDirectory: String?
     private(set) var activatedAt: Date?
 
     var displayLabel: String {
+        if let label = customLabel {
+            if let num = instanceNumber { return "\(label) \(num)" }
+            return label
+        }
         if let num = instanceNumber {
             return "Shell \(num)"
         }
@@ -23,10 +29,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     var contentView: NSView { terminalView }
 
-    init(id: UUID, instanceNumber: Int?) {
+    init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil) {
         self.channelId = id
         self.instanceNumber = instanceNumber
-        self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.customLabel = label
+        self.workingDirectory = workingDirectory
+        self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         terminalView.processDelegate = self
     }
@@ -96,6 +104,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
-        // Track working directory changes
+        Task { @MainActor [weak self] in
+            self?.workingDirectory = directory
+        }
     }
 }

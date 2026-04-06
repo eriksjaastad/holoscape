@@ -79,6 +79,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         configService.save(updatedConfig)
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            handleURL(url)
+        }
+    }
+
+    private func handleURL(_ url: URL) {
+        guard url.scheme == "holoscape" else { return }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let params = Dictionary(
+            uniqueKeysWithValues: (components.queryItems ?? []).compactMap { item in
+                item.value.map { (item.name, $0) }
+            }
+        )
+
+        switch url.host {
+        case "new-channel":
+            let typeStr = params["type"] ?? "shell"
+            let dir = params["dir"]
+            let label = params["label"]
+            let cmd = params["cmd"]
+            windowController?.openChannel(type: typeStr, directory: dir, label: label, command: cmd)
+        default:
+            NSLog("Holoscape URL: unknown host '\(url.host ?? "")'")
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         windowController?.channelManager.saveState()
         windowController?.historyBuffer.stopPeriodicFlush()
@@ -112,8 +139,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
         switch metadata.type {
         case .shell:
-            let controller = ShellChannelController(id: metadata.id, instanceNumber: metadata.instanceNumber)
+            let label = (metadata.role != "Shell" && !metadata.role.hasPrefix("Shell ")) ? metadata.role : nil
+            let controller = ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: label,
+                workingDirectory: metadata.workingDirectory
+            )
             controller.activate()
+            if let dir = metadata.workingDirectory {
+                controller.sendInput("cd \(dir)")
+            }
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }

@@ -425,6 +425,55 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         return splitView.subviews.first === subview
     }
 
+    // MARK: - URL Scheme
+
+    func openChannel(type: String, directory: String?, label: String?, command: String? = nil) {
+        let dir = directory.map { URL(fileURLWithPath: $0) }
+
+        switch type {
+        case "shell":
+            let dirName = dir?.lastPathComponent
+            let effectiveLabel = label ?? dirName
+            let channel = channelManager.createChannel(
+                type: .shell,
+                role: effectiveLabel ?? "Shell",
+                workingDirectory: dir
+            ) { id, _, _, instanceNum, _ in
+                ShellChannelController(id: id, instanceNumber: instanceNum, label: effectiveLabel)
+            }
+            channel.delegate = self
+            channel.activate()
+            if let dir = directory {
+                channel.sendInput("cd \(dir)")
+            }
+            if let cmd = command {
+                channel.sendInput(cmd)
+            }
+            switchToChannel(channel.channelId)
+
+        case "agent":
+            let channel = channelManager.createChannel(
+                type: .agentDirect,
+                role: label,
+                workingDirectory: dir ?? URL(fileURLWithPath: NSHomeDirectory())
+            ) { id, _, _, instanceNum, workDir in
+                AgentChannelController(
+                    id: id,
+                    authType: .oauth,
+                    workingDirectory: workDir,
+                    userLabel: label,
+                    instanceNumber: instanceNum
+                )
+            }
+            channel.delegate = self
+            channel.activate()
+            switchToChannel(channel.channelId)
+
+        default:
+            NSLog("Holoscape openChannel: unknown type '\(type)'")
+        }
+    }
+
     // MARK: - Channel Operations
 
     func switchToChannel(_ id: UUID) {
@@ -588,15 +637,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     func closeChannel(id: UUID) {
-        if channelManager.needsCloseConfirmation(id: id) {
-            let alert = NSAlert()
-            alert.messageText = "Close Channel?"
-            alert.informativeText = "This channel has a running process. Close anyway?"
-            alert.addButton(withTitle: "Close")
-            alert.addButton(withTitle: "Cancel")
-            alert.alertStyle = .warning
-            if alert.runModal() != .alertFirstButtonReturn { return }
-        }
         channelManager.closeChannel(id: id)
 
         splitPaneManager.removeChannel(channelId: id)

@@ -10,7 +10,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: LocalProcessTerminalView
+    private let terminalView: HoloscapeTerminalView
     private let authType: AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
@@ -65,7 +65,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.userLabel = userLabel
         self.instanceNumber = instanceNumber
         self.useRawLabel = useRawLabel
-        self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         terminalView.processDelegate = self
 
