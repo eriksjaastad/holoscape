@@ -45,7 +45,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: .connecting)
 
         let shell = "/bin/zsh"
-        let env = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment
+        // Apple_Terminal triggers macOS zsh's built-in OSC 7 directory notifications
+        env["TERM_PROGRAM"] = "Apple_Terminal"
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
         terminalView.startProcess(
@@ -58,15 +60,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
-
-        // Inject a chpwd hook that sends OSC 7 directory notifications to SwiftTerm
-        let osc7Hook = #"chpwd() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }"#
-        let bytes = Array((osc7Hook + "\n").utf8)
-        terminalView.send(bytes)
-        // Send initial directory notification
-        let initOsc7 = #"printf '\e]7;file://%s%s\a' "$HOST" "$PWD""#
-        let initBytes = Array((initOsc7 + "\n").utf8)
-        terminalView.send(initBytes)
     }
 
     func deactivate() {

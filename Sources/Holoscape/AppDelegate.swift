@@ -141,7 +141,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         switch metadata.type {
         case .shell:
             let defaultPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects").path
-            let dir = metadata.workingDirectory ?? defaultPath
+            var rawDir = metadata.workingDirectory ?? defaultPath
+            // OSC 7 saves file:// URLs — strip to plain path
+            if let url = URL(string: rawDir), url.scheme == "file" {
+                rawDir = url.path
+            }
+            let dir = rawDir
             let dirName = URL(fileURLWithPath: dir).lastPathComponent
             // Use saved role only if it's a custom label (not a generic "Shell" and not a stale dir mismatch)
             let label = dirName
