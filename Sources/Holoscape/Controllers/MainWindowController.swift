@@ -25,6 +25,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
     let historyBuffer = HistoryBuffer()
+    weak var apiServer: HoloscapeAPIServer?
     private let bugReportService = BugReportService()
     private var bugReportDialog: BugReportDialog?
     private let launchTime = Date()
@@ -490,6 +491,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         activeChannelId = id
         channel.hasUnread = false
+        apiServer?.clearNotification(for: id)
         splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
@@ -514,8 +516,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let unpinned = channels.filter { !channelManager.pinnedChannelIds.contains($0.channelId) }
         let sorted = pinned + unpinned
 
+        let notifications = apiServer?.channelNotifications ?? [:]
         tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds)
-        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
     }
 
     func refreshLauncher() {
@@ -854,6 +857,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - ChannelControllerDelegate
 
     func channelDidReceiveOutput(_ channel: any ChannelController) {
+        // New output means Claude is working — clear any stale notification state
+        apiServer?.clearNotification(for: channel.channelId)
+
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Only reorder unpinned channels

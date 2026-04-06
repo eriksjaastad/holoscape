@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UserNotifications
 
 @MainActor
 class HoloscapeAPIServer {
@@ -7,6 +8,9 @@ class HoloscapeAPIServer {
     private weak var channelManager: ChannelManager?
     private weak var windowController: MainWindowController?
     private let port: UInt16 = 7865
+
+    /// Notification state per channel: "permission_prompt", "idle_prompt", or nil (normal)
+    private(set) var channelNotifications: [UUID: String] = [:]
 
     init(channelManager: ChannelManager, windowController: MainWindowController) {
         self.channelManager = channelManager
@@ -106,6 +110,9 @@ class HoloscapeAPIServer {
             let lines = Int(request.queryParams["lines"] ?? "50") ?? 50
             return handleReadOutput(id: id, lines: lines)
 
+        case ("POST", "/notify"):
+            return handleNotify(request)
+
         default:
             return .error("Not found", status: 404)
         }
@@ -177,6 +184,60 @@ class HoloscapeAPIServer {
         }
         let output = channel.lastLines(lines)
         return .json(["lines": output, "channel": channel.displayLabel])
+    }
+
+    private func handleNotify(_ request: HTTPRequest) -> HTTPResponse {
+        guard let body = request.body,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let type = json["type"] as? String else {
+            return .error("Missing 'type' in body")
+        }
+
+        let cwd = json["cwd"] as? String
+        // Match notification to a channel by working directory
+        if let cwd, let channel = resolveChannelByCwd(cwd: cwd) {
+            channelNotifications[channel.channelId] = type
+            // Trigger tab refresh to update colors
+            windowController?.refreshAllTabs()
+
+            // Send macOS notification for key events
+            if type == "permission_prompt" || type == "idle_prompt" {
+                sendDesktopNotification(type: type, channel: channel.displayLabel)
+            }
+        }
+
+        return .json(["status": "received", "type": type])
+    }
+
+    private func resolveChannelByCwd(cwd: String) -> (any ChannelController)? {
+        guard let cm = channelManager else { return nil }
+        let cwdName = URL(fileURLWithPath: cwd).lastPathComponent
+        // Match by directory name in display label
+        return cm.allChannels().first { $0.displayLabel.lowercased() == cwdName.lowercased() }
+    }
+
+    private func sendDesktopNotification(type: String, channel: String) {
+        let content = UNMutableNotificationContent()
+        switch type {
+        case "permission_prompt":
+            content.title = "Permission Needed"
+            content.body = "\(channel) is waiting for approval"
+        case "idle_prompt":
+            content.title = "Task Complete"
+            content.body = "\(channel) is ready for input"
+        default:
+            content.title = "Holoscape"
+            content.body = "\(channel): \(type)"
+        }
+        content.sound = .default
+
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Clear notification state when switching to a channel
+    func clearNotification(for channelId: UUID) {
+        channelNotifications.removeValue(forKey: channelId)
     }
 
     // MARK: - Helpers

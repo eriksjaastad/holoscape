@@ -42,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if let wc = windowController {
             apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc)
             apiServer?.start()
+            wc.apiServer = apiServer
         }
 
         // Apply appearance
