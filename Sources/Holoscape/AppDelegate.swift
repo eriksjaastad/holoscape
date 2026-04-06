@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var notificationService: NotificationService?
     private var channelManagerRef: ChannelManager?
     private var settingsWindowController: AppearanceSettingsWindowController?
+    private var apiServer: HoloscapeAPIServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
@@ -36,6 +37,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         notificationService?.channelSwitchDelegate = windowController
         notificationService?.requestAuthorization()
         windowController?.setNotificationService(notificationService!)
+
+        // Start API server for MCP integration
+        if let wc = windowController {
+            apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc)
+            apiServer?.start()
+        }
 
         // Apply appearance
         applyAppearance(config.appearance)
@@ -108,6 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        apiServer?.stop()
         windowController?.channelManager.saveState()
         windowController?.historyBuffer.stopPeriodicFlush()
         windowController?.historyBuffer.flush()
