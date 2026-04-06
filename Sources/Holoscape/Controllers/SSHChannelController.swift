@@ -1,6 +1,17 @@
 import AppKit
 import SwiftTerm
 
+/// Protocol abstracting terminal process interaction for testability.
+protocol TerminalProcess: AnyObject {
+    @MainActor func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?)
+    @MainActor func send(_ bytes: [UInt8])
+    @MainActor var terminalContentView: NSView { get }
+}
+
+extension LocalProcessTerminalView: TerminalProcess {
+    @MainActor var terminalContentView: NSView { self }
+}
+
 @MainActor
 class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalViewDelegate {
     let channelId: UUID
@@ -10,7 +21,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: LocalProcessTerminalView
+    private let terminal: TerminalProcess
     let profile: SessionProfile
     private let instanceNumber: Int?
     private(set) var activatedAt: Date?
@@ -22,22 +33,24 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         return profile.label
     }
 
-    var contentView: NSView { terminalView }
+    var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, profile: SessionProfile, instanceNumber: Int?) {
+    init(id: UUID, profile: SessionProfile, instanceNumber: Int?, terminal: TerminalProcess? = nil) {
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
-        self.terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminal = terminal ?? LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
-        terminalView.processDelegate = self
+        if let termView = self.terminal as? LocalProcessTerminalView {
+            termView.processDelegate = self
+        }
     }
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
-        terminalView.send(bytes)
+        terminal.send(bytes)
     }
 
     func activate() {
@@ -54,11 +67,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let sshArgs = buildSSHArgs(host: host, user: user, directory: profile.directory, command: profile.command)
         let env = buildSSHEnvironment()
 
-        terminalView.startProcess(
+        terminal.startProcess(
             executable: "/usr/bin/ssh",
             args: sshArgs,
             environment: env,
-            execName: "ssh"
+            execName: "ssh",
+            currentDirectory: nil
         )
         state = .active
         activatedAt = Date()
@@ -75,10 +89,11 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func lastLines(_ count: Int) -> [String] {
-        let terminal = terminalView.terminal!
-        let text = terminal.getText(
+        guard let termView = terminal as? LocalProcessTerminalView else { return [] }
+        let term = termView.terminal!
+        let text = term.getText(
             start: Position(col: 0, row: 0),
-            end: Position(col: terminal.cols - 1, row: Int.max / 2)
+            end: Position(col: term.cols - 1, row: Int.max / 2)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))
