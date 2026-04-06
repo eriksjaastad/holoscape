@@ -138,7 +138,11 @@ class ChannelManager {
             var apiURL: String?
             var apiKeyEnv: String?
 
-            if let sshChannel = channel as? SSHChannelController {
+            var workingDir: String?
+
+            if let shellChannel = channel as? ShellChannelController {
+                workingDir = shellChannel.workingDirectory
+            } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
                 command = sshChannel.profile.command
@@ -155,7 +159,7 @@ class ChannelManager {
                 role: channel.displayLabel,
                 context: nil,
                 instanceNumber: nil,
-                workingDirectory: nil,
+                workingDirectory: workingDir,
                 host: host,
                 user: user,
                 command: command,

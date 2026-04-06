@@ -24,6 +24,9 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # Copy binary
 cp "$BUILD_DIR/Holoscape" "$APP_DIR/Contents/MacOS/Holoscape"
 
+# Copy app icon
+cp "$SCRIPT_DIR/Sources/Holoscape/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+
 # Copy Info.plist and resolve Xcode variables
 sed -e 's/$(EXECUTABLE_NAME)/Holoscape/g' \
     -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.synthinsightlabs.holoscape/g' \
