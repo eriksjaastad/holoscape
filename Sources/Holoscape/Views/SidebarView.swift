@@ -55,7 +55,7 @@ class SidebarView: NSView {
         ])
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = []) {
+    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
         activeChannelId = activeId
 
         // Remove all existing entries
@@ -69,13 +69,15 @@ class SidebarView: NSView {
         for channel in channels {
             let entry = SidebarTabEntry(frame: .zero)
             let isPinned = pinnedIds.contains(channel.channelId)
+            let notificationType = notifications[channel.channelId]
             entry.configure(
                 label: channel.displayLabel,
                 hasUnread: channel.hasUnread,
                 state: channel.state,
                 isActive: channel.channelId == activeId,
                 elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
-                isPinned: isPinned
+                isPinned: isPinned,
+                notificationType: notificationType
             )
             entry.channelId = channel.channelId
             entry.target = self
@@ -178,9 +180,9 @@ class SidebarTabEntry: NSControl {
         ])
     }
 
-    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false) {
+    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
-        unreadDot.isHidden = !hasUnread
+        unreadDot.isHidden = true  // No dots — use background colors
 
         switch state {
         case .active:
@@ -197,9 +199,23 @@ class SidebarTabEntry: NSControl {
         if isActive {
             layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
             labelField.textColor = NSColor.white
+        } else if notificationType == "permission_prompt" {
+            // Amber/orange — Claude needs permission approval
+            layer?.backgroundColor = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
+            labelField.textColor = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
+            statusTextField.stringValue = "needs approval"
+        } else if notificationType == "idle_prompt" {
+            // Green tint — Claude is done, waiting for input
+            layer?.backgroundColor = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
+            labelField.textColor = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
+            statusTextField.stringValue = "ready"
+        } else if hasUnread {
+            // Subtle blue tint — has new output
+            layer?.backgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
+            labelField.textColor = NSColor.white
         } else {
             layer?.backgroundColor = NSColor.clear.cgColor
-            labelField.textColor = hasUnread ? NSColor.white : NSColor.lightGray
+            labelField.textColor = NSColor.lightGray
         }
 
         setAccessibilityElement(true)
