@@ -12,17 +12,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private let terminalView: HoloscapeTerminalView
     private let instanceNumber: Int?
-    let customLabel: String?
     private(set) var workingDirectory: String?
     private(set) var activatedAt: Date?
 
     var displayLabel: String {
-        if let label = customLabel {
-            if let num = instanceNumber { return "\(label) \(num)" }
-            return label
-        }
-        if let num = instanceNumber {
-            return "Shell \(num)"
+        if let dir = workingDirectory {
+            return URL(fileURLWithPath: dir).lastPathComponent
         }
         return "Shell"
     }
@@ -32,7 +27,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil) {
         self.channelId = id
         self.instanceNumber = instanceNumber
-        self.customLabel = label
         self.workingDirectory = workingDirectory
         self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
@@ -58,11 +52,21 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             executable: shell,
             args: ["--login"],
             environment: envPairs,
-            execName: "zsh"
+            execName: "zsh",
+            currentDirectory: workingDirectory
         )
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
+
+        // Inject a chpwd hook that sends OSC 7 directory notifications to SwiftTerm
+        let osc7Hook = #"chpwd() { printf '\e]7;file://%s%s\a' "$HOST" "$PWD" }"#
+        let bytes = Array((osc7Hook + "\n").utf8)
+        terminalView.send(bytes)
+        // Send initial directory notification
+        let initOsc7 = #"printf '\e]7;file://%s%s\a' "$HOST" "$PWD""#
+        let initBytes = Array((initOsc7 + "\n").utf8)
+        terminalView.send(initBytes)
     }
 
     func deactivate() {
@@ -105,7 +109,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         Task { @MainActor [weak self] in
-            self?.workingDirectory = directory
+            guard let self else { return }
+            // OSC 7 sends file:// URLs — extract the path
+            if let dir = directory, let url = URL(string: dir), url.scheme == "file" {
+                self.workingDirectory = url.path
+            } else {
+                self.workingDirectory = directory
+            }
+            self.delegate?.channelStateDidChange(self, to: self.state)
         }
     }
 }

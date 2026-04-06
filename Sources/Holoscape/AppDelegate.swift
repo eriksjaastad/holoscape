@@ -48,13 +48,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
 
         // If no channels restored, create a default shell
+        let defaultDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects")
         if channelManager.count == 0 {
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: "Shell",
-                workingDirectory: nil
+                role: "projects",
+                workingDirectory: defaultDir
             ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum)
+                ShellChannelController(id: id, instanceNumber: instanceNum, label: "projects", workingDirectory: defaultDir.path)
             }
             channel.activate()
             windowController?.switchToChannel(channel.channelId)
@@ -139,17 +140,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
         switch metadata.type {
         case .shell:
-            let label = (metadata.role != "Shell" && !metadata.role.hasPrefix("Shell ")) ? metadata.role : nil
+            let defaultPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects").path
+            let dir = metadata.workingDirectory ?? defaultPath
+            let dirName = URL(fileURLWithPath: dir).lastPathComponent
+            // Use saved role only if it's a custom label (not a generic "Shell" and not a stale dir mismatch)
+            let label = dirName
             let controller = ShellChannelController(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: label,
-                workingDirectory: metadata.workingDirectory
+                workingDirectory: dir
             )
             controller.activate()
-            if let dir = metadata.workingDirectory {
-                controller.sendInput("cd \(dir)")
-            }
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
