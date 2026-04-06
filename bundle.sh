@@ -24,8 +24,13 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # Copy binary
 cp "$BUILD_DIR/Holoscape" "$APP_DIR/Contents/MacOS/Holoscape"
 
-# Copy Info.plist
-cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
+# Copy Info.plist and resolve Xcode variables
+sed -e 's/$(EXECUTABLE_NAME)/Holoscape/g' \
+    -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.synthinsightlabs.holoscape/g' \
+    -e 's/$(PRODUCT_NAME)/Holoscape/g' \
+    -e 's/$(MARKETING_VERSION)/3.0/g' \
+    -e 's/$(CURRENT_PROJECT_VERSION)/1/g' \
+    "$SCRIPT_DIR/Info.plist" > "$APP_DIR/Contents/Info.plist"
 
 echo "Done! App bundle created at: $APP_DIR"
 echo ""
