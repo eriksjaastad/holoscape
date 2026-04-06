@@ -403,7 +403,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - NSWindowDelegate
 
     func windowDidBecomeKey(_ notification: Notification) {
-        window.makeFirstResponder(inputBox)
+        if let id = activeChannelId,
+           let channel = channelManager.channel(for: id),
+           ptyChannelTypes.contains(channel.channelType) {
+            window.makeFirstResponder(channel.contentView)
+        } else {
+            window.makeFirstResponder(inputBox)
+        }
     }
 
     // MARK: - NSSplitViewDelegate
@@ -438,16 +444,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 type: .shell,
                 role: effectiveLabel ?? "Shell",
                 workingDirectory: dir
-            ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum, label: effectiveLabel)
+            ) { id, _, _, instanceNum, workDir in
+                ShellChannelController(id: id, instanceNumber: instanceNum, label: effectiveLabel, workingDirectory: workDir?.path)
             }
             channel.delegate = self
             channel.activate()
-            if let dir = directory {
-                channel.sendInput("cd \(dir)")
-            }
             if let cmd = command {
-                channel.sendInput(cmd)
+                // Small delay to let shell initialize before sending command
+                let channelRef = channel
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    channelRef.sendInput(cmd)
+                }
             }
             switchToChannel(channel.channelId)
 
@@ -476,6 +483,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - Channel Operations
 
+    private let ptyChannelTypes: Set<ChannelType> = [.shell, .agentDirect, .agentAPI, .ssh]
+
     func switchToChannel(_ id: UUID) {
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
@@ -484,6 +493,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.showContent(channel.contentView, channelId: id)
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
+
+        // PTY channels handle their own input — hide InputBox and focus the terminal
+        if ptyChannelTypes.contains(channel.channelType) {
+            inputContainer.isHidden = true
+            inputHeightConstraint?.constant = 0
+            window.makeFirstResponder(channel.contentView)
+        } else {
+            inputContainer.isHidden = false
+            inputHeightConstraint?.constant = inputMinHeight
+            window.makeFirstResponder(inputBox)
+        }
     }
 
     func refreshAllTabs() {
@@ -797,6 +817,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         channel.sendInput(text)
         historyBuffer.recordCommand(text, channelName: channel.displayLabel)
         resizeInputBox()
+        window.makeFirstResponder(inputBox)
     }
 
     @objc private func inputTextDidChange(_ notification: Notification) {

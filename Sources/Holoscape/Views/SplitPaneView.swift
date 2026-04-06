@@ -37,11 +37,12 @@ class SplitPaneView: NSView {
         contentView = view
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view)
+        let inset: CGFloat = 6
         NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor),
-            view.bottomAnchor.constraint(equalTo: bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor, constant: inset),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
         ])
     }
 
