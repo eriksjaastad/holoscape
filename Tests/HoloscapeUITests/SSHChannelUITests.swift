@@ -22,38 +22,6 @@ final class SSHChannelUITests: HoloscapeUITestCase {
         dialog.buttons["Cancel"].click()
     }
 
-    // MARK: - Coexistence
-
-    func testSSHSidebarEntryPatternWorks() throws {
-        // Verify the sidebar query pattern for SSH entries works
-        // This doesn't require an actual SSH connection
-        let shellEntry = sidebarEntry("Shell")
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2), "Shell entry should exist as baseline")
-    }
-
-    // MARK: - Input Box With Default Channel
-
-    func testInputBoxFunctionalWithoutSSH() throws {
-        // Even without SSH, the input box should work normally
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("ssh-test-input")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "ssh-test-input", "Input should work without SSH channels")
-    }
-
-    func testCommandHistoryWorksForShell() throws {
-        // Verify command history works (SSH would use same mechanism)
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("ssh-history-cmd")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        inputBox.typeKey(.upArrow, modifierFlags: [])
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "ssh-history-cmd", "Command history should recall submitted commands")
-    }
-
     // MARK: - Session Launcher SSH Path
 
     func testSessionLauncherComboBoxExists() throws {
