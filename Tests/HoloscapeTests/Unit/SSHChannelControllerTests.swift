@@ -1,5 +1,25 @@
 import XCTest
+import AppKit
 @testable import Holoscape
+
+@MainActor
+class MockTerminalProcess: TerminalProcess {
+    var startProcessCalled = false
+    var lastArgs: [String] = []
+    var lastEnvironment: [String] = []
+    var sentBytes: [[UInt8]] = []
+    var terminalContentView: NSView = NSView()
+
+    func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
+        startProcessCalled = true
+        lastArgs = args
+        lastEnvironment = environment ?? []
+    }
+
+    func send(_ bytes: [UInt8]) {
+        sentBytes.append(bytes)
+    }
+}
 
 @MainActor
 class MockChannelDelegate: ChannelControllerDelegate {
@@ -268,14 +288,93 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertEqual(mock.stateChanges, [.connecting, .disconnected], "Should transition connecting → disconnected on validation failure")
     }
 
-    @MainActor func testDelegateNotifiedOnActivateSuccess() {
-        // This will actually try to SSH — skip if not desirable
-        // Just verify the connecting state notification at minimum
-        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "localhost", user: "test")
-        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
-        let mock = MockChannelDelegate()
-        c.delegate = mock
-        // Don't actually activate (would start SSH), just verify delegate setup
-        XCTAssertNotNil(c.delegate)
+    // MARK: - Mock Terminal Tests
+
+    @MainActor func testSendInputWhenActiveRoutesToTerminal() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "server.com", user: "erik")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        c.activate()
+        XCTAssertEqual(c.state, .active)
+        c.sendInput("ls -la")
+        XCTAssertEqual(mock.sentBytes.count, 1)
+        XCTAssertEqual(String(bytes: mock.sentBytes[0], encoding: .utf8), "ls -la\n")
+    }
+
+    @MainActor func testSendInputAddsToHistoryWhenActive() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "server.com", user: "erik")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        c.activate()
+        c.sendInput("pwd")
+        XCTAssertEqual(c.commandHistory.count, 1)
+    }
+
+    @MainActor func testActivatePassesCorrectArgsToProcess() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "test", connection: .ssh, command: "zsh", directory: "~/projects", host: "server.com", user: "erik")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        c.activate()
+        XCTAssertTrue(mock.startProcessCalled)
+        XCTAssertEqual(mock.lastArgs[0], "-t")
+        XCTAssertEqual(mock.lastArgs[1], "erik@server.com")
+        XCTAssertTrue(mock.lastArgs[2].contains("cd '~/projects'"))
+        XCTAssertTrue(mock.lastArgs[2].contains("&& zsh"))
+    }
+
+    @MainActor func testActivatePassesFilteredEnvironment() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        c.activate()
+        let envKeys = mock.lastEnvironment.map { $0.components(separatedBy: "=").first ?? "" }
+        let allowedKeys: Set<String> = ["PATH", "HOME", "SHELL", "TERM", "LANG", "SSH_AUTH_SOCK"]
+        for key in envKeys {
+            XCTAssertTrue(allowedKeys.contains(key), "Unexpected env key passed to process: \(key)")
+        }
+    }
+
+    @MainActor func testRetryReactivatesAfterDisconnect() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        c.activate()
+        XCTAssertEqual(c.state, .active)
+        c.deactivate()
+        XCTAssertEqual(c.state, .disconnected)
+        mock.startProcessCalled = false
+        c.retry()
+        XCTAssertTrue(mock.startProcessCalled, "Retry should call startProcess again")
+        XCTAssertEqual(c.state, .active)
+    }
+
+    @MainActor func testSendInputGuardsWhenNotActive() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        // Don't activate — state is .disconnected
+        c.sendInput("should not send")
+        XCTAssertTrue(mock.sentBytes.isEmpty, "Should not send bytes when disconnected")
+        XCTAssertEqual(c.commandHistory.count, 0, "Should not add to history when disconnected")
+    }
+
+    @MainActor func testActivateSetsActivatedAt() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        XCTAssertNil(c.activatedAt)
+        c.activate()
+        XCTAssertNotNil(c.activatedAt, "activatedAt should be set after successful activate")
+    }
+
+    @MainActor func testDelegateNotifiedThroughFullLifecycle() {
+        let mock = MockTerminalProcess()
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: mock)
+        let delegate = MockChannelDelegate()
+        c.delegate = delegate
+        c.activate()
+        c.deactivate()
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .disconnected])
     }
 }
