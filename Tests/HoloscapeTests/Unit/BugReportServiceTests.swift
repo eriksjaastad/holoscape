@@ -150,13 +150,15 @@ final class BugReportServiceTests: XCTestCase {
         // Run retry (which should age out the old file)
         service.retryPendingReports()
 
-        // Give async retry a moment to process
-        let expectation = XCTestExpectation(description: "Aging should delete old file")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let exists = FileManager.default.fileExists(atPath: bugFile.path)
-            XCTAssertFalse(exists, "Report older than 30 days should be deleted")
-            expectation.fulfill()
+        // Poll for file deletion instead of fixed sleep
+        let startTime = Date()
+        while FileManager.default.fileExists(atPath: bugFile.path) {
+            if Date().timeIntervalSince(startTime) > 5 {
+                XCTFail("Aging did not delete old report within 5 seconds")
+                return
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
         }
-        wait(for: [expectation], timeout: 3)
+        // File was deleted — test passes
     }
 }
