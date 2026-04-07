@@ -859,10 +859,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func channelDidReceiveOutput(_ channel: any ChannelController) {
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
-            // Only reorder unpinned channels
-            if !channelManager.pinnedChannelIds.contains(channel.channelId) {
-                self.channelManager.moveUnreadToFront(id: channel.channelId)
-            }
+            // Tabs stay in place — no reordering on output
             self.refreshAllTabs()
 
             // Send desktop notification
