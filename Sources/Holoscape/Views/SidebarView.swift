@@ -222,6 +222,18 @@ class SidebarTabEntry: NSControl {
         setAccessibilityRole(.button)
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
+
+        if let notificationType {
+            switch notificationType {
+            case "idle_prompt": setAccessibilityValue("ready")
+            case "permission_prompt": setAccessibilityValue("needs-approval")
+            default: setAccessibilityValue(notificationType)
+            }
+        } else if state == .disconnected {
+            setAccessibilityValue("disconnected")
+        } else {
+            setAccessibilityValue(isActive ? "active" : "normal")
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

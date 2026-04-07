@@ -24,6 +24,25 @@ test-ui: bundle
 		-only-testing:HoloscapeUITests \
 		2>&1 | tail -40
 
+# Run fast UI tests (HTTP API, URL scheme, terminal input, tab behavior)
+test-ui-fast: bundle
+	xcodebuild test \
+		-scheme Holoscape \
+		-destination 'platform=macOS' \
+		-only-testing:HoloscapeUITests/HTTPAPIUITests \
+		-only-testing:HoloscapeUITests/URLSchemeUITests \
+		-only-testing:HoloscapeUITests/TerminalInputUITests \
+		-only-testing:HoloscapeUITests/TabBehaviorUITests \
+		2>&1 | tail -40
+
+# Run notification UI tests
+test-ui-notifications: bundle
+	xcodebuild test \
+		-scheme Holoscape \
+		-destination 'platform=macOS' \
+		-only-testing:HoloscapeUITests/NotificationSystemUITests \
+		2>&1 | tail -40
+
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:
 	swift test --filter $(CLASS)
