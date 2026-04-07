@@ -32,11 +32,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
         windowController?.setProfileManager(profileManager)
 
-        // Set up notifications
+        // Set up notifications (deferred to avoid TCC prompt on startup)
         notificationService = NotificationService(configService: configService)
         notificationService?.channelSwitchDelegate = windowController
-        notificationService?.requestAuthorization()
         windowController?.setNotificationService(notificationService!)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.notificationService?.requestAuthorization()
+        }
 
         // Start API server for MCP integration
         if let wc = windowController {
