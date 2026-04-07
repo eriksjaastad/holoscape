@@ -65,6 +65,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
+        terminalView.onOutput = nil
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -74,7 +75,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        let terminal = terminalView.terminal!
+        guard let terminal = terminalView.terminal else { return [] }
         // getText clamps end.row to buffer size, so use Int.max as upper bound
         let text = terminal.getText(
             start: Position(col: 0, row: 0),

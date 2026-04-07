@@ -161,7 +161,15 @@ final class ModelCodableTests: XCTestCase {
             lastOutputLines: ["$ ls", "file1.txt", "file2.txt"],
             timestamp: Date(timeIntervalSince1970: 1700000000),
             macOSVersion: "15.0",
-            description: "Terminal stops responding after typing one character"
+            description: "Terminal stops responding after typing one character",
+            appVersion: nil,
+            hardwareModel: nil,
+            allChannelStates: nil,
+            appearanceConfig: nil,
+            splitLayout: nil,
+            uptime: nil,
+            historyBuffer: nil,
+            screenshotData: nil
         )
 
         let data = try encoder.encode(original)
@@ -181,7 +189,15 @@ final class ModelCodableTests: XCTestCase {
             lastOutputLines: [],
             timestamp: Date(),
             macOSVersion: "15.0",
-            description: "No output"
+            description: "No output",
+            appVersion: nil,
+            hardwareModel: nil,
+            allChannelStates: nil,
+            appearanceConfig: nil,
+            splitLayout: nil,
+            uptime: nil,
+            historyBuffer: nil,
+            screenshotData: nil
         )
 
         let data = try encoder.encode(original)
@@ -199,7 +215,10 @@ final class ModelCodableTests: XCTestCase {
                 ChannelMetadata(id: UUID(), type: .shell, role: "Shell", context: nil, instanceNumber: 1, workingDirectory: nil)
             ],
             timestamp: Date(timeIntervalSince1970: 1700000000),
-            macOSVersion: "15.0"
+            macOSVersion: "15.0",
+            appVersion: nil,
+            hardwareModel: nil,
+            historySnapshot: nil
         )
 
         let data = try encoder.encode(original)
@@ -215,7 +234,10 @@ final class ModelCodableTests: XCTestCase {
             crashTrace: "crash trace here",
             lastChannelState: nil,
             timestamp: Date(),
-            macOSVersion: "15.0"
+            macOSVersion: "15.0",
+            appVersion: nil,
+            hardwareModel: nil,
+            historySnapshot: nil
         )
 
         let data = try encoder.encode(original)
