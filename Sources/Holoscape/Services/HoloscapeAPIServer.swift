@@ -17,6 +17,9 @@ class HoloscapeAPIServer {
         self.windowController = windowController
     }
 
+    /// Suppress notifications for a grace period after launch (tabs start idle)
+    private var suppressUntil: Date = Date().addingTimeInterval(10)
+
     func start() {
         let params = NWParameters.tcp
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
@@ -191,6 +194,11 @@ class HoloscapeAPIServer {
               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let type = json["type"] as? String else {
             return .error("Missing 'type' in body")
+        }
+
+        // Ignore notifications during startup grace period
+        if Date() < suppressUntil {
+            return .json(["status": "suppressed"])
         }
 
         let cwd = json["cwd"] as? String
