@@ -2,6 +2,7 @@ import XCTest
 
 /// Shared base class for all Holoscape UI tests.
 /// Provides common setup/teardown, channel creation helpers, and settings helpers.
+@MainActor
 class HoloscapeUITestCase: XCTestCase {
     var app: XCUIApplication!
 

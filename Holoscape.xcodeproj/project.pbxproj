@@ -107,6 +107,7 @@
 		A3CF42F631147C6BAECD150B /* HoloscapeUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A45AEBB6A7ECE1427B61527 /* HoloscapeUITestCase.swift */; };
 		2C3246BB78DA20FF3218E6A3 /* HTTPAPIUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E394D197040211AC6C7CE36D /* HTTPAPIUITests.swift */; };
 		0FAC9584FCDA473018CD3A11 /* InputBoxUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C85ADF16FAD88F4FFEE289E1 /* InputBoxUITests.swift */; };
+		B7E4F19A2D3C8E01A5F67823 /* IntegrityUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A2C38B1E9F07524C8D6A15 /* IntegrityUITests.swift */; };
 		26A8BD8EEDB7EBFD826F045D /* KeyboardShortcutsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C331CD63A9F5B518A77A5487 /* KeyboardShortcutsUITests.swift */; };
 		962C227055353F447FE2858C /* NotificationSystemUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85C3D1FE36C88F1FB3AEE21F /* NotificationSystemUITests.swift */; };
 		F20EC8BE3B40C239E6815642 /* NotificationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CFD9A15368EF16267B5FD66 /* NotificationUITests.swift */; };
@@ -258,6 +259,7 @@
 		7A45AEBB6A7ECE1427B61527 /* HoloscapeUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoloscapeUITestCase.swift; sourceTree = "<group>"; };
 		E394D197040211AC6C7CE36D /* HTTPAPIUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPAPIUITests.swift; sourceTree = "<group>"; };
 		C85ADF16FAD88F4FFEE289E1 /* InputBoxUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBoxUITests.swift; sourceTree = "<group>"; };
+		D4A2C38B1E9F07524C8D6A15 /* IntegrityUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrityUITests.swift; sourceTree = "<group>"; };
 		C331CD63A9F5B518A77A5487 /* KeyboardShortcutsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsUITests.swift; sourceTree = "<group>"; };
 		85C3D1FE36C88F1FB3AEE21F /* NotificationSystemUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSystemUITests.swift; sourceTree = "<group>"; };
 		8CFD9A15368EF16267B5FD66 /* NotificationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationUITests.swift; sourceTree = "<group>"; };
@@ -375,6 +377,7 @@
 				7A45AEBB6A7ECE1427B61527 /* HoloscapeUITestCase.swift */,
 				E394D197040211AC6C7CE36D /* HTTPAPIUITests.swift */,
 				C85ADF16FAD88F4FFEE289E1 /* InputBoxUITests.swift */,
+				D4A2C38B1E9F07524C8D6A15 /* IntegrityUITests.swift */,
 				C331CD63A9F5B518A77A5487 /* KeyboardShortcutsUITests.swift */,
 				85C3D1FE36C88F1FB3AEE21F /* NotificationSystemUITests.swift */,
 				8CFD9A15368EF16267B5FD66 /* NotificationUITests.swift */,
@@ -774,6 +777,7 @@
 				A3CF42F631147C6BAECD150B /* HoloscapeUITestCase.swift in Sources */,
 				2C3246BB78DA20FF3218E6A3 /* HTTPAPIUITests.swift in Sources */,
 				0FAC9584FCDA473018CD3A11 /* InputBoxUITests.swift in Sources */,
+				B7E4F19A2D3C8E01A5F67823 /* IntegrityUITests.swift in Sources */,
 				26A8BD8EEDB7EBFD826F045D /* KeyboardShortcutsUITests.swift in Sources */,
 				962C227055353F447FE2858C /* NotificationSystemUITests.swift in Sources */,
 				F20EC8BE3B40C239E6815642 /* NotificationUITests.swift in Sources */,
