@@ -857,9 +857,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - ChannelControllerDelegate
 
     func channelDidReceiveOutput(_ channel: any ChannelController) {
-        // New output means Claude is working — clear any stale notification state
-        apiServer?.clearNotification(for: channel.channelId)
-
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Only reorder unpinned channels
