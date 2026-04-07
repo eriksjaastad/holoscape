@@ -12,12 +12,18 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
 
     // MARK: - Idle Prompt (Green)
 
+    /// Notification matching works by comparing the cwd's last path component against
+    /// the channel's displayLabel (see resolveChannelByCwd in HoloscapeAPIServer).
+    /// So the cwd path must end with a component that matches the channel label exactly.
+    /// Example: label "notify-green" + cwd "/tmp/notify-green" → match.
+
     func testIdlePromptTurnsTabGreen() throws {
         try apiCreateChannel(dir: "/tmp", label: "notify-green")
         let entry = sidebarEntry("notify-green")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
-        try apiNotify(type: "idle_prompt", cwd: "/tmp")
+        // cwd last component must match label for resolveChannelByCwd
+        try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-green")
         Thread.sleep(forTimeInterval: 0.5)
 
         // Sidebar entry should have accessibility value "ready"
@@ -32,7 +38,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         let entry = sidebarEntry("notify-amber")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
-        try apiNotify(type: "permission_prompt", cwd: "/tmp")
+        try apiNotify(type: "permission_prompt", cwd: "/tmp/notify-amber")
         Thread.sleep(forTimeInterval: 0.5)
 
         let value = entry.value as? String
@@ -51,7 +57,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         let entry = sidebarEntry("notify-clear")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
-        try apiNotify(type: "idle_prompt", cwd: "/tmp")
+        try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-clear")
         Thread.sleep(forTimeInterval: 0.5)
 
         // Verify notification is set
@@ -72,12 +78,15 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     func testStartupSuppressionBlocksNotifications() throws {
         // This test uses a FRESH launch WITHOUT the suppression bypass
         app.terminate()
+        let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
+        expectation(for: notRunning, evaluatedWith: app, handler: nil)
+        waitForExpectations(timeout: 5)
 
         let freshApp = XCUIApplication()
         // No --disable-notification-suppression argument
         freshApp.launch()
         // Immediately send a notification (within the 10s window)
-        let (data, _) = try apiNotify(type: "idle_prompt", cwd: "/tmp")
+        let (data, _) = try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-suppressed")
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         XCTAssertEqual(json?["status"] as? String, "suppressed", "Notifications should be suppressed during startup")
@@ -90,7 +99,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         try apiCreateChannel(dir: "/tmp", label: "post-suppress")
         Thread.sleep(forTimeInterval: 0.5)
 
-        let (data, _) = try apiNotify(type: "idle_prompt", cwd: "/tmp")
+        let (data, _) = try apiNotify(type: "idle_prompt", cwd: "/tmp/post-suppress")
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         XCTAssertEqual(json?["status"] as? String, "received", "Notifications should work when suppression is disabled")

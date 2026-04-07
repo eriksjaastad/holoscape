@@ -50,8 +50,7 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
         let entry = sidebarEntry("persist-test")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
-        app.terminate()
-        app.launch()
+        restartApp()
 
         let restored = sidebarEntry("persist-test")
         XCTAssertTrue(restored.waitForExistence(timeout: 5), "Channel label should persist across restart")
