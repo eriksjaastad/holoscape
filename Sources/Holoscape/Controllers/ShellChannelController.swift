@@ -31,10 +31,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         terminalView.processDelegate = self
-        terminalView.onOutput = { [weak self] in
-            guard let self else { return }
-            self.delegate?.channelDidReceiveOutput(self)
-        }
+        // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
+        // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
     }
 
     func sendInput(_ text: String) {
