@@ -35,6 +35,9 @@ sed -e 's/$(EXECUTABLE_NAME)/Holoscape/g' \
     -e 's/$(CURRENT_PROJECT_VERSION)/1/g' \
     "$SCRIPT_DIR/Info.plist" > "$APP_DIR/Contents/Info.plist"
 
+# Ad-hoc code sign so macOS remembers permission grants across rebuilds
+codesign --force --deep --sign - "$APP_DIR"
+
 echo "Done! App bundle created at: $APP_DIR"
 echo ""
 echo "To run:  open $APP_DIR"

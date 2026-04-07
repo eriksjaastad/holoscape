@@ -50,10 +50,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
         let shell = "/bin/zsh"
         var env = ProcessInfo.processInfo.environment
-        // Apple_Terminal triggers macOS zsh's built-in OSC 7 directory notifications
+        // Apple_Terminal for OSC 7 directory notifications from zsh
         env["TERM_PROGRAM"] = "Apple_Terminal"
-        // Suppress PROMPT_SP (the % partial-line indicator) that Apple_Terminal enables
-        env["HOLOSCAPE_SUPPRESS_PROMPT_SP"] = "1"
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
         terminalView.startProcess(
