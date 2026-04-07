@@ -31,9 +31,8 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
         let tmpEntry = sidebarEntry("tmp")
         XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5), "Label should update to 'tmp'")
 
-        // Quit and reopen
-        app.terminate()
-        app.launch()
+        // Quit and reopen — use restartApp() to wait for full process exit
+        restartApp()
 
         let restoredEntry = sidebarEntry("tmp")
         XCTAssertTrue(restoredEntry.waitForExistence(timeout: 5), "Tab label 'tmp' should persist after restart")
@@ -51,9 +50,8 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
         let tmpEntry = sidebarEntry("tmp")
         XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5))
 
-        // Quit and reopen
-        app.terminate()
-        app.launch()
+        // Quit and reopen — use restartApp() to wait for full process exit
+        restartApp()
 
         // Wait for restoration
         let restored = sidebarEntry("tmp")

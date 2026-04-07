@@ -37,9 +37,8 @@ final class TabBarUITests: HoloscapeUITestCase {
         // We're now on Shell 2. Switch to first channel.
         app.typeKey("1", modifierFlags: .command)
 
-        // Input box should still work
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after Cmd+1 switch")
+        // Shell channels type directly into the terminal — no separate input box
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+1 switch")
     }
 
     func testCmd2SwitchesToSecondChannel() throws {
@@ -52,9 +51,7 @@ final class TabBarUITests: HoloscapeUITestCase {
         // Switch back to second
         app.typeKey("2", modifierFlags: .command)
 
-        // Input box should still work
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after Cmd+2 switch")
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+2 switch")
     }
 
     func testCmdOutOfRangeDoesNothing() throws {
@@ -64,8 +61,7 @@ final class TabBarUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.exists, "App should not crash on out-of-range Cmd+N")
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists, "Input box should still be functional")
+        assertActiveChannelResponsive(message: "Channel should still be responsive after out-of-range Cmd+N")
     }
 
     // MARK: - Active Tab
@@ -104,8 +100,7 @@ final class TabBarUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.exists, "App should survive rapid channel switching")
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after rapid switching")
+        assertActiveChannelResponsive(message: "Channel should be responsive after rapid switching")
     }
 
     // MARK: - Tab Click Switching (Usability Suite Section 5)

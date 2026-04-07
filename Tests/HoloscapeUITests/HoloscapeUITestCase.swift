@@ -304,6 +304,29 @@ class HoloscapeUITestCase: XCTestCase {
         return app.windows["Holoscape"].otherElements["terminal-view"]
     }
 
+    /// Assert the active channel is responsive by verifying the terminal view exists.
+    /// Use this instead of checking for "input-box" — shell/PTY channels type directly
+    /// into the terminal and have no separate input box. The input box is only visible
+    /// for non-PTY channels (e.g., Group Chat, Bridge).
+    func assertActiveChannelResponsive(timeout: TimeInterval = 3, message: String = "Active channel should be responsive") {
+        let terminal = terminalView()
+        let inputBox = app.textViews["input-box"]
+        let isResponsive = terminal.waitForExistence(timeout: timeout) || inputBox.waitForExistence(timeout: 1)
+        XCTAssertTrue(isResponsive, message)
+    }
+
+    /// Restart the app cleanly — terminate, wait for not-running state, then relaunch.
+    /// Use this instead of bare terminate()/launch() pairs to avoid timing races where
+    /// the persistence layer hasn't finished flushing before the process exits.
+    func restartApp() {
+        app.terminate()
+        // Wait for the process to fully exit before relaunching
+        let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
+        expectation(for: notRunning, evaluatedWith: app, handler: nil)
+        waitForExpectations(timeout: 5)
+        app.launch()
+    }
+
     /// Open a URL using /usr/bin/open (for URL scheme tests).
     func openURL(_ urlString: String) {
         let process = Process()
