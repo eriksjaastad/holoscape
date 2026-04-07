@@ -12,11 +12,13 @@ open class HoloscapeTerminalView: LocalProcessTerminalView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         notifyUpdateChanges = true
+        setAccessibilityIdentifier("terminal-view")
     }
 
     public required init?(coder: NSCoder) {
         super.init(coder: coder)
         notifyUpdateChanges = true
+        setAccessibilityIdentifier("terminal-view")
     }
 
     open override func linefeed(source: Terminal) {

@@ -18,7 +18,12 @@ class HoloscapeAPIServer {
     }
 
     /// Suppress notifications for a grace period after launch (tabs start idle)
-    private var suppressUntil: Date = Date().addingTimeInterval(10)
+    private var suppressUntil: Date = {
+        if ProcessInfo.processInfo.arguments.contains("--disable-notification-suppression") {
+            return Date()
+        }
+        return Date().addingTimeInterval(10)
+    }()
 
     func start() {
         let params = NWParameters.tcp
