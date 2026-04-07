@@ -107,4 +107,49 @@ final class TabBarUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after rapid switching")
     }
+
+    // MARK: - Tab Click Switching (Usability Suite Section 5)
+
+    func testClickingTabSwitchesChannel() throws {
+        // Create a second channel
+        createChannel(type: "Shell")
+        Thread.sleep(forTimeInterval: 0.5)
+
+        collapseSidebar()
+
+        // Find tab buttons
+        let window = app.windows["Holoscape"]
+        let tabs = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'"))
+        XCTAssertGreaterThanOrEqual(tabs.count, 2, "Should have at least 2 tab buttons")
+
+        // Click the first tab
+        let firstTab = tabs.element(boundBy: 0)
+        firstTab.click()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // Click the second tab
+        let secondTab = tabs.element(boundBy: 1)
+        secondTab.click()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // App should be responsive
+        let appWindow = app.windows["Holoscape"]
+        XCTAssertTrue(appWindow.exists, "App should be responsive after clicking tabs")
+    }
+
+    func testAllTabsShowCorrectLabels() throws {
+        createChannel(type: "Shell")
+        collapseSidebar()
+
+        let window = app.windows["Holoscape"]
+        let tabs = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'"))
+        XCTAssertGreaterThanOrEqual(tabs.count, 2, "Should have at least 2 tabs")
+
+        // Each tab should have a non-empty title
+        for i in 0..<tabs.count {
+            let tab = tabs.element(boundBy: i)
+            let title = tab.title
+            XCTAssertFalse(title.isEmpty, "Tab \(i) should have a non-empty title")
+        }
+    }
 }

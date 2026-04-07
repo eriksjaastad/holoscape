@@ -198,6 +198,121 @@ class HoloscapeUITestCase: XCTestCase {
         return nil
     }
 
+    // MARK: - HTTP API Helpers
+
+    private let apiBase = "http://127.0.0.1:7865"
+
+    /// Synchronous HTTP request to the Holoscape API server.
+    @discardableResult
+    func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
+        let url = URL(string: apiBase + path)!
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 5
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var responseData: Data?
+        var responseCode: Int?
+        var responseError: Error?
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            responseData = data
+            responseCode = (response as? HTTPURLResponse)?.statusCode
+            responseError = error
+            semaphore.signal()
+        }.resume()
+
+        semaphore.wait()
+        if let responseError { throw responseError }
+        return (responseData ?? Data(), responseCode ?? 0)
+    }
+
+    /// List all channels via GET /channels.
+    func apiListChannels() throws -> [[String: Any]] {
+        let (data, _) = try apiRequest("GET", path: "/channels")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            XCTFail("Failed to decode channels JSON array")
+            return []
+        }
+        return json
+    }
+
+    /// Create a channel via POST /channels.
+    @discardableResult
+    func apiCreateChannel(type: String = "shell", dir: String? = nil, label: String? = nil, cmd: String? = nil) throws -> (Data, Int) {
+        var body: [String: Any] = ["type": type]
+        if let dir { body["dir"] = dir }
+        if let label { body["label"] = label }
+        if let cmd { body["cmd"] = cmd }
+        return try apiRequest("POST", path: "/channels", body: body)
+    }
+
+    /// Read output lines from a channel via GET /channels/{label}/output.
+    func apiReadOutput(label: String, lines: Int = 50) throws -> [String] {
+        let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
+        let (data, _) = try apiRequest("GET", path: "/channels/\(encoded)/output?lines=\(lines)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outputLines = json["lines"] as? [String] else {
+            return []
+        }
+        return outputLines
+    }
+
+    /// Send input to a channel via POST /channels/{label}/input.
+    func apiSendInput(label: String, text: String) throws {
+        let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
+        try apiRequest("POST", path: "/channels/\(encoded)/input", body: ["text": text])
+    }
+
+    /// Switch to a channel via POST /channels/{label}/switch.
+    func apiSwitchChannel(label: String) throws {
+        let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
+        try apiRequest("POST", path: "/channels/\(encoded)/switch")
+    }
+
+    /// Delete a channel via DELETE /channels/{label}.
+    func apiDeleteChannel(label: String) throws {
+        let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
+        try apiRequest("DELETE", path: "/channels/\(encoded)")
+    }
+
+    /// Send a notification via POST /notify.
+    @discardableResult
+    func apiNotify(type: String, cwd: String) throws -> (Data, Int) {
+        return try apiRequest("POST", path: "/notify", body: ["type": type, "cwd": cwd])
+    }
+
+    /// Poll channel output until it contains the expected text, or timeout.
+    func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 10) throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let lines = try apiReadOutput(label: label)
+            if lines.contains(where: { $0.contains(text) }) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        return false
+    }
+
+    /// Get the terminal view element by accessibility identifier.
+    func terminalView() -> XCUIElement {
+        return app.windows["Holoscape"].otherElements["terminal-view"]
+    }
+
+    /// Open a URL using /usr/bin/open (for URL scheme tests).
+    func openURL(_ urlString: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [urlString]
+        try? process.run()
+        process.waitUntilExit()
+    }
+
     // MARK: - Dependency Checks
 
     /// Skip test if the Claude CLI binary is not installed.
