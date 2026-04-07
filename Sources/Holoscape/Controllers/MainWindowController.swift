@@ -22,7 +22,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
-    private var elapsedTimeTimer: Timer?
+    nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
     let historyBuffer = HistoryBuffer()
     weak var apiServer: HoloscapeAPIServer?
@@ -95,6 +95,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Refresh elapsed time on tabs every 60 seconds
         elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAllTabs() }
+        }
+    }
+
+    deinit {
+        elapsedTimeTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
         }
     }
 
@@ -249,7 +257,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         setupChannelSwitchShortcuts()
     }
 
-    private var keyMonitor: Any?
+    nonisolated(unsafe) private var keyMonitor: Any?
 
     private func setupChannelSwitchShortcuts() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in

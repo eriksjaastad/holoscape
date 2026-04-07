@@ -80,6 +80,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func deactivate() {
+        (terminal as? HoloscapeTerminalView)?.onOutput = nil
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -89,8 +90,8 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let termView = terminal as? LocalProcessTerminalView else { return [] }
-        let term = termView.terminal!
+        guard let termView = terminal as? LocalProcessTerminalView,
+              let term = termView.terminal else { return [] }
         let text = term.getText(
             start: Position(col: 0, row: 0),
             end: Position(col: term.cols - 1, row: Int.max / 2)
