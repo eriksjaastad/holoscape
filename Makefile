@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-property test-ui xcode bundle clean run
+.PHONY: build test test-unit test-property test-ui xcode bundle clean run setup
 
 # Default: build debug
 build:
@@ -50,6 +50,10 @@ bundle-release:
 # Open the built .app
 run: bundle
 	open build/Holoscape.app
+
+# Set up Claude Code integration (MCP server, hooks, notifications)
+setup:
+	bash scripts/setup.sh
 
 # Clean build artifacts
 clean:
