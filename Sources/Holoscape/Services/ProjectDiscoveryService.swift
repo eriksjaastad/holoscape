@@ -78,7 +78,7 @@ class ProjectDiscoveryService {
                 process.arguments = [
                     "-o", "ConnectTimeout=10",
                     "\(user)@\(host)",
-                    "ls -1 \(root)"
+                    "ls", "-1", root
                 ]
 
                 let pipe = Pipe()

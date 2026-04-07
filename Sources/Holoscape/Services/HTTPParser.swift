@@ -39,7 +39,8 @@ struct HTTPResponse {
         header += "Content-Length: \(body.count)\r\n"
         header += "Connection: close\r\n"
         header += "\r\n"
-        return header.data(using: .utf8)! + body
+        guard let headerData = header.data(using: .utf8) else { return Data() }
+        return headerData + body
     }
 
     private static func statusText(for code: Int) -> String {

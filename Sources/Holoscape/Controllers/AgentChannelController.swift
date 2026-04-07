@@ -111,6 +111,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
+        terminalView.onOutput = nil
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -120,7 +121,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        let terminal = terminalView.terminal!
+        guard let terminal = terminalView.terminal else { return [] }
         let text = terminal.getText(
             start: Position(col: 0, row: 0),
             end: Position(col: terminal.cols - 1, row: Int.max / 2)
