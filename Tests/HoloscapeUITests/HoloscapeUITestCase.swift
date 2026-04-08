@@ -53,6 +53,12 @@ class HoloscapeUITestCase: XCTestCase {
         )).firstMatch
     }
 
+    /// Find the first sidebar entry (whatever the default channel is called).
+    func firstSidebarEntry() -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).firstMatch
+    }
+
     /// Count sidebar entries.
     func sidebarEntryCount() -> Int {
         let window = app.windows["Holoscape"]

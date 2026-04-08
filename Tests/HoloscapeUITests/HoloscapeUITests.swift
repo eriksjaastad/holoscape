@@ -94,21 +94,20 @@ final class HoloscapeUITests: HoloscapeUITestCase {
 
     func testDefaultShellTabExists() throws {
         // On launch, there should be at least one sidebar entry
-        let entry = sidebarEntry("Shell")
-        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Default Shell entry should be visible")
+        let entry = firstSidebarEntry()
+        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Default sidebar entry should be visible")
     }
 
     func testNewChannelCreatesTab() throws {
-        // On launch we should have one Shell entry
-        let firstEntry = sidebarEntry("Shell")
-        XCTAssertTrue(firstEntry.waitForExistence(timeout: 2), "Should have initial Shell entry")
+        let initialCount = sidebarEntryCount()
+        XCTAssertGreaterThan(initialCount, 0, "Should have at least one entry on launch")
 
         // Create a new shell channel
         createChannel(type: "Shell")
 
-        // The second shell entry should appear with an instance number
-        let secondEntry = sidebarEntry("Shell 2")
-        XCTAssertTrue(secondEntry.waitForExistence(timeout: 3), "Second Shell entry should appear after creating new channel")
+        // Sidebar count should increase
+        let newCount = sidebarEntryCount()
+        XCTAssertGreaterThan(newCount, initialCount, "New channel should add a sidebar entry")
     }
 
     // MARK: - Keyboard Shortcuts

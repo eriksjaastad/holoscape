@@ -58,14 +58,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
 
         // If no channels restored, create a default shell
-        let defaultDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects")
         if channelManager.count == 0 {
             let channel = channelManager.createChannel(
                 type: .shell,
                 role: "Shell",
-                workingDirectory: defaultDir
+                workingDirectory: nil
             ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum, label: "Shell", workingDirectory: defaultDir.path)
+                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
             }
             channel.activate()
             windowController?.switchToChannel(channel.channelId)
