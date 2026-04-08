@@ -144,10 +144,9 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
             app.typeKey(.escape, modifierFlags: [])
         }
 
-        // Verify input box still works after theme + color interaction
+        // Verify app still works after theme + color interaction
         closeSettings()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should function after theme + color interaction")
+        assertActiveChannelResponsive(message: "App should be responsive after theme + color interaction")
 
         // Reset theme
         openSettings()
@@ -190,8 +189,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
 
         // Verify main window is still functional
         closeSettings()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "App should function with transparency + custom background")
+        assertActiveChannelResponsive(message: "App should be responsive with transparency + custom background")
 
         // Reset
         openSettings()
@@ -210,9 +208,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         XCTAssertFalse(value.isEmpty, "Slider should reflect the adjusted value for live preview")
 
         // Verify main window is still visible and functional while settings open
-        let window = app.windows["Holoscape"]
-        let inputBox = window.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be visible during live preview")
+        assertActiveChannelResponsive(message: "App should be responsive during live preview")
 
         // Reset
         slider.adjust(toNormalizedSliderPosition: 1.0)

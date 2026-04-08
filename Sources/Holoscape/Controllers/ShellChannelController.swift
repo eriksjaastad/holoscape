@@ -12,14 +12,23 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private let terminalView: HoloscapeTerminalView
     private let instanceNumber: Int?
+    private let userLabel: String?
     private(set) var workingDirectory: String?
     private(set) var activatedAt: Date?
 
     var displayLabel: String {
-        if let dir = workingDirectory {
-            return URL(fileURLWithPath: dir).lastPathComponent
+        let base: String
+        if let userLabel {
+            base = userLabel
+        } else if let dir = workingDirectory {
+            base = URL(fileURLWithPath: dir).lastPathComponent
+        } else {
+            base = "Shell"
         }
-        return "Shell"
+        if let n = instanceNumber {
+            return "\(base) \(n)"
+        }
+        return base
     }
 
     var contentView: NSView { terminalView }
@@ -27,6 +36,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil) {
         self.channelId = id
         self.instanceNumber = instanceNumber
+        self.userLabel = label
         self.workingDirectory = workingDirectory
         self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()

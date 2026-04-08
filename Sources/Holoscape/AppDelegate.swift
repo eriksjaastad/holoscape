@@ -62,10 +62,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if channelManager.count == 0 {
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: "projects",
+                role: "Shell",
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum, label: "projects", workingDirectory: defaultDir.path)
+                ShellChannelController(id: id, instanceNumber: instanceNum, label: "Shell", workingDirectory: defaultDir.path)
             }
             channel.activate()
             windowController?.switchToChannel(channel.channelId)
@@ -158,9 +158,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 rawDir = url.path
             }
             let dir = rawDir
-            let dirName = URL(fileURLWithPath: dir).lastPathComponent
-            // Use saved role only if it's a custom label (not a generic "Shell" and not a stale dir mismatch)
-            let label = dirName
+            // Restore the saved display label; fall back to directory name
+            let label = metadata.role
             let controller = ShellChannelController(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
