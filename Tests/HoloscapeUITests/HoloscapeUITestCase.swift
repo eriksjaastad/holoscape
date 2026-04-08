@@ -301,8 +301,13 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Get the terminal view element by accessibility identifier.
+    /// HoloscapeTerminalView uses role .textArea, so XCTest classifies it under textViews.
     func terminalView() -> XCUIElement {
-        return app.windows["Holoscape"].otherElements["terminal-view"]
+        let window = app.windows["Holoscape"]
+        // Try textViews first (matches .textArea role), fall back to otherElements
+        let tv = window.textViews["terminal-view"]
+        if tv.exists { return tv }
+        return window.otherElements["terminal-view"]
     }
 
     /// Assert the active channel is responsive by verifying the terminal view exists.
