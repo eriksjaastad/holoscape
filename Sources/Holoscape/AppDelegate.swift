@@ -11,6 +11,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var apiServer: HoloscapeAPIServer?
 
+    private var isUITesting: Bool {
+        CommandLine.arguments.contains("--ui-testing")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
         NSApp.setActivationPolicy(.regular)
@@ -27,17 +31,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         self.channelManagerRef = channelManager
         windowController = MainWindowController(channelManager: channelManager, configService: configService)
 
-        // Set up session profile manager
-        let discoveryService = ProjectDiscoveryService(configService: configService)
-        let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
-        windowController?.setProfileManager(profileManager)
+        if !isUITesting {
+            // Set up session profile manager
+            let discoveryService = ProjectDiscoveryService(configService: configService)
+            let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+            windowController?.setProfileManager(profileManager)
 
-        // Set up notifications (deferred to avoid TCC prompt on startup)
-        notificationService = NotificationService(configService: configService)
-        notificationService?.channelSwitchDelegate = windowController
-        windowController?.setNotificationService(notificationService!)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.notificationService?.requestAuthorization()
+            // Set up notifications (deferred to avoid TCC prompt on startup)
+            notificationService = NotificationService(configService: configService)
+            notificationService?.channelSwitchDelegate = windowController
+            windowController?.setNotificationService(notificationService!)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.notificationService?.requestAuthorization()
+            }
         }
 
         // Start API server for MCP integration
@@ -50,11 +56,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // Apply appearance
         applyAppearance(config.appearance)
 
-        // Restore channels from saved state
-        channelManager.restoreState { [weak self] metadata in
-            guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
-            controller.delegate = self.windowController
-            return controller
+        if !isUITesting {
+            // Restore channels from saved state
+            channelManager.restoreState { [weak self] metadata in
+                guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
+                controller.delegate = self.windowController
+                return controller
+            }
         }
 
         // If no channels restored, create a default shell
@@ -77,16 +85,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // Show window
         windowController?.window.makeKeyAndOrderFront(nil)
 
-        // Retry any pending reports from previous failed submissions
-        bugReportService.retryPendingReports()
+        if !isUITesting {
+            // Retry any pending reports from previous failed submissions
+            bugReportService.retryPendingReports()
 
-        // Check for crashes on previous launch
-        checkForCrashes(lastLaunch: config.lastLaunchTimestamp)
+            // Check for crashes on previous launch
+            checkForCrashes(lastLaunch: config.lastLaunchTimestamp)
 
-        // Update launch timestamp
-        var updatedConfig = config
-        updatedConfig.lastLaunchTimestamp = Date()
-        configService.save(updatedConfig)
+            // Update launch timestamp
+            var updatedConfig = config
+            updatedConfig.lastLaunchTimestamp = Date()
+            configService.save(updatedConfig)
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
