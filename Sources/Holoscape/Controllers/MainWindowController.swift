@@ -39,6 +39,16 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let inputMinHeight: CGFloat = 40
     private let inputMaxHeight: CGFloat = 120
 
+    /// Coalesces multiple refreshAllTabs() calls into a single
+    /// layout pass at the end of the current run loop cycle.
+    private var refreshScheduled: Bool = false
+
+    /// Coalesces saveState() calls — waits 1s after last request before writing.
+    private var saveStateWorkItem: DispatchWorkItem?
+
+    /// Debounces search queries — waits 150ms after last keystroke.
+    private var searchDebounceWorkItem: DispatchWorkItem?
+
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
 
@@ -315,10 +325,22 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func searchBar(_ searchBar: SearchBarView, didChangeQuery query: String) {
         guard !query.isEmpty else {
+            searchDebounceWorkItem?.cancel()
             searchBar.updateMatchInfo(total: 0, current: 0)
             return
         }
-        // Search the active channel's content
+
+        // Debounce: wait 150ms after last keystroke before scanning
+        searchDebounceWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.performSearch(query: query, searchBar: searchBar)
+        }
+        searchDebounceWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+    }
+
+    private func performSearch(query: String, searchBar: SearchBarView) {
         guard let id = activeChannelId,
               let channel = channelManager.channel(for: id) else { return }
 
@@ -335,7 +357,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             currentSearchMatchIndex = count > 0 ? 1 : 0
             searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
         } else {
-            // PTY channels — search last lines
+            // PTY channels — search visible buffer
             let lines = channel.lastLines(10000)
             let count = lines.filter { $0.localizedCaseInsensitiveContains(query) }.count
             currentSearchQuery = query
@@ -516,7 +538,35 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
+    /// Schedule a tab refresh for the end of the current run loop cycle.
+    /// Multiple calls within the same cycle are coalesced into one.
+    func scheduleRefreshAllTabs() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refreshAllTabsNow()
+        }
+    }
+
+    /// Debounce saveState() — waits 1s after the last call before writing to disk.
+    private func scheduleSaveState() {
+        saveStateWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.channelManager.saveState()
+        }
+        saveStateWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    /// Immediately refresh all tabs (use sparingly — prefer scheduleRefreshAllTabs).
     func refreshAllTabs() {
+        refreshAllTabsNow()
+    }
+
+    private func refreshAllTabsNow() {
         let channels = channelManager.allChannels()
         // Sort: pinned first (by pinnedAt), then unpinned
         let pinned = channels.filter { channelManager.pinnedChannelIds.contains($0.channelId) }
@@ -884,17 +934,16 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Tabs stay in place — no reordering on output
-            self.refreshAllTabs()
+            scheduleRefreshAllTabs()
 
-            // Send desktop notification
-            let firstLine = channel.lastLines(1).first ?? ""
-            notificationService?.notifyIfNeeded(channel: channel, firstLine: firstLine)
+            // Send desktop notification (use displayLabel instead of extracting full buffer)
+            notificationService?.notifyIfNeeded(channel: channel, firstLine: channel.displayLabel)
         }
     }
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
-        refreshAllTabs()
-        channelManager.saveState()
+        scheduleRefreshAllTabs()
+        scheduleSaveState()
     }
 
     // MARK: - SplitPaneManagerDelegate
@@ -902,7 +951,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func splitPaneManager(_ manager: SplitPaneManager, activePaneDidChange channelId: UUID?) {
         if let channelId {
             activeChannelId = channelId
-            refreshAllTabs()
+            scheduleRefreshAllTabs()
         }
     }
 

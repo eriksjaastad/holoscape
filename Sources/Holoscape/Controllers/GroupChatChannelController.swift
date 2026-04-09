@@ -23,6 +23,18 @@ class GroupChatChannelController: NSObject, ChannelController {
     private let profileLabel: String
     private let instanceNumber: Int?
 
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
     private(set) var activatedAt: Date?
 
     var displayLabel: String {
@@ -192,13 +204,8 @@ class GroupChatChannelController: NSObject, ChannelController {
 
                     self.lastTimestamp = ts
 
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    let date = formatter.date(from: ts) ?? Date()
-
-                    let timeFormatter = DateFormatter()
-                    timeFormatter.dateFormat = "h:mm a"
-                    let timeString = timeFormatter.string(from: date)
+                    let date = Self.isoFormatter.date(from: ts) ?? Date()
+                    let timeString = Self.timeFormatter.string(from: date)
 
                     self.appendMessage("[\(timeString)] \(msgSender): \(body)", autoScroll: isAtBottom)
 

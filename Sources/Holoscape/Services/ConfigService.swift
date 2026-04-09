@@ -4,6 +4,9 @@ class ConfigService {
     private let configDir: URL
     private let configURL: URL
 
+    /// In-memory cache — avoids disk reads on every load().
+    private var cachedConfig: HoloscapeConfig?
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.configDir = home.appendingPathComponent(".holoscape")
@@ -11,6 +14,9 @@ class ConfigService {
     }
 
     func load() -> HoloscapeConfig {
+        if let cached = cachedConfig {
+            return cached
+        }
         do {
             try ensureDirectoryExists()
             guard FileManager.default.fileExists(atPath: configURL.path) else {
@@ -21,7 +27,9 @@ class ConfigService {
             let data = try Data(contentsOf: configURL)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(HoloscapeConfig.self, from: data)
+            let config = try decoder.decode(HoloscapeConfig.self, from: data)
+            cachedConfig = config
+            return config
         } catch {
             NSLog("ConfigService: Failed to load config (\(error)). Using defaults.")
             let defaultConfig = HoloscapeConfig.default
@@ -31,6 +39,7 @@ class ConfigService {
     }
 
     func save(_ config: HoloscapeConfig) {
+        cachedConfig = config
         do {
             try ensureDirectoryExists()
             let encoder = JSONEncoder()

@@ -19,8 +19,10 @@ class TerminalContainerView: NSView {
     override var acceptsFirstResponder: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Prevent clicks inside the terminal from stealing first responder
-        return nil
+        // Delegate hit testing to the content view (terminal) so mouse
+        // interaction (selection, scrolling, right-click) works normally.
+        // The container itself doesn't become first responder.
+        return currentContentView?.hitTest(convert(point, to: currentContentView)) ?? nil
     }
 
     func showContent(_ view: NSView) {

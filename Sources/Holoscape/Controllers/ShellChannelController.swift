@@ -86,10 +86,11 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func lastLines(_ count: Int) -> [String] {
         guard let terminal = terminalView.terminal else { return [] }
-        // getText clamps end.row to buffer size, so use Int.max as upper bound
+        let totalRows = terminal.rows
+        let startRow = max(0, totalRows - count)
         let text = terminal.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: terminal.cols - 1, row: Int.max / 2)
+            start: Position(col: 0, row: startRow),
+            end: Position(col: terminal.cols - 1, row: totalRows - 1)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))
