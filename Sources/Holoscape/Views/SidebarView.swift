@@ -118,11 +118,11 @@ class SidebarView: NSView {
             }
         }
 
-        // Force layout then auto-scroll to the active entry
+        // Auto-scroll to the active entry — use NSView's built-in method
+        // which handles coordinate space conversion automatically
         stackView.layoutSubtreeIfNeeded()
         if let activeId, let activeEntry = tabEntries[activeId] {
-            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
-            scrollView.contentView.scrollToVisible(entryFrame)
+            activeEntry.scrollToVisible(activeEntry.bounds)
         }
     }
 
