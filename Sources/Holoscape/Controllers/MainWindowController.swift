@@ -663,7 +663,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func closeActiveChannel() {
-        guard let id = activeChannelId else { return }
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else { return }
+
+        // Show confirmation for active channels
+        if channel.state == .active {
+            let alert = NSAlert()
+            alert.messageText = "Close Channel"
+            alert.informativeText = "The channel \"\(channel.displayLabel)\" is still active. Are you sure you want to close it?"
+            alert.addButton(withTitle: "Close")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            if alert.runModal() != .alertFirstButtonReturn {
+                return
+            }
+        }
+
         closeChannel(id: id)
     }
 

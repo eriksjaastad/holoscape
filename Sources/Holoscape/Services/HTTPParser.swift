@@ -58,7 +58,9 @@ struct HTTPResponse {
 enum HTTPParser {
     static func parse(_ data: Data) -> HTTPRequest? {
         guard let raw = String(data: data, encoding: .utf8) else { return nil }
-        let lines = raw.components(separatedBy: "\r\n")
+        // Normalize line endings — handle both \r\n and \n
+        let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
         guard let requestLine = lines.first else { return nil }
 
         let parts = requestLine.split(separator: " ", maxSplits: 2)
@@ -87,7 +89,7 @@ enum HTTPParser {
         // Extract body (after blank line)
         var body: Data?
         if let blankIndex = lines.firstIndex(of: "") {
-            let bodyString = lines[(blankIndex + 1)...].joined(separator: "\r\n")
+            let bodyString = lines[(blankIndex + 1)...].joined(separator: "\n")
             if !bodyString.isEmpty {
                 body = bodyString.data(using: .utf8)
             }

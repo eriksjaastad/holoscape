@@ -6,7 +6,11 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
 
     /// Read the current slider value as a normalized string.
     private func sliderValue() -> String {
-        return transparencySlider().value as? String ?? ""
+        let v = transparencySlider().value
+        if let s = v as? String, !s.isEmpty { return s }
+        if let n = v as? NSNumber { return n.stringValue }
+        if let d = v as? Double { return String(d) }
+        return String(describing: v ?? "")
     }
 
     // MARK: - Transparency Slider

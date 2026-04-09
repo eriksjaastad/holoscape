@@ -56,7 +56,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // Apply appearance
         applyAppearance(config.appearance)
 
-        if !isUITesting {
+        let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
+        if shouldRestore {
             // Restore channels from saved state
             channelManager.restoreState { [weak self] metadata in
                 guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
