@@ -124,6 +124,13 @@ class SidebarView: NSView {
             let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
             scrollView.contentView.scrollToVisible(entryFrame)
         }
+
+        // Auto-scroll to the active entry so it's always visible and hittable
+        if let activeId, let activeEntry = tabEntries[activeId] {
+            DispatchQueue.main.async { [weak self] in
+                self?.scrollView.contentView.scrollToVisible(activeEntry.frame)
+            }
+        }
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
