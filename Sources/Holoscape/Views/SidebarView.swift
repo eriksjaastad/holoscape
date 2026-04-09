@@ -94,11 +94,11 @@ class SidebarView: NSView {
             tabEntries[channel.channelId] = entry
         }
 
-        // Auto-scroll to the active entry so it's always visible and hittable
+        // Force layout then auto-scroll to the active entry
+        stackView.layoutSubtreeIfNeeded()
         if let activeId, let activeEntry = tabEntries[activeId] {
-            DispatchQueue.main.async { [weak self] in
-                self?.scrollView.contentView.scrollToVisible(activeEntry.frame)
-            }
+            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
+            scrollView.contentView.scrollToVisible(entryFrame)
         }
     }
 
@@ -231,7 +231,7 @@ class SidebarTabEntry: NSControl {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
-        setAccessibilityIdentifier("sidebar-\(stableTypePrefix)-\(label)")
+        setAccessibilityIdentifier("sidebar-\(label)")
 
         if let notificationType {
             switch notificationType {
