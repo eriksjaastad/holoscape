@@ -26,6 +26,7 @@ class TerminalContainerView: NSView {
     }
 
     func showContent(_ view: NSView) {
+        guard currentContentView !== view else { return }
         currentContentView?.removeFromSuperview()
         currentContentView = view
 

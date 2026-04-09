@@ -7,6 +7,9 @@ protocol SplitPaneViewDelegate: AnyObject {
 
 @MainActor
 class SplitPaneView: NSView {
+    private static let activeBorder = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
+    private static let clearBorder = NSColor.clear.cgColor
+
     let paneId: UUID
     var channelId: UUID?
     weak var paneDelegate: SplitPaneViewDelegate?
@@ -14,9 +17,7 @@ class SplitPaneView: NSView {
 
     var isActivePane: Bool = false {
         didSet {
-            layer?.borderColor = isActivePane
-                ? NSColor.systemBlue.withAlphaComponent(0.6).cgColor
-                : NSColor.clear.cgColor
+            layer?.borderColor = isActivePane ? Self.activeBorder : Self.clearBorder
             layer?.borderWidth = isActivePane ? 2 : 0
         }
     }
@@ -33,6 +34,8 @@ class SplitPaneView: NSView {
     }
 
     func showContent(_ view: NSView) {
+        // Skip reparenting if this view is already displayed
+        guard contentView !== view else { return }
         contentView?.removeFromSuperview()
         contentView = view
         view.translatesAutoresizingMaskIntoConstraints = false

@@ -741,10 +741,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             activeChannelId = nil
             if let first = channelManager.allChannels().first {
                 switchToChannel(first.channelId)
+                // switchToChannel already called refreshAllTabs + scheduleSaveState
+                return
             }
         }
         refreshAllTabs()
-        channelManager.saveState()
+        scheduleSaveState()
     }
 
     // MARK: - Context Menu
@@ -825,7 +827,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let id = sender.representedObject as? UUID else { return }
         channelManager.togglePin(id: id)
         refreshAllTabs()
-        channelManager.saveState()
+        scheduleSaveState()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
