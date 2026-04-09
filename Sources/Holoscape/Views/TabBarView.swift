@@ -57,36 +57,68 @@ class TabBarView: NSView {
     func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = []) {
         activeChannelId = activeId
 
-        // Remove old buttons
-        for (_, button) in tabButtons {
+        let currentIds = Set(channels.map { $0.channelId })
+
+        // Remove buttons for channels that no longer exist
+        for (id, button) in tabButtons where !currentIds.contains(id) {
             button.removeFromSuperview()
+            tabButtons.removeValue(forKey: id)
         }
-        tabButtons.removeAll()
 
         var xOffset: CGFloat = tabSpacing
 
         for channel in channels {
-            let button = makeTabButton(for: channel)
+            let button: NSButton
+            if let existing = tabButtons[channel.channelId] {
+                // Update existing button in place
+                button = existing
+                updateTabButton(button, for: channel)
+            } else {
+                // Only create new buttons for new channels
+                button = makeTabButton(for: channel)
+                contentView.addSubview(button)
+                tabButtons[channel.channelId] = button
+            }
             button.frame = NSRect(x: xOffset, y: 2, width: button.fittingSize.width + tabPadding * 2, height: tabHeight - 4)
-            contentView.addSubview(button)
-            tabButtons[channel.channelId] = button
             xOffset += button.frame.width + tabSpacing
         }
 
         contentView.frame = NSRect(x: 0, y: 0, width: max(xOffset, scrollView.contentView.bounds.width), height: tabHeight)
     }
 
-    private func makeTabButton(for channel: any ChannelController) -> NSButton {
+    private func buildTabTitle(for channel: any ChannelController) -> String {
         var title = channel.displayLabel
-        // Add elapsed time or state text
         if let elapsed = ElapsedTimeFormatter.format(since: channel.activatedAt) {
             title += " (\(elapsed))"
         } else if channel.state == .connecting {
             title += " ..."
         }
         if channel.hasUnread {
-            title = "\u{25CF} " + title  // Bullet dot for unread
+            title = "\u{25CF} " + title
         }
+        return title
+    }
+
+    private func updateTabButton(_ button: NSButton, for channel: any ChannelController) {
+        let title = buildTabTitle(for: channel)
+        button.title = title
+
+        if channel.channelId == activeChannelId {
+            button.contentTintColor = NSColor.white
+            button.wantsLayer = true
+            button.layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+            button.layer?.cornerRadius = 4
+        } else {
+            button.contentTintColor = NSColor.lightGray
+            button.layer?.backgroundColor = nil
+        }
+
+        button.setAccessibilityTitle(title)
+        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+    }
+
+    private func makeTabButton(for channel: any ChannelController) -> NSButton {
+        let title = buildTabTitle(for: channel)
 
         let button = NSButton(title: title, target: self, action: #selector(tabClicked(_:)))
         button.bezelStyle = .recessed

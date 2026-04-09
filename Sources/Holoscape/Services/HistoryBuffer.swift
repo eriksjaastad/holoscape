@@ -62,6 +62,7 @@ final class HistoryBuffer {
 
     private let persistURL: URL
     private var flushTimer: Timer?
+    private var isDirty: Bool = false
 
     init() {
         let configDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".holoscape")
@@ -83,6 +84,7 @@ final class HistoryBuffer {
         if commands.count > maxCommands {
             commands.removeFirst(commands.count - maxCommands)
         }
+        isDirty = true
     }
 
     func recordChannelSwitch(from: String?, to: String) {
@@ -91,6 +93,7 @@ final class HistoryBuffer {
         if channelSwitches.count > maxSwitches {
             channelSwitches.removeFirst(channelSwitches.count - maxSwitches)
         }
+        isDirty = true
     }
 
     func recordSettingsChange(setting: String, oldValue: String, newValue: String) {
@@ -99,6 +102,7 @@ final class HistoryBuffer {
         if settingsChanges.count > maxSettingsChanges {
             settingsChanges.removeFirst(settingsChanges.count - maxSettingsChanges)
         }
+        isDirty = true
     }
 
     func recordError(_ message: String, context: String? = nil) {
@@ -107,6 +111,7 @@ final class HistoryBuffer {
         if errors.count > maxErrors {
             errors.removeFirst(errors.count - maxErrors)
         }
+        isDirty = true
     }
 
     // MARK: - Snapshot
@@ -124,11 +129,13 @@ final class HistoryBuffer {
     // MARK: - Persistence
 
     func flush() {
+        guard isDirty else { return }
         let snap = snapshot()
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         if let data = try? encoder.encode(snap) {
             try? data.write(to: persistURL, options: .atomic)
+            isDirty = false
         }
     }
 
