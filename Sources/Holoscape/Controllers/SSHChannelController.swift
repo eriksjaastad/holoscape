@@ -92,9 +92,11 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     func lastLines(_ count: Int) -> [String] {
         guard let termView = terminal as? LocalProcessTerminalView,
               let term = termView.terminal else { return [] }
+        let totalRows = term.rows
+        let startRow = max(0, totalRows - count)
         let text = term.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: term.cols - 1, row: Int.max / 2)
+            start: Position(col: 0, row: startRow),
+            end: Position(col: term.cols - 1, row: totalRows - 1)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))

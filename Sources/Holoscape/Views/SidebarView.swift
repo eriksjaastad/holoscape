@@ -58,40 +58,64 @@ class SidebarView: NSView {
     func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
         activeChannelId = activeId
 
-        // Remove all existing entries
-        for (_, entry) in tabEntries {
+        let currentIds = Set(channels.map { $0.channelId })
+
+        // Remove entries for channels that no longer exist
+        for (id, entry) in tabEntries where !currentIds.contains(id) {
             stackView.removeArrangedSubview(entry)
             entry.removeFromSuperview()
+            tabEntries.removeValue(forKey: id)
         }
-        tabEntries.removeAll()
 
-        // Add entries for each channel
-        for channel in channels {
-            let entry = SidebarTabEntry(frame: .zero)
+        // Update existing entries in-place, create new ones as needed
+        for (index, channel) in channels.enumerated() {
             let isPinned = pinnedIds.contains(channel.channelId)
             let notificationType = notifications[channel.channelId]
-            entry.configure(
-                label: channel.displayLabel,
-                channelType: channel.channelType,
-                hasUnread: channel.hasUnread,
-                state: channel.state,
-                isActive: channel.channelId == activeId,
-                elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
-                isPinned: isPinned,
-                notificationType: notificationType
-            )
-            entry.channelId = channel.channelId
-            entry.target = self
-            entry.action = #selector(entryClicked(_:))
-            entry.translatesAutoresizingMaskIntoConstraints = false
 
-            stackView.addArrangedSubview(entry)
-            NSLayoutConstraint.activate([
-                entry.heightAnchor.constraint(equalToConstant: entryHeight),
-                entry.widthAnchor.constraint(equalTo: stackView.widthAnchor),
-            ])
+            if let existing = tabEntries[channel.channelId] {
+                // Update in place — no alloc, no constraint churn
+                existing.configure(
+                    label: channel.displayLabel,
+                    channelType: channel.channelType,
+                    hasUnread: channel.hasUnread,
+                    state: channel.state,
+                    isActive: channel.channelId == activeId,
+                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    isPinned: isPinned,
+                    notificationType: notificationType
+                )
+                // Reorder if needed
+                let arrangedViews = stackView.arrangedSubviews
+                if index < arrangedViews.count && arrangedViews[index] !== existing {
+                    stackView.removeArrangedSubview(existing)
+                    stackView.insertArrangedSubview(existing, at: index)
+                }
+            } else {
+                // New channel — create entry
+                let entry = SidebarTabEntry(frame: .zero)
+                entry.configure(
+                    label: channel.displayLabel,
+                    channelType: channel.channelType,
+                    hasUnread: channel.hasUnread,
+                    state: channel.state,
+                    isActive: channel.channelId == activeId,
+                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    isPinned: isPinned,
+                    notificationType: notificationType
+                )
+                entry.channelId = channel.channelId
+                entry.target = self
+                entry.action = #selector(entryClicked(_:))
+                entry.translatesAutoresizingMaskIntoConstraints = false
 
-            tabEntries[channel.channelId] = entry
+                stackView.insertArrangedSubview(entry, at: index)
+                NSLayoutConstraint.activate([
+                    entry.heightAnchor.constraint(equalToConstant: entryHeight),
+                    entry.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+                ])
+
+                tabEntries[channel.channelId] = entry
+            }
         }
 
         // Force layout then auto-scroll to the active entry

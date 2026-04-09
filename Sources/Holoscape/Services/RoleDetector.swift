@@ -1,6 +1,11 @@
 import Foundation
 
 struct RoleDetector {
+    /// Compiled once, reused on every call.
+    private static let roleRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: #"\*\*[Yy]ou are the ([^.*]+?)(?:\s+of\s+[^.*]+)?\.*\*\*"#)
+    }()
+
     /// Parse CLAUDE.md to extract role identifier.
     /// Looks for pattern: > **You are the {role}**
     static func detectRole(in directory: URL) -> String? {
@@ -16,8 +21,7 @@ struct RoleDetector {
         // Match: **You are the {role} of {project}.**
         // or:   **You are the {role}.**
         // or:   **You are the {role}**
-        let pattern = #"\*\*[Yy]ou are the ([^.*]+?)(?:\s+of\s+[^.*]+)?\.*\*\*"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+        guard let regex = roleRegex,
               let match = regex.firstMatch(
                 in: content,
                 range: NSRange(content.startIndex..., in: content)
