@@ -124,6 +124,13 @@ class SidebarView: NSView {
             let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
             scrollView.contentView.scrollToVisible(entryFrame)
         }
+
+        // Force layout then auto-scroll to the active entry
+        stackView.layoutSubtreeIfNeeded()
+        if let activeId, let activeEntry = tabEntries[activeId] {
+            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
+            scrollView.contentView.scrollToVisible(entryFrame)
+        }
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
