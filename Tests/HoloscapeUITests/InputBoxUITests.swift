@@ -2,11 +2,19 @@ import XCTest
 
 final class InputBoxUITests: HoloscapeUITestCase {
 
+    /// Input box is only visible for non-PTY channels (Bridge, Group Chat).
+    /// Create a Bridge channel before each test so input-box exists.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+
     // MARK: - Auto-Grow
 
     func testInputBoxGrowsWithMultipleLines() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist for non-PTY channel")
 
         let baselineHeight = inputBox.frame.height
 
@@ -29,7 +37,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testInputBoxShrinksAfterSend() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         let baselineHeight = inputBox.frame.height
 
@@ -58,7 +66,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testShiftEnterInsertsNewline() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         inputBox.typeText("first line")
         inputBox.typeKey(.return, modifierFlags: .shift)
@@ -75,7 +83,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testUpArrowRecallsCommand() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Submit a command
         inputBox.typeText("echo test-history")
@@ -90,7 +98,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testDownArrowAfterUpClearsInput() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Submit
         inputBox.typeText("history-test")
@@ -106,7 +114,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testMultipleHistoryEntries() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Submit 3 commands
         for cmd in ["cmd-a", "cmd-b", "cmd-c"] {
@@ -125,25 +133,25 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     // MARK: - Focus
 
-    func testInputBoxHasFocusOnLaunch() throws {
+    func testInputBoxHasFocusOnNonPTYChannel() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists, "Input box should exist")
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist for non-PTY channel")
 
         inputBox.typeText("focus-test")
         let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "focus-test", "Input box should accept typing on launch")
+        XCTAssertEqual(value, "focus-test", "Input box should accept typing on non-PTY channel")
     }
 
     func testInputBoxRetainsFocusAfterChannelSwitch() throws {
-        // Create second channel
-        createChannel(type: "Shell")
-
-        // Switch back
+        // Switch to shell and back to bridge
         app.typeKey("1", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
+        app.typeKey("2", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
 
         // Type
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.typeText("still-focused")
         let value = inputBox.value as? String ?? ""
         XCTAssertEqual(value, "still-focused", "Input box should retain focus after channel switch")
@@ -153,7 +161,7 @@ final class InputBoxUITests: HoloscapeUITestCase {
 
     func testEmptyInputDoesNotSubmit() throws {
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Press Enter with no text — should not crash
         inputBox.typeKey(.return, modifierFlags: [])

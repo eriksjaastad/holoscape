@@ -11,11 +11,10 @@ final class TerminalDisplayUITests: HoloscapeUITestCase {
         // Switch back and forth — should never show blank
         app.typeKey("1", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after switching to channel 1")
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching to channel 1")
 
         app.typeKey("2", modifierFlags: .command)
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after switching to channel 2")
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching to channel 2")
     }
 
     // MARK: - Rapid Switching
@@ -33,8 +32,7 @@ final class TerminalDisplayUITests: HoloscapeUITestCase {
             }
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should be present after rapid switching")
+        assertActiveChannelResponsive(message: "Channel should be responsive after rapid switching")
     }
 
     // MARK: - Window Resizing
@@ -52,12 +50,8 @@ final class TerminalDisplayUITests: HoloscapeUITestCase {
         // Create a new shell — it should have a shell prompt, not be blank
         createChannel(type: "Shell")
 
-        // Window should have content (input box exists, app responsive)
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("echo alive")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "echo alive", "Input should work in newly created channel")
+        // Window should have content (terminal view exists, app responsive)
+        assertActiveChannelResponsive(message: "Newly created shell channel should be responsive")
     }
 
     // MARK: - Channel Types

@@ -206,11 +206,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         // Escape to cancel
         app.typeKey(.escape, modifierFlags: [])
 
-        // Input box should regain focus — verify by typing and checking value
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after cancel")
-        inputBox.typeText("back-to-input")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "back-to-input", "Focus should return to input box after launcher cancel")
+        // Channel should be responsive after cancelling launcher
+        assertActiveChannelResponsive(message: "Channel should be responsive after launcher cancel")
     }
 }

@@ -3,6 +3,13 @@ import XCTest
 
 final class EditMenuUITests: HoloscapeUITestCase {
 
+    /// Edit menu tests need the input box, which requires a non-PTY channel.
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+
     // MARK: - Copy
 
     func testCmdCCopiesSelectedText() throws {
@@ -202,14 +209,15 @@ final class EditMenuUITests: HoloscapeUITestCase {
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist")
 
-        // Type and copy in first channel
+        // Type and copy in Bridge channel
         inputBox.typeText("cross-channel")
         inputBox.typeKey("a", modifierFlags: .command)
         inputBox.typeKey("c", modifierFlags: .command)
         inputBox.typeKey(.return, modifierFlags: [])
 
-        // Create second channel
-        createChannel(type: "Shell")
+        // Create second Bridge channel for input-box access
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
 
         // Paste in second channel
         let inputBox2 = app.textViews["input-box"]

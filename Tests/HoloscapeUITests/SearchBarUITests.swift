@@ -17,12 +17,8 @@ final class SearchBarUITests: HoloscapeUITestCase {
         // Close with Escape
         closeSearch()
 
-        // Focus should return to input box
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("after-search")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "after-search", "Focus should return to input box after closing search")
+        // Channel should still be responsive after closing search
+        assertActiveChannelResponsive(message: "Channel should be responsive after closing search")
     }
 
     func testCmdFTogglesSearchBar() throws {
@@ -32,12 +28,8 @@ final class SearchBarUITests: HoloscapeUITestCase {
         // Toggle off
         app.typeKey("f", modifierFlags: .command)
 
-        // Input box should have focus
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("toggled")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "toggled", "Input box should have focus after toggling search off")
+        // Channel should still be responsive after toggling search off
+        assertActiveChannelResponsive(message: "Channel should be responsive after toggling search off")
     }
 
     // MARK: - Search via Menu
@@ -55,11 +47,12 @@ final class SearchBarUITests: HoloscapeUITestCase {
     // MARK: - Search Query
 
     func testSearchShowsMatchCount() throws {
-        // First, send some text to the shell so we have content to search
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
-        inputBox.typeText("echo searchable-text-123")
-        inputBox.typeKey(.return, modifierFlags: [])
+        // Send text to the shell via API so we have content to search
+        let channels = try apiListChannels()
+        if let label = channels.first?["label"] as? String {
+            try apiSendInput(label: label, text: "echo searchable-text-123\n")
+            Thread.sleep(forTimeInterval: 1.0)
+        }
 
         // Open search
         openSearch()

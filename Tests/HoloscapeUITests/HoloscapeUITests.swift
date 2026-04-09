@@ -15,24 +15,33 @@ final class HoloscapeUITests: HoloscapeUITestCase {
         XCTAssertEqual(app.windows.count, 1, "Only one window should be open (no Terminal.app spawned)")
     }
 
-    // MARK: - Input Box Focus
+    // MARK: - Input Box (requires non-PTY channel)
 
     func testInputBoxRetainsFocusAfterChannelSwitch() throws {
-        // Open a new channel via File > New Channel, pick Shell
-        createChannel(type: "Shell")
+        // Create a Bridge channel so input-box is visible
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
 
-        // Input box should still accept keystrokes
+        // Switch away and back
+        app.typeKey("1", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
+        app.typeKey("2", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
+
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
         inputBox.typeText("test")
         XCTAssertEqual(inputBox.value as? String, "test")
     }
 
-    // MARK: - Input Submission
+    // MARK: - Input Submission (requires non-PTY channel)
 
     func testEnterKeySubmitsAndClearsInput() throws {
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         inputBox.typeText("echo hello")
         inputBox.typeKey(.return, modifierFlags: [])
@@ -42,11 +51,14 @@ final class HoloscapeUITests: HoloscapeUITestCase {
         XCTAssertTrue(value.isEmpty, "Input box should be empty after Enter")
     }
 
-    // MARK: - Command History
+    // MARK: - Command History (requires non-PTY channel)
 
     func testUpArrowRecallsPreviousCommand() throws {
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Submit a command
         inputBox.typeText("ls -la")
@@ -59,12 +71,11 @@ final class HoloscapeUITests: HoloscapeUITestCase {
     }
 
     func testDownArrowAfterUpClearsInput() throws {
-        // BUG: InputBoxView.keyDown only handles down-arrow when string.isEmpty,
-        // but after up-arrow recalls a command, string is non-empty so down-arrow
-        // falls through to NSTextView instead of navigating history.
-        // This test documents the expected behavior once fixed.
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.exists)
+        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
         // Submit, then up, then down
         inputBox.typeText("pwd")
@@ -82,22 +93,21 @@ final class HoloscapeUITests: HoloscapeUITestCase {
     // MARK: - Tab Bar
 
     func testDefaultShellTabExists() throws {
-        // On launch, there should be at least one tab button (the default shell)
-        let entry = sidebarEntry("Shell")
-        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Default Shell entry should be visible")
+        // On launch, there should be at least one sidebar entry
+        let entry = firstSidebarEntry()
+        XCTAssertTrue(entry.waitForExistence(timeout: 2), "Default sidebar entry should be visible")
     }
 
     func testNewChannelCreatesTab() throws {
-        // On launch we should have one Shell entry
-        let firstEntry = sidebarEntry("Shell")
-        XCTAssertTrue(firstEntry.waitForExistence(timeout: 2), "Should have initial Shell entry")
+        let initialCount = sidebarEntryCount()
+        XCTAssertGreaterThan(initialCount, 0, "Should have at least one entry on launch")
 
         // Create a new shell channel
         createChannel(type: "Shell")
 
-        // The second shell entry should appear with an instance number
-        let secondEntry = sidebarEntry("Shell 2")
-        XCTAssertTrue(secondEntry.waitForExistence(timeout: 3), "Second Shell entry should appear after creating new channel")
+        // Sidebar count should increase
+        let newCount = sidebarEntryCount()
+        XCTAssertGreaterThan(newCount, initialCount, "New channel should add a sidebar entry")
     }
 
     // MARK: - Keyboard Shortcuts

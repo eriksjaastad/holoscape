@@ -9,16 +9,13 @@ final class SplitPaneUITests: HoloscapeUITestCase {
         app.typeKey("d", modifierFlags: .command)
 
         // Window should still be functional
-        // Input box should still work
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after split")
+        assertActiveChannelResponsive(message: "Channel should be responsive after horizontal split")
     }
 
     func testCmdShiftDCreatesVerticalSplit() throws {
         app.typeKey("d", modifierFlags: [.command, .shift])
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after split")
+        assertActiveChannelResponsive(message: "Channel should be responsive after vertical split")
     }
 
     // MARK: - Close Pane
@@ -27,22 +24,20 @@ final class SplitPaneUITests: HoloscapeUITestCase {
         // With only 1 pane, Cmd+Shift+W should do nothing (no blank screen)
         app.typeKey("w", modifierFlags: [.command, .shift])
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should still be present — no blank screen")
+        assertActiveChannelResponsive(message: "Channel should still be responsive — no blank screen")
     }
 
     func testCmdShiftWClosesSecondPane() throws {
         // Split first
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after split")
+        assertActiveChannelResponsive(message: "Channel should be responsive after split")
 
         // Now close the active pane
         app.typeKey("w", modifierFlags: [.command, .shift])
 
         // Should be back to single pane
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should still work after pane close")
+        assertActiveChannelResponsive(message: "Channel should still work after pane close")
     }
 
     // MARK: - Max Panes
@@ -53,8 +48,7 @@ final class SplitPaneUITests: HoloscapeUITestCase {
             app.typeKey("d", modifierFlags: .command)
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist at max pane limit")
+        assertActiveChannelResponsive(message: "Channel should be responsive at max pane limit")
 
         // 4 panes max + input scroll view + potential search scroll view = 6
         // If this threshold needs updating, check SplitPaneManager for new scroll views
@@ -69,15 +63,8 @@ final class SplitPaneUITests: HoloscapeUITestCase {
         // Split
         app.typeKey("d", modifierFlags: .command)
 
-        // Type into input box — should go to the active (new) pane
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("echo active-pane-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Input should be cleared
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submission in split mode")
+        // Channel should still be responsive in split mode
+        assertActiveChannelResponsive(message: "Active pane should be responsive after split")
     }
 
     // MARK: - Sequential Split and Close
@@ -86,12 +73,10 @@ final class SplitPaneUITests: HoloscapeUITestCase {
         // Split, close, split, close — should not leak or crash
         for _ in 0..<3 {
             app.typeKey("d", modifierFlags: .command)
-            let inputBox = app.textViews["input-box"]
-            XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
+            assertActiveChannelResponsive()
             app.typeKey("w", modifierFlags: [.command, .shift])
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist after split/close cycles")
+        assertActiveChannelResponsive(message: "Channel should be responsive after split/close cycles")
     }
 }

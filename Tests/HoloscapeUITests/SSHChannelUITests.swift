@@ -63,7 +63,6 @@ final class SSHChannelUITests: HoloscapeUITestCase {
 
         // Verify switching works
         shellEntry.click()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input should work after switching between channel types")
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching between channel types")
     }
 }

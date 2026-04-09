@@ -113,8 +113,7 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should remain after closing last channel")
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still be present after closing last channel")
+        assertActiveChannelResponsive(message: "Channel should be responsive after closing last channel")
     }
 
     func testRapidCloseDoesNotDoublePrompt() throws {

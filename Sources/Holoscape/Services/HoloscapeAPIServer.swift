@@ -61,24 +61,47 @@ class HoloscapeAPIServer {
 
     private nonisolated func handleConnection(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, _ in
-            guard let data, let request = HTTPParser.parse(data) else {
+        receiveFullRequest(connection: connection, accumulated: Data())
+    }
+
+    /// Accumulate data until we have a complete HTTP request (headers + body).
+    private nonisolated func receiveFullRequest(connection: NWConnection, accumulated: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, _ in
+            var buffer = accumulated
+            if let data { buffer.append(data) }
+
+            // Check if we have a complete request (headers + Content-Length body)
+            if let request = HTTPParser.parse(buffer) {
+                // If there's a Content-Length header, verify we have the full body
+                if let raw = String(data: buffer, encoding: .utf8),
+                   let clRange = raw.range(of: "Content-Length: ", options: .caseInsensitive) {
+                    let afterCL = raw[clRange.upperBound...]
+                    if let nlIndex = afterCL.firstIndex(of: "\n") ?? afterCL.firstIndex(of: "\r") {
+                        let clValue = Int(afterCL[..<nlIndex].trimmingCharacters(in: .whitespaces)) ?? 0
+                        let bodySize = request.body?.count ?? 0
+                        if bodySize < clValue && !isComplete {
+                            // Need more data
+                            self?.receiveFullRequest(connection: connection, accumulated: buffer)
+                            return
+                        }
+                    }
+                }
+
+                Task { @MainActor [weak self] in
+                    guard let self else { connection.cancel(); return }
+                    let response = await self.route(request)
+                    connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                        connection.cancel()
+                    }))
+                }
+            } else if isComplete {
                 let resp = HTTPResponse.error("Bad request")
                 connection.send(content: resp.serialize(), completion: .contentProcessed({ _ in
                     connection.cancel()
                 }))
-                return
-            }
-
-            Task { @MainActor [weak self] in
-                guard let self else {
-                    connection.cancel()
-                    return
-                }
-                let response = await self.route(request)
-                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
-                    connection.cancel()
-                }))
+            } else {
+                // Not yet parseable, keep reading
+                self?.receiveFullRequest(connection: connection, accumulated: buffer)
             }
         }
     }

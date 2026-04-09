@@ -556,15 +556,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         let response = alert.runModal()
         switch response {
-        case .alertFirstButtonReturn:
+        case .alertFirstButtonReturn:                      // 1000 — Shell
             createShellChannel()
-        case .alertSecondButtonReturn:
+        case .alertSecondButtonReturn:                     // 1001 — Agent (OAuth)
             createAgentChannel(authType: .oauth)
-        case .alertThirdButtonReturn:
+        case .alertThirdButtonReturn:                      // 1002 — Agent (API Key)
             createAgentChannel(authType: .apiKey(""))
-        case NSApplication.ModalResponse(rawValue: 1002):
+        case NSApplication.ModalResponse(rawValue: 1003):  // Group Chat
             createGroupChatChannel()
-        case NSApplication.ModalResponse(rawValue: 1003):
+        case NSApplication.ModalResponse(rawValue: 1004):  // Bridge
             createBridgeChannel()
         default:
             break
@@ -663,7 +663,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func closeActiveChannel() {
-        guard let id = activeChannelId else { return }
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else { return }
+
+        // Show confirmation for active channels
+        if channel.state == .active {
+            let alert = NSAlert()
+            alert.messageText = "Close Channel"
+            alert.informativeText = "The channel \"\(channel.displayLabel)\" is still active. Are you sure you want to close it?"
+            alert.addButton(withTitle: "Close")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            if alert.runModal() != .alertFirstButtonReturn {
+                return
+            }
+        }
+
         closeChannel(id: id)
     }
 
