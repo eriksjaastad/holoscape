@@ -556,15 +556,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         let response = alert.runModal()
         switch response {
-        case .alertFirstButtonReturn:
+        case .alertFirstButtonReturn:                      // 1000 — Shell
             createShellChannel()
-        case .alertSecondButtonReturn:
+        case .alertSecondButtonReturn:                     // 1001 — Agent (OAuth)
             createAgentChannel(authType: .oauth)
-        case .alertThirdButtonReturn:
+        case .alertThirdButtonReturn:                      // 1002 — Agent (API Key)
             createAgentChannel(authType: .apiKey(""))
-        case NSApplication.ModalResponse(rawValue: 1002):
+        case NSApplication.ModalResponse(rawValue: 1003):  // Group Chat
             createGroupChatChannel()
-        case NSApplication.ModalResponse(rawValue: 1003):
+        case NSApplication.ModalResponse(rawValue: 1004):  // Bridge
             createBridgeChannel()
         default:
             break
