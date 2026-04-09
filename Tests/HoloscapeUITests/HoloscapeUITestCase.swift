@@ -49,6 +49,19 @@ class HoloscapeUITestCase: XCTestCase {
         return window.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "sidebar-\(label)")).firstMatch
     }
 
+    /// Click a sidebar entry, handling the case where it exists but isn't hittable
+    /// (e.g., partially off-screen or needs scrolling into view).
+    func clickSidebarEntry(_ label: String, timeout: TimeInterval = 3) {
+        let entry = sidebarEntry(label)
+        XCTAssertTrue(entry.waitForExistence(timeout: timeout), "\(label) sidebar entry should exist")
+        if entry.isHittable {
+            entry.click()
+        } else {
+            // Force click via coordinate — element exists but isn't hittable
+            entry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        }
+    }
+
     /// Find a sidebar entry by exact identifier match.
     func sidebarEntryExact(_ label: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
@@ -220,15 +233,15 @@ class HoloscapeUITestCase: XCTestCase {
 
     // MARK: - HTTP API Helpers
 
-    private let apiBase = "http://127.0.0.1:7865"
-    private var apiReady = false
+    private nonisolated(unsafe) static let apiBase = "http://127.0.0.1:7865"
+    private nonisolated(unsafe) static var apiReady = false
 
     /// Wait for the API server to start responding.
-    private func ensureAPIReady() {
-        guard !apiReady else { return }
+    private nonisolated func ensureAPIReady() {
+        guard !Self.apiReady else { return }
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
-            let url = URL(string: apiBase + "/channels")!
+            let url = URL(string: Self.apiBase + "/channels")!
             var req = URLRequest(url: url)
             req.httpMethod = "GET"
             req.timeoutInterval = 2
@@ -239,16 +252,19 @@ class HoloscapeUITestCase: XCTestCase {
                 sem.signal()
             }.resume()
             sem.wait()
-            if ok { apiReady = true; return }
+            if ok { Self.apiReady = true; return }
             Thread.sleep(forTimeInterval: 0.5)
         }
     }
 
     /// Synchronous HTTP request to the Holoscape API server.
+    /// Marked nonisolated to avoid blocking the MainActor — the API server
+    /// dispatches responses via Task { @MainActor }, which deadlocks if
+    /// the caller is also blocking the main actor with semaphore.wait().
     @discardableResult
-    func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
+    nonisolated func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
         ensureAPIReady()
-        let url = URL(string: apiBase + path)!
+        let url = URL(string: Self.apiBase + path)!
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 15
@@ -275,7 +291,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// List all channels via GET /channels.
-    func apiListChannels() throws -> [[String: Any]] {
+    nonisolated func apiListChannels() throws -> [[String: Any]] {
         let (data, _) = try apiRequest("GET", path: "/channels")
         guard let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             XCTFail("Failed to decode channels JSON array")
@@ -286,7 +302,7 @@ class HoloscapeUITestCase: XCTestCase {
 
     /// Create a channel via POST /channels.
     @discardableResult
-    func apiCreateChannel(type: String = "shell", dir: String? = nil, label: String? = nil, cmd: String? = nil) throws -> (Data, Int) {
+    nonisolated func apiCreateChannel(type: String = "shell", dir: String? = nil, label: String? = nil, cmd: String? = nil) throws -> (Data, Int) {
         var body: [String: Any] = ["type": type]
         if let dir { body["dir"] = dir }
         if let label { body["label"] = label }
@@ -295,7 +311,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Read output lines from a channel via GET /channels/{label}/output.
-    func apiReadOutput(label: String, lines: Int = 50) throws -> [String] {
+    nonisolated func apiReadOutput(label: String, lines: Int = 50) throws -> [String] {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
         let (data, _) = try apiRequest("GET", path: "/channels/\(encoded)/output?lines=\(lines)")
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -306,31 +322,31 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Send input to a channel via POST /channels/{label}/input.
-    func apiSendInput(label: String, text: String) throws {
+    nonisolated func apiSendInput(label: String, text: String) throws {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
         try apiRequest("POST", path: "/channels/\(encoded)/input", body: ["text": text])
     }
 
     /// Switch to a channel via POST /channels/{label}/switch.
-    func apiSwitchChannel(label: String) throws {
+    nonisolated func apiSwitchChannel(label: String) throws {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
         try apiRequest("POST", path: "/channels/\(encoded)/switch")
     }
 
     /// Delete a channel via DELETE /channels/{label}.
-    func apiDeleteChannel(label: String) throws {
+    nonisolated func apiDeleteChannel(label: String) throws {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
         try apiRequest("DELETE", path: "/channels/\(encoded)")
     }
 
     /// Send a notification via POST /notify.
     @discardableResult
-    func apiNotify(type: String, cwd: String) throws -> (Data, Int) {
+    nonisolated func apiNotify(type: String, cwd: String) throws -> (Data, Int) {
         return try apiRequest("POST", path: "/notify", body: ["type": type, "cwd": cwd])
     }
 
     /// Poll channel output until it contains the expected text, or timeout.
-    func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 10) throws -> Bool {
+    nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 10) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let lines = try apiReadOutput(label: label)
