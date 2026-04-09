@@ -9,6 +9,9 @@ protocol TabBarViewDelegate: AnyObject {
 class TabBarView: NSView {
     weak var tabDelegate: TabBarViewDelegate?
 
+    private static let barBg = NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0).cgColor
+    private static let activeTabBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+
     private let scrollView = NSScrollView()
     private let contentView = NSView()
     private var tabButtons: [UUID: NSButton] = [:]
@@ -30,7 +33,7 @@ class TabBarView: NSView {
 
     private func setupScrollView() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0).cgColor
+        layer?.backgroundColor = Self.barBg
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasHorizontalScroller = false
@@ -106,7 +109,7 @@ class TabBarView: NSView {
         if channel.channelId == activeChannelId {
             button.contentTintColor = NSColor.white
             button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+            button.layer?.backgroundColor = Self.activeTabBg
             button.layer?.cornerRadius = 4
         } else {
             button.contentTintColor = NSColor.lightGray
@@ -128,7 +131,7 @@ class TabBarView: NSView {
         if channel.channelId == activeChannelId {
             button.contentTintColor = NSColor.white
             button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+            button.layer?.backgroundColor = Self.activeTabBg
             button.layer?.cornerRadius = 4
         } else {
             button.contentTintColor = NSColor.lightGray

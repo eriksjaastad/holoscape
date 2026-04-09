@@ -124,13 +124,6 @@ class SidebarView: NSView {
             let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
             scrollView.contentView.scrollToVisible(entryFrame)
         }
-
-        // Force layout then auto-scroll to the active entry
-        stackView.layoutSubtreeIfNeeded()
-        if let activeId, let activeEntry = tabEntries[activeId] {
-            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
-            scrollView.contentView.scrollToVisible(entryFrame)
-        }
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
@@ -153,6 +146,18 @@ class SidebarView: NSView {
 
 @MainActor
 class SidebarTabEntry: NSControl {
+    // Pre-computed CGColors — avoids NSColor→CGColor conversion on every configure() call
+    private static let activeBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+    private static let permissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
+    private static let permissionText = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
+    private static let idleBg = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
+    private static let idleText = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
+    private static let unreadBg = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
+    private static let clearBg = NSColor.clear.cgColor
+    private static let greenStatus = NSColor.systemGreen.cgColor
+    private static let yellowStatus = NSColor.systemYellow.cgColor
+    private static let redStatus = NSColor.systemRed.cgColor
+
     var channelId: UUID?
     private var stableTypePrefix = "Shell"
 
@@ -227,35 +232,32 @@ class SidebarTabEntry: NSControl {
 
         switch state {
         case .active:
-            statusIndicator.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            statusIndicator.layer?.backgroundColor = Self.greenStatus
             statusTextField.stringValue = elapsedTime ?? ""
         case .connecting:
-            statusIndicator.layer?.backgroundColor = NSColor.systemYellow.cgColor
+            statusIndicator.layer?.backgroundColor = Self.yellowStatus
             statusTextField.stringValue = "connecting..."
         case .disconnected:
-            statusIndicator.layer?.backgroundColor = NSColor.systemRed.cgColor
+            statusIndicator.layer?.backgroundColor = Self.redStatus
             statusTextField.stringValue = "disconnected"
         }
 
         if isActive {
-            layer?.backgroundColor = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+            layer?.backgroundColor = Self.activeBg
             labelField.textColor = NSColor.white
         } else if notificationType == "permission_prompt" {
-            // Amber/orange — Claude needs permission approval
-            layer?.backgroundColor = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
-            labelField.textColor = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
+            layer?.backgroundColor = Self.permissionBg
+            labelField.textColor = Self.permissionText
             statusTextField.stringValue = "needs approval"
         } else if notificationType == "idle_prompt" {
-            // Green tint — Claude is done, waiting for input
-            layer?.backgroundColor = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
-            labelField.textColor = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
+            layer?.backgroundColor = Self.idleBg
+            labelField.textColor = Self.idleText
             statusTextField.stringValue = "ready"
         } else if hasUnread {
-            // Subtle blue tint — has new output
-            layer?.backgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
+            layer?.backgroundColor = Self.unreadBg
             labelField.textColor = NSColor.white
         } else {
-            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.backgroundColor = Self.clearBg
             labelField.textColor = NSColor.lightGray
         }
 
