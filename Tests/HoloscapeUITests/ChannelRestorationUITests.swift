@@ -21,8 +21,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let restoredWindow = app.windows["Holoscape"]
         XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5), "Window should exist after relaunch")
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be present after restoration")
+        assertActiveChannelResponsive(message: "Channel should be responsive after restoration")
 
         XCTAssertGreaterThanOrEqual(sidebarEntryCount(), 3, "All 3 channels should be restored")
     }
@@ -90,8 +89,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Should have an input box from default shell")
+        assertActiveChannelResponsive(message: "Default shell should be responsive on launch")
 
         let shellEntry = sidebarEntry("Shell")
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3), "Should have a Shell sidebar entry on fresh launch")

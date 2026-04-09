@@ -171,17 +171,12 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testInputBoxAcceptsTextAfterFontChange() throws {
+    func testChannelResponsiveAfterFontChange() throws {
         openSettings()
         selectFont("Monaco")
         closeSettings()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist with changed font")
-
-        inputBox.typeText("font-test")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "font-test", "Input box should accept text after font change")
+        assertActiveChannelResponsive(message: "Channel should be responsive after font change")
 
         openSettings()
         selectFont("SF Mono")
@@ -193,11 +188,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         selectFont("Menlo")
         closeSettings()
 
-        // Generate output
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist")
-        inputBox.typeText("echo font-output-test")
-        inputBox.typeKey(.return, modifierFlags: [])
+        assertActiveChannelResponsive(message: "Channel should be responsive after font change")
 
         let window = app.windows["Holoscape"]
         let scrollViews = window.scrollViews

@@ -9,7 +9,18 @@ class HoloscapeUITestCase: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        app.launchArguments.append("--ui-testing")
         app.launch()
+
+        // Wait for the app to fully initialize before proceeding.
+        // Without this, ~57% of tests fail with "Application has not loaded accessibility"
+        // because applicationDidFinishLaunching hasn't completed yet.
+        let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after launch")
+        let sidebar = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
+        ).firstMatch
+        _ = sidebar.waitForExistence(timeout: 10)
     }
 
     override func tearDownWithError() throws {
@@ -51,6 +62,12 @@ class HoloscapeUITestCase: XCTestCase {
             format: "title CONTAINS %@ AND title CONTAINS %@",
             "\u{1F4CC}", label
         )).firstMatch
+    }
+
+    /// Find the first sidebar entry (whatever the default channel is called).
+    func firstSidebarEntry() -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).firstMatch
     }
 
     /// Count sidebar entries.
@@ -189,27 +206,52 @@ class HoloscapeUITestCase: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    /// Read the match count label text from the search bar.
-    func searchMatchCountText() -> String? {
+    /// Read the match count label text from the search bar, waiting for results.
+    func searchMatchCountText(timeout: TimeInterval = 3) -> String? {
         let searchBar = app.toolbars["Search Bar"]
         let label = searchBar.staticTexts["search-match-count"]
-        if label.exists {
-            return label.label
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if label.exists, !label.label.isEmpty { return label.label }
+            Thread.sleep(forTimeInterval: 0.2)
         }
-        return nil
+        return label.exists ? label.label : nil
     }
 
     // MARK: - HTTP API Helpers
 
     private let apiBase = "http://127.0.0.1:7865"
+    private var apiReady = false
+
+    /// Wait for the API server to start responding.
+    private func ensureAPIReady() {
+        guard !apiReady else { return }
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let url = URL(string: apiBase + "/channels")!
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 2
+            let sem = DispatchSemaphore(value: 0)
+            var ok = false
+            URLSession.shared.dataTask(with: req) { _, response, _ in
+                if let http = response as? HTTPURLResponse, http.statusCode == 200 { ok = true }
+                sem.signal()
+            }.resume()
+            sem.wait()
+            if ok { apiReady = true; return }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+    }
 
     /// Synchronous HTTP request to the Holoscape API server.
     @discardableResult
     func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
+        ensureAPIReady()
         let url = URL(string: apiBase + path)!
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 5
+        request.timeoutInterval = 15
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -301,8 +343,13 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Get the terminal view element by accessibility identifier.
+    /// HoloscapeTerminalView uses role .textArea, so XCTest classifies it under textViews.
     func terminalView() -> XCUIElement {
-        return app.windows["Holoscape"].otherElements["terminal-view"]
+        let window = app.windows["Holoscape"]
+        // Try textViews first (matches .textArea role), fall back to otherElements
+        let tv = window.textViews["terminal-view"]
+        if tv.exists { return tv }
+        return window.otherElements["terminal-view"]
     }
 
     /// Assert the active channel is responsive by verifying the terminal view exists.
@@ -321,11 +368,17 @@ class HoloscapeUITestCase: XCTestCase {
     /// the persistence layer hasn't finished flushing before the process exits.
     func restartApp() {
         app.terminate()
-        // Wait for the process to fully exit before relaunching
         let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
         expectation(for: notRunning, evaluatedWith: app, handler: nil)
         waitForExpectations(timeout: 5)
         app.launch()
+
+        let window = app.windows["Holoscape"]
+        _ = window.waitForExistence(timeout: 10)
+        let sidebar = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
+        ).firstMatch
+        _ = sidebar.waitForExistence(timeout: 10)
     }
 
     /// Open a URL using /usr/bin/open (for URL scheme tests).

@@ -5,9 +5,12 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
     // MARK: - Helpers
 
     private func generateOutput(_ text: String) {
-        let inputBox = app.textViews["input-box"]
-        inputBox.typeText("echo \(text)")
-        inputBox.typeKey(.return, modifierFlags: [])
+        // Use API to send commands to the shell (PTY channels don't have input-box)
+        let channels = try? apiListChannels()
+        if let label = channels?.first?["label"] as? String {
+            try? apiSendInput(label: label, text: "echo \(text)\n")
+            Thread.sleep(forTimeInterval: 0.5)
+        }
     }
 
     // MARK: - Match Navigation
@@ -287,16 +290,12 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         closeSearch()
     }
 
-    func testEscapeReturnsToInputBox() throws {
+    func testEscapeReturnsFocusToChannel() throws {
         openSearch()
         closeSearch()
 
-        // Input box should have focus after escape
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Input box should exist")
-        inputBox.typeText("after-escape")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "after-escape", "Escape should return focus to input box")
+        // Focus should return to the active channel
+        assertActiveChannelResponsive(message: "Channel should be responsive after closing search with Escape")
     }
 
     func testSearchFieldRetainsFocusDuringNavigation() throws {

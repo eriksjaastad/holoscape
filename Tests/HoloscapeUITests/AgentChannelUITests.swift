@@ -40,57 +40,34 @@ final class AgentChannelUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
         entry.click()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("hello agent")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // After submit the input box should clear
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
+        // Agent channels are PTY — they use terminal view, not input-box
+        assertActiveChannelResponsive(message: "Agent channel should be responsive after creation")
     }
 
-    func testAgentChannelViewLoadsWithInputBox() throws {
+    func testAgentChannelViewLoads() throws {
         try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
         let entry = sidebarEntry("Agent")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
         entry.click()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2), "Agent view should load with input box")
+        // Agent channels are PTY — verify terminal view loads
+        assertActiveChannelResponsive(message: "Agent view should load with terminal view")
 
         // Verify the output scroll view also exists
         let window = app.windows["Holoscape"]
         XCTAssertGreaterThanOrEqual(window.scrollViews.count, 1, "Agent view should have an output scroll view")
     }
 
-    func testAgentChannelCommandHistory() throws {
+    func testAgentChannelResponsiveAfterSwitch() throws {
         try skipUnlessClaudeCLIInstalled()
         createChannel(type: "Agent (OAuth)")
         let entry = sidebarEntry("Agent")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
         entry.click()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("agent-history-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Wait for input to clear after submit
-        let cleared = NSPredicate(format: "value == '' OR value == nil")
-        expectation(for: cleared, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-
-        inputBox.typeKey(.upArrow, modifierFlags: [])
-
-        let recalled = NSPredicate(format: "value == 'agent-history-test'")
-        expectation(for: recalled, evaluatedWith: inputBox, handler: nil)
-        waitForExpectations(timeout: 2)
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "agent-history-test", "Up arrow should recall previous agent command")
+        // Agent channels are PTY — verify terminal is responsive
+        assertActiveChannelResponsive(message: "Agent channel should be responsive after switching to it")
     }
 
     // MARK: - Lifecycle

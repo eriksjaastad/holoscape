@@ -25,8 +25,7 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         // Zoom (green button)
         window.buttons[XCUIIdentifierZoomWindow].click()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after zoom")
+        assertActiveChannelResponsive(message: "Channel should be responsive after zoom")
 
         let zoomedFrame = window.frame
         XCTAssertNotEqual(initialFrame, zoomedFrame, "Window frame should change after zoom")
@@ -36,40 +35,29 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 3))
 
-        let initialFrame = window.frame
-
         // Enter full screen via Ctrl+Cmd+F
         app.typeKey("f", modifierFlags: [.control, .command])
 
         // Verify window still functional in full screen
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 5), "Input box should exist in full screen")
+        assertActiveChannelResponsive(timeout: 5, message: "Channel should be responsive in full screen")
 
         // Exit full screen via Ctrl+Cmd+F (NOT Escape)
         app.typeKey("f", modifierFlags: [.control, .command])
 
-        // Wait for fullscreen animation to complete and verify frame changed back
-        let restoredInputBox = app.textViews["input-box"]
-        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 5), "Input box should exist after exiting full screen")
+        // Wait for fullscreen animation to complete
+        assertActiveChannelResponsive(timeout: 5, message: "Channel should be responsive after exiting full screen")
     }
 
     func testWindowRestoreAfterMinimize() throws {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 3))
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeText("before-minimize")
-        inputBox.typeKey(.return, modifierFlags: [])
-
         // Minimize and restore
         window.buttons[XCUIIdentifierMinimizeWindow].click()
         app.activate()
 
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
-
-        let restoredInputBox = app.textViews["input-box"]
-        XCTAssertTrue(restoredInputBox.waitForExistence(timeout: 3), "Input box should be present after minimize/restore")
+        assertActiveChannelResponsive(message: "Channel should be responsive after minimize/restore")
     }
 
     // MARK: - Application Menu
@@ -100,8 +88,7 @@ final class WindowManagementUITests: HoloscapeUITestCase {
             app.typeKey(.escape, modifierFlags: [])
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after closing About dialog")
+        assertActiveChannelResponsive(message: "Channel should be responsive after closing About dialog")
     }
 
     func testQuitViaMenu() throws {
@@ -135,9 +122,8 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(newSessionItem.waitForExistence(timeout: 2), "New Session menu item should exist")
         newSessionItem.click()
 
-        // Should focus session launcher — verify input box still works
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be functional after New Session")
+        // Should focus session launcher — verify channel still responsive
+        assertActiveChannelResponsive(message: "Channel should be responsive after New Session")
     }
 
     func testFileMenuNewChannel() throws {

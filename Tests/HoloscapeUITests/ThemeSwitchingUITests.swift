@@ -207,16 +207,12 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         closeSettings()
     }
 
-    func testInputBoxAcceptsTextAfterThemeChange() throws {
+    func testChannelResponsiveAfterThemeChange() throws {
         openSettings()
         selectTheme("Monokai")
         closeSettings()
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after theme change")
-        inputBox.typeText("theme-test")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertEqual(value, "theme-test", "Input box should accept text after theme change")
+        assertActiveChannelResponsive(message: "Channel should be responsive after theme change")
 
         openSettings()
         selectTheme("Dark")

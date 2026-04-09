@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-property test-ui xcode bundle clean run setup
+.PHONY: build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup
 
 # Default: build debug
 build:
@@ -16,24 +16,37 @@ test-unit:
 test-property:
 	swift test --filter HoloscapePropertyTests
 
-# Run UI tests (requires Xcode and built .app bundle)
+# Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle
-	xcodebuild test \
-		-scheme Holoscape \
-		-destination 'platform=macOS' \
-		-only-testing:HoloscapeUITests \
-		2>&1 | tail -40
+	./scripts/test-ui-shards.sh all
 
-# Run fast UI tests (HTTP API, URL scheme, terminal input, tab behavior)
+# Run a single shard (usage: make test-ui-shard SHARD=3)
+test-ui-shard: bundle
+	./scripts/test-ui-shards.sh $(SHARD)
+
+# Run a range of shards (usage: make test-ui-range RANGE=3-5)
+test-ui-range: bundle
+	./scripts/test-ui-shards.sh $(RANGE)
+
+# Resume from last failed shard
+test-ui-resume: bundle
+	./scripts/test-ui-shards.sh resume
+
+# Run only currently-failing test classes (~35 min)
+test-ui-failing: bundle
+	./scripts/test-ui-shards.sh failing
+
+# Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
 	xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
-		-only-testing:HoloscapeUITests/HTTPAPIUITests \
-		-only-testing:HoloscapeUITests/URLSchemeUITests \
-		-only-testing:HoloscapeUITests/TerminalInputUITests \
-		-only-testing:HoloscapeUITests/TabBehaviorUITests \
-		2>&1 | tail -40
+		-only-testing:HoloscapeUITests/HoloscapeUITests \
+		-only-testing:HoloscapeUITests/SettingsUITests \
+		-only-testing:HoloscapeUITests/SearchBarUITests \
+		-only-testing:HoloscapeUITests/SidebarUITests \
+		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
+		2>&1 | grep -E "Test Case|Executed|TEST"
 
 # Run notification UI tests
 test-ui-notifications: bundle
@@ -41,7 +54,7 @@ test-ui-notifications: bundle
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-only-testing:HoloscapeUITests/NotificationSystemUITests \
-		2>&1 | tail -40
+		2>&1 | grep -E "Test Case|Executed|TEST"
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:

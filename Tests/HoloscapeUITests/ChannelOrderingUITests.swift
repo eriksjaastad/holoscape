@@ -14,8 +14,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         // Switch to second channel so first becomes inactive
         app.typeKey("2", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching to channel 2")
 
         let count = sidebarEntryCount()
         XCTAssertGreaterThanOrEqual(count, 2, "Should have at least 2 sidebar entries")
@@ -28,8 +27,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         // Switch to last channel
         app.typeKey("3", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching to channel 3")
 
         let window = app.windows["Holoscape"]
         let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
@@ -44,11 +42,10 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
 
         // Switch away then back
         app.typeKey("2", modifierFlags: .command)
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching to channel 2")
 
         app.typeKey("1", modifierFlags: .command)
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after switching back to channel 1")
 
         // Both sidebar entries should still exist
         XCTAssertTrue(shell1.waitForExistence(timeout: 2), "Shell 1 should still exist after switching")
@@ -84,8 +81,7 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         let initialCount = sidebarButtons.count
 
         // Wait with no activity — use waitForExistence on an element we know exists
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after creating second shell")
 
         let afterCount = sidebarButtons.count
         XCTAssertEqual(initialCount, afterCount, "Sidebar order should not change without activity")

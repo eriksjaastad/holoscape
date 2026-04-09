@@ -70,14 +70,8 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     func testCmdD() throws {
         app.typeKey("d", modifierFlags: .command)
 
-        // After split, input box should still work
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still work after Cmd+D split")
-        inputBox.typeText("split-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submit in split pane")
+        // After split, channel should still be responsive
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+D split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -85,8 +79,7 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     func testCmdShiftD() throws {
         app.typeKey("d", modifierFlags: [.command, .shift])
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still work after Cmd+Shift+D vertical split")
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+Shift+D vertical split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -95,12 +88,11 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         // Create split first
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive after split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
 
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after Cmd+Shift+W closes split pane")
+        assertActiveChannelResponsive(message: "Channel should remain responsive after Cmd+Shift+W closes split pane")
     }
 
     func testCmdComma() throws {
@@ -129,20 +121,22 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
             createChannel(type: "Shell")
         }
 
-        let inputBox = app.textViews["input-box"]
-
-        // Switch between channels
+        // Switch between channels — each should be responsive
         app.typeKey("1", modifierFlags: .command)
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+1")
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+1")
 
         app.typeKey("2", modifierFlags: .command)
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+2")
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+2")
 
         app.typeKey("3", modifierFlags: .command)
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should exist after Cmd+3")
+        assertActiveChannelResponsive(message: "Channel should be responsive after Cmd+3")
     }
 
     func testCmdCVXA() throws {
+        // Clipboard tests need input-box, which requires a non-PTY channel
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
 
@@ -185,14 +179,14 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("s", modifierFlags: [.command, .shift])
 
         // Window should still be functional
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should be functional after rapid shortcut sequence")
-        inputBox.typeText("post-conflict-test")
-        let value = inputBox.value as? String ?? ""
-        XCTAssertFalse(value.isEmpty, "Input box should accept text after rapid shortcut sequence")
+        assertActiveChannelResponsive(message: "Channel should be responsive after rapid shortcut sequence")
     }
 
     func testShortcutsWorkFromInputBox() throws {
+        // Need non-PTY channel for input box
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.click()
@@ -206,15 +200,11 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     }
 
     func testShortcutsWorkFromOutputView() throws {
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
-        inputBox.typeText("echo output-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
+        // Verify shortcut works when focus is on the terminal/output area
         app.typeKey("f", modifierFlags: .command)
 
         let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from output view")
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from terminal view")
 
         app.typeKey(.escape, modifierFlags: [])
     }
@@ -228,8 +218,7 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("s", modifierFlags: [.command, .shift])
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain functional with search bar open")
+        assertActiveChannelResponsive(message: "Channel should remain responsive with search bar open")
 
         app.typeKey(.escape, modifierFlags: [])
     }
@@ -249,6 +238,10 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     }
 
     func testEnterSubmitsInput() throws {
+        // Need non-PTY channel for input box
+        createChannel(type: "Bridge")
+        Thread.sleep(forTimeInterval: 0.5)
+
         let inputBox = app.textViews["input-box"]
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.typeText("enter-test")

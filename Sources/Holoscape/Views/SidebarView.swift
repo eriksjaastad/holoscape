@@ -72,6 +72,7 @@ class SidebarView: NSView {
             let notificationType = notifications[channel.channelId]
             entry.configure(
                 label: channel.displayLabel,
+                channelType: channel.channelType,
                 hasUnread: channel.hasUnread,
                 state: channel.state,
                 isActive: channel.channelId == activeId,
@@ -91,6 +92,13 @@ class SidebarView: NSView {
             ])
 
             tabEntries[channel.channelId] = entry
+        }
+
+        // Force layout then auto-scroll to the active entry
+        stackView.layoutSubtreeIfNeeded()
+        if let activeId, let activeEntry = tabEntries[activeId] {
+            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
+            scrollView.contentView.scrollToVisible(entryFrame)
         }
     }
 
@@ -115,6 +123,7 @@ class SidebarView: NSView {
 @MainActor
 class SidebarTabEntry: NSControl {
     var channelId: UUID?
+    private var stableTypePrefix = "Shell"
 
     private let labelField = NSTextField(labelWithString: "")
     private let statusTextField = NSTextField(labelWithString: "")
@@ -180,7 +189,8 @@ class SidebarTabEntry: NSControl {
         ])
     }
 
-    func configure(label: String, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
+    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
+        self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
 

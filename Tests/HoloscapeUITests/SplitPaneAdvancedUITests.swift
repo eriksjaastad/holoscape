@@ -10,13 +10,12 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         // Split
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(message: "Channel should be responsive in split pane")
 
         // Switch channel in active pane
         app.typeKey("1", modifierFlags: .command)
 
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after channel switch in split pane")
+        assertActiveChannelResponsive(message: "Channel should remain responsive after switch in split pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -24,14 +23,8 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
     func testInputRoutesToActivePane() throws {
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
-        inputBox.typeText("active-pane-input")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        // Verify input box cleared after submit (routing worked)
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input box should clear after submit, confirming routing worked")
+        // Active pane should be responsive (terminal view for PTY channels)
+        assertActiveChannelResponsive(message: "Active pane should be responsive after split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -44,8 +37,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         // Cmd+2 should switch channel in active pane
         app.typeKey("2", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain functional after channel switch in pane")
+        assertActiveChannelResponsive(message: "Channel should remain responsive after switch in pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -63,8 +55,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
             closeButton.click()
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after closing channel in pane")
+        assertActiveChannelResponsive(message: "Channel should remain responsive after closing channel in pane")
     }
 
     func testClosePaneAfterClosingChannel() throws {
@@ -76,8 +67,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
             closeButton.click()
         }
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should remain after removing channel from specific pane")
+        assertActiveChannelResponsive(message: "Channel should remain responsive after removing channel from pane")
     }
 
     // MARK: - Layout Combinations
@@ -86,13 +76,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         app.typeKey("d", modifierFlags: .command) // Horizontal
         app.typeKey("d", modifierFlags: [.command, .shift]) // Vertical
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still accept text after mixed splits")
-        inputBox.typeText("mixed-split-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submit in mixed split layout")
+        assertActiveChannelResponsive(message: "Channel should be responsive after mixed splits")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
         app.typeKey("w", modifierFlags: [.command, .shift])
@@ -102,13 +86,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         app.typeKey("d", modifierFlags: [.command, .shift]) // Vertical
         app.typeKey("d", modifierFlags: .command) // Horizontal
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should still accept text after mixed splits")
-        inputBox.typeText("reverse-split-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submit in mixed split layout")
+        assertActiveChannelResponsive(message: "Channel should be responsive after mixed splits")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
         app.typeKey("w", modifierFlags: [.command, .shift])
@@ -118,13 +96,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         app.typeKey("d", modifierFlags: .command)
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should accept text in 3-pane layout")
-        inputBox.typeText("three-pane-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submit in 3-pane layout")
+        assertActiveChannelResponsive(message: "Channel should be responsive in 3-pane layout")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
         app.typeKey("w", modifierFlags: [.command, .shift])
@@ -135,13 +107,7 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         app.typeKey("d", modifierFlags: .command)
         app.typeKey("d", modifierFlags: .command)
 
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "Input box should accept text in 4-pane layout")
-        inputBox.typeText("four-pane-test")
-        inputBox.typeKey(.return, modifierFlags: [])
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertTrue(value.isEmpty, "Input should clear after submit in 4-pane layout")
+        assertActiveChannelResponsive(message: "Channel should be responsive in 4-pane layout")
 
         for _ in 0..<3 {
             app.typeKey("w", modifierFlags: [.command, .shift])

@@ -46,8 +46,7 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
     }
 
     func testAppLaunchesSuccessfully() throws {
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "App should launch with functional input box")
+        assertActiveChannelResponsive(message: "App should launch with responsive channel")
     }
 
     func testConfigFileUpdatedOnChange() throws {
@@ -91,8 +90,7 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
 
         // Verify the app is still functional
         closeSettings()
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3), "App should remain functional after rapid settings changes")
+        assertActiveChannelResponsive(message: "App should remain responsive after rapid settings changes")
 
         // Reset
         openSettings()
