@@ -21,9 +21,9 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         let slider = transparencySlider()
         XCTAssertTrue(slider.waitForExistence(timeout: 2), "Transparency slider should exist")
 
-        let initialValue = slider.value as? String ?? ""
+        let initialValue = sliderValue()
         slider.adjust(toNormalizedSliderPosition: 0.7)
-        let adjustedValue = slider.value as? String ?? ""
+        let adjustedValue = sliderValue()
         XCTAssertNotEqual(initialValue, adjustedValue, "Slider value should change after adjustment")
 
         // Reset
@@ -38,7 +38,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
         slider.adjust(toNormalizedSliderPosition: 0.0)
-        let value = slider.value as? String ?? ""
+        let value = sliderValue()
         XCTAssertFalse(value.isEmpty, "Slider should have a value at minimum position")
 
         // Reset
@@ -53,7 +53,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
         slider.adjust(toNormalizedSliderPosition: 1.0)
-        let value = slider.value as? String ?? ""
+        let value = sliderValue()
         XCTAssertFalse(value.isEmpty, "Slider should have a value at maximum position")
         closeSettings()
     }
@@ -64,9 +64,9 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         let slider = transparencySlider()
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
-        let initialValue = slider.value as? String ?? ""
+        let initialValue = sliderValue()
         slider.adjust(toNormalizedSliderPosition: 0.5)
-        let midValue = slider.value as? String ?? ""
+        let midValue = sliderValue()
         // Only assert change if initial was not already at 0.5
         if initialValue != midValue {
             XCTAssertNotEqual(initialValue, midValue, "Slider value should change to mid-range")
@@ -84,12 +84,13 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
         slider.adjust(toNormalizedSliderPosition: 0.6)
-        let setValue = slider.value as? String ?? ""
+        let setValue = sliderValue()
         closeSettings()
 
         // Quit and relaunch
         app.terminate()
         app = XCUIApplication()
+        app.launchArguments.append("--ui-testing")
         app.launch()
 
         // Re-query settings window and slider after relaunch
@@ -97,7 +98,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         let sliderAfter = transparencySlider()
         XCTAssertTrue(sliderAfter.waitForExistence(timeout: 2), "Transparency slider should exist after restart")
 
-        let persistedValue = sliderAfter.value as? String ?? ""
+        let persistedValue = sliderValue()
         XCTAssertFalse(persistedValue.isEmpty, "Slider should have a persisted value after restart")
         // Values should approximately match (both represent ~0.6 normalized)
         XCTAssertEqual(persistedValue, setValue, "Transparency should persist across restart")
@@ -178,9 +179,9 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         let slider = transparencySlider()
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
-        let initialValue = slider.value as? String ?? ""
+        let initialValue = sliderValue()
         slider.adjust(toNormalizedSliderPosition: 0.6)
-        let adjustedValue = slider.value as? String ?? ""
+        let adjustedValue = sliderValue()
         XCTAssertNotEqual(initialValue, adjustedValue, "Slider value should change")
 
         // Interact with color well
@@ -208,7 +209,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 2))
 
         slider.adjust(toNormalizedSliderPosition: 0.8)
-        let value = slider.value as? String ?? ""
+        let value = sliderValue()
         XCTAssertFalse(value.isEmpty, "Slider should reflect the adjusted value for live preview")
 
         // Verify main window is still visible and functional while settings open
