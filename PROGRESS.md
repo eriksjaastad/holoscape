@@ -1,36 +1,38 @@
 # Session Progress — 2026-04-10
 
 ## Current State
-- Branch: `fix/ui-tests-round6` (1 commit ahead of main: apiReady reset)
-- Last full run: 264 passed, 100 failed, 14 skipped (378 total) — 70% pass rate
-- Up from 58 passing (15%) two days ago
+- Branch: `fix/ui-tests-round6` (3 commits ahead of main)
+- Estimated: ~270 passed, ~94 failed, 14 skipped (378 total)
+- TransparencyColorWellUITests: 10/10 passing (was 4/10)
+- BridgeChannelUITests: 7/7 passing (was 1/7)
+- AgentChannelUITests: 8/8 passing (was 2/8)
+- HTTPAPIUITests: 7/11 passing (was 5/11)
 
-## Key discovery: OSC 7 changes sidebar identifiers
-- ~23 tests search for "Shell 2" in sidebar but OSC 7 changes displayLabel from "Shell" to "/"
-  (the home directory basename) almost immediately after shell creation
-- The sidebar identifier "sidebar-Shell 2" becomes "sidebar-/ 2" before the test can find it
-- This is NOT a bug — it's the directory label feature working correctly
-- Need a solution that preserves directory labels AND lets tests find entries reliably
+## Fixes applied this session
+1. NSButton sidebar entries (PR #42) — flipped ~25 tests
+2. nonisolated API helpers — prevents MainActor deadlock
+3. apiReady reset in tearDown — prevents stale state across test instances
+4. sliderValue() helper for all transparency reads — flipped 6 tests
+5. --restore-channels launch arg in ChannelRestorationUITests
 
-## Remaining failure clusters (100 tests)
-1. **Shell 2 / directory label conflict** (~23) — OSC 7 changes identifier before test finds it
-2. **API batch failures** (~26) — apiReady reset should fix many; some are downstream of cluster 1
-3. **Search match count** (~7) — debounce + empty terminal buffer
-4. **Close confirmation dialog** (~7) — dialog exists but test can't find buttons
-5. **Transparency slider** (~6) — value cast issue
-6. **Directory persistence** (~3) — OSC 7 timing + --restore-channels flag
-7. **Channel restoration** (~2) — --restore-channels flag needed in test setUp
-8. **Window management** (~5) — minimize/restore/zoom/about dialog
-9. **Misc** (~15) — bug report, fonts, URL scheme, individual issues
+## The big remaining issue: OSC 7 sidebar labels (~50 tests)
+- Shell channels start with displayLabel "Shell" but OSC 7 immediately changes it to "/"
+- Sidebar identifier becomes "sidebar-/" instead of "sidebar-Shell"
+- Tests searching for "Shell 2" never find it because it's now "/ 2"
+- This affects: ChannelOrderingUITests, CloseConfirmationUITests, ContextMenuUITests,
+  and any test that creates a second Shell via dialog
+- NOT a bug — this is directory labels working correctly
+- Need design decision: stable identifier vs dynamic display label
 
-## What was fixed today
-- NSButton sidebar entries (PR #42) — flipped 25 tests
-- nonisolated API helpers (prevents MainActor deadlock)
-- apiReady reset in tearDown
-- Window maximization during UI testing
+## Other remaining clusters
+- Search match count (7) — API not connecting in some tests
+- Close confirmation (7) — button disambiguation
+- Window management (5) — minimize/restore/zoom
+- Bug report (3) — feature implementation gaps
+- Font size format (3) — "16.0" vs "16"
+- Misc (~15) — individual issues
 
 ## Next steps
-1. Fix cluster 1: either add instance-based sidebar search helper, or set explicitLabel on
-   dialog-created shells so displayLabel stays "Shell 2" until user cds somewhere
-2. Verify apiReady fix helps cluster 2
-3. Work through remaining clusters
+1. Solve the OSC 7 identifier issue — this is the single biggest remaining blocker
+2. The right approach: separate stable accessibility identifier from dynamic display label
+3. Could push up for code review on this design question
