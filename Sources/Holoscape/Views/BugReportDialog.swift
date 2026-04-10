@@ -192,6 +192,7 @@ final class BugReportDialog {
         contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
         screenshotData = bitmap.representation(using: .png, properties: [:])
         screenshotButton.title = "Screenshot Attached"
+        screenshotButton.setAccessibilityLabel("Screenshot Attached")
         screenshotButton.isEnabled = false
     }
 
@@ -208,7 +209,7 @@ final class BugReportDialog {
             let alert = NSAlert()
             alert.messageText = "Please describe what happened"
             alert.informativeText = "A brief description helps us understand the issue."
-            alert.runModal()
+            alert.beginSheetModal(for: panel) { _ in }
             return
         }
 
