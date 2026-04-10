@@ -1,33 +1,36 @@
-# Session Progress — 2026-04-09 (evening)
+# Session Progress — 2026-04-10
 
 ## Current State
-- Branch: `fix/ui-tests-round3-v2` (1 commit ahead of main: nonisolated API fix)
-- Last full run: 239 passed, 125 failed, 14 skipped (378 total)
-- HTTPAPIUITests: 9/11 passing (up from 5/11) after nonisolated fix
-- PR #37 merged, PR for round3-v2 pending
+- Branch: `fix/ui-tests-round6` (1 commit ahead of main: apiReady reset)
+- Last full run: 264 passed, 100 failed, 14 skipped (378 total) — 70% pass rate
+- Up from 58 passing (15%) two days ago
 
-## Key finding: sidebar isHittable issue — ROOT CAUSE FOUND
-- ~22 tests fail because newly created sidebar entries return `isHittable == false`
-- Root cause: NSStackView caches its accessibilityChildren() list. After runModal() returns,
-  dynamically inserted entries are NOT in the cached list. XCTest's hit test traversal reaches
-  the stack view but never delegates to the new entry — so isHittable is false.
-- Secondary issue: NSTextField subviews (labelField, statusTextField) were accessibility elements,
-  which could intercept the hit test even when the parent was found.
-- Fix applied: (1) stackView.setAccessibilityChildren(stackView.arrangedSubviews) after every
-  update, (2) mark all entry subviews as non-accessibility-elements, (3) post .layoutChanged
-  on the stack view (not the sidebar view)
+## Key discovery: OSC 7 changes sidebar identifiers
+- ~23 tests search for "Shell 2" in sidebar but OSC 7 changes displayLabel from "Shell" to "/"
+  (the home directory basename) almost immediately after shell creation
+- The sidebar identifier "sidebar-Shell 2" becomes "sidebar-/ 2" before the test can find it
+- This is NOT a bug — it's the directory label feature working correctly
+- Need a solution that preserves directory labels AND lets tests find entries reliably
 
-## What still needs fixing
-1. Sidebar isHittable (~22 tests) — need test-side workaround or deeper NSStackView investigation
-2. Search match count (~7 tests) — debounce + empty terminal buffer
-3. Close confirmation dialog (~7 tests) — dialog added but button matching issues
-4. Transparency slider value (~6 tests) — cast fix needs verification
-5. Font size format (~2 tests) — "16.0" vs "16"
-6. Channel restoration (~2 tests) — --restore-channels flag in test setUp
-7. Directory labels (~3 tests) — OSC 7 timing
-8. Misc (~15 tests) — window management, bug report, URL scheme, input shrink
+## Remaining failure clusters (100 tests)
+1. **Shell 2 / directory label conflict** (~23) — OSC 7 changes identifier before test finds it
+2. **API batch failures** (~26) — apiReady reset should fix many; some are downstream of cluster 1
+3. **Search match count** (~7) — debounce + empty terminal buffer
+4. **Close confirmation dialog** (~7) — dialog exists but test can't find buttons
+5. **Transparency slider** (~6) — value cast issue
+6. **Directory persistence** (~3) — OSC 7 timing + --restore-channels flag
+7. **Channel restoration** (~2) — --restore-channels flag needed in test setUp
+8. **Window management** (~5) — minimize/restore/zoom/about dialog
+9. **Misc** (~15) — bug report, fonts, URL scheme, individual issues
+
+## What was fixed today
+- NSButton sidebar entries (PR #42) — flipped 25 tests
+- nonisolated API helpers (prevents MainActor deadlock)
+- apiReady reset in tearDown
+- Window maximization during UI testing
 
 ## Next steps
-1. Verify sidebar isHittable fix — run tests with the new changes
-2. Fix remaining categories in order of impact
-3. Run make test-ui-failing after each fix
+1. Fix cluster 1: either add instance-based sidebar search helper, or set explicitLabel on
+   dialog-created shells so displayLabel stays "Shell 2" until user cds somewhere
+2. Verify apiReady fix helps cluster 2
+3. Work through remaining clusters
