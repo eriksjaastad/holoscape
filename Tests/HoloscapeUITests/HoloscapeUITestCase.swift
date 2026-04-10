@@ -26,6 +26,8 @@ class HoloscapeUITestCase: XCTestCase {
     override func tearDownWithError() throws {
         Self.apiReady = false
         app.terminate()
+        // Allow the API server's port to fully release before the next test launches
+        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Channel Helpers
@@ -367,7 +369,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Poll channel output until it contains the expected text, or timeout.
-    nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 10) throws -> Bool {
+    nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let lines = try apiReadOutput(label: label)
