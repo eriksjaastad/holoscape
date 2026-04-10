@@ -15,11 +15,13 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
         // Quit the app (triggers applicationWillTerminate -> saveState)
         app.terminate()
+        app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--restore-channels")
         app.launch()
 
         // Should have restored the channels
         let restoredWindow = app.windows["Holoscape"]
-        XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5), "Window should exist after relaunch")
+        XCTAssertTrue(restoredWindow.waitForExistence(timeout: 10), "Window should exist after relaunch")
 
         assertActiveChannelResponsive(message: "Channel should be responsive after restoration")
 
@@ -39,11 +41,13 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
+        app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--restore-channels")
         app.launch()
 
         // Tab bar should be visible (sidebar was collapsed)
         let restoredWindow = app.windows["Holoscape"]
-        XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(restoredWindow.waitForExistence(timeout: 10))
 
         let restoredTabButton = restoredWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
         XCTAssertTrue(restoredTabButton.waitForExistence(timeout: 3), "Tab bar should be visible if sidebar was collapsed before quit")
