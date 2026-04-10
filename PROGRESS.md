@@ -1,27 +1,50 @@
-# Session Progress — 2026-04-10 (afternoon)
+# Session Progress — 2026-04-10 (late afternoon)
 
 ## Current State
-- Branch: `fix/ui-tests-round6` (9 commits ahead of main)
-- Full run: 291 passed, 73 failed, 14 skipped (378 total) — 77% pass rate
-- Up from 58 passing (15%) three days ago
+- Branch: `fix/ui-tests-round6` (11 commits ahead of main)
+- Full shard run: 293 passed, 71 failed, 14 skipped (378 total) — 78% pass rate
 
-## Remaining 73 failures by cluster
-- IntegrityUITests (15) — integration tests, depend on API + search + notifications
-- TabBehaviorUITests (6) + DirectoryPersistenceUITests (3) — OSC 7 cd timing
-- SearchAdvancedUITests (6) + SearchBarUITests (1) — search match count empty
-- API-dependent: TerminalInput (4), HTTP (4), Stress (5), Notification (4) — 17 total
-- WindowManagementUITests (5) — minimize/restore/zoom XCTest limitations
-- Misc: ContextMenu (3), TabBar (2), SplitPane (2), Session (2), etc.
+## Perfect score classes (100%)
+- FontSettingsUITests (13/13)
+- EditMenuUITests (13/13)
+- TransparencyColorWellUITests (10/10)
+- ChannelOrderingUITests (9/9)
+- AgentChannelUITests (8/8)
+- BridgeChannelUITests (7/7)
+- SidebarUITests (6/6)
+- ThemeSwitchingUITests (15/15)
+- SettingsUITests (13/13)
+- KeyboardShortcutsUITests (18/18)
+- HoloscapeUITests (10/10)
+- SplitPaneUITests (7/7)
 
-## Root causes identified
-1. API channel label resolution fails after OSC 7 changes displayLabel
-2. Search match count empty — terminal buffer not populated when search runs
-3. cd /tmp doesn't trigger visible OSC 7 update in test environment
-4. Window minimize/restore not working via app.activate() in XCTest
-5. testCreateChannelWithDirectory returns 400 — dir parameter handling
+## Remaining 71 failures — all cluster around API timing race
+- IntegrityUITests (15) — depends on apiCreateChannel + apiSendInput
+- TabBehaviorUITests (6) — cd commands via API, wait for label update
+- TerminalInputUITests (4) — API send input, waitForAPIOutput
+- SearchAdvancedUITests (6) — search for text sent via API
+- StressUITests (4) — bulk API operations
+- NotificationSystemUITests (4) — API-created channels + notify
+- HTTPAPIUITests (3) — testCreateChannelWithDirectory, testSendInput, testResolveByLabelCase
+- WindowManagementUITests (5) — minimize/restore/zoom XCTest limits
+- CloseConfirmationUITests (1) — testCloseLastChannelBehavior
+- Plus ~23 more in misc classes, mostly API-dependent
 
-## Next steps
-1. Fix API label resolution — resolveChannel should match by original role, not just displayLabel
-2. Fix search — ensure terminal buffer has content before searching
-3. Fix directory test timing — longer waits or different approach for OSC 7
-4. IntegrityUITests should improve as upstream fixes land
+## The core architectural issue
+All failing tests share: create/send via API, then query and expect result.
+The API timing race is hard to solve without:
+1. Random port per test (bigger change)
+2. App process isolation (each test its own process tree)
+3. Waiting on BOTH port-free AND new-app-responsive states (tried, flaky)
+
+## What was fixed this session (Groups 1-6)
+1. API tearDown delay + nonisolated helpers + saveState skip
+2. Close confirmation dialog button scoping
+3. Font size integer format + non-numeric validation
+4. Bug report screenshot accessibility label + validation sheet
+5. Context menu duplicate fallback for UI testing mode
+6. Window minimize/restore via Cm+backtick, About dialog dismiss
+7. Transparency slider NSNumber cast
+8. Sidebar index-based lookups (OSC 7 label changes)
+9. NSButton sidebar entries (native accessibility)
+10. ChannelRestoration --restore-channels launch arg
