@@ -1,42 +1,27 @@
-# Session Progress — 2026-04-10
+# Session Progress — 2026-04-10 (afternoon)
 
 ## Current State
-- Branch: `fix/ui-tests-round6` (5 commits ahead of main)
-- ChannelOrderingUITests: 9/9 (100%) — was 5/9
-- HoloscapeUITests: 10/10 (100%) — was 9/10
-- TransparencyColorWellUITests: 10/10 (100%) — was 4/10
-- BridgeChannelUITests: 7/7 (100%) — was 1/7
-- AgentChannelUITests: 8/8 (100%) — was 2/8
-- ContextMenuUITests: 6/13 — was 3/13
-- Estimated total: ~290+ passing (up from 264 last full run)
+- Branch: `fix/ui-tests-round6` (9 commits ahead of main)
+- Full run: 291 passed, 73 failed, 14 skipped (378 total) — 77% pass rate
+- Up from 58 passing (15%) three days ago
 
-## What was fixed this session
-1. NSButton sidebar entries (PR #42 from Cousin Claude) — native accessibility hit test
-2. nonisolated API helpers — prevents MainActor deadlock
-3. apiReady reset in tearDown — prevents stale state between tests
-4. sliderValue() helper for all transparency reads — NSNumber cast
-5. --restore-channels launch arg for restoration tests
-6. Replaced all hardcoded "Shell"/"Shell 2" sidebar lookups with index-based helpers
-   - Added sidebarEntryAt(index) and waitForNewSidebarEntry(expectedCount:) to base class
-   - Updated 10 test files
+## Remaining 73 failures by cluster
+- IntegrityUITests (15) — integration tests, depend on API + search + notifications
+- TabBehaviorUITests (6) + DirectoryPersistenceUITests (3) — OSC 7 cd timing
+- SearchAdvancedUITests (6) + SearchBarUITests (1) — search match count empty
+- API-dependent: TerminalInput (4), HTTP (4), Stress (5), Notification (4) — 17 total
+- WindowManagementUITests (5) — minimize/restore/zoom XCTest limitations
+- Misc: ContextMenu (3), TabBar (2), SplitPane (2), Session (2), etc.
 
-## Remaining failures (~80 estimated)
-- CloseConfirmationUITests (6) — dialog button disambiguation, not label related
-- ContextMenuUITests (7) — mix of duplicate/reconnect issues, some may need context menu fixes
-- SearchAdvancedUITests (7) — search match count + API connection timing
-- WindowManagementUITests (5) — minimize/restore/zoom
-- TerminalInputUITests (4) — API send input failures
-- IntegrityUITests (~14) — mix of all remaining issues
-- Various others (1-3 each) — fonts, directory persistence, bug report, etc.
-
-## Key design decisions made
-- Directory labels are the primary UX — tests must not depend on "Shell" being stable
-- Tests use index-based sidebar lookups instead of label strings
-- The --ui-testing flag skips heavy init; --restore-channels re-enables channel restoration
-- SidebarTabEntry is NSButton (not NSControl) for native accessibility support
+## Root causes identified
+1. API channel label resolution fails after OSC 7 changes displayLabel
+2. Search match count empty — terminal buffer not populated when search runs
+3. cd /tmp doesn't trigger visible OSC 7 update in test environment
+4. Window minimize/restore not working via app.activate() in XCTest
+5. testCreateChannelWithDirectory returns 400 — dir parameter handling
 
 ## Next steps
-1. Run full suite to get accurate baseline: `nohup xcodebuild test -scheme Holoscape -destination 'platform=macOS' -only-testing:HoloscapeUITests > /tmp/test-results-round6-final.txt 2>&1 &`
-2. Fix close confirmation dialog button matching
-3. Fix search match count (API connection + debounce timing)
-4. Work through remaining individual failures
+1. Fix API label resolution — resolveChannel should match by original role, not just displayLabel
+2. Fix search — ensure terminal buffer has content before searching
+3. Fix directory test timing — longer waits or different approach for OSC 7
+4. IntegrityUITests should improve as upstream fixes land
