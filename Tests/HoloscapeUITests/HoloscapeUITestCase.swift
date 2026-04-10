@@ -26,8 +26,6 @@ class HoloscapeUITestCase: XCTestCase {
     override func tearDownWithError() throws {
         Self.apiReady = false
         app.terminate()
-        // Allow the API server's port to fully release before the next test launches
-        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Channel Helpers
