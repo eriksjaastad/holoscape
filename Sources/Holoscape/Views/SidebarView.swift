@@ -277,7 +277,9 @@ class SidebarTabEntry: NSButton {
             labelField.textColor = NSColor.lightGray
         }
 
-        // NSButton provides native accessibility — just set the metadata
+        // NSButton provides native accessibility — just set the metadata.
+        // The title shows the dynamic display label (may change with directory).
+        // The identifier uses the label for test discoverability.
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
 

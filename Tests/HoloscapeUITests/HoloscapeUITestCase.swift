@@ -24,6 +24,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        Self.apiReady = false
         app.terminate()
     }
 
