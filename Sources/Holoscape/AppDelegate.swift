@@ -83,7 +83,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         windowController?.refreshAllTabs()
 
-        // Show window
+        // Show window — maximize during UI testing to ensure all sidebar entries are visible
+        if isUITesting, let window = windowController?.window, let screen = NSScreen.main {
+            window.setFrame(screen.visibleFrame, display: true)
+        }
         windowController?.window.makeKeyAndOrderFront(nil)
 
         if !isUITesting {
