@@ -118,17 +118,21 @@ class SidebarView: NSView {
             }
         }
 
-        // Force layout, sync the scroll view's clip-view state, then auto-scroll.
-        // Without reflectScrolledClipView, the scroll view doesn't know the document
-        // grew — so newly added entries have correct frames but isHittable returns false
-        // in XCTest because the clip view still reports the old visible rect.
+        // Force layout and sync scroll view state.
         stackView.layoutSubtreeIfNeeded()
         scrollView.reflectScrolledClipView(scrollView.contentView)
         if let activeId, let activeEntry = tabEntries[activeId] {
             let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
             scrollView.contentView.scrollToVisible(entryFrame)
         }
-        NSAccessibility.post(element: self, notification: .layoutChanged)
+
+        // NSStackView caches its accessibilityChildren() list. After runModal()
+        // returns and new entries are inserted, the cache is stale — the hit test
+        // traversal never reaches the new entry, so isHittable returns false even
+        // though the entry exists in the tree with a valid frame. Explicitly setting
+        // the children forces the stack view to expose the current arranged subviews.
+        stackView.setAccessibilityChildren(stackView.arrangedSubviews)
+        NSAccessibility.post(element: stackView, notification: .layoutChanged)
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
@@ -204,6 +208,13 @@ class SidebarTabEntry: NSControl {
         statusTextField.textColor = NSColor.gray
         statusTextField.lineBreakMode = .byTruncatingTail
         statusTextField.translatesAutoresizingMaskIntoConstraints = false
+
+        // Subviews are decorative parts of a single accessible button — they must
+        // not be accessibility elements, otherwise the hit test resolves to the
+        // child NSTextField instead of the entry, and isHittable fails.
+        for child in [unreadDot, statusIndicator, labelField, statusTextField] as [NSView] {
+            child.setAccessibilityElement(false)
+        }
 
         addSubview(unreadDot)
         addSubview(statusIndicator)
