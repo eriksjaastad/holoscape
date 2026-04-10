@@ -31,8 +31,12 @@ final class HTTPAPIUITests: HoloscapeUITestCase {
     }
 
     func testCreateChannelWithDirectory() throws {
-        let (_, status) = try apiCreateChannel(dir: "/tmp", label: "tmp-api")
-        XCTAssertEqual(status, 201)
+        let (data, status) = try apiCreateChannel(dir: "/tmp", label: "tmp-api")
+        if status != 201 {
+            let body = String(data: data, encoding: .utf8) ?? "<not utf8>"
+            XCTFail("Create channel returned \(status), body: \(body)")
+            return
+        }
 
         let entry = sidebarEntry("tmp-api")
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Sidebar should show channel with custom label")

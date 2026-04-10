@@ -8,13 +8,14 @@ class HoloscapeUITestCase: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        // Reset API ready flag — the previous test's app may still be terminating
+        // and could have left the port in a weird state
+        Self.apiReady = false
         app = XCUIApplication()
         app.launchArguments.append("--ui-testing")
         app.launch()
 
         // Wait for the app to fully initialize before proceeding.
-        // Without this, ~57% of tests fail with "Application has not loaded accessibility"
-        // because applicationDidFinishLaunching hasn't completed yet.
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after launch")
         let sidebar = window.buttons.matching(
@@ -260,8 +261,10 @@ class HoloscapeUITestCase: XCTestCase {
     private nonisolated(unsafe) static var apiReady = false
 
     /// Wait for the API server to start responding.
+    /// Does NOT cache — always verifies the current app's API is responding.
+    /// This prevents a race where a stale app from the previous test briefly
+    /// handles a request before the new app binds to port 7865.
     private nonisolated func ensureAPIReady() {
-        guard !Self.apiReady else { return }
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             let url = URL(string: Self.apiBase + "/channels")!
@@ -275,8 +278,8 @@ class HoloscapeUITestCase: XCTestCase {
                 sem.signal()
             }.resume()
             sem.wait()
-            if ok { Self.apiReady = true; return }
-            Thread.sleep(forTimeInterval: 0.5)
+            if ok { return }
+            Thread.sleep(forTimeInterval: 0.2)
         }
     }
 
