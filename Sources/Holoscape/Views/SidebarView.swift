@@ -118,12 +118,17 @@ class SidebarView: NSView {
             }
         }
 
-        // Force layout then auto-scroll to the active entry
+        // Force layout, sync the scroll view's clip-view state, then auto-scroll.
+        // Without reflectScrolledClipView, the scroll view doesn't know the document
+        // grew — so newly added entries have correct frames but isHittable returns false
+        // in XCTest because the clip view still reports the old visible rect.
         stackView.layoutSubtreeIfNeeded()
+        scrollView.reflectScrolledClipView(scrollView.contentView)
         if let activeId, let activeEntry = tabEntries[activeId] {
             let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
             scrollView.contentView.scrollToVisible(entryFrame)
         }
+        NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
