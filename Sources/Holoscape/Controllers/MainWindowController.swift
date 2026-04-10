@@ -552,6 +552,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     /// Debounce saveState() — waits 1s after the last call before writing to disk.
     private func scheduleSaveState() {
+        // Skip state persistence during UI testing to prevent cross-test pollution
+        if CommandLine.arguments.contains("--ui-testing") &&
+           !CommandLine.arguments.contains("--restore-channels") {
+            return
+        }
         saveStateWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
