@@ -114,10 +114,11 @@ final class HoloscapeUITests: HoloscapeUITestCase {
 
     func testCmdWClosesChannel() throws {
         // Create a second channel
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
         // Verify second entry appeared
-        let secondEntry = sidebarEntry("Shell 2")
+        let secondEntry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(secondEntry.waitForExistence(timeout: 3), "Second entry should exist before close test")
 
         // Close active channel

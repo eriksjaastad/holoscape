@@ -97,14 +97,16 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         closeSettings()
 
         // Create second channel and switch between them
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
+        let _ = waitForNewSidebarEntry(expectedCount: countBefore + 1)
 
         app.typeKey("1", modifierFlags: .command)
-        let firstSidebar = sidebarEntry("Shell")
+        let firstSidebar = firstSidebarEntry()
         XCTAssertTrue(firstSidebar.waitForExistence(timeout: 2), "First channel sidebar entry should exist after switch")
 
         app.typeKey("2", modifierFlags: .command)
-        let secondSidebar = sidebarEntry("Shell 2")
+        let secondSidebar = sidebarEntryAt(1)
         XCTAssertTrue(secondSidebar.waitForExistence(timeout: 2), "Second channel sidebar entry should exist after switch")
 
         // Verify theme still set
@@ -198,7 +200,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         selectTheme("Solarized Dark")
         closeSettings()
 
-        let sidebar = sidebarEntry("Shell")
+        let sidebar = firstSidebarEntry()
         XCTAssertTrue(sidebar.waitForExistence(timeout: 3), "Sidebar entry should exist after theme change")
         XCTAssertTrue(sidebar.isHittable, "Sidebar entry should be hittable after theme change")
 

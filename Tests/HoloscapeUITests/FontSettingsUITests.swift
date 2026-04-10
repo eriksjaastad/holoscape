@@ -156,14 +156,16 @@ final class FontSettingsUITests: HoloscapeUITestCase {
         closeSettings()
 
         // Create second channel and switch between them
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
+        let _ = waitForNewSidebarEntry(expectedCount: countBefore + 1)
 
         app.typeKey("1", modifierFlags: .command)
-        let first = sidebarEntry("Shell")
+        let first = firstSidebarEntry()
         XCTAssertTrue(first.waitForExistence(timeout: 2), "First channel should be accessible after font change")
 
         app.typeKey("2", modifierFlags: .command)
-        let second = sidebarEntry("Shell 2")
+        let second = sidebarEntryAt(1)
         XCTAssertTrue(second.waitForExistence(timeout: 2), "Second channel should be accessible after font change")
 
         openSettings()

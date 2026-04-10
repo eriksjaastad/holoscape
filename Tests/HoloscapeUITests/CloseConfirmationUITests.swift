@@ -18,7 +18,7 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
         // Cancel to keep channel
         cancelButton.click()
 
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3), "Shell sidebar entry should remain after cancel")
     }
 
@@ -62,7 +62,7 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     }
 
     func testConfirmationCancelKeepsChannelOpen() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         app.typeKey("w", modifierFlags: .command)
@@ -78,9 +78,10 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     }
 
     func testConfirmationCloseRemovesChannel() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3))
         shell2.click()
 

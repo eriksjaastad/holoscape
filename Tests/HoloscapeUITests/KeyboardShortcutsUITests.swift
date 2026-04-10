@@ -17,9 +17,10 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     }
 
     func testCmdW() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3))
         shell2.click()
 

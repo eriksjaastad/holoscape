@@ -60,10 +60,11 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
     func testPinStatePersistsAcrossRestart() throws {
         // Create a second channel
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
         // Pin the second channel via context menu
-        let shell2 = sidebarEntry("Shell 2")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3))
 
         shell2.rightClick()
@@ -72,8 +73,9 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         pinItem.click()
 
         // Verify pin emoji appeared in sidebar accessibility title
-        let pinnedEntry = pinnedSidebarEntry("Shell 2")
-        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear in sidebar entry identifier after pinning")
+        let window = app.windows["Holoscape"]
+        let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
+        XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear in sidebar entry after pinning")
 
         // Quit and relaunch
         app.terminate()
@@ -83,7 +85,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let restoredWindow = app.windows["Holoscape"]
         XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5))
 
-        let restoredPinnedEntry = pinnedSidebarEntry("Shell 2")
+        let restoredPinnedEntry = restoredWindow.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
         XCTAssertTrue(restoredPinnedEntry.waitForExistence(timeout: 3), "Pinned channel should retain pin state after restart")
     }
 
@@ -95,7 +97,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
 
         assertActiveChannelResponsive(message: "Default shell should be responsive on launch")
 
-        let shellEntry = sidebarEntry("Shell")
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3), "Should have a Shell sidebar entry on fresh launch")
+        let shellEntry = firstSidebarEntry()
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 3), "Should have a sidebar entry on fresh launch")
     }
 }

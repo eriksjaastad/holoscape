@@ -90,6 +90,26 @@ class HoloscapeUITestCase: XCTestCase {
         return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).count
     }
 
+    /// Find a sidebar entry by index (0-based). Use when labels are dynamic (OSC 7 updates).
+    func sidebarEntryAt(_ index: Int) -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).element(boundBy: index)
+    }
+
+    /// Wait for sidebar to have at least N entries, then return the last one.
+    func waitForNewSidebarEntry(expectedCount: Int, timeout: TimeInterval = 5) -> XCUIElement {
+        let window = app.windows["Holoscape"]
+        let entries = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if entries.count >= expectedCount {
+                return entries.element(boundBy: expectedCount - 1)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return entries.element(boundBy: expectedCount - 1)
+    }
+
     /// Find a tab bar entry by partial identifier match.
     func tabEntry(_ identifier: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
