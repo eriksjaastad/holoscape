@@ -810,10 +810,27 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID,
-              let label = channelManager.labelForChannel(id: id) else { return }
-        if let profileManager {
+              let channel = channelManager.channel(for: id) else { return }
+
+        if let profileManager, let label = channelManager.labelForChannel(id: id) {
             let profile = profileManager.resolve(label: label)
             launchSession(from: profile)
+        } else {
+            // Fallback: duplicate by channel type without a profile
+            switch channel.channelType {
+            case .shell:
+                createShellChannel()
+            case .agentDirect:
+                createAgentChannel(authType: .oauth)
+            case .agentAPI:
+                createAgentChannel(authType: .apiKey(""))
+            case .bridge:
+                createBridgeChannel()
+            case .groupChat:
+                createGroupChatChannel()
+            default:
+                createShellChannel()
+            }
         }
     }
 
