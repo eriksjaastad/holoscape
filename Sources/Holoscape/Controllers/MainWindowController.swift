@@ -627,7 +627,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             role: "Shell",
             workingDirectory: nil
         ) { id, _, _, instanceNum, _ in
-            ShellChannelController(id: id, instanceNumber: instanceNum)
+            return ShellChannelController(id: id, instanceNumber: instanceNum)
         }
         channel.delegate = self
         channel.activate()
