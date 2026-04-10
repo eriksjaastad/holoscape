@@ -118,12 +118,25 @@ class SidebarView: NSView {
             }
         }
 
-        // Auto-scroll to the active entry — use NSView's built-in method
-        // which handles coordinate space conversion automatically
+        // Debug: write split view state
         stackView.layoutSubtreeIfNeeded()
-        if let activeId, let activeEntry = tabEntries[activeId] {
-            activeEntry.scrollToVisible(activeEntry.bounds)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        NSAccessibility.post(element: self, notification: .layoutChanged)
+
+        let splitView = superview?.superview as? NSSplitView
+        let sidebarPane = superview
+        var lines = [
+            "splitView: \(splitView?.frame ?? .zero) dividerPos=\(splitView.map { $0.isSubviewCollapsed($0.arrangedSubviews[0]) } ?? false)",
+            "sidebarPane: \(sidebarPane?.frame ?? .zero) hidden=\(sidebarPane?.isHidden ?? true)",
+            "sidebarView: \(frame)",
+            "scrollView: \(scrollView.frame) visibleRect=\(scrollView.documentVisibleRect)",
+            "clipView bounds=\(scrollView.contentView.bounds)",
+        ]
+        for (_, entry) in tabEntries {
+            let windowFrame = entry.convert(entry.bounds, to: nil)
+            lines.append("  \(entry.accessibilityIdentifier() ?? "?") local=\(entry.frame) window=\(windowFrame)")
         }
+        try? lines.joined(separator: "\n").write(toFile: "/tmp/sidebar-debug.txt", atomically: true, encoding: .utf8)
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
@@ -265,6 +278,12 @@ class SidebarTabEntry: NSControl {
         setAccessibilityRole(.button)
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
+
+        // Set explicit accessibility frame in screen coordinates to ensure isHittable works.
+        // After NSAlert.runModal(), the accessibility system may have stale position data.
+        if let screenFrame = window?.convertToScreen(convert(bounds, to: nil)) {
+            setAccessibilityFrame(screenFrame)
+        }
 
         if let notificationType {
             switch notificationType {
