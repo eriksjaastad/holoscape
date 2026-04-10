@@ -6,14 +6,16 @@
 - HTTPAPIUITests: 9/11 passing (up from 5/11) after nonisolated fix
 - PR #37 merged, PR for round3-v2 pending
 
-## Key finding: sidebar isHittable issue
+## Key finding: sidebar isHittable issue — ROOT CAUSE FOUND
 - ~22 tests fail because newly created sidebar entries return `isHittable == false`
-- The entry EXISTS in accessibility tree, has correct frame, is within window bounds
-- NOT caused by: scroll view clipping, coordinate conversion, layout timing, focus, window position
-- IS caused by: XCTest accessibility hit testing on NSControl subclass inside NSStackView/NSScrollView
-- The Shell entry created at launch IS hittable. Entries created via dialog are NOT.
-- Pragmatic fix: update tests to use coordinate-based clicks instead of relying on isHittable
-- Proper fix: investigate NSStackView accessibility interaction more deeply
+- Root cause: NSStackView caches its accessibilityChildren() list. After runModal() returns,
+  dynamically inserted entries are NOT in the cached list. XCTest's hit test traversal reaches
+  the stack view but never delegates to the new entry — so isHittable is false.
+- Secondary issue: NSTextField subviews (labelField, statusTextField) were accessibility elements,
+  which could intercept the hit test even when the parent was found.
+- Fix applied: (1) stackView.setAccessibilityChildren(stackView.arrangedSubviews) after every
+  update, (2) mark all entry subviews as non-accessibility-elements, (3) post .layoutChanged
+  on the stack view (not the sidebar view)
 
 ## What still needs fixing
 1. Sidebar isHittable (~22 tests) — need test-side workaround or deeper NSStackView investigation
@@ -26,6 +28,6 @@
 8. Misc (~15 tests) — window management, bug report, URL scheme, input shrink
 
 ## Next steps
-1. Fix sidebar isHittable — likely need to restructure SidebarTabEntry to be directly accessible
+1. Verify sidebar isHittable fix — run tests with the new changes
 2. Fix remaining categories in order of impact
 3. Run make test-ui-failing after each fix
