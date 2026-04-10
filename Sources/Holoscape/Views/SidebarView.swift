@@ -118,13 +118,19 @@ class SidebarView: NSView {
             }
         }
 
-        // Force layout and sync scroll view state.
+        // Force layout and reset the clip view's scroll position.
+        // The stack view is non-flipped (y-up) but NSClipView is flipped (y-down).
+        // The previous code used stackView.convert(entry.frame, to: clipView) which
+        // produces wrong y-values across this coordinate mismatch, then scrollToVisible
+        // scrolled the clip view to bounds origin 818 (= clipHeight - contentHeight).
+        // That stale origin makes the accessibility hit test convert screen points to
+        // wrong document coordinates, so isHittable fails for entries near y=0.
         stackView.layoutSubtreeIfNeeded()
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+        scrollView.contentView.scroll(to: .zero)
         if let activeId, let activeEntry = tabEntries[activeId] {
-            let entryFrame = stackView.convert(activeEntry.frame, to: scrollView.contentView)
-            scrollView.contentView.scrollToVisible(entryFrame)
+            activeEntry.scrollToVisible(activeEntry.bounds)
         }
+        scrollView.reflectScrolledClipView(scrollView.contentView)
 
         // NSStackView caches its accessibilityChildren() list. After runModal()
         // returns and new entries are inserted, the cache is stale — the hit test
