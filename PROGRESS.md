@@ -1,32 +1,31 @@
-# Session Progress — 2026-04-09
+# Session Progress — 2026-04-09 (evening)
 
 ## Current State
-- Branch: `fix/ui-tests-round3` (clean from main after PRs #35, #36, #37 merged)
-- Full test suite running via `nohup` → `/tmp/test-results-round3.txt` (PID 36752)
-- Last full run: 245 passed, 127 failed, 14 skipped (378 total)
+- Branch: `fix/ui-tests-round3-v2` (1 commit ahead of main: nonisolated API fix)
+- Last full run: 239 passed, 125 failed, 14 skipped (378 total)
+- HTTPAPIUITests: 9/11 passing (up from 5/11) after nonisolated fix
+- PR #37 merged, PR for round3-v2 pending
 
-## What was done today
-1. Fixed "Application has not loaded accessibility" (134 tests) — `--ui-testing` launch arg skips heavy init
-2. Fixed NSAlert button mapping — Bridge was response code 1003, should be 1004
-3. Fixed HTTP body parsing — accumulate TCP data across multiple receive() calls
-4. Fixed ShellChannelController — store explicit label (was silently discarding it)
-5. Added close confirmation dialog for active channels
-6. Fixed transparency slider value cast (NSNumber not String)
-7. Added `--restore-channels` flag for restoration tests
-8. Added sidebar auto-scroll to active entry
-9. Created test sharding system (10 shards, ~8 min each)
-10. Reverted sidebar identifier prefix change (broke CONTAINS matching)
+## Key finding: sidebar isHittable issue
+- ~22 tests fail because newly created sidebar entries return `isHittable == false`
+- The entry EXISTS in accessibility tree, has correct frame, is within window bounds
+- NOT caused by: scroll view clipping, coordinate conversion, layout timing, focus, window position
+- IS caused by: XCTest accessibility hit testing on NSControl subclass inside NSStackView/NSScrollView
+- The Shell entry created at launch IS hittable. Entries created via dialog are NOT.
+- Pragmatic fix: update tests to use coordinate-based clicks instead of relying on isHittable
+- Proper fix: investigate NSStackView accessibility interaction more deeply
 
-## Still failing (~127 tests) — root causes
-- Sidebar buttons not hittable (~30) — entries off-screen despite auto-scroll
-- HTTP API tests (~20) — body accumulation fix needs verification
-- Search match count (~7) — label populated but debounce + empty terminal buffer
-- Channel restoration (~5) — --restore-channels flag needs test setup
-- Close confirmation (~6) — dialog added but tests need verification
-- Misc (~15) — font validation, URL scheme, bug report, window restore
+## What still needs fixing
+1. Sidebar isHittable (~22 tests) — need test-side workaround or deeper NSStackView investigation
+2. Search match count (~7 tests) — debounce + empty terminal buffer
+3. Close confirmation dialog (~7 tests) — dialog added but button matching issues
+4. Transparency slider value (~6 tests) — cast fix needs verification
+5. Font size format (~2 tests) — "16.0" vs "16"
+6. Channel restoration (~2 tests) — --restore-channels flag in test setUp
+7. Directory labels (~3 tests) — OSC 7 timing
+8. Misc (~15 tests) — window management, bug report, URL scheme, input shrink
 
 ## Next steps
-1. Run full suite to get baseline with all PR #37 fixes
-2. Investigate remaining sidebar hittability issue
-3. Fix search match count for PTY channels
-4. Individual test fixes for the misc category
+1. Fix sidebar isHittable — likely need to restructure SidebarTabEntry to be directly accessible
+2. Fix remaining categories in order of impact
+3. Run make test-ui-failing after each fix
