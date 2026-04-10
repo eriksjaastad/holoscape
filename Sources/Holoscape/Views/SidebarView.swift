@@ -118,27 +118,11 @@ class SidebarView: NSView {
             }
         }
 
-        // Force layout and reset the clip view's scroll position.
-        // The stack view is non-flipped (y-up) but NSClipView is flipped (y-down).
-        // The previous code used stackView.convert(entry.frame, to: clipView) which
-        // produces wrong y-values across this coordinate mismatch, then scrollToVisible
-        // scrolled the clip view to bounds origin 818 (= clipHeight - contentHeight).
-        // That stale origin makes the accessibility hit test convert screen points to
-        // wrong document coordinates, so isHittable fails for entries near y=0.
+        // Force layout then auto-scroll to the active entry
         stackView.layoutSubtreeIfNeeded()
-        scrollView.contentView.scroll(to: .zero)
         if let activeId, let activeEntry = tabEntries[activeId] {
             activeEntry.scrollToVisible(activeEntry.bounds)
         }
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-
-        // NSStackView caches its accessibilityChildren() list. After runModal()
-        // returns and new entries are inserted, the cache is stale — the hit test
-        // traversal never reaches the new entry, so isHittable returns false even
-        // though the entry exists in the tree with a valid frame. Explicitly setting
-        // the children forces the stack view to expose the current arranged subviews.
-        stackView.setAccessibilityChildren(stackView.arrangedSubviews)
-        NSAccessibility.post(element: stackView, notification: .layoutChanged)
     }
 
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
@@ -159,8 +143,13 @@ class SidebarView: NSView {
 
 // MARK: - SidebarTabEntry
 
+/// Sidebar entry backed by NSButton for native accessibility hit-test support.
+/// Custom NSControl subclasses are not recognized by XCTest's isHittable check
+/// after dynamic insertion (e.g., post-NSAlert.runModal()), because the
+/// accessibility system only provides full hit-test integration for standard
+/// AppKit control classes. NSButton gets this natively.
 @MainActor
-class SidebarTabEntry: NSControl {
+class SidebarTabEntry: NSButton {
     // Pre-computed CGColors — avoids NSColor→CGColor conversion on every configure() call
     private static let activeBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
     private static let permissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
@@ -192,6 +181,11 @@ class SidebarTabEntry: NSControl {
     }
 
     private func setupViews() {
+        // Suppress default NSButton chrome — we draw everything with custom subviews
+        title = ""
+        isBordered = false
+        imagePosition = .noImage
+
         wantsLayer = true
         layer?.cornerRadius = 4
 
@@ -217,7 +211,7 @@ class SidebarTabEntry: NSControl {
 
         // Subviews are decorative parts of a single accessible button — they must
         // not be accessibility elements, otherwise the hit test resolves to the
-        // child NSTextField instead of the entry, and isHittable fails.
+        // child NSTextField instead of the entry.
         for child in [unreadDot, statusIndicator, labelField, statusTextField] as [NSView] {
             child.setAccessibilityElement(false)
         }
@@ -283,8 +277,7 @@ class SidebarTabEntry: NSControl {
             labelField.textColor = NSColor.lightGray
         }
 
-        setAccessibilityElement(true)
-        setAccessibilityRole(.button)
+        // NSButton provides native accessibility — just set the metadata
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
 
