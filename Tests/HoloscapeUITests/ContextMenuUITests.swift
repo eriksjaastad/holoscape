@@ -17,9 +17,9 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertTrue(closeItem.waitForExistence(timeout: 2), "Close menu item should exist")
         closeItem.click()
 
-        // Handle confirmation if it appears
+        // Handle confirmation dialog — active channels always show confirmation
         let closeButton = app.buttons["Close"]
-        if closeButton.waitForExistence(timeout: 1) {
+        if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
 
@@ -41,7 +41,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         closeItem.click()
 
         let closeButton = app.buttons["Close"]
-        if closeButton.waitForExistence(timeout: 1) {
+        if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
 
