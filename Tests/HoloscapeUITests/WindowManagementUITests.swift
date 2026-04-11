@@ -14,13 +14,14 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         // Restore via Window menu — macOS adds the window title automatically
         app.activate()
         app.menuBars.firstMatch.menuBarItems["Window"].click()
-        let windowItem = app.menuItems["Holoscape"]
+        // Window title may include decorators when minimized — use CONTAINS match
+        let windowItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Holoscape'")).firstMatch
         if windowItem.waitForExistence(timeout: 2) {
             windowItem.click()
         } else {
-            // Fallback: click any menu item that matches the window
             app.typeKey(.escape, modifierFlags: [])
-            app.typeKey("`", modifierFlags: .command)
+            // Fallback: just activate the app which should restore on macOS
+            app.activate()
         }
         Thread.sleep(forTimeInterval: 0.5)
 
@@ -82,12 +83,12 @@ final class WindowManagementUITests: HoloscapeUITestCase {
 
         app.activate()
         app.menuBars.firstMatch.menuBarItems["Window"].click()
-        let windowItem = app.menuItems["Holoscape"]
+        let windowItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Holoscape'")).firstMatch
         if windowItem.waitForExistence(timeout: 2) {
             windowItem.click()
         } else {
             app.typeKey(.escape, modifierFlags: [])
-            app.typeKey("`", modifierFlags: .command)
+            app.activate()
         }
         Thread.sleep(forTimeInterval: 0.5)
 
@@ -108,13 +109,16 @@ final class WindowManagementUITests: HoloscapeUITestCase {
 
         // The standard About panel may report invalid accessibility coordinates (INFINITY).
         // Don't query the About panel directly — just close it and verify the main window.
+        // NOTE: Cmd+W is mapped to "Close Channel" — it won't close the About panel.
+        // Click the main window to bring it to front, which effectively dismisses the About panel.
         Thread.sleep(forTimeInterval: 1.0)
-        // Cmd+W closes the About panel; Escape alone may not dismiss it
-        app.typeKey("w", modifierFlags: .command)
+        let mainWindow = app.windows["Holoscape"]
+        if mainWindow.exists {
+            mainWindow.click()
+        }
         Thread.sleep(forTimeInterval: 0.3)
 
-        let window = app.windows["Holoscape"]
-        XCTAssertTrue(window.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
+        XCTAssertTrue(mainWindow.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
     }
 
     func testAboutDialogCloses() throws {
@@ -125,7 +129,11 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
             Thread.sleep(forTimeInterval: 1.0)
-            app.typeKey("w", modifierFlags: .command)
+            // Click the main window to dismiss the About panel — Cmd+W is "Close Channel"
+            let mainWindow = app.windows["Holoscape"]
+            if mainWindow.exists {
+                mainWindow.click()
+            }
             Thread.sleep(forTimeInterval: 0.3)
         } else {
             app.typeKey(.escape, modifierFlags: [])

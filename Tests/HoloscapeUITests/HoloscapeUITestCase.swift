@@ -264,55 +264,81 @@ class HoloscapeUITestCase: XCTestCase {
     /// Internal so subclasses that override setUpWithError can set it.
     nonisolated(unsafe) static var currentAPIBase = "http://127.0.0.1:7865"
 
+    /// Background queue for API calls.
+    private static let apiQueue = DispatchQueue(label: "holoscape.test.api", qos: .userInitiated)
+
     /// Wait for the API server to start responding on this test's unique port.
+    /// Spins the RunLoop so the MainActor can process the server's `Task { @MainActor }`
+    /// response dispatch. A semaphore.wait() would deadlock because this method
+    /// (though nonisolated) runs on the main thread when called from @MainActor test code.
     private nonisolated func ensureAPIReady() {
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline {
-            let url = URL(string: Self.currentAPIBase + "/channels")!
-            var req = URLRequest(url: url)
-            req.httpMethod = "GET"
-            req.timeoutInterval = 2
-            let sem = DispatchSemaphore(value: 0)
-            var ok = false
-            URLSession.shared.dataTask(with: req) { _, response, _ in
-                if let http = response as? HTTPURLResponse, http.statusCode == 200 { ok = true }
-                sem.signal()
-            }.resume()
-            sem.wait()
-            if ok { return }
-            Thread.sleep(forTimeInterval: 0.2)
+        var ready = false
+        Self.apiQueue.async {
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline && !ready {
+                let url = URL(string: Self.currentAPIBase + "/channels")!
+                var req = URLRequest(url: url)
+                req.httpMethod = "GET"
+                req.timeoutInterval = 2
+                let sem = DispatchSemaphore(value: 0)
+                var ok = false
+                URLSession.shared.dataTask(with: req) { _, response, _ in
+                    if let http = response as? HTTPURLResponse, http.statusCode == 200 { ok = true }
+                    sem.signal()
+                }.resume()
+                sem.wait()
+                if ok { ready = true; return }
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+        }
+        // Spin RunLoop so MainActor Tasks can execute (server dispatches via Task { @MainActor })
+        while !ready {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         }
     }
 
     /// Synchronous HTTP request to the Holoscape API server.
-    /// Marked nonisolated to avoid blocking the MainActor — the API server
-    /// dispatches responses via Task { @MainActor }, which deadlocks if
-    /// the caller is also blocking the main actor with semaphore.wait().
+    /// The server processes requests via `Task { @MainActor }`, so we MUST NOT
+    /// block the MainActor thread while waiting for a response. Although this
+    /// method is `nonisolated`, Swift calls it synchronously on the main thread
+    /// when invoked from @MainActor test methods. We spin the RunLoop instead
+    /// of using semaphore.wait() so the MainActor can process the server's
+    /// response Tasks.
     @discardableResult
     nonisolated func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
         ensureAPIReady()
-        let url = URL(string: Self.currentAPIBase + path)!
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = 15
-        if let body {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
 
-        let semaphore = DispatchSemaphore(value: 0)
         var responseData: Data?
         var responseCode: Int?
         var responseError: Error?
+        var completed = false
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            responseData = data
-            responseCode = (response as? HTTPURLResponse)?.statusCode
-            responseError = error
-            semaphore.signal()
-        }.resume()
+        Self.apiQueue.async {
+            let url = URL(string: Self.currentAPIBase + path)!
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            request.timeoutInterval = 15
+            if let body {
+                request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
 
-        semaphore.wait()
+            let sem = DispatchSemaphore(value: 0)
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                responseData = data
+                responseCode = (response as? HTTPURLResponse)?.statusCode
+                responseError = error
+                sem.signal()
+            }.resume()
+            sem.wait()
+            completed = true
+        }
+
+        // Spin RunLoop so MainActor Tasks can execute while we wait
+        while !completed {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+
         if let responseError { throw responseError }
         return (responseData ?? Data(), responseCode ?? 0)
     }
@@ -373,6 +399,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Poll channel output until it contains the expected text, or timeout.
+    /// Uses RunLoop spinning between polls to keep the MainActor responsive.
     nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -380,7 +407,11 @@ class HoloscapeUITestCase: XCTestCase {
             if lines.contains(where: { $0.contains(text) }) {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.5)
+            // Spin RunLoop instead of Thread.sleep to keep MainActor responsive
+            let waitUntil = Date(timeIntervalSinceNow: 0.5)
+            while Date() < waitUntil {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            }
         }
         return false
     }
