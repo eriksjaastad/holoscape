@@ -348,7 +348,20 @@ class HoloscapeUITestCase: XCTestCase {
         }
 
         if let responseError { throw responseError }
-        return (responseData ?? Data(), responseCode ?? 0)
+        let code = responseCode ?? 0
+        // P0: surface non-2xx server responses instead of silently returning
+        // them. Previously every caller discarded the status code, masking
+        // 500 "Not ready" and 404 "channel not found" as downstream UI
+        // assertion failures. See docs/round-9-deep-dive.md Bucket A.
+        if !(200...299).contains(code) {
+            let body = String(data: responseData ?? Data(), encoding: .utf8) ?? ""
+            throw NSError(
+                domain: "HoloscapeAPITest",
+                code: code,
+                userInfo: [NSLocalizedDescriptionKey: "HTTP \(code) \(method) \(path): \(body)"]
+            )
+        }
+        return (responseData ?? Data(), code)
     }
 
     /// List all channels via GET /channels.
