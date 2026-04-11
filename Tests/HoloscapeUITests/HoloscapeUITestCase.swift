@@ -273,7 +273,9 @@ class HoloscapeUITestCase: XCTestCase {
     /// (though nonisolated) runs on the main thread when called from @MainActor test code.
     private nonisolated func ensureAPIReady() {
         var ready = false
+        var finished = false
         Self.apiQueue.async {
+            defer { finished = true }
             let deadline = Date().addingTimeInterval(10)
             while Date() < deadline && !ready {
                 let url = URL(string: Self.currentAPIBase + "/channels")!
@@ -291,9 +293,15 @@ class HoloscapeUITestCase: XCTestCase {
                 Thread.sleep(forTimeInterval: 0.2)
             }
         }
-        // Spin RunLoop so MainActor Tasks can execute (server dispatches via Task { @MainActor })
-        while !ready {
+        // Spin RunLoop so MainActor Tasks can execute (server dispatches via Task { @MainActor }).
+        // Outer wall-clock deadline prevents an infinite spin if the background probe exits
+        // without setting `ready` (e.g. API server never came up).
+        let outerDeadline = Date().addingTimeInterval(12)
+        while !ready && !finished && Date() < outerDeadline {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        if !ready {
+            XCTFail("API server did not become ready within 10s at \(Self.currentAPIBase)")
         }
     }
 
