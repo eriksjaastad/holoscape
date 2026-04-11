@@ -110,17 +110,17 @@ final class HTTPAPIUITests: HoloscapeUITestCase {
     // MARK: - Error Cases
 
     func testInvalidChannelReturns404() throws {
-        let (_, status) = try apiRequest("GET", path: "/channels/nonexistent/output?lines=5")
+        let (_, status) = try apiRequestAllowingError("GET", path: "/channels/nonexistent/output?lines=5")
         XCTAssertEqual(status, 404, "Non-existent channel should return 404")
     }
 
     func testSendInputToNonexistentReturns404() throws {
-        let (_, status) = try apiRequest("POST", path: "/channels/fake/input", body: ["text": "hello"])
+        let (_, status) = try apiRequestAllowingError("POST", path: "/channels/fake/input", body: ["text": "hello"])
         XCTAssertEqual(status, 404)
     }
 
     func testDeleteNonexistentReturns404() throws {
-        let (_, status) = try apiRequest("DELETE", path: "/channels/no-such-channel")
+        let (_, status) = try apiRequestAllowingError("DELETE", path: "/channels/no-such-channel")
         XCTAssertEqual(status, 404)
     }
 }

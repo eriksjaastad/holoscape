@@ -206,15 +206,32 @@ final class BugReportDialog {
         guard let panel else { return }
         let desc = descriptionField.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !desc.isEmpty else {
-            let alert = NSAlert()
-            alert.messageText = "Please describe what happened"
-            alert.informativeText = "A brief description helps us understand the issue."
-            alert.runModal()
+            presentAlert(
+                messageText: "Please describe what happened",
+                informativeText: "A brief description helps us understand the issue.",
+                style: .warning
+            )
             return
         }
 
         panel.sheetParent?.endSheet(panel)
         self.panel = nil
         delegate?.bugReportDialog(self, didSubmitDescription: desc, screenshot: screenshotData)
+    }
+
+    private func presentAlert(messageText: String, informativeText: String, style: NSAlert.Style) {
+        let alert = NSAlert()
+        alert.messageText = messageText
+        alert.informativeText = informativeText
+        alert.alertStyle = style
+        alert.addButton(withTitle: "OK")
+
+        if let parent = panel?.sheetParent {
+            alert.beginSheetModal(for: parent) { _ in }
+        } else if let panel {
+            alert.beginSheetModal(for: panel) { _ in }
+        } else {
+            alert.runModal()
+        }
     }
 }
