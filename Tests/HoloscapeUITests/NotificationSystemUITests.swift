@@ -94,6 +94,10 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         waitForExpectations(timeout: 5)
 
         let freshApp = XCUIApplication()
+        let port = UInt16.random(in: 49152...60999)
+        Self.currentAPIBase = "http://127.0.0.1:\(port)"
+        freshApp.launchArguments.append("--ui-testing")
+        freshApp.launchArguments += ["--api-port", "\(port)"]
         // No --disable-notification-suppression argument
         freshApp.launch()
         // Immediately send a notification (within the 10s window)

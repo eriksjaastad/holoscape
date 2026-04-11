@@ -249,13 +249,23 @@ class HoloscapeUITestCase: XCTestCase {
     /// Needs sufficient timeout for: 150ms search debounce + terminal buffer scan + UI update.
     func searchMatchCountText(timeout: TimeInterval = 5) -> String? {
         let searchBar = app.toolbars["Search Bar"]
-        let label = searchBar.staticTexts["search-match-count"]
+        let label = searchBar.descendants(matching: .any)["search-match-count"]
         let deadline = Date().addingTimeInterval(timeout)
+        var latestText: String?
         while Date() < deadline {
-            if label.exists, !label.label.isEmpty { return label.label }
+            if label.exists {
+                let text = (label.value as? String) ?? label.label
+                if !text.isEmpty {
+                    latestText = text
+                    if text.contains(" of ") { return text }
+                }
+            }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        return label.exists ? label.label : nil
+        if let latestText { return latestText }
+        guard label.exists else { return nil }
+        let text = (label.value as? String) ?? label.label
+        return text.isEmpty ? nil : text
     }
 
     // MARK: - HTTP API Helpers
@@ -314,6 +324,18 @@ class HoloscapeUITestCase: XCTestCase {
     /// response Tasks.
     @discardableResult
     nonisolated func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
+        return try performAPIRequest(method, path: path, body: body, allowErrorStatus: false)
+    }
+
+    /// Variant of apiRequest that returns non-2xx responses to the caller instead
+    /// of surfacing them as harness errors.
+    @discardableResult
+    nonisolated func apiRequestAllowingError(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
+        return try performAPIRequest(method, path: path, body: body, allowErrorStatus: true)
+    }
+
+    @discardableResult
+    private nonisolated func performAPIRequest(_ method: String, path: String, body: [String: Any]? = nil, allowErrorStatus: Bool) throws -> (Data, Int) {
         ensureAPIReady()
 
         var responseData: Data?
@@ -353,7 +375,7 @@ class HoloscapeUITestCase: XCTestCase {
         // them. Previously every caller discarded the status code, masking
         // 500 "Not ready" and 404 "channel not found" as downstream UI
         // assertion failures. See docs/round-9-deep-dive.md Bucket A.
-        if !(200...299).contains(code) {
+        if !allowErrorStatus && !(200...299).contains(code) {
             let body = String(data: responseData ?? Data(), encoding: .utf8) ?? ""
             throw NSError(
                 domain: "HoloscapeAPITest",
