@@ -1,79 +1,101 @@
-# Session Progress — 2026-04-10 (round 7 full-suite run)
+# Session Progress — Round 8 Results (2026-04-11)
 
-## Headline
-- **297 passed / 73 failed / 6 skipped → 80.3% pass rate** (370 tests run)
-- Baseline before round 6+7 fixes: 293/378 (78%)
-- Net movement: **+4 passing**. The 73 remaining failures mostly fall into the same clusters as round 6, meaning the fixes landed in code but did not resolve the underlying runtime behavior.
+## TL;DR
 
-## Round 6/7 fixes verified present on disk
-All the following are on `main` and not reverted — they just don't resolve the failures at runtime:
+**Round 8: 316 passed / 48 failed / 6 skipped → 86.8%** (pass/(pass+fail))
 
-| Fix | Location |
-|---|---|
-| `--api-port` launch arg wiring | `Sources/Holoscape/AppDelegate.swift:51-57` |
-| Random per-test port (49152–60999) | `Tests/HoloscapeUITests/HoloscapeUITestCase.swift:16-20` |
-| `currentAPIBase` static for nonisolated helpers | `Tests/HoloscapeUITests/HoloscapeUITestCase.swift:265` |
-| `waitForAPIOutput` before search | `Tests/HoloscapeUITests/SearchAdvancedUITests.swift:13` |
-| `searchMatchCountText(timeout: 5)` | `Tests/HoloscapeUITests/HoloscapeUITestCase.swift:250` |
-| Window menu with Minimize + `NSApp.windowsMenu` | `Sources/Holoscape/AppDelegate.swift:354-360` |
-| BugReport `alert.runModal()` | `Sources/Holoscape/Views/BugReportDialog.swift:212` |
-| Context-menu `autoenablesItems = false` | `Sources/Holoscape/Controllers/MainWindowController.swift:774` |
+Round 7 → Round 8: **80.3% → 86.8% (+6.5pt, +19 passing)**. The MainActor deadlock fix (`f2ff00d`) and the `ensureAPIReady` outer-timeout fix (`6385f48`, PR #47) both landed and produced real movement — but we underperformed the ~92% target. Three surprise failure pockets (Integrity, TerminalInput/TabBehavior, NotificationSystem) are the next targets.
 
-Next session must **debug runtime behavior**, not re-apply the same fixes.
+## Full round 8 per-shard
 
-## Shard results (Xcode "Executed N tests")
+| Shard | Classes | Tests | Fails | Skip |
+|-------|---------|-------|-------|------|
+| 1 | IntegrityUITests | 41 | **10** ❌ | 0 |
+| 2 | KeyboardShortcuts, WindowManagement | 34 | 5 | 0 |
+| 3 | Stress, ThemeSwitching | 31 | 2 | 0 |
+| 4 | SearchAdvanced, Settings, SessionLauncher | 44 | 8 | 3 |
+| 5 | FontSettings, EditMenu, ContextMenu | 42 | 1 | 3 |
+| 6 | BugReport, HTTPAPI, TransparencyColorWell | 33 | 4 | 0 |
+| 7 | Holoscape, TabBar, SplitPaneAdvanced, InputBox | 37 | 3 | 0 |
+| 8 | ChannelOrdering, AgentChannel, SplitPane, CloseConfirmation | 31 | **0** ✅ | 0 |
+| 9 | Bridge, TerminalInput, TabBehavior, Sidebar, SearchBar | 31 | **8** ❌ | 0 |
+| 10 | URLScheme, TerminalDisplay, SSHChannel, NotificationSystem, TimestampToggle, SkinEngine, ConfigPersistence, ChannelStateIndicator, ChannelRestoration, Notification, DirectoryPersistence | 46 | 7 | 0 |
+| **Total** | | **370** | **48** | **6** |
 
-| Shard | Classes | Run | Failed | Skipped |
-|-------|---------|-----|--------|---------|
-| 1 | IntegrityUITests | 41 | 14 | 0 |
-| 2 | KeyboardShortcutsUITests, WindowManagementUITests | 34 | 5 | 0 |
-| 3 | StressUITests, ThemeSwitchingUITests | 31 | 7 | 0 |
-| 4 | SearchAdvancedUITests, SettingsUITests, SessionLauncherUITests | 44 | 8 | 3 |
-| 5 | FontSettingsUITests, EditMenuUITests, ContextMenuUITests | 42 | 3 | 3 |
-| 6 | BugReportUITests, HTTPAPIUITests, TransparencyColorWellUITests | 33 | 8 | 0 |
-| 7 | HoloscapeUITests, TabBarUITests, SplitPaneAdvancedUITests, InputBoxUITests | 37 | 6 | 0 |
-| 8 | ChannelOrderingUITests, AgentChannelUITests, SplitPaneUITests, CloseConfirmationUITests | 31 | 2 | 0 |
-| 9 | BridgeChannelUITests, TerminalInputUITests, TabBehaviorUITests, SidebarUITests, SearchBarUITests | 31 | 11 | 0 |
-| 10 | URLSchemeUITests, TerminalDisplayUITests, SSHChannelUITests, NotificationSystemUITests, TimestampToggleUITests, SkinEngineUITests, ConfigPersistenceUITests, ChannelStateIndicatorUITests, ChannelRestorationUITests, NotificationUITests, DirectoryPersistenceUITests | 46 | 9 | 0 |
-| **Total** | | **370** | **73** | **6** |
+## Shard 10 per-class (for triage)
 
-Note: the shard script's grep-based summary is unreliable (counts "failed" substrings, not tests). Trust the Xcode "Executed" lines.
+| Class | Tests | Fails |
+|-------|-------|-------|
+| URLSchemeUITests | 4 | 0 ✅ |
+| TerminalDisplayUITests | 4 | 0 ✅ |
+| SSHChannelUITests | 4 | 0 ✅ |
+| **NotificationSystemUITests** | **3** | **3** ❌ (total wipeout) |
+| TimestampToggleUITests | 5 | 2 |
+| SkinEngineUITests | 3 | 0 ✅ |
+| ConfigPersistenceUITests | 5 | 0 ✅ |
+| ChannelStateIndicatorUITests | 4 | 1 |
+| ChannelRestorationUITests | 5 | 0 ✅ |
+| NotificationUITests | 4 | 0 ✅ |
+| DirectoryPersistenceUITests | 5 | 1 |
 
-## Failure clusters — 73 tests
+## Shards/clusters the deadlock fix cleared (as predicted)
 
-IntegrityUITests (shard 1) is a meta-suite that re-runs feature paths. Most of its failures shadow failures in feature-specific shards; fixing a cluster root cause should resolve the Integrity case for free.
+- **Shard 8**: 0 failures (ChannelOrdering/Agent/SplitPane/CloseConfirmation)
+- **Shard 5**: 1 failure (FontSettings/EditMenu/ContextMenu — cluster G collapsed)
+- **Shard 3**: 2 failures (Stress — cousin Claude's revised prediction nailed it)
+- **Shard 6**: 4 failures (HTTPAPI cluster ≈ 0; BugReport still a problem)
 
-| # | Cluster | Count | Shards | Failing tests | Root-cause hypothesis |
-|---|---------|-------|--------|---------------|------------------------|
-| A | **HTTP API** | 7 | 6, 1 | HTTPAPIUITests {CreateChannel, CreateChannelWithDirectory, DeleteChannel, ResolveByLabel, SendInputAndReadOutput, SwitchChannel}; Integrity.testAPIChannelLifecycle | Port-isolation fix wired but API still not reachable at expected port. Check test-server startup race / AppDelegate timing / whether HoloscapeAPIServer actually binds to the passed port. |
-| B | **Search match count** | 9 | 4, 1, 9 | SearchAdvanced {EnterAdvancesToNext, MultipleMatches, Next/PreviousButton, NoMatches, SingleMatch}; Integrity.testSearchFindNavigateAndCount, testSearchPersistsAcrossChannelSwitch; SearchBar.testSearchShowsMatchCount | `waitForAPIOutput` helper present but matches still not counted. Buffer render vs. search scan ordering. |
-| C | **cd/directory labels** | 9 | 9, 10 | TabBehavior {CdToAnotherDirectory, CdUpdatesTabLabel, LabelsPeristAcrossRestart, NoReorderOnBackgroundOutput, ShellLabelShowsDirectoryNotShell, CmdWClosesChannel}; DirectoryPersistence {CdChangesLabel, DirectoryPersistsAcrossRestart, RestoredChannelStartsInSavedDirectory} | OSC 7 → sidebar label pipeline. Likely single bug across cd-handler + restart restore. |
-| D | **Stress / many channels** | 8 | 3, 1 | StressUITests {CommandHistory100Entries, Create20Channels, CtrlCKeepsTabOpen, ExitShowsDisconnected, Rapid100Cycles, SixPlusTabs, Submit50Commands}; Integrity.testSidebarScalesWithManyChannels | Rapid create/close timing; per-channel waits added last round may not cover all cases. |
-| E | **Terminal focus/input** | 5 | 9, 1 | TerminalInput {CopyFromTerminal, FocusAfterAppReactivation, FocusOnChannelSwitch, AcceptsKeystrokes}; Integrity.testTerminalGetsFocusOnPTYSwitch | Focus handling after switch/reactivation; may be coupled to cluster A if helpers hit API. |
-| F | **Notifications** | 7 | 10, 1 | NotificationSystem {ClickingNotifiedTab, IdlePromptAmber, PermissionAmber, StartupSuppression}; Integrity {testNotificationTypesSetCorrectValues, testUnreadBulletAppears, testSidebarUnreadBackgroundState} | Notification state machine regression. |
-| G | **Context menu / Cmd+W close** | 6 | 5, 1, 7, 9, 8 | ContextMenu {CloseActiveChannelSwitches, CloseRemovesChannel, CloseWithConfirmation}; HoloscapeUITests.testCmdWClosesChannel; Integrity.testContextMenuFullWorkflow; TabBehavior.testCmdWClosesChannel; AgentChannel.testAgentChannelDeactivates; ChannelOrdering.testClosedChannelRemovedCleanly | Close-confirmation path. `autoenablesItems=false` landed but doesn't cover all entry points. |
-| H | **Window / About / Minimize** | 5 | 2, 1 | Keyboard.testCmdW; WindowManagement {AboutDialogOpens, AboutDialogCloses, WindowMinimize, WindowRestoreAfterMinimize}; Integrity.testMinimizeRestoreFunctionality | Window menu added last round — verify About dialog + minimize interaction. |
-| I | **Split pane** | 3 | 7 | SplitPaneAdvanced {ChannelSwitchInActivePaneOnly, ClosePaneAfterClosingChannel, ClosingChannelInSplitDoesNotCrash} | Small, self-contained. |
-| J | **Tab bar** | 2 | 7 | TabBar {ClickingTabSwitchesChannel, TabBarAppearsWhenSidebarCollapsed} | Small. |
-| K | **State transitions** | 3 | 1 | Integrity {testDisconnectedChannelShowsDisconnectedState, testFullStateTransitionCycle, testTimestampToggle, testThemePersistsThroughChannelSwitch} | Integrity-only; may resolve when A/F fixed. |
-| L | **Session launcher** | 2 | 4 | SessionLauncher {RecentSessionAppearsAfterCreation, SelectingShellProfileCreatesShellChannel} | Small. |
-| M | **Bug Report** | 2 | 6 | BugReport {SubmitWithDescriptionShowsConfirmation, SubmitWithEmptyDescriptionShowsValidation} | `runModal` fix landed; investigate why test still can't find alerts. |
-| N | **Singles** | 2 | 10 | SkinEngine.testTestSkinAppearsInPicker; URLScheme.testURLSchemeWithCommand | Small. |
+## Three surprise failure pockets (round 8 → round 9 targets)
 
-## Suggested parallel work split
+### 1. Shard 1 IntegrityUITests — 10 failures (predicted: low)
 
-Highest-leverage clusters for delegation to a cousin agent:
-- **Cluster A (HTTP API, 7 tests)** — needs runtime debugging of why `--api-port` isn't making the server reachable. Instrument HoloscapeAPIServer init; verify test-side hits the right port; check for ordering bug where tests try API before server binds.
-- **Cluster C (cd/directory labels, 9 tests)** — single likely root cause (OSC 7 + restore). Small blast radius, high payoff.
-- **Cluster F (notifications, 7 tests)** — state-machine bug; may benefit from fresh eyes.
+The full-suite integrity tests hit the API heavily. The deadlock fix should have cleared most of these. Either:
+- A second, latent blocking point exists in the integrity harness; or
+- The failures are real feature regressions around app launch/teardown that the deadlock was masking.
 
-Leave for the primary session:
-- **Cluster B (search, 9 tests)** — entangled with cluster A since search uses API helpers.
-- **Cluster D (stress, 8 tests)** — timing-sensitive; historically flaky.
+**Action**: dump all 10 failing test names + first failure messages from `/tmp/holoscape-test-shards/shard-1.txt`.
 
-Backlog / opportunistic fixes:
-- Clusters E, G, H, I, J, K, L, M, N — mostly small, self-contained, pick off as time allows.
+### 2. Shard 9 TerminalInput + TabBehavior — 8 failures (predicted: low)
 
-## Open architectural questions
-- Is `--api-port` actually taking effect? Need to log the actual bind port in `HoloscapeAPIServer` at startup and verify tests see that port in their requests.
-- Should `HoloscapeAPIServer` expose a "ready" signal the tests can wait on, instead of the current poll-until-first-call pattern?
+Known failing from the rerun3 log tail:
+- `TabBehaviorUITests.testCdToAnotherDirectoryUpdatesLabel`
+- `TabBehaviorUITests.testCdUpdatesTabLabel`
+- `TabBehaviorUITests.testLabelsPersistAcrossRestart`
+- `TerminalInputUITests.testCopyFromTerminal`
+- `TerminalInputUITests.testTerminalFocusAfterAppReactivation`
+- `TerminalInputUITests.testTerminalFocusOnChannelSwitch`
+- `TerminalInputUITests.testTerminalViewAcceptsKeystrokes`
+
+Cluster C (cd/directory labels) was predicted 0–2 fails after the deadlock fix. Hitting 3 here is unexpected — same with terminal focus. Either `waitForAPIOutput` has its own deadlock variant or these are real bugs in cd/label handling and terminal focus tracking.
+
+**Action**: pull actual failure messages from `shard-9.txt`.
+
+### 3. NotificationSystemUITests — 3/3 total wipeout (predicted: 0–1)
+
+A full-class failure is suspicious. Could be a single setUp-level failure cascading. Could be a missing @MainActor annotation. Could be a notification-permission prompt that never gets dismissed.
+
+**Action**: pull the NotificationSystemUITests section from `shard-10.txt`, check for `setUp` or `tearDown` errors first.
+
+## Other remaining failures to classify (35 across clusters)
+
+- Shard 2 KeyboardShortcuts/WindowManagement (5) — likely real feature bugs
+- Shard 4 Search/Settings/SessionLauncher (8) + 3 skipped — split pane / launcher clusters, predicted to stay
+- Shard 6 BugReport/HTTPAPI/Transparency (4) — BugReport a11y query was flagged in PROGRESS
+- Shard 7 Holoscape/TabBar/SplitPane/InputBox (3) — tab bar + split pane, predicted to stay
+- Shard 10 TimestampToggle (2), ChannelStateIndicator (1), DirectoryPersistence (1)
+
+## Known environmental issue
+
+**TCC automation-mode grant is unstable across xcodebuild invocations.** Each `build-for-testing` triggers a `CodeSign ... replacing existing signature` step, which can invalidate the Accessibility/Automation grant for `HoloscapeUITests-Runner.app`. The first two shard-10 reruns failed with `Timed out while enabling automation mode` before any test could run; Erik had to click through the permission prompt manually for attempt 3 to work.
+
+**Fix-later task**: investigate whether stable signing (maybe a persistent dev identity instead of "Sign to Run Locally") prevents TCC re-prompts on each fresh xcodebuild run.
+
+## Environment notes
+
+- Project: `/Users/eriksjaastad/holoscape`
+- Branch: `main` at `5eb052d` (merge of PR #47)
+- Shard results: `/tmp/holoscape-test-shards/shard-{1..10}.txt`
+  - Note: shard-10.txt has been overwritten 3 times — current contents are the successful third attempt.
+- Background logs: `/tmp/holoscape-tests/shards-all.log` (original run), `shard-10-rerun{,2,3}.log`
+- Shard script: `./scripts/test-ui-shards.sh`
+- PRs merged this session: #47 (fix/ui-tests-round8-api-ready-timeout)
