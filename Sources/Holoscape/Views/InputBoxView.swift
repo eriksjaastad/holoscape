@@ -58,6 +58,8 @@ class InputBoxView: NSTextView {
             inputDelegate?.inputBoxView(self, didSubmitText: text)
             self.string = ""
             isNavigatingHistory = false
+            // Force layout recalculation so the height constraint updates
+            didChangeText()
             return
         }
 

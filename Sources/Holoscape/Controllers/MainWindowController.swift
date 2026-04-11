@@ -749,6 +749,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 // switchToChannel already called refreshAllTabs + scheduleSaveState
                 return
             }
+            // Last channel was closed — create a fresh shell so the window isn't empty
+            let channel = channelManager.createChannel(
+                type: .shell,
+                role: "Shell",
+                workingDirectory: nil
+            ) { id, _, _, instanceNum, _ in
+                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
+            }
+            channel.activate()
+            switchToChannel(channel.channelId)
+            return
         }
         refreshAllTabs()
         scheduleSaveState()
@@ -760,6 +771,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let channel = channelManager.channel(for: channelId) else { return nil }
 
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         let closeItem = NSMenuItem(title: "Close", action: #selector(contextMenuClose(_:)), keyEquivalent: "")
         closeItem.target = self
@@ -805,7 +817,22 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc private func contextMenuClose(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID else { return }
+        guard let id = sender.representedObject as? UUID,
+              let channel = channelManager.channel(for: id) else { return }
+
+        if channel.state == .active {
+            let alert = NSAlert()
+            alert.messageText = "Close Channel"
+            alert.informativeText = "The channel \"\(channel.displayLabel)\" is still active. Are you sure you want to close it?"
+            alert.addButton(withTitle: "Close")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+
+            if alert.runModal() != .alertFirstButtonReturn {
+                return
+            }
+        }
+
         closeChannel(id: id)
     }
 
@@ -1116,6 +1143,6 @@ extension MainWindowController: BugReportDialogDelegate {
             alert.alertStyle = .warning
         }
         alert.addButton(withTitle: "OK")
-        alert.beginSheetModal(for: window)
+        alert.runModal()
     }
 }
