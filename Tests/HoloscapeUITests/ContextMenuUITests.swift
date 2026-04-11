@@ -65,7 +65,8 @@ final class ContextMenuUITests: HoloscapeUITestCase {
 
         // Check for confirmation dialog
         let closeButton = app.buttons["Close"]
-        let cancelButton = app.buttons["Cancel"]
+        let dialog = app.sheets.firstMatch.exists ? app.sheets.firstMatch : app.dialogs.firstMatch
+        let cancelButton = dialog.buttons["Cancel"]
         if closeButton.waitForExistence(timeout: 2) || cancelButton.waitForExistence(timeout: 1) {
             XCTAssertTrue(closeButton.exists || cancelButton.exists, "Confirmation dialog should have Close or Cancel button")
             // Cancel to keep channel
