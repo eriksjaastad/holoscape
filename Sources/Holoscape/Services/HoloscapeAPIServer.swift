@@ -71,23 +71,10 @@ class HoloscapeAPIServer {
             var buffer = accumulated
             if let data { buffer.append(data) }
 
-            // Check if we have a complete request (headers + Content-Length body)
+            // HTTPParser.parse returns nil unless the full request (headers
+            // end marker + Content-Length worth of body bytes) has arrived,
+            // so the outer Content-Length recursion check is no longer needed.
             if let request = HTTPParser.parse(buffer) {
-                // If there's a Content-Length header, verify we have the full body
-                if let raw = String(data: buffer, encoding: .utf8),
-                   let clRange = raw.range(of: "Content-Length: ", options: .caseInsensitive) {
-                    let afterCL = raw[clRange.upperBound...]
-                    if let nlIndex = afterCL.firstIndex(of: "\n") ?? afterCL.firstIndex(of: "\r") {
-                        let clValue = Int(afterCL[..<nlIndex].trimmingCharacters(in: .whitespaces)) ?? 0
-                        let bodySize = request.body?.count ?? 0
-                        if bodySize < clValue && !isComplete {
-                            // Need more data
-                            self?.receiveFullRequest(connection: connection, accumulated: buffer)
-                            return
-                        }
-                    }
-                }
-
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
@@ -101,7 +88,7 @@ class HoloscapeAPIServer {
                     connection.cancel()
                 }))
             } else {
-                // Not yet parseable, keep reading
+                // Incomplete (need more bytes), keep reading from the socket.
                 self?.receiveFullRequest(connection: connection, accumulated: buffer)
             }
         }
