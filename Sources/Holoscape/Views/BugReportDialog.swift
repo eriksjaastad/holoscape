@@ -209,7 +209,7 @@ final class BugReportDialog {
             let alert = NSAlert()
             alert.messageText = "Please describe what happened"
             alert.informativeText = "A brief description helps us understand the issue."
-            alert.beginSheetModal(for: panel) { _ in }
+            alert.runModal()
             return
         }
 

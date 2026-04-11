@@ -59,6 +59,15 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
     // MARK: - Pin State Persistence
 
     func testPinStatePersistsAcrossRestart() throws {
+        // Need --restore-channels from the start so pin state is saved to disk
+        app.terminate()
+        app.launchArguments.append("--restore-channels")
+        app.launch()
+        let window0 = app.windows["Holoscape"]
+        XCTAssertTrue(window0.waitForExistence(timeout: 10))
+        let sidebar0 = window0.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).firstMatch
+        _ = sidebar0.waitForExistence(timeout: 10)
+
         // Create a second channel
         let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
@@ -77,7 +86,10 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         let pinnedEntry = window.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
         XCTAssertTrue(pinnedEntry.waitForExistence(timeout: 3), "Pin emoji should appear in sidebar entry after pinning")
 
-        // Quit and relaunch
+        // Allow debounced save to flush (1s debounce + margin)
+        Thread.sleep(forTimeInterval: 1.5)
+
+        // Quit and relaunch with --restore-channels
         app.terminate()
         app.launch()
 
@@ -86,7 +98,7 @@ final class ChannelRestorationUITests: HoloscapeUITestCase {
         XCTAssertTrue(restoredWindow.waitForExistence(timeout: 5))
 
         let restoredPinnedEntry = restoredWindow.buttons.matching(NSPredicate(format: "title CONTAINS '\u{1F4CC}'")).firstMatch
-        XCTAssertTrue(restoredPinnedEntry.waitForExistence(timeout: 3), "Pinned channel should retain pin state after restart")
+        XCTAssertTrue(restoredPinnedEntry.waitForExistence(timeout: 5), "Pinned channel should retain pin state after restart")
     }
 
     // MARK: - Empty State

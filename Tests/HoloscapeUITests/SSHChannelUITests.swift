@@ -56,13 +56,13 @@ final class SSHChannelUITests: HoloscapeUITestCase {
         // Create a bridge channel alongside the default shell
         createChannel(type: "Bridge")
 
-        let shellEntry = sidebarEntry("Shell")
+        // Default shell's label may be a directory name (OSC 7), so use index-based lookup
+        XCTAssertGreaterThanOrEqual(sidebarEntryCount(), 2, "Should have at least 2 channels after creating Bridge")
         let bridgeEntry = sidebarEntry("Bridge")
-        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2), "Shell should coexist with other types")
         XCTAssertTrue(bridgeEntry.waitForExistence(timeout: 2), "Bridge should coexist with shell")
 
-        // Verify switching works
-        shellEntry.click()
+        // Switch to first channel (default shell) and verify it's responsive
+        app.typeKey("1", modifierFlags: .command)
         assertActiveChannelResponsive(message: "Channel should be responsive after switching between channel types")
     }
 }

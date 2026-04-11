@@ -9,12 +9,19 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(window.waitForExistence(timeout: 3))
 
         window.buttons[XCUIIdentifierMinimizeWindow].click()
-
-        // Restore via menu: Window > Holoscape (deminiaturize)
         Thread.sleep(forTimeInterval: 0.5)
+
+        // Restore via Window menu — macOS adds the window title automatically
         app.activate()
-        // Use keyboard shortcut to cycle windows, which restores minimized ones
-        app.typeKey("`", modifierFlags: .command)
+        app.menuBars.firstMatch.menuBarItems["Window"].click()
+        let windowItem = app.menuItems["Holoscape"]
+        if windowItem.waitForExistence(timeout: 2) {
+            windowItem.click()
+        } else {
+            // Fallback: click any menu item that matches the window
+            app.typeKey(.escape, modifierFlags: [])
+            app.typeKey("`", modifierFlags: .command)
+        }
         Thread.sleep(forTimeInterval: 0.5)
 
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
@@ -72,8 +79,16 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         // Minimize and restore
         window.buttons[XCUIIdentifierMinimizeWindow].click()
         Thread.sleep(forTimeInterval: 0.5)
+
         app.activate()
-        app.typeKey("`", modifierFlags: .command)
+        app.menuBars.firstMatch.menuBarItems["Window"].click()
+        let windowItem = app.menuItems["Holoscape"]
+        if windowItem.waitForExistence(timeout: 2) {
+            windowItem.click()
+        } else {
+            app.typeKey(.escape, modifierFlags: [])
+            app.typeKey("`", modifierFlags: .command)
+        }
         Thread.sleep(forTimeInterval: 0.5)
 
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
@@ -91,10 +106,12 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
         aboutItem.click()
 
-        // The standard About panel may have invalid accessibility coordinates.
-        // Just verify the main window is still functional — the About panel opened without crash.
-        Thread.sleep(forTimeInterval: 0.5)
-        app.typeKey(.escape, modifierFlags: [])
+        // The standard About panel may report invalid accessibility coordinates (INFINITY).
+        // Don't query the About panel directly — just close it and verify the main window.
+        Thread.sleep(forTimeInterval: 1.0)
+        // Cmd+W closes the About panel; Escape alone may not dismiss it
+        app.typeKey("w", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
 
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
@@ -107,8 +124,9 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
-            Thread.sleep(forTimeInterval: 0.5)
-            app.typeKey(.escape, modifierFlags: [])
+            Thread.sleep(forTimeInterval: 1.0)
+            app.typeKey("w", modifierFlags: .command)
+            Thread.sleep(forTimeInterval: 0.3)
         } else {
             app.typeKey(.escape, modifierFlags: [])
         }

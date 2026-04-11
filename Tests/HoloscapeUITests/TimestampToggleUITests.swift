@@ -67,7 +67,7 @@ final class TimestampToggleUITests: HoloscapeUITestCase {
 
         // Switch between channels
         app.typeKey("1", modifierFlags: .command)
-        let firstEntry = sidebarEntry("Shell")
+        let firstEntry = firstSidebarEntry()
         XCTAssertTrue(firstEntry.waitForExistence(timeout: 2), "First channel sidebar entry should exist after switch")
 
         app.typeKey("2", modifierFlags: .command)

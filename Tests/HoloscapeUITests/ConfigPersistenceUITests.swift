@@ -84,9 +84,11 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
         for pos in stride(from: 0.5, through: 1.0, by: 0.1) {
             slider.adjust(toNormalizedSliderPosition: CGFloat(pos))
         }
+        // Allow slider value to settle after rapid adjustments
+        Thread.sleep(forTimeInterval: 0.3)
         // Assert slider ended at approximately 1.0
-        let finalValue = slider.value as? String ?? ""
-        XCTAssertFalse(finalValue.isEmpty, "Slider should have a value after rapid adjustments")
+        let finalValue = slider.normalizedSliderPosition
+        XCTAssertGreaterThan(finalValue, 0.8, "Slider should be near 1.0 after rapid adjustments to the right")
 
         // Verify the app is still functional
         closeSettings()

@@ -7,14 +7,15 @@ class HoloscapeAPIServer {
     private var listener: NWListener?
     private weak var channelManager: ChannelManager?
     private weak var windowController: MainWindowController?
-    private let port: UInt16 = 7865
+    let port: UInt16
 
     /// Notification state per channel: "permission_prompt", "idle_prompt", or nil (normal)
     private(set) var channelNotifications: [UUID: String] = [:]
 
-    init(channelManager: ChannelManager, windowController: MainWindowController) {
+    init(channelManager: ChannelManager, windowController: MainWindowController, port: UInt16 = 7865) {
         self.channelManager = channelManager
         self.windowController = windowController
+        self.port = port
     }
 
     /// Suppress notifications for a grace period after launch (tabs start idle)

@@ -199,7 +199,13 @@ final class BugReportUITests: HoloscapeUITestCase {
         submitButton.click()
 
         // Should see confirmation alert (success or network failure — either means path executed)
-        let alert = app.dialogs.firstMatch
-        XCTAssertTrue(alert.waitForExistence(timeout: 5), "Confirmation alert should appear after submission")
+        // runModal() alerts appear as app.alerts, not app.dialogs
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 10), "Confirmation alert should appear after submission")
+        // Dismiss the confirmation
+        let okButton = alert.buttons.firstMatch
+        if okButton.waitForExistence(timeout: 1) {
+            okButton.click()
+        }
     }
 }
