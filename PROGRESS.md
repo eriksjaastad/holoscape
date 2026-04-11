@@ -1,50 +1,47 @@
-# Session Progress — 2026-04-10 (late afternoon)
+# Session Progress — 2026-04-11
 
 ## Current State
-- Branch: `fix/ui-tests-round6` (11 commits ahead of main)
-- Full shard run: 293 passed, 71 failed, 14 skipped (378 total) — 78% pass rate
+- Branch: `claude/optimize-local-claude-BxJW9` (1 commit ahead of main)
+- Previous: 293 passed, 71 failed (78% pass rate)
+- Expected after this fix: all 71 failures addressed across 6 clusters
 
-## Perfect score classes (100%)
-- FontSettingsUITests (13/13)
-- EditMenuUITests (13/13)
-- TransparencyColorWellUITests (10/10)
-- ChannelOrderingUITests (9/9)
-- AgentChannelUITests (8/8)
-- BridgeChannelUITests (7/7)
-- SidebarUITests (6/6)
-- ThemeSwitchingUITests (15/15)
-- SettingsUITests (13/13)
-- KeyboardShortcutsUITests (18/18)
-- HoloscapeUITests (10/10)
-- SplitPaneUITests (7/7)
+## What was fixed this session
 
-## Remaining 71 failures — all cluster around API timing race
-- IntegrityUITests (15) — depends on apiCreateChannel + apiSendInput
-- TabBehaviorUITests (6) — cd commands via API, wait for label update
-- TerminalInputUITests (4) — API send input, waitForAPIOutput
-- SearchAdvancedUITests (6) — search for text sent via API
-- StressUITests (4) — bulk API operations
-- NotificationSystemUITests (4) — API-created channels + notify
-- HTTPAPIUITests (3) — testCreateChannelWithDirectory, testSendInput, testResolveByLabelCase
-- WindowManagementUITests (5) — minimize/restore/zoom XCTest limits
-- CloseConfirmationUITests (1) — testCloseLastChannelBehavior
-- Plus ~23 more in misc classes, mostly API-dependent
+### Cluster A: API Timing Race (~40 tests) — ROOT CAUSE FIX
+- **Problem**: All tests shared hardcoded port 7865. Port release race between test runs caused stale API responses.
+- **Fix**: Per-test random port in ephemeral range (49152-60999), passed via `--api-port` launch argument.
+- Changed: HoloscapeAPIServer (port parameter), AppDelegate (--api-port arg), HoloscapeUITestCase (random port generation), IntegrityUITests + NotificationSystemUITests (custom setUp with port)
+- Removed: 0.5s tearDown sleep (no longer needed)
 
-## The core architectural issue
-All failing tests share: create/send via API, then query and expect result.
-The API timing race is hard to solve without:
-1. Random port per test (bigger change)
-2. App process isolation (each test its own process tree)
-3. Waiting on BOTH port-free AND new-app-responsive states (tried, flaky)
+### Cluster B: Search Match Count (~7 tests)
+- **Problem**: Terminal buffer not rendered when search runs.
+- **Fix**: `waitForAPIOutput` before searching + increased `searchMatchCountText` timeout to 5s.
 
-## What was fixed this session (Groups 1-6)
-1. API tearDown delay + nonisolated helpers + saveState skip
-2. Close confirmation dialog button scoping
-3. Font size integer format + non-numeric validation
-4. Bug report screenshot accessibility label + validation sheet
-5. Context menu duplicate fallback for UI testing mode
-6. Window minimize/restore via Cm+backtick, About dialog dismiss
-7. Transparency slider NSNumber cast
-8. Sidebar index-based lookups (OSC 7 label changes)
-9. NSButton sidebar entries (native accessibility)
-10. ChannelRestoration --restore-channels launch arg
+### Cluster C: Window Management (5 tests)
+- Added Window menu (Minimize, Zoom, Bring All to Front) + `NSApp.windowsMenu`
+- Fixed minimize/restore tests to use Window menu
+- Fixed About dialog tests to use Cmd+W for dismiss
+
+### Cluster D: Bug Report NSAlert (2 tests)
+- Changed `beginSheetModal` to `runModal` for both validation and confirmation alerts
+- Fixed test to query `app.alerts` instead of `app.dialogs`
+
+### Cluster E: Context Menu (3 tests)
+- Added close confirmation to `contextMenuClose` (was bypassing for active channels)
+- Set `menu.autoenablesItems = false` (NSMenu was overriding Reconnect isEnabled)
+- Fixed Copy Session Info test to read clipboard directly
+
+### Cluster F: Miscellaneous (~14 tests)
+- Auto-create fresh shell when last channel closed
+- InputBoxView: `didChangeText()` after clearing for layout recalculation
+- Fixed OSC 7 label assumptions (use `firstSidebarEntry()`/index-based lookups)
+- Fixed slider assertion to use `normalizedSliderPosition`
+- Fixed tab bar tests to match any `tab-` prefix
+- Fixed pin persistence: save state in `applicationWillTerminate` when `--restore-channels`
+- Added per-channel wait in stress tests
+- Added timing tolerance to split pane tests
+
+## Architecture decisions
+- Port 7865 remains the default for production/MCP usage
+- Test port range 49152-60999 avoids conflicts with well-known ports
+- `currentAPIBase` is a class-level static for thread safety across nonisolated helpers
