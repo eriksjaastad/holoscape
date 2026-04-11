@@ -6,13 +6,18 @@ import XCTest
 class HoloscapeUITestCase: XCTestCase {
     var app: XCUIApplication!
 
+    /// Per-test random port eliminates the API timing race between test runs.
+    /// Each test gets its own port so there's no contention with a dying app.
+    private var apiPort: UInt16 = 0
+
     override func setUpWithError() throws {
         continueAfterFailure = false
-        // Reset API ready flag — the previous test's app may still be terminating
-        // and could have left the port in a weird state
-        Self.apiReady = false
+        // Pick a random port in the ephemeral range for this test
+        apiPort = UInt16.random(in: 49152...60999)
+        Self.currentAPIBase = "http://127.0.0.1:\(apiPort)"
         app = XCUIApplication()
         app.launchArguments.append("--ui-testing")
+        app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launch()
 
         // Wait for the app to fully initialize before proceeding.
@@ -25,10 +30,7 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        Self.apiReady = false
         app.terminate()
-        // Allow the API server's port to fully release before the next test launches
-        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Channel Helpers
@@ -244,7 +246,8 @@ class HoloscapeUITestCase: XCTestCase {
     }
 
     /// Read the match count label text from the search bar, waiting for results.
-    func searchMatchCountText(timeout: TimeInterval = 3) -> String? {
+    /// Needs sufficient timeout for: 150ms search debounce + terminal buffer scan + UI update.
+    func searchMatchCountText(timeout: TimeInterval = 5) -> String? {
         let searchBar = app.toolbars["Search Bar"]
         let label = searchBar.staticTexts["search-match-count"]
         let deadline = Date().addingTimeInterval(timeout)
@@ -257,17 +260,15 @@ class HoloscapeUITestCase: XCTestCase {
 
     // MARK: - HTTP API Helpers
 
-    private nonisolated(unsafe) static let apiBase = "http://127.0.0.1:7865"
-    private nonisolated(unsafe) static var apiReady = false
+    /// Per-test API base URL — set in setUp to match the random port.
+    /// Internal so subclasses that override setUpWithError can set it.
+    nonisolated(unsafe) static var currentAPIBase = "http://127.0.0.1:7865"
 
-    /// Wait for the API server to start responding.
-    /// Does NOT cache — always verifies the current app's API is responding.
-    /// This prevents a race where a stale app from the previous test briefly
-    /// handles a request before the new app binds to port 7865.
+    /// Wait for the API server to start responding on this test's unique port.
     private nonisolated func ensureAPIReady() {
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
-            let url = URL(string: Self.apiBase + "/channels")!
+            let url = URL(string: Self.currentAPIBase + "/channels")!
             var req = URLRequest(url: url)
             req.httpMethod = "GET"
             req.timeoutInterval = 2
@@ -290,7 +291,7 @@ class HoloscapeUITestCase: XCTestCase {
     @discardableResult
     nonisolated func apiRequest(_ method: String, path: String, body: [String: Any]? = nil) throws -> (Data, Int) {
         ensureAPIReady()
-        let url = URL(string: Self.apiBase + path)!
+        let url = URL(string: Self.currentAPIBase + path)!
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 15

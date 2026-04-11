@@ -48,7 +48,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         // Start API server for MCP integration
         if let wc = windowController {
-            apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc)
+            var apiPort: UInt16 = 7865
+            if let idx = CommandLine.arguments.firstIndex(of: "--api-port"),
+               idx + 1 < CommandLine.arguments.count,
+               let p = UInt16(CommandLine.arguments[idx + 1]) {
+                apiPort = p
+            }
+            apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
             apiServer?.start()
             wc.apiServer = apiServer
         }
@@ -132,7 +138,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
-        if !isUITesting {
+        let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
+        if shouldSave {
             windowController?.channelManager.saveState()
         }
         windowController?.historyBuffer.stopPeriodicFlush()
@@ -340,6 +347,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        // Window menu — standard macOS window management
+        let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
 
         // Help menu
         let helpMenuItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")

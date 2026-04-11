@@ -51,7 +51,10 @@ final class SearchBarUITests: HoloscapeUITestCase {
         let channels = try apiListChannels()
         if let label = channels.first?["label"] as? String {
             try apiSendInput(label: label, text: "echo searchable-text-123\n")
-            Thread.sleep(forTimeInterval: 1.0)
+            // Wait for the echo to actually appear in the terminal buffer
+            _ = try waitForAPIOutput(label: label, containing: "searchable-text-123", timeout: 10)
+            // Extra settle time for SwiftTerm rendering
+            Thread.sleep(forTimeInterval: 0.5)
         }
 
         // Open search

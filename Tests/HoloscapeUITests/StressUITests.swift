@@ -194,8 +194,10 @@ final class StressUITests: HoloscapeUITestCase {
         // Create 6 additional channels (7 total with default)
         for i in 1...6 {
             try apiCreateChannel(label: "edge-\(i)")
+            // Wait for each channel to appear before creating the next
+            let entry = sidebarEntry("edge-\(i)")
+            _ = entry.waitForExistence(timeout: 3)
         }
-        Thread.sleep(forTimeInterval: 1)
 
         let window = app.windows["Holoscape"]
         let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
