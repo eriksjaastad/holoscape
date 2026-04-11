@@ -204,19 +204,20 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
+        // Clear pasteboard first
+        NSPasteboard.general.clearContents()
+
         shellEntry.rightClick()
 
         let copyInfoItem = app.menuItems["Copy Session Info"]
         XCTAssertTrue(copyInfoItem.waitForExistence(timeout: 2))
         copyInfoItem.click()
 
-        // Paste into input box and verify non-empty
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 2))
-        inputBox.typeKey("v", modifierFlags: .command)
-
-        let value = inputBox.value as? String ?? ""
-        XCTAssertFalse(value.isEmpty, "Clipboard should contain session info after Copy Session Info")
+        // Verify clipboard has content directly (no input-box for PTY channels)
+        Thread.sleep(forTimeInterval: 0.5)
+        let clipboardContent = NSPasteboard.general.string(forType: .string) ?? ""
+        XCTAssertFalse(clipboardContent.isEmpty, "Clipboard should contain session info after Copy Session Info")
+        XCTAssertTrue(clipboardContent.contains("Label:"), "Session info should contain channel label")
     }
 
     // MARK: - Pin/Unpin

@@ -22,9 +22,10 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
 
     func testInputRoutesToActivePane() throws {
         app.typeKey("d", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
 
         // Active pane should be responsive (terminal view for PTY channels)
-        assertActiveChannelResponsive(message: "Active pane should be responsive after split")
+        assertActiveChannelResponsive(timeout: 5, message: "Active pane should be responsive after split")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }
@@ -33,11 +34,13 @@ final class SplitPaneAdvancedUITests: HoloscapeUITestCase {
         createChannel(type: "Shell")
 
         app.typeKey("d", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
 
         // Cmd+2 should switch channel in active pane
         app.typeKey("2", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.3)
 
-        assertActiveChannelResponsive(message: "Channel should remain responsive after switch in pane")
+        assertActiveChannelResponsive(timeout: 5, message: "Channel should remain responsive after switch in pane")
 
         app.typeKey("w", modifierFlags: [.command, .shift])
     }

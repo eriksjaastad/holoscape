@@ -9,8 +9,20 @@ final class IntegrityUITests: HoloscapeUITestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        app.launchArguments.append("--ui-testing")
         app.launchArguments.append("--disable-notification-suppression")
+        // Use the parent's random port allocation
+        let port = UInt16.random(in: 49152...60999)
+        Self.currentAPIBase = "http://127.0.0.1:\(port)"
+        app.launchArguments += ["--api-port", "\(port)"]
         app.launch()
+
+        let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after launch")
+        let sidebar = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
+        ).firstMatch
+        _ = sidebar.waitForExistence(timeout: 10)
     }
 
     // MARK: - Unread Indicators

@@ -5,8 +5,10 @@ final class TabBarUITests: HoloscapeUITestCase {
     /// Collapse sidebar so tab bar is visible.
     private func collapseSidebar() {
         app.typeKey("s", modifierFlags: [.command, .shift])
-        let tab = tabEntry("Shell")
-        _ = tab.waitForExistence(timeout: 2)
+        // Wait for any tab to appear (label may be directory name from OSC 7, not "Shell")
+        let window = app.windows["Holoscape"]
+        let anyTab = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        _ = anyTab.waitForExistence(timeout: 3)
     }
 
     // MARK: - Visibility
@@ -14,8 +16,9 @@ final class TabBarUITests: HoloscapeUITestCase {
     func testTabBarAppearsWhenSidebarCollapsed() throws {
         collapseSidebar()
 
-        let shellTab = tabEntry("Shell")
-        XCTAssertTrue(shellTab.waitForExistence(timeout: 2), "Tab bar with Shell tab should appear when sidebar collapsed")
+        let window = app.windows["Holoscape"]
+        let anyTab = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        XCTAssertTrue(anyTab.waitForExistence(timeout: 3), "Tab bar should show at least one tab when sidebar collapsed")
     }
 
     func testTabBarHiddenWhenSidebarExpanded() throws {

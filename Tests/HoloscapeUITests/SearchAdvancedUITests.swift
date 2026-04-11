@@ -9,11 +9,11 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         let channels = try? apiListChannels()
         if let label = channels?.first?["label"] as? String {
             try? apiSendInput(label: label, text: "echo \(text)\n")
-            // Wait for the echo to appear in the terminal buffer
-            let found = try? waitForAPIOutput(label: label, containing: text, timeout: 5)
-            if found != true {
-                Thread.sleep(forTimeInterval: 1.0)
-            }
+            // Wait for the echo to appear in the terminal buffer (API reads from SwiftTerm)
+            _ = try? waitForAPIOutput(label: label, containing: text, timeout: 10)
+            // Extra settle time for SwiftTerm to finish rendering into the view buffer
+            // so the search controller's lastLines() call sees the content
+            Thread.sleep(forTimeInterval: 0.5)
         }
     }
 
