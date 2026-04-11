@@ -24,7 +24,7 @@ final class TabBarUITests: HoloscapeUITestCase {
         app.typeKey("s", modifierFlags: [.command, .shift])
 
         // The sidebar entries should be visible, not the tab bar buttons
-        let entry = sidebarEntry("Shell")
+        let entry = firstSidebarEntry()
         XCTAssertTrue(entry.waitForExistence(timeout: 2), "Sidebar entries should be visible when expanded")
     }
 

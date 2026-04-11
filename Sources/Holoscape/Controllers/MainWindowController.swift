@@ -552,6 +552,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     /// Debounce saveState() — waits 1s after the last call before writing to disk.
     private func scheduleSaveState() {
+        // Skip state persistence during UI testing to prevent cross-test pollution
+        if CommandLine.arguments.contains("--ui-testing") &&
+           !CommandLine.arguments.contains("--restore-channels") {
+            return
+        }
         saveStateWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -627,7 +632,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             role: "Shell",
             workingDirectory: nil
         ) { id, _, _, instanceNum, _ in
-            ShellChannelController(id: id, instanceNumber: instanceNum)
+            return ShellChannelController(id: id, instanceNumber: instanceNum)
         }
         channel.delegate = self
         channel.activate()
@@ -810,10 +815,27 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID,
-              let label = channelManager.labelForChannel(id: id) else { return }
-        if let profileManager {
+              let channel = channelManager.channel(for: id) else { return }
+
+        if let profileManager, let label = channelManager.labelForChannel(id: id) {
             let profile = profileManager.resolve(label: label)
             launchSession(from: profile)
+        } else {
+            // Fallback: duplicate by channel type without a profile
+            switch channel.channelType {
+            case .shell:
+                createShellChannel()
+            case .agentDirect:
+                createAgentChannel(authType: .oauth)
+            case .agentAPI:
+                createAgentChannel(authType: .apiKey(""))
+            case .bridge:
+                createBridgeChannel()
+            case .groupChat:
+                createGroupChatChannel()
+            default:
+                createShellChannel()
+            }
         }
     }
 

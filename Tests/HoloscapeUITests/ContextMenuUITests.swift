@@ -5,10 +5,11 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     // MARK: - Close via Context Menu
 
     func testContextMenuCloseRemovesChannel() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Shell 2 sidebar entry should appear")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "New shell sidebar entry should appear")
 
         shell2.rightClick()
 
@@ -26,10 +27,11 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuCloseActiveChannelSwitchesToAnother() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Shell 2 sidebar entry should appear")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "New shell sidebar entry should appear")
         shell2.click()
 
         // Close active channel via context menu
@@ -46,13 +48,13 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         // Shell 2 should be gone
         XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Closed channel should disappear from sidebar")
 
-        // Original Shell should still exist
-        let shell1 = sidebarEntry("Shell")
+        // Original shell should still exist
+        let shell1 = firstSidebarEntry()
         XCTAssertTrue(shell1.waitForExistence(timeout: 2), "Another channel should be selected after closing active")
     }
 
     func testContextMenuCloseWithConfirmation() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
@@ -81,11 +83,9 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     // MARK: - Duplicate
 
     func testContextMenuDuplicateCreatesNewChannel() throws {
-        let window = app.windows["Holoscape"]
-        let initialButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
-        let initialCount = initialButtons.count
+        let initialCount = sidebarEntryCount()
 
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
@@ -94,16 +94,18 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2), "Duplicate menu item should exist")
         duplicateItem.click()
 
-        let shell2 = sidebarEntry("Shell 2")
+        let shell2 = waitForNewSidebarEntry(expectedCount: initialCount + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Duplicate should create a second channel")
 
-        let afterButtons = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'"))
-        XCTAssertGreaterThan(afterButtons.count, initialCount, "Sidebar entry count should increase after duplicate")
+        let afterCount = sidebarEntryCount()
+        XCTAssertGreaterThan(afterCount, initialCount, "Sidebar entry count should increase after duplicate")
     }
 
     func testContextMenuDuplicateShellChannel() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
+
+        let countBefore = sidebarEntryCount()
 
         shellEntry.rightClick()
 
@@ -111,9 +113,8 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
         duplicateItem.click()
 
-        let window = app.windows["Holoscape"]
-        let sidebarButtons = window.buttons.matching(NSPredicate(format: "identifier CONTAINS 'sidebar-Shell'"))
-        XCTAssertGreaterThanOrEqual(sidebarButtons.count, 2, "Duplicating shell should create a new shell channel")
+        let _ = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertGreaterThanOrEqual(sidebarEntryCount(), 2, "Duplicating shell should create a new shell channel")
     }
 
     func testContextMenuDuplicateAgentChannel() throws {
@@ -135,8 +136,10 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuDuplicateIncrementLabel() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
+
+        let countBefore = sidebarEntryCount()
 
         // Duplicate once
         shellEntry.rightClick()
@@ -144,8 +147,8 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertTrue(duplicateItem.waitForExistence(timeout: 2))
         duplicateItem.click()
 
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "First duplicate should get numbered label 'Shell 2'")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "First duplicate should create a new sidebar entry")
 
         // Duplicate again
         shell2.rightClick()
@@ -153,8 +156,8 @@ final class ContextMenuUITests: HoloscapeUITestCase {
         XCTAssertTrue(duplicateItem2.waitForExistence(timeout: 2))
         duplicateItem2.click()
 
-        let shell3 = sidebarEntry("Shell 3")
-        XCTAssertTrue(shell3.waitForExistence(timeout: 3), "Second duplicate should get 'Shell 3'")
+        let shell3 = waitForNewSidebarEntry(expectedCount: countBefore + 2)
+        XCTAssertTrue(shell3.waitForExistence(timeout: 3), "Second duplicate should create another sidebar entry")
     }
 
     // MARK: - Reconnect
@@ -183,7 +186,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuReconnectOnActiveChannelDisabled() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
@@ -198,7 +201,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     // MARK: - Copy Session Info
 
     func testContextMenuCopySessionInfoContent() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
@@ -219,7 +222,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     // MARK: - Pin/Unpin
 
     func testContextMenuPinAddsEmoji() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         shellEntry.rightClick()
@@ -234,7 +237,7 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuUnpinRemovesEmoji() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         // Pin first
@@ -260,10 +263,11 @@ final class ContextMenuUITests: HoloscapeUITestCase {
     }
 
     func testContextMenuPinOrderStableWithMultiplePins() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell1 = sidebarEntry("Shell")
-        let shell2 = sidebarEntry("Shell 2")
+        let shell1 = firstSidebarEntry()
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3))
 
         // Pin both channels

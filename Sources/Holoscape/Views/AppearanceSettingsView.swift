@@ -162,7 +162,10 @@ class AppearanceSettingsWindowController: NSWindowController {
         }
         transparencySlider.doubleValue = config.transparency
         fontFamilyPopup.selectItem(withTitle: config.fontFamily)
-        fontSizeField.stringValue = String(config.fontSize)
+        // Display as integer when there's no fractional part (e.g., "16" not "16.0")
+        fontSizeField.stringValue = config.fontSize.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(config.fontSize))
+            : String(config.fontSize)
 
         // Notification state
         let fullConfig = configService.load()
@@ -221,7 +224,15 @@ class AppearanceSettingsWindowController: NSWindowController {
     }
 
     @objc private func fontSizeChanged(_ sender: NSTextField) {
-        config.fontSize = sender.doubleValue
+        let text = sender.stringValue.trimmingCharacters(in: .whitespaces)
+        guard let size = Double(text), size > 0 else {
+            // Reject non-numeric input — revert to current value
+            sender.stringValue = config.fontSize.truncatingRemainder(dividingBy: 1) == 0
+                ? String(Int(config.fontSize))
+                : String(config.fontSize)
+            return
+        }
+        config.fontSize = size
         applyAndSave()
     }
 
