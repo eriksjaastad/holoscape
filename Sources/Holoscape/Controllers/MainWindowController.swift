@@ -1143,6 +1143,6 @@ extension MainWindowController: BugReportDialogDelegate {
             alert.alertStyle = .warning
         }
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.beginSheetModal(for: window) { _ in }
     }
 }

@@ -97,6 +97,7 @@ class SearchBarView: NSView, NSTextFieldDelegate {
         prevButton.setAccessibilityIdentifier("search-previous")
         nextButton.setAccessibilityIdentifier("search-next")
         closeButton.setAccessibilityIdentifier("search-close")
+        matchCountLabel.setAccessibilityElement(true)
         matchCountLabel.setAccessibilityIdentifier("search-match-count")
     }
 
@@ -118,13 +119,17 @@ class SearchBarView: NSView, NSTextFieldDelegate {
     }
 
     private func updateMatchLabel() {
+        let text: String
         if matchCount == 0 && !searchField.stringValue.isEmpty {
-            matchCountLabel.stringValue = "No matches"
+            text = "No matches"
         } else if matchCount > 0 {
-            matchCountLabel.stringValue = "\(currentMatch) of \(matchCount)"
+            text = "\(currentMatch) of \(matchCount)"
         } else {
-            matchCountLabel.stringValue = ""
+            text = ""
         }
+        matchCountLabel.stringValue = text
+        matchCountLabel.setAccessibilityLabel(text)
+        matchCountLabel.setAccessibilityValue(text)
     }
 
     // MARK: - NSTextFieldDelegate

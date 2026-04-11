@@ -9,6 +9,13 @@ final class BugReportUITests: HoloscapeUITestCase {
         // The dialog is a sheet on the main window
     }
 
+    private func firstAlertOrSheet() -> XCUIElement {
+        if app.alerts.firstMatch.exists {
+            return app.alerts.firstMatch
+        }
+        return app.sheets.firstMatch
+    }
+
     // MARK: - Dialog Lifecycle
 
     func testCmdShiftBOpensBugReportDialog() throws {
@@ -55,7 +62,7 @@ final class BugReportUITests: HoloscapeUITestCase {
         submitButton.click()
 
         // Validation alert should appear
-        let alert = app.alerts.firstMatch
+        let alert = firstAlertOrSheet()
         XCTAssertTrue(alert.waitForExistence(timeout: 3), "Submitting with empty description should show a validation alert")
 
         // Dismiss the alert
@@ -199,8 +206,7 @@ final class BugReportUITests: HoloscapeUITestCase {
         submitButton.click()
 
         // Should see confirmation alert (success or network failure — either means path executed)
-        // runModal() alerts appear as app.alerts, not app.dialogs
-        let alert = app.alerts.firstMatch
+        let alert = firstAlertOrSheet()
         XCTAssertTrue(alert.waitForExistence(timeout: 10), "Confirmation alert should appear after submission")
         // Dismiss the confirmation
         let okButton = alert.buttons.firstMatch
