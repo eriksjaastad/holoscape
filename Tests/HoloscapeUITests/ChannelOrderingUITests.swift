@@ -6,10 +6,11 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
 
     /// XCUITest cannot verify sidebar ordering — we can only assert that multiple entries exist.
     func testMultipleChannelsExistAfterCreation() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 3), "Shell 2 should exist in sidebar")
+        let newEntry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(newEntry.exists, "New shell should appear in sidebar")
 
         // Switch to second channel so first becomes inactive
         app.typeKey("2", modifierFlags: .command)
@@ -35,10 +36,10 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
     }
 
     func testChannelsSurviveSwitching() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
-
-        let shell1 = sidebarEntry("Shell")
-        XCTAssertTrue(shell1.waitForExistence(timeout: 3))
+        let newEntry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(newEntry.exists)
 
         // Switch away then back
         app.typeKey("2", modifierFlags: .command)
@@ -48,15 +49,13 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
         assertActiveChannelResponsive(message: "Channel should be responsive after switching back to channel 1")
 
         // Both sidebar entries should still exist
-        XCTAssertTrue(shell1.waitForExistence(timeout: 2), "Shell 1 should still exist after switching")
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 2), "Shell 2 should still exist after switching")
+        XCTAssertGreaterThanOrEqual(sidebarEntryCount(), countBefore + 1, "Both entries should still exist after switching")
     }
 
     func testPinnedChannelHasEmojiInSidebar() throws {
         createChannel(type: "Shell")
 
-        let shell1 = sidebarEntry("Shell")
+        let shell1 = firstSidebarEntry()
         XCTAssertTrue(shell1.waitForExistence(timeout: 3))
 
         // Pin the first shell
@@ -99,25 +98,29 @@ final class ChannelOrderingUITests: HoloscapeUITestCase {
     }
 
     func testClosedChannelRemovedCleanly() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let window = app.windows["Holoscape"]
-        let shell2 = sidebarEntry("Shell 2")
-        XCTAssertTrue(shell2.waitForExistence(timeout: 3))
+        let newEntry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(newEntry.exists)
 
-        let beforeCount = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).count
+        let beforeCount = sidebarEntryCount()
 
-        // Close Shell 2
-        shell2.click()
+        // Close the new channel — switch to it first
+        app.typeKey("2", modifierFlags: .command)
         app.typeKey("w", modifierFlags: .command)
         let closeButton = app.buttons["Close"]
         if closeButton.waitForExistence(timeout: 2) {
             closeButton.click()
         }
 
-        XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Closed channel should leave no ghost entry in sidebar")
+        // Wait for count to decrease
+        let deadline = Date().addingTimeInterval(3)
+        while sidebarEntryCount() >= beforeCount && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
 
-        let afterCount = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).count
+        let afterCount = sidebarEntryCount()
         XCTAssertLessThan(afterCount, beforeCount, "Sidebar count should decrease after closing channel")
     }
 

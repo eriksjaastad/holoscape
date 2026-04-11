@@ -132,7 +132,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
-        windowController?.channelManager.saveState()
+        if !isUITesting {
+            windowController?.channelManager.saveState()
+        }
         windowController?.historyBuffer.stopPeriodicFlush()
         windowController?.historyBuffer.flush()
     }

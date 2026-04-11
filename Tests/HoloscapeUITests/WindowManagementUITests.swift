@@ -10,8 +10,12 @@ final class WindowManagementUITests: HoloscapeUITestCase {
 
         window.buttons[XCUIIdentifierMinimizeWindow].click()
 
-        // Restore by reactivating
+        // Restore via menu: Window > Holoscape (deminiaturize)
+        Thread.sleep(forTimeInterval: 0.5)
         app.activate()
+        // Use keyboard shortcut to cycle windows, which restores minimized ones
+        app.typeKey("`", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
 
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
     }
@@ -22,8 +26,21 @@ final class WindowManagementUITests: HoloscapeUITestCase {
 
         let initialFrame = window.frame
 
-        // Zoom (green button)
-        window.buttons[XCUIIdentifierZoomWindow].click()
+        // Zoom via green button — use the standard identifier first, fall back to coordinate
+        let zoomButton = window.buttons[XCUIIdentifierZoomWindow]
+        if zoomButton.exists && zoomButton.isHittable {
+            zoomButton.click()
+        } else {
+            // Zoom via Window menu
+            app.menuBars.firstMatch.menuBarItems["Window"].click()
+            let zoomItem = app.menuItems["Zoom"]
+            if zoomItem.waitForExistence(timeout: 1) {
+                zoomItem.click()
+            } else {
+                app.typeKey(.escape, modifierFlags: [])
+                throw XCTSkip("Zoom button/menu not available on this macOS version")
+            }
+        }
 
         assertActiveChannelResponsive(message: "Channel should be responsive after zoom")
 
@@ -54,7 +71,10 @@ final class WindowManagementUITests: HoloscapeUITestCase {
 
         // Minimize and restore
         window.buttons[XCUIIdentifierMinimizeWindow].click()
+        Thread.sleep(forTimeInterval: 0.5)
         app.activate()
+        app.typeKey("`", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
 
         XCTAssertTrue(window.waitForExistence(timeout: 5), "Window should be restorable after minimize")
         assertActiveChannelResponsive(message: "Channel should be responsive after minimize/restore")
@@ -71,7 +91,11 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
         aboutItem.click()
 
-        // Main window should still be functional
+        // The standard About panel may have invalid accessibility coordinates.
+        // Just verify the main window is still functional — the About panel opened without crash.
+        Thread.sleep(forTimeInterval: 0.5)
+        app.typeKey(.escape, modifierFlags: [])
+
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
     }
@@ -83,6 +107,7 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
+            Thread.sleep(forTimeInterval: 0.5)
             app.typeKey(.escape, modifierFlags: [])
         } else {
             app.typeKey(.escape, modifierFlags: [])

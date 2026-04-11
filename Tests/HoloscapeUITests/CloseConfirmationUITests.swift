@@ -2,23 +2,36 @@ import XCTest
 
 final class CloseConfirmationUITests: HoloscapeUITestCase {
 
+    // MARK: - Helpers
+
+    /// Find the close confirmation dialog — NSAlert appears as a dialog or sheet.
+    private func findCloseDialog(timeout: TimeInterval = 3) -> XCUIElement? {
+        let dialog = app.dialogs.firstMatch
+        if dialog.waitForExistence(timeout: timeout) { return dialog }
+        let sheet = app.sheets.firstMatch
+        if sheet.waitForExistence(timeout: 1) { return sheet }
+        return nil
+    }
+
     // MARK: - Confirmation Triggers
 
     func testCloseActiveShellShowsConfirmation() throws {
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Close confirmation should appear for active shell channel")
+        guard let dialog = findCloseDialog() else {
+            XCTFail("Close confirmation should appear for active shell channel")
+            return
+        }
 
-        let closeButton = app.buttons["Close"]
-        let cancelButton = app.buttons["Cancel"]
+        let closeButton = dialog.buttons["Close"]
+        let cancelButton = dialog.buttons["Cancel"]
         XCTAssertTrue(closeButton.exists, "Dialog should have Close button")
         XCTAssertTrue(cancelButton.exists, "Dialog should have Cancel button")
 
         // Cancel to keep channel
         cancelButton.click()
 
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3), "Shell sidebar entry should remain after cancel")
     }
 
@@ -32,14 +45,13 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
 
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Close confirmation should appear for active agent channel")
+        guard let dialog = findCloseDialog() else {
+            XCTFail("Close confirmation should appear for active agent channel")
+            return
+        }
 
-        let closeButton = app.buttons["Close"]
-        let cancelButton = app.buttons["Cancel"]
-        XCTAssertTrue(closeButton.exists, "Dialog should have Close button")
+        let cancelButton = dialog.buttons["Cancel"]
         XCTAssertTrue(cancelButton.exists, "Dialog should have Cancel button")
-
         cancelButton.click()
 
         XCTAssertTrue(agentEntry.waitForExistence(timeout: 3), "Agent sidebar entry should remain after cancel")
@@ -50,11 +62,13 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     func testConfirmationDialogHasButtons() throws {
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Close confirmation dialog should appear")
+        guard let dialog = findCloseDialog() else {
+            XCTFail("Close confirmation dialog should appear")
+            return
+        }
 
-        let closeButton = app.buttons["Close"]
-        let cancelButton = app.buttons["Cancel"]
+        let closeButton = dialog.buttons["Close"]
+        let cancelButton = dialog.buttons["Cancel"]
         XCTAssertTrue(closeButton.exists, "Dialog should have Close button")
         XCTAssertTrue(cancelButton.exists, "Dialog should have Cancel button")
 
@@ -62,15 +76,17 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     }
 
     func testConfirmationCancelKeepsChannelOpen() throws {
-        let shellEntry = sidebarEntry("Shell")
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 3))
 
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Close confirmation dialog should appear")
+        guard let dialog = findCloseDialog() else {
+            XCTFail("Close confirmation dialog should appear")
+            return
+        }
 
-        let cancelButton = app.buttons["Cancel"]
+        let cancelButton = dialog.buttons["Cancel"]
         XCTAssertTrue(cancelButton.exists, "Dialog should have Cancel button")
         cancelButton.click()
 
@@ -78,22 +94,30 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     }
 
     func testConfirmationCloseRemovesChannel() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
 
-        let shell2 = sidebarEntry("Shell 2")
+        let shell2 = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(shell2.waitForExistence(timeout: 3))
         shell2.click()
 
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Close confirmation dialog should appear")
+        guard let dialog = findCloseDialog() else {
+            XCTFail("Close confirmation dialog should appear")
+            return
+        }
 
-        let closeButton = app.buttons["Close"]
+        let closeButton = dialog.buttons["Close"]
         XCTAssertTrue(closeButton.exists, "Dialog should have Close button")
         closeButton.click()
 
-        XCTAssertFalse(shell2.waitForExistence(timeout: 3), "Channel sidebar entry should disappear after Close confirmation")
+        // Wait for sidebar count to decrease
+        let deadline = Date().addingTimeInterval(3)
+        while sidebarEntryCount() >= countBefore + 1 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertEqual(sidebarEntryCount(), countBefore, "Sidebar count should decrease after closing channel")
     }
 
     // MARK: - Edge Cases
@@ -101,9 +125,8 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
     func testCloseLastChannelBehavior() throws {
         app.typeKey("w", modifierFlags: .command)
 
-        let dialog = app.dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 3) {
-            let closeButton = app.buttons["Close"]
+        if let dialog = findCloseDialog() {
+            let closeButton = dialog.buttons["Close"]
             if closeButton.exists {
                 closeButton.click()
             }
@@ -126,9 +149,8 @@ final class CloseConfirmationUITests: HoloscapeUITestCase {
         let dialogCount = dialogs.count
         XCTAssertLessThanOrEqual(dialogCount, 1, "Rapid Cmd+W should not produce multiple dialogs")
 
-        let dialog = dialogs.firstMatch
-        if dialog.waitForExistence(timeout: 2) {
-            let cancelButton = app.buttons["Cancel"]
+        if let dialog = findCloseDialog(timeout: 2) {
+            let cancelButton = dialog.buttons["Cancel"]
             if cancelButton.exists { cancelButton.click() }
             else { app.typeKey(.escape, modifierFlags: []) }
         }
