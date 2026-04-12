@@ -31,8 +31,11 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     // MARK: - Profile Selection
 
     func testSelectingShellProfileCreatesShellChannel() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
-        let entry = sidebarEntry("Shell")
+        // Don't match by "Shell" — OSC 7 renames the channel to its directory name
+        // almost immediately. Verify a new sidebar entry exists regardless of label.
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Shell channel should appear in sidebar after selection")
         XCTAssertTrue(entry.isHittable, "Shell sidebar entry should be hittable")
     }
@@ -171,8 +174,10 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     // MARK: - Recent Sessions
 
     func testRecentSessionAppearsAfterCreation() throws {
+        let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
-        let entry = sidebarEntry("Shell")
+        // Don't match by "Shell" — OSC 7 renames the channel to its directory name.
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Shell channel should appear in sidebar")
 
         // Combo box should still be functional after channel creation
