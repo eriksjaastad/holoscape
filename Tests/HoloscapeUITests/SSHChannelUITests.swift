@@ -42,8 +42,9 @@ final class SSHChannelUITests: HoloscapeUITestCase {
     // MARK: - Context Menu for Future SSH Entries
 
     func testContextMenuHasReconnectItem() throws {
-        // Verify Reconnect exists in context menu (SSH would use this)
-        let shellEntry = sidebarEntry("Shell")
+        // Verify Reconnect exists in context menu (SSH would use this).
+        // Use firstSidebarEntry() because OSC 7 may rename "Shell".
+        let shellEntry = firstSidebarEntry()
         XCTAssertTrue(shellEntry.waitForExistence(timeout: 2))
         shellEntry.rightClick()
 

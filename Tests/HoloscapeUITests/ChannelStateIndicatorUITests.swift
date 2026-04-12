@@ -5,7 +5,10 @@ final class ChannelStateIndicatorUITests: HoloscapeUITestCase {
     // MARK: - Sidebar Entry Exists After Creation
 
     func testShellChannelHasSidebarEntry() throws {
-        let entry = sidebarEntry("Shell")
+        // Use firstSidebarEntry() instead of sidebarEntry("Shell") because
+        // OSC 7 may rename the default shell's label to the home directory
+        // name before the test runs.
+        let entry = firstSidebarEntry()
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Shell channel should have a sidebar entry on launch")
     }
 
@@ -21,7 +24,9 @@ final class ChannelStateIndicatorUITests: HoloscapeUITestCase {
         // Collapse sidebar to show tab bar — tab titles contain elapsed time
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        let tabButton = tabEntry("Shell")
+        // Use a broad match for any tab entry — OSC 7 may rename "Shell".
+        let window = app.windows["Holoscape"]
+        let tabButton = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
         if tabButton.waitForExistence(timeout: 3) {
             let title = tabButton.title
             XCTAssertTrue(

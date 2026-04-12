@@ -229,7 +229,9 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         selectTheme("Nord")
         closeSettings()
 
-        let tabButton = tabEntry("Shell")
+        // Use a broad match — OSC 7 may rename the default shell's label.
+        let window = app.windows["Holoscape"]
+        let tabButton = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
         XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar entry should exist after theme change")
         XCTAssertTrue(tabButton.isHittable, "Tab bar entry should be hittable after theme change")
 
