@@ -233,41 +233,6 @@ class HoloscapeUITestCase: XCTestCase {
         return field.value as? String ?? ""
     }
 
-    // MARK: - Search Helpers
-
-    func openSearch() {
-        app.typeKey("f", modifierFlags: .command)
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Search bar should open")
-    }
-
-    func closeSearch() {
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
-    /// Read the match count label text from the search bar, waiting for results.
-    /// Needs sufficient timeout for: 150ms search debounce + terminal buffer scan + UI update.
-    func searchMatchCountText(timeout: TimeInterval = 5) -> String? {
-        let searchBar = app.toolbars["Search Bar"]
-        let label = searchBar.descendants(matching: .any)["search-match-count"]
-        let deadline = Date().addingTimeInterval(timeout)
-        var latestText: String?
-        while Date() < deadline {
-            if label.exists {
-                let text = (label.value as? String) ?? label.label
-                if !text.isEmpty {
-                    latestText = text
-                    if text.contains(" of ") { return text }
-                }
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-        if let latestText { return latestText }
-        guard label.exists else { return nil }
-        let text = (label.value as? String) ?? label.label
-        return text.isEmpty ? nil : text
-    }
-
     // MARK: - HTTP API Helpers
 
     /// Per-test API base URL — set in setUp to match the random port.
@@ -423,6 +388,12 @@ class HoloscapeUITestCase: XCTestCase {
         try apiRequest("POST", path: "/channels/\(encoded)/input", body: ["text": text])
     }
 
+    /// Send input to a channel via POST /channels/{id}/input using a stable identifier.
+    nonisolated func apiSendInput(channelRef: String, text: String) throws {
+        let encoded = channelRef.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channelRef
+        try apiRequest("POST", path: "/channels/\(encoded)/input", body: ["text": text])
+    }
+
     /// Switch to a channel via POST /channels/{label}/switch.
     nonisolated func apiSwitchChannel(label: String) throws {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
@@ -451,6 +422,31 @@ class HoloscapeUITestCase: XCTestCase {
                 return true
             }
             // Spin RunLoop instead of Thread.sleep to keep MainActor responsive
+            let waitUntil = Date(timeIntervalSinceNow: 0.5)
+            while Date() < waitUntil {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            }
+        }
+        return false
+    }
+
+    nonisolated func apiReadOutput(channelRef: String, lines: Int = 50) throws -> [String] {
+        let encoded = channelRef.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channelRef
+        let (data, _) = try apiRequest("GET", path: "/channels/\(encoded)/output?lines=\(lines)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outputLines = json["lines"] as? [String] else {
+            return []
+        }
+        return outputLines
+    }
+
+    nonisolated func waitForAPIOutput(channelRef: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let lines = try apiReadOutput(channelRef: channelRef)
+            if lines.contains(where: { $0.contains(text) }) {
+                return true
+            }
             let waitUntil = Date(timeIntervalSinceNow: 0.5)
             while Date() < waitUntil {
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))

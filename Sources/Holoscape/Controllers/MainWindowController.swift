@@ -4,7 +4,7 @@ import AppKit
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
-    SearchBarDelegate, SplitPaneManagerDelegate {
+    SplitPaneManagerDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -29,12 +29,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let bugReportService = BugReportService()
     private var bugReportDialog: BugReportDialog?
     private let launchTime = Date()
-    private let searchBar = SearchBarView(frame: .zero)
-    private var searchBarVisible: Bool = false
-    private var searchBarHeightConstraint: NSLayoutConstraint?
-    private var currentSearchQuery: String = ""
-    private var currentSearchMatchIndex: Int = 0
-    private var currentSearchMatchTotal: Int = 0
     private var inputHeightConstraint: NSLayoutConstraint?
     private let inputMinHeight: CGFloat = 40
     private let inputMaxHeight: CGFloat = 120
@@ -45,9 +39,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     /// Coalesces saveState() calls — waits 1s after last request before writing.
     private var saveStateWorkItem: DispatchWorkItem?
-
-    /// Debounces search queries — waits 150ms after last keystroke.
-    private var searchDebounceWorkItem: DispatchWorkItem?
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
@@ -169,17 +160,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        searchBar.translatesAutoresizingMaskIntoConstraints = false
-        searchBar.searchDelegate = self
-        searchBar.isHidden = true
-
         rightPane.addSubview(tabBar)
-        rightPane.addSubview(searchBar)
         rightPane.addSubview(splitPaneManager)
         rightPane.addSubview(inputContainer)
-
-        let sbHeight = searchBar.heightAnchor.constraint(equalToConstant: 0)
-        searchBarHeightConstraint = sbHeight
 
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: rightPane.topAnchor),
@@ -187,12 +170,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             tabBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: 32),
 
-            searchBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            searchBar.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            searchBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            sbHeight,
-
-            splitPaneManager.topAnchor.constraint(equalTo: searchBar.bottomAnchor),
+            splitPaneManager.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             splitPaneManager.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
             splitPaneManager.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             splitPaneManager.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
@@ -252,15 +230,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             fileMenu.addItem(toggleSidebarItem)
         }
 
-        // View menu with timestamp toggle and search
+        // View menu with timestamp toggle
         if let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu {
             let timestampItem = NSMenuItem(title: "Show Timestamps", action: #selector(toggleTimestamps), keyEquivalent: "t")
             timestampItem.target = self
             viewMenu.addItem(timestampItem)
-
-            let findItem = NSMenuItem(title: "Find", action: #selector(toggleSearch), keyEquivalent: "f")
-            findItem.target = self
-            viewMenu.addItem(findItem)
         }
 
         // Cmd+1-9 channel switching via local event monitor
@@ -305,99 +279,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
             return event
         }
-    }
-
-    @objc func toggleSearch() {
-        searchBarVisible.toggle()
-        if searchBarVisible {
-            searchBar.isHidden = false
-            searchBarHeightConstraint?.constant = 32
-            searchBar.focus()
-        } else {
-            searchBar.isHidden = true
-            searchBarHeightConstraint?.constant = 0
-            searchBar.clear()
-            window.makeFirstResponder(inputBox)
-        }
-    }
-
-    // MARK: - SearchBarDelegate
-
-    func searchBar(_ searchBar: SearchBarView, didChangeQuery query: String) {
-        guard !query.isEmpty else {
-            searchDebounceWorkItem?.cancel()
-            searchBar.updateMatchInfo(total: 0, current: 0)
-            return
-        }
-
-        // Debounce: wait 150ms after last keystroke before scanning
-        searchDebounceWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.performSearch(query: query, searchBar: searchBar)
-        }
-        searchDebounceWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
-    }
-
-    private func performSearch(query: String, searchBar: SearchBarView) {
-        guard let id = activeChannelId,
-              let channel = channelManager.channel(for: id) else { return }
-
-        if let textViewChannel = channel as? MCPChannelController {
-            let count = searchTextView(query: query, in: textViewChannel.contentView)
-            currentSearchQuery = query
-            currentSearchMatchTotal = count
-            currentSearchMatchIndex = count > 0 ? 1 : 0
-            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
-        } else if let textViewChannel = channel as? GroupChatChannelController {
-            let count = searchTextView(query: query, in: textViewChannel.contentView)
-            currentSearchQuery = query
-            currentSearchMatchTotal = count
-            currentSearchMatchIndex = count > 0 ? 1 : 0
-            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
-        } else {
-            // PTY channels — search visible buffer
-            let lines = channel.lastLines(10000)
-            let count = lines.filter { $0.localizedCaseInsensitiveContains(query) }.count
-            currentSearchQuery = query
-            currentSearchMatchTotal = count
-            currentSearchMatchIndex = count > 0 ? 1 : 0
-            searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
-        }
-    }
-
-    func searchBarDidRequestNext(_ searchBar: SearchBarView) {
-        guard currentSearchMatchTotal > 0 else { return }
-        currentSearchMatchIndex = currentSearchMatchIndex >= currentSearchMatchTotal ? 1 : currentSearchMatchIndex + 1
-        searchBar.updateMatchInfo(total: currentSearchMatchTotal, current: currentSearchMatchIndex)
-    }
-
-    func searchBarDidRequestPrevious(_ searchBar: SearchBarView) {
-        guard currentSearchMatchTotal > 0 else { return }
-        currentSearchMatchIndex = currentSearchMatchIndex <= 1 ? currentSearchMatchTotal : currentSearchMatchIndex - 1
-        searchBar.updateMatchInfo(total: currentSearchMatchTotal, current: currentSearchMatchIndex)
-    }
-
-    func searchBarDidClose(_ searchBar: SearchBarView) {
-        searchBarVisible = false
-        searchBar.isHidden = true
-        searchBarHeightConstraint?.constant = 0
-        searchBar.clear()
-        window.makeFirstResponder(inputBox)
-    }
-
-    private func searchTextView(query: String, in view: NSView) -> Int {
-        guard let scrollView = view as? NSScrollView,
-              let textView = scrollView.documentView as? NSTextView else { return 0 }
-        let content = textView.string
-        var count = 0
-        var searchRange = content.startIndex..<content.endIndex
-        while let range = content.range(of: query, options: .caseInsensitive, range: searchRange) {
-            count += 1
-            searchRange = range.upperBound..<content.endIndex
-        }
-        return count
     }
 
     @objc func toggleTimestamps() {

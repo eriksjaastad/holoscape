@@ -445,64 +445,6 @@ final class IntegrityUITests: HoloscapeUITestCase {
         }
     }
 
-    // MARK: - Search Integrity
-
-    /// Search must find text, show accurate count, and navigate matches.
-    func testSearchFindNavigateAndCount() throws {
-        // Send distinctive text to the channel
-        try apiCreateChannel(label: "search-integrity")
-        let entry = sidebarEntry("search-integrity")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Send multiple lines with the search term
-        for i in 1...3 {
-            try apiSendInput(label: "search-integrity", text: "echo FINDME-\(i)")
-            Thread.sleep(forTimeInterval: 0.3)
-        }
-        Thread.sleep(forTimeInterval: 1.0)
-
-        // Open search
-        openSearch()
-
-        // Type search query
-        let searchField = app.toolbars["Search Bar"].searchFields.firstMatch
-        if searchField.waitForExistence(timeout: 2) {
-            searchField.typeText("FINDME")
-            Thread.sleep(forTimeInterval: 0.5)
-
-            // Check match count
-            if let countText = searchMatchCountText() {
-                XCTAssertFalse(countText.isEmpty || countText == "No matches",
-                    "Search for 'FINDME' should find matches, got: '\(countText)'")
-            }
-        }
-
-        // Close search
-        closeSearch()
-
-        // Clean up
-        try apiDeleteChannel(label: "search-integrity")
-    }
-
-    /// Search bar must close on Escape and not leave artifacts.
-    func testSearchBarClosesCleanly() throws {
-        // Open search
-        openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.exists, "Search bar should be open")
-
-        // Close with Escape
-        app.typeKey(.escape, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Search bar should no longer be visible (height 0)
-        // The toolbar still exists but the search field shouldn't be hittable
-        // Just verify the main window is still functional
-        assertActiveChannelResponsive(message: "App should be responsive after closing search")
-    }
-
     // MARK: - Context Menu Integrity
 
     /// Every context menu action should work in sequence without crashes.
@@ -817,29 +759,6 @@ final class IntegrityUITests: HoloscapeUITestCase {
     }
 
     // MARK: - Cross-Feature Interaction Tests
-
-    /// Search should work correctly across channel switches.
-    func testSearchPersistsAcrossChannelSwitch() throws {
-        try apiCreateChannel(label: "cross-search")
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Open search on first channel
-        openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.exists, "Search bar should be open")
-
-        // Switch to another channel
-        let entry = sidebarEntry("cross-search")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
-        entry.click()
-        Thread.sleep(forTimeInterval: 0.5)
-
-        // Search bar should still be visible
-        XCTAssertTrue(searchBar.exists, "Search bar should persist across channel switch")
-
-        closeSearch()
-        try apiDeleteChannel(label: "cross-search")
-    }
 
     /// Split panes should survive channel creation and deletion.
     func testSplitPanesSurviveChannelLifecycle() throws {

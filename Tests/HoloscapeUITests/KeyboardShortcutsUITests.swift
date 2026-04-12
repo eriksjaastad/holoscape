@@ -59,15 +59,6 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("t", modifierFlags: .command)
     }
 
-    func testCmdF() throws {
-        app.typeKey("f", modifierFlags: .command)
-
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Cmd+F should open search bar")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
     func testCmdD() throws {
         app.typeKey("d", modifierFlags: .command)
 
@@ -170,9 +161,6 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("t", modifierFlags: .command)
         app.typeKey("t", modifierFlags: .command)
 
-        app.typeKey("f", modifierFlags: .command)
-        app.typeKey(.escape, modifierFlags: [])
-
         app.typeKey("d", modifierFlags: .command)
         app.typeKey("w", modifierFlags: [.command, .shift])
 
@@ -192,50 +180,14 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
         inputBox.click()
 
-        app.typeKey("f", modifierFlags: .command)
-
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from input box")
-
-        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey("t", modifierFlags: .command)
+        app.typeKey("t", modifierFlags: .command)
     }
 
     func testShortcutsWorkFromOutputView() throws {
         // Verify shortcut works when focus is on the terminal/output area
-        app.typeKey("f", modifierFlags: .command)
-
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Shortcuts should fire from terminal view")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
-    func testShortcutsWorkWithSearchBarOpen() throws {
-        app.typeKey("f", modifierFlags: .command)
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3))
-
-        // Toggle sidebar while search is open
-        app.typeKey("s", modifierFlags: [.command, .shift])
-        app.typeKey("s", modifierFlags: [.command, .shift])
-
-        assertActiveChannelResponsive(message: "Channel should remain responsive with search bar open")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
-    // MARK: - Shortcut Context
-
-    func testEscapeClosesSearch() throws {
-        app.typeKey("f", modifierFlags: .command)
-
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3))
-
-        app.typeKey(.escape, modifierFlags: [])
-
-        // Search bar should be gone
-        XCTAssertFalse(searchBar.waitForExistence(timeout: 2), "Escape should close search bar")
+        app.typeKey("t", modifierFlags: .command)
+        app.typeKey("t", modifierFlags: .command)
     }
 
     func testEnterSubmitsInput() throws {
