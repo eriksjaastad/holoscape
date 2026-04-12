@@ -93,11 +93,29 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func lastLines(_ count: Int) -> [String] {
         guard let terminal = terminalView.terminal else { return [] }
-        let totalRows = terminal.rows
-        let startRow = max(0, totalRows - count)
+        // SwiftTerm's getText(start:end:) uses BUFFER-ABSOLUTE coordinates
+        // (it indexes buf.lines[start.row] directly — Terminal.swift
+        // getSelectedLines), so Position.row 0 is the oldest scrollback line,
+        // NOT the top of the visible viewport. The visible area starts at
+        // `buffer.yDisp` in buffer coordinates.
+        //
+        // The old `Position(row: 0)..Position(row: rows-1)` pattern accidentally
+        // worked only for terminals with no scrollback (yDisp == 0). As soon as
+        // shell login output (path_helper, .zshrc banners, oh-my-zsh, etc.)
+        // scrolled past the visible area, yDisp advanced and lastLines started
+        // returning the oldest scrollback content instead of the recent output —
+        // which is why every test that called waitForAPIOutput was silently
+        // failing after the round-9 delegate-wiring fix actually let OSC 7 fire.
+        //
+        // Read the last `count` lines ending at the bottom of the current visible
+        // area, walking backwards into scrollback as needed.
+        let visibleRows = terminal.rows
+        let yDisp = terminal.buffer.yDisp
+        let bottomRow = yDisp + visibleRows - 1
+        let startRow = max(0, bottomRow - count + 1)
         let text = terminal.getText(
             start: Position(col: 0, row: startRow),
-            end: Position(col: terminal.cols - 1, row: totalRows - 1)
+            end: Position(col: terminal.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))
