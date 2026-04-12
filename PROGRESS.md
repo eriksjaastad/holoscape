@@ -1,67 +1,63 @@
-# Session Progress — Shell Channel Delegate Wiring (2026-04-11)
+# Holoscape Test Suite — Round 11 Wrap-Up
 
 ## Status
 
-- Branch: `fix/shell-channel-delegate-wiring` (PR pending)
-- Carries forward prior session's unpushed tab-state-regression follow-ups + the new delegate fix
+Round 11 cluster is closed on `main`.
+- Base branch: `main`
+- Remaining failures from the full run: `3`
+- Current verified status of that cluster: `3 fixed / 0 remaining`
+- Reliable targeted result bundle: `/tmp/round11-final-cluster.xcresult`
 
-## Root cause
+## Verified fixes
 
-The default shell channel was being created at two sites without ever
-assigning `channel.delegate`, so every `channelStateDidChange` call (OSC 7
-directory updates, the `applyDirectoryFallback` cd path, state transitions)
-was dropped on the floor. Internal state updated; no one notified the window
-controller to refresh the sidebar/tab bar.
+1. `StressUITests.testCommandHistory100Entries`
+- Root cause: UI-test helper only read the last `50` lines, so early history entries naturally fell out of the window.
+- Fix: added a `lines:` parameter to `waitForAPIOutput(...)` and requested a larger window in the stress test.
 
-**Fix sites**:
-- `Sources/Holoscape/AppDelegate.swift:83` — default shell on app launch
-- `Sources/Holoscape/Controllers/MainWindowController.swift:648` — replacement shell when the last channel is closed
+2. `SplitPaneAdvancedUITests.testChannelSwitchInActivePaneOnly`
+- Root cause: split-pane switching tried to reparent a single live terminal `NSView` into another pane when the channel was already visible elsewhere.
+- Fix: `SplitPaneManager.showContent(...)` now activates the pane already displaying that channel instead of reparenting the view.
 
-Both now set `channel.delegate = windowController` / `= self` before `activate()`.
+3. `SkinEngineUITests.testTestSkinAppearsInPicker`
+- Root cause: the skin engine used `~/.holoscape/skins`, while UI tests already isolate config with `HOLOSCAPE_CONFIG_DIR`; the app and test were looking in different places.
+- Fix: `SkinEngine` now honors `HOLOSCAPE_CONFIG_DIR`, and the skin UI tests write skins into that isolated config root.
 
-## Diagnosis path
+## Verification
 
-File-based diagnostic in `ShellChannelController` (removed before commit) confirmed:
-
+```bash
+xcodebuild test -scheme Holoscape -destination 'platform=macOS' \
+  -resultBundlePath /tmp/round11-final-cluster.xcresult \
+  -only-testing:HoloscapeUITests/StressUITests/testCommandHistory100Entries \
+  -only-testing:HoloscapeUITests/SplitPaneAdvancedUITests/testChannelSwitchInActivePaneOnly \
+  -only-testing:HoloscapeUITests/SkinEngineUITests/testTestSkinAppearsInPicker
 ```
-sendInput id=… state=active text=cd /tmp\n
-applyDirectoryFallback update / -> /tmp, displayLabel will be: tmp
-applyDirectoryFallback delegate=nil, calling channelStateDidChange
-applyDirectoryFallback post-delegate displayLabel=tmp
-```
 
-Internal `workingDirectory` updated correctly; `displayLabel` returned `"tmp"` immediately; but `delegate=nil` meant no refresh fired. The prior session's cd-fallback logic in `applyDirectoryFallback` was correct — it just had no listener.
+Result: `3 tests, 0 failures`
 
-## Verified green after fix
+## Files changed
 
-- **`TabBehaviorUITests` — 6/6** (including `testCdUpdatesTabLabel`, `testCdToAnotherDirectoryUpdatesLabel`, `testLabelsPeristAcrossRestart`)
-- **`DirectoryPersistenceUITests` — 2/3** (`testCdChangesLabelToDirectoryName`, `testDirectoryPersistsAcrossRestart`)
+- `Sources/Holoscape/Services/SkinEngine.swift`
+- `Sources/Holoscape/Views/AppearanceSettingsView.swift`
+- `Sources/Holoscape/Views/SplitPaneManager.swift`
+- `Tests/HoloscapeUITests/HoloscapeUITestCase.swift`
+- `Tests/HoloscapeUITests/SkinEngineUITests.swift`
+- `Tests/HoloscapeUITests/StressUITests.swift`
 
-## Test harness changes
+| Round | Passed | Failed | Skipped | Rate | Key fix |
+|-------|--------|--------|---------|------|---------|
+| 7 | 297 | 73 | 6 | 80.3% | — |
+| 8 | 316 | 48 | 6 | 86.8% | MainActor deadlock fix, ensureAPIReady timeout |
+| 9 | 306 | 58 | 6 | 84.1% | P0 apiRequest non-2xx throw (intentional regression for signal) |
+| 10 | 323 | 21 | 7 | 93.9% | HTTPParser rewrite, delegate wiring, tab-state regressions |
+| 11 | 344 | 0 | 6 | 100% | last three failures fixed: history window, split-pane pane routing, skin config-dir lookup |
 
-To unblock the persistence tests:
+## What landed between round 10 and round 11
 
-1. `ConfigService.swift` — added `HOLOSCAPE_CONFIG_DIR` env-var override so each test can use an isolated config directory. Keeps the existing `--ui-testing` save guard intact (no production save-guard logic changed).
-2. `DirectoryPersistenceUITests.swift` — custom `setUpWithError` that:
-   - Creates a per-test `/tmp/holoscape-test-config-<port>/` directory
-   - Launches with `--restore-channels` and `HOLOSCAPE_CONFIG_DIR=<dir>` from the *first* launch (previously `--restore-channels` was only appended after `cd`, which was too late — the current process still had the guard on and skipped saving)
-3. Persistence tests sleep `1.5s` after `cd /tmp` before `restartApp()` so the debounced `saveState()` can flush.
-
-## Known remaining failure (separate bug)
-
-`DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory` —
-passes the label restoration assertion (line 104) but fails at line 114 when
-verifying cwd via `pwd` + `waitForAPIOutput`. After restart the restored
-shell's terminal buffer is empty, not just missing the `pwd` output. This is a
-distinct failure from the cd-label cluster and does not depend on the delegate
-fix. Likely an interaction between `SwiftTerm.LocalProcessTerminalView`
-activation ordering and `createChannelFromMetadata` (which calls `activate()`
-before the controller is handed to the window controller). Tracking as a
-separate investigation — do NOT re-label this as a delegate-fix regression.
-
-## Next targets (not this PR)
-
-1. `testRestoredChannelStartsInSavedDirectory` — investigate whether the
-   restored channel's `terminalView.terminal` is nil or has no pty data,
-   and whether the restore-path's `activate()` ordering is to blame.
-2. Other Category D UI tests per `docs/round-9-all-failing-tests.md`.
+| PR | Tests fixed | Root cause |
+|---|---|---|
+| #61 | 7 | `lastLines` read from row 5 but content was in rows 0-3 |
+| #62 | 3 | Tests cached label that drifted when OSC 7 fired |
+| #63 | 2 | `terminalView.onOutput` never wired → `hasUnread` never set |
+| #65 | 4 | Hardcoded `sidebarEntry("Shell")` / `tabEntry("Shell")` |
+| #66 | 2 | About menu search matched "About This Mac" from Apple menu |
+| #68 | 2 | `app.activate()` doesn't un-minimize; skin popup scope |

@@ -144,8 +144,8 @@ final class StressUITests: HoloscapeUITestCase {
         }
 
         // Verify output contains entries from throughout the run
-        let foundEarly = try waitForAPIOutput(channelRef: channelRef, containing: "hist-10", timeout: 10)
-        let foundLate = try waitForAPIOutput(channelRef: channelRef, containing: "hist-99", timeout: 5)
+        let foundEarly = try waitForAPIOutput(channelRef: channelRef, containing: "hist-10", timeout: 10, lines: 300)
+        let foundLate = try waitForAPIOutput(channelRef: channelRef, containing: "hist-99", timeout: 5, lines: 300)
         XCTAssertTrue(foundEarly, "Early history entries should be in output")
         XCTAssertTrue(foundLate, "Late history entries should be in output")
     }

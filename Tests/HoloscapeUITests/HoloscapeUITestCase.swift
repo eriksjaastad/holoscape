@@ -16,6 +16,7 @@ class HoloscapeUITestCase: XCTestCase {
         apiPort = UInt16.random(in: 49152...60999)
         Self.currentAPIBase = "http://127.0.0.1:\(apiPort)"
         app = XCUIApplication()
+        configureAppForLaunch(app)
         app.launchArguments.append("--ui-testing")
         app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launch()
@@ -28,6 +29,11 @@ class HoloscapeUITestCase: XCTestCase {
 
     override func tearDownWithError() throws {
         app.terminate()
+    }
+
+    /// Subclasses can inject launch environment/arguments before the shared
+    /// UI-test flags are appended and the app is launched.
+    func configureAppForLaunch(_ app: XCUIApplication) {
     }
 
     // MARK: - Channel Helpers
@@ -491,11 +497,11 @@ class HoloscapeUITestCase: XCTestCase {
 
     /// Poll channel output until it contains the expected text, or timeout.
     /// Uses RunLoop spinning between polls to keep the MainActor responsive.
-    nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
+    nonisolated func waitForAPIOutput(label: String, containing text: String, timeout: TimeInterval = 15, lines: Int = 50) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let lines = try apiReadOutput(label: label)
-            if lines.contains(where: { $0.contains(text) }) {
+            let outputLines = try apiReadOutput(label: label, lines: lines)
+            if outputLines.contains(where: { $0.contains(text) }) {
                 return true
             }
             // Spin RunLoop instead of Thread.sleep to keep MainActor responsive
@@ -509,11 +515,11 @@ class HoloscapeUITestCase: XCTestCase {
 
     /// Poll channel output until it contains the expected text, or timeout.
     /// Uses a stable channel identifier to survive dynamic label changes.
-    nonisolated func waitForAPIOutput(channelRef: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
+    nonisolated func waitForAPIOutput(channelRef: String, containing text: String, timeout: TimeInterval = 15, lines: Int = 50) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let lines = try apiReadOutput(channelRef: channelRef)
-            if lines.contains(where: { $0.contains(text) }) {
+            let outputLines = try apiReadOutput(channelRef: channelRef, lines: lines)
+            if outputLines.contains(where: { $0.contains(text) }) {
                 return true
             }
             let waitUntil = Date(timeIntervalSinceNow: 0.5)
@@ -528,10 +534,11 @@ class HoloscapeUITestCase: XCTestCase {
     /// HoloscapeTerminalView uses role .textArea, so XCTest classifies it under textViews.
     func terminalView() -> XCUIElement {
         let window = app.windows["Holoscape"]
-        // Try textViews first (matches .textArea role), fall back to otherElements
-        let tv = window.textViews["terminal-view"]
-        if tv.exists { return tv }
-        return window.otherElements["terminal-view"]
+        let textView = window.textViews["terminal-view"]
+        if textView.exists { return textView }
+        let other = window.otherElements["terminal-view"]
+        if other.exists { return other }
+        return textView
     }
 
     /// Assert the active channel is responsive by verifying the terminal view exists.
@@ -539,9 +546,19 @@ class HoloscapeUITestCase: XCTestCase {
     /// into the terminal and have no separate input box. The input box is only visible
     /// for non-PTY channels (e.g., Group Chat, Bridge).
     func assertActiveChannelResponsive(timeout: TimeInterval = 3, message: String = "Active channel should be responsive") {
-        let terminal = terminalView()
         let inputBox = app.textViews["input-box"]
-        let isResponsive = terminal.waitForExistence(timeout: timeout) || inputBox.waitForExistence(timeout: 1)
+        let deadline = Date().addingTimeInterval(timeout)
+        var isResponsive = false
+        while Date() < deadline {
+            let window = app.windows["Holoscape"]
+            if window.textViews["terminal-view"].exists ||
+                window.otherElements["terminal-view"].exists ||
+                inputBox.exists {
+                isResponsive = true
+                break
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        }
         XCTAssertTrue(isResponsive, message)
     }
 

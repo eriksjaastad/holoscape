@@ -6,7 +6,7 @@ protocol AppearanceSettingsDelegate: AnyObject {
 }
 
 @MainActor
-class AppearanceSettingsWindowController: NSWindowController {
+class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     weak var settingsDelegate: AppearanceSettingsDelegate?
     private var config: AppearanceConfig
     private let configService: ConfigService
@@ -73,10 +73,11 @@ class AppearanceSettingsWindowController: NSWindowController {
 
         // Skin
         let skinRow = makeRow(label: "Skin:", control: skinPopup)
-        skinPopup.addItems(withTitles: skinEngine.availableSkins())
+        refreshSkinPopupItems()
         skinPopup.target = self
         skinPopup.action = #selector(skinChanged(_:))
         skinPopup.setAccessibilityIdentifier("skin-popup")
+        skinPopup.menu?.delegate = self
         stack.addArrangedSubview(skinRow)
 
         // Background color
@@ -153,6 +154,7 @@ class AppearanceSettingsWindowController: NSWindowController {
     }
 
     private func loadCurrentValues() {
+        refreshSkinPopupItems(selectedTitle: config.skinName ?? skinPopup.titleOfSelectedItem)
         let themeName = config.themeName ?? "Dark"
         themePopup.selectItem(withTitle: themeName)
         let skinName = config.skinName ?? "Default"
@@ -262,6 +264,25 @@ class AppearanceSettingsWindowController: NSWindowController {
         var fullConfig = configService.load()
         fullConfig.appearance = config
         configService.save(fullConfig)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu == skinPopup.menu else { return }
+        refreshSkinPopupItems(selectedTitle: skinPopup.titleOfSelectedItem)
+    }
+
+    private func refreshSkinPopupItems(selectedTitle: String? = nil) {
+        let skins = skinEngine.availableSkins()
+        skinPopup.removeAllItems()
+        skinPopup.addItems(withTitles: skins)
+        for item in skinPopup.itemArray {
+            item.identifier = NSUserInterfaceItemIdentifier("skin-\(item.title)")
+        }
+        if let selectedTitle, skins.contains(selectedTitle) {
+            skinPopup.selectItem(withTitle: selectedTitle)
+        } else {
+            skinPopup.selectItem(withTitle: "Default")
+        }
     }
 }
 

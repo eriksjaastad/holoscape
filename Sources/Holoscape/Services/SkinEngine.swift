@@ -5,8 +5,12 @@ class SkinEngine {
     private let skinsDirectory: URL
 
     init() {
-        self.skinsDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/skins")
+        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            self.skinsDirectory = URL(fileURLWithPath: override).appendingPathComponent("skins")
+        } else {
+            self.skinsDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".holoscape/skins")
+        }
     }
 
     /// List all available skin names. Always includes "Default" first.
