@@ -16,9 +16,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var workingDirectory: String?
     private(set) var activatedAt: Date?
 
+    var notificationDirectoryPath: String? {
+        workingDirectory
+    }
+
     var displayLabel: String {
         let base: String
-        if let label = explicitLabel {
+        if let label = explicitLabel,
+           label != workingDirectory.flatMap({ URL(fileURLWithPath: $0).lastPathComponent }) {
             base = label
         } else if let dir = workingDirectory {
             base = URL(fileURLWithPath: dir).lastPathComponent
