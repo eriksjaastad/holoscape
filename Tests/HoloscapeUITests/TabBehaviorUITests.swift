@@ -5,11 +5,14 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
     // MARK: - Labels Show Directory
 
     func testShellLabelShowsDirectoryNotShell() throws {
+        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "tmp")
-        Thread.sleep(forTimeInterval: 1)
-
-        let entry = sidebarEntry("tmp")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3), "Tab label should show directory name, not 'Shell'")
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "New shell tab should appear in sidebar")
+        XCTAssertTrue(
+            entry.identifier.contains("sidebar-tmp") || entry.label.contains("tmp"),
+            "Tab label should show directory name 'tmp', got identifier='\(entry.identifier)' label='\(entry.label)'"
+        )
     }
 
     // MARK: - CD Updates Label
@@ -17,13 +20,13 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
     func testCdUpdatesTabLabel() throws {
         // Get the default shell channel
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
         // Send cd /tmp — OSC 7 should update the tab label
-        try apiSendInput(label: label, text: "cd /tmp\n")
+        try apiSendInput(channelRef: channelRef, text: "cd /tmp\n")
 
         // Wait for the sidebar entry to update (OSC 7 triggers hostCurrentDirectoryUpdate)
         let tmpEntry = sidebarEntry("tmp")
@@ -32,12 +35,12 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
 
     func testCdToAnotherDirectoryUpdatesLabel() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
-        try apiSendInput(label: label, text: "cd /var\n")
+        try apiSendInput(channelRef: channelRef, text: "cd /var\n")
 
         let varEntry = sidebarEntry("var")
         XCTAssertTrue(varEntry.waitForExistence(timeout: 5), "Tab label should update to 'var' after cd")
