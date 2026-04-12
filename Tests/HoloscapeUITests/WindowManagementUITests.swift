@@ -109,15 +109,24 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(appMenu.waitForExistence(timeout: 2))
         appMenu.click()
 
-        let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
+        // Scope the menu-item search to the Holoscape menu we just opened.
+        // `app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'"))`
+        // walks every NSMenuItem in the app's accessibility tree — including
+        // "About This Mac" in the Apple menu, which has never been opened and
+        // whose frame is INFINITY. `firstMatch` on macOS 26 / Xcode 26.4 picks
+        // the Apple menu item, XCUITest tries to synthesize a click at INFINITY
+        // coordinates, and raises NSInternalInconsistencyException. Same bug
+        // pattern and fix as the Window-menu scoping in PR #52.
+        let aboutItem = appMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'About'")
+        ).firstMatch
         XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
         aboutItem.click()
 
-        // The standard macOS About panel reports invalid accessibility coordinates
-        // (INFINITY), which causes NSInternalInconsistencyException if XCUITest
-        // queries the panel's frame. Do not touch any About panel elements.
-        // Dismiss via Escape, then bring the main window forward using a fixed
-        // normalized coordinate (avoiding any AX geometry lookup).
+        // The standard macOS About panel is a well-behaved NSPanel, but we still
+        // avoid querying any About-panel elements directly: dismiss via Escape,
+        // then bring the main window forward with a fixed normalized coordinate
+        // click (no AX geometry lookup on the panel at all).
         Thread.sleep(forTimeInterval: 1.0)
         app.typeKey(.escape, modifierFlags: [])
         Thread.sleep(forTimeInterval: 0.5)
@@ -135,10 +144,13 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
 
-        let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
+        // See testAboutDialogOpens for why this search is scoped to appMenu.menus
+        // instead of app.menuItems.
+        let aboutItem = appMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'About'")
+        ).firstMatch
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
-            // Don't touch About panel elements — INFINITY AX coords crash XCUITest.
             Thread.sleep(forTimeInterval: 1.0)
             app.typeKey(.escape, modifierFlags: [])
             Thread.sleep(forTimeInterval: 0.5)
