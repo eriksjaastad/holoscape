@@ -67,6 +67,11 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let sshArgs = buildSSHArgs(host: host, user: user, directory: profile.directory, command: profile.command)
         let env = buildSSHEnvironment()
 
+        (terminal as? HoloscapeTerminalView)?.onOutput = { [weak self] in
+            guard let self else { return }
+            self.delegate?.channelDidReceiveOutput(self)
+        }
+
         terminal.startProcess(
             executable: "/usr/bin/ssh",
             args: sshArgs,
