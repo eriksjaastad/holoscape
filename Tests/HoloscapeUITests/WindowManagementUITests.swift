@@ -109,25 +109,22 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(appMenu.waitForExistence(timeout: 2))
         appMenu.click()
 
-        let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
+        // Scope the search to the Holoscape menu that was just opened.
+        // The old `app.menuItems.matching(...)` walked every menu in the
+        // app's AX tree and matched "About This Mac" in the Apple menu
+        // (which was never opened → INFINITY coordinates → crash).
+        let aboutItem = appMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'About'")
+        ).firstMatch
         XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
         aboutItem.click()
 
-        // The standard macOS About panel reports invalid accessibility coordinates
-        // (INFINITY), which causes NSInternalInconsistencyException if XCUITest
-        // queries the panel's frame. Do not touch any About panel elements.
-        // Dismiss via Escape, then bring the main window forward using a fixed
-        // normalized coordinate (avoiding any AX geometry lookup).
+        // Dismiss the About panel and verify the main window survives.
         Thread.sleep(forTimeInterval: 1.0)
         app.typeKey(.escape, modifierFlags: [])
         Thread.sleep(forTimeInterval: 0.5)
 
         let mainWindow = app.windows["Holoscape"]
-        if mainWindow.exists && mainWindow.isHittable {
-            mainWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-        }
-        Thread.sleep(forTimeInterval: 0.3)
-
         XCTAssertTrue(mainWindow.waitForExistence(timeout: 3), "Main window should remain after opening About dialog")
     }
 
@@ -135,10 +132,12 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let appMenu = app.menuBars.firstMatch.menuBarItems["Holoscape"]
         appMenu.click()
 
-        let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
+        // Same scoped search — only matches "About Holoscape", not "About This Mac".
+        let aboutItem = appMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'About'")
+        ).firstMatch
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
-            // Don't touch About panel elements — INFINITY AX coords crash XCUITest.
             Thread.sleep(forTimeInterval: 1.0)
             app.typeKey(.escape, modifierFlags: [])
             Thread.sleep(forTimeInterval: 0.5)
