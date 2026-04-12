@@ -2,6 +2,13 @@ import XCTest
 
 final class NotificationSystemUITests: HoloscapeUITestCase {
 
+    private func collapseSidebarToShowTopTabs() {
+        app.typeKey("s", modifierFlags: [.command, .shift])
+        let window = app.windows["Holoscape"]
+        let anyTab = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        _ = anyTab.waitForExistence(timeout: 3)
+    }
+
     /// Override setUp to pass the suppression bypass argument for most tests.
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -15,10 +22,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
 
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after launch")
-        let sidebar = window.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
-        ).firstMatch
-        _ = sidebar.waitForExistence(timeout: 10)
+        XCTAssertTrue(ensureSidebarVisible(), "Sidebar should be visible after launch")
     }
 
     // MARK: - Idle Prompt (Green)
@@ -29,10 +33,9 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     /// Example: label "notify-green" + cwd "/tmp/notify-green" → match.
 
     func testIdlePromptTurnsTabGreen() throws {
-        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-green")
-        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        let entry = sidebarEntry("notify-green")
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertTrue(entry.identifier.contains("sidebar-notify-green") || entry.label.contains("notify-green"))
 
         // cwd last component must match label for resolveChannelByCwd
@@ -47,10 +50,9 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     // MARK: - Permission Prompt (Amber)
 
     func testPermissionPromptTurnsTabAmber() throws {
-        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-amber")
-        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        let entry = sidebarEntry("notify-amber")
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertTrue(entry.identifier.contains("sidebar-notify-amber") || entry.label.contains("notify-amber"))
 
         try apiNotify(type: "permission_prompt", cwd: "/tmp/notify-amber")
@@ -60,13 +62,29 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         XCTAssertEqual(value, "needs-approval", "Permission prompt should set tab accessibility value to 'needs-approval'")
     }
 
+    func testIdlePromptTurnsTopTabReady() throws {
+        try apiCreateChannel(dir: "/tmp", label: "notify-top-ready")
+        let entry = sidebarEntry("notify-top-ready")
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+
+        app.typeKey("1", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
+
+        try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-top-ready")
+        Thread.sleep(forTimeInterval: 0.5)
+
+        collapseSidebarToShowTopTabs()
+        let tab = tabEntry("notify-top-ready")
+        XCTAssertTrue(tab.waitForExistence(timeout: 3), "Top tab should exist for notified channel")
+        XCTAssertEqual(tab.value as? String, "ready", "Idle prompt should set top tab accessibility value to 'ready'")
+    }
+
     // MARK: - Click Clears Notification
 
     func testClickingNotifiedTabClearsNotification() throws {
-        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-clear")
-        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        let entry = sidebarEntry("notify-clear")
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertTrue(entry.identifier.contains("sidebar-notify-clear") || entry.label.contains("notify-clear"))
 
         // Switch away from the notify-clear channel so it's not active
@@ -87,6 +105,28 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         // Notification should be cleared — value should become "active"
         let valueAfter = entry.value as? String
         XCTAssertEqual(valueAfter, "active", "Clicking notified tab should clear notification state")
+    }
+
+    func testClickingNotifiedTopTabClearsNotification() throws {
+        try apiCreateChannel(dir: "/tmp", label: "notify-top-clear")
+        let entry = sidebarEntry("notify-top-clear")
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+
+        app.typeKey("1", modifierFlags: .command)
+        Thread.sleep(forTimeInterval: 0.5)
+
+        try apiNotify(type: "permission_prompt", cwd: "/tmp/notify-top-clear")
+        Thread.sleep(forTimeInterval: 0.5)
+
+        collapseSidebarToShowTopTabs()
+        let tab = tabEntry("notify-top-clear")
+        XCTAssertTrue(tab.waitForExistence(timeout: 3), "Top tab should exist for notified channel")
+        XCTAssertEqual(tab.value as? String, "needs-approval")
+
+        tab.click()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        XCTAssertEqual(tab.value as? String, "active", "Clicking notified top tab should clear notification state")
     }
 
     // MARK: - Startup Suppression

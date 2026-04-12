@@ -14,6 +14,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let instanceNumber: Int?
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
+    private var previousWorkingDirectory: String?
     private(set) var activatedAt: Date?
 
     var notificationDirectoryPath: String? {
@@ -53,6 +54,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     func sendInput(_ text: String) {
         guard state == .active else { return }
         commandHistory.add(text)
+        applyDirectoryFallback(for: text)
         let bytes = Array((text + "\n").utf8)
         terminalView.send(bytes)
     }
@@ -122,13 +124,71 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard let directory else { return }
             // OSC 7 sends file:// URLs — extract the path
-            if let dir = directory, let url = URL(string: dir), url.scheme == "file" {
+            if let url = URL(string: directory), url.scheme == "file" {
+                self.previousWorkingDirectory = self.workingDirectory
                 self.workingDirectory = url.path
             } else {
+                self.previousWorkingDirectory = self.workingDirectory
                 self.workingDirectory = directory
             }
             self.delegate?.channelStateDidChange(self, to: self.state)
         }
+    }
+
+    private func applyDirectoryFallback(for input: String) {
+        guard let nextDirectory = resolvedDirectory(from: input) else { return }
+        guard nextDirectory != workingDirectory else { return }
+        previousWorkingDirectory = workingDirectory
+        workingDirectory = nextDirectory
+        delegate?.channelStateDidChange(self, to: state)
+    }
+
+    private func resolvedDirectory(from input: String) -> String? {
+        let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty,
+              !command.contains(";"),
+              !command.contains("&&"),
+              !command.contains("||"),
+              !command.contains("|") else {
+            return nil
+        }
+
+        if command == "cd" {
+            return standardizedDirectory(path: NSHomeDirectory())
+        }
+
+        guard command.hasPrefix("cd ") else { return nil }
+
+        var rawPath = String(command.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        guard !rawPath.isEmpty else { return standardizedDirectory(path: NSHomeDirectory()) }
+
+        if rawPath == "-" {
+            return previousWorkingDirectory.flatMap(standardizedDirectory(path:))
+        }
+
+        if (rawPath.hasPrefix("\"") && rawPath.hasSuffix("\"")) ||
+            (rawPath.hasPrefix("'") && rawPath.hasSuffix("'")) {
+            rawPath = String(rawPath.dropFirst().dropLast())
+        }
+
+        let expandedPath = (rawPath as NSString).expandingTildeInPath
+        if expandedPath.hasPrefix("/") {
+            return standardizedDirectory(path: expandedPath)
+        }
+
+        let base = workingDirectory ?? FileManager.default.currentDirectoryPath
+        return standardizedDirectory(path: URL(fileURLWithPath: base).appendingPathComponent(expandedPath).path)
+    }
+
+    private func standardizedDirectory(path: String) -> String? {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return standardized
     }
 }

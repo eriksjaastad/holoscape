@@ -468,7 +468,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let sorted = pinned + unpinned
 
         let notifications = apiServer?.channelNotifications ?? [:]
-        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds)
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
         sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
     }
 
@@ -645,6 +645,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             ) { id, _, _, instanceNum, _ in
                 ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
             }
+            channel.delegate = self
             channel.activate()
             switchToChannel(channel.channelId)
             return

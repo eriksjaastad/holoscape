@@ -24,13 +24,12 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
             XCTFail("No channels found")
             return
         }
+        XCTAssertTrue(firstSidebarEntry().waitForExistence(timeout: 3), "Default shell entry should exist")
 
         // Send cd /tmp — OSC 7 should update the tab label
         try apiSendInput(channelRef: channelRef, text: "cd /tmp\n")
 
-        // Wait for the sidebar entry to update (OSC 7 triggers hostCurrentDirectoryUpdate)
-        let tmpEntry = sidebarEntry("tmp")
-        XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5), "Tab label should update to 'tmp' after cd")
+        XCTAssertTrue(waitForFirstSidebarEntry(toContain: "tmp", timeout: 5), "Tab label should update to 'tmp' after cd")
     }
 
     func testCdToAnotherDirectoryUpdatesLabel() throws {
@@ -39,11 +38,11 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
             XCTFail("No channels found")
             return
         }
+        XCTAssertTrue(firstSidebarEntry().waitForExistence(timeout: 3), "Default shell entry should exist")
 
         try apiSendInput(channelRef: channelRef, text: "cd /var\n")
 
-        let varEntry = sidebarEntry("var")
-        XCTAssertTrue(varEntry.waitForExistence(timeout: 5), "Tab label should update to 'var' after cd")
+        XCTAssertTrue(waitForFirstSidebarEntry(toContain: "var", timeout: 5), "Tab label should update to 'var' after cd")
     }
 
     // MARK: - Persistence Across Restart

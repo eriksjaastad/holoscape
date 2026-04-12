@@ -8,8 +8,18 @@ class ConfigService {
     private var cachedConfig: HoloscapeConfig?
 
     init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        self.configDir = home.appendingPathComponent(".holoscape")
+        // Allow UI tests to isolate config in a per-test directory by setting
+        // HOLOSCAPE_CONFIG_DIR in launchEnvironment. Without this override,
+        // every test shares ~/.holoscape/config.json, which forces the save
+        // guard in applicationWillTerminate / scheduleSaveState to skip
+        // persistence under --ui-testing to avoid cross-test pollution —
+        // which in turn breaks restart/persistence tests.
+        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            self.configDir = URL(fileURLWithPath: override)
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            self.configDir = home.appendingPathComponent(".holoscape")
+        }
         self.configURL = configDir.appendingPathComponent("config.json")
     }
 
