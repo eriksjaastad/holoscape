@@ -92,11 +92,16 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     func lastLines(_ count: Int) -> [String] {
         guard let termView = terminal as? LocalProcessTerminalView,
               let term = termView.terminal else { return [] }
-        let totalRows = term.rows
-        let startRow = max(0, totalRows - count)
+        // See ShellChannelController.lastLines for the long explanation.
+        // tl;dr: terminal.getText uses buffer-absolute row indexing, not
+        // viewport-relative, so we must offset by buffer.yDisp.
+        let visibleRows = term.rows
+        let yDisp = term.buffer.yDisp
+        let bottomRow = yDisp + visibleRows - 1
+        let startRow = max(0, bottomRow - count + 1)
         let text = term.getText(
             start: Position(col: 0, row: startRow),
-            end: Position(col: term.cols - 1, row: totalRows - 1)
+            end: Position(col: term.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))
