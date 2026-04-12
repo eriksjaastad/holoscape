@@ -129,12 +129,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         // See ShellChannelController.lastLines for the long explanation.
         // tl;dr: terminal.getText uses buffer-absolute row indexing, not
         // viewport-relative, so we must offset by buffer.yDisp.
-        let visibleRows = terminal.rows
         let yDisp = terminal.buffer.yDisp
-        let bottomRow = yDisp + visibleRows - 1
-        let startRow = max(0, bottomRow - count + 1)
+        let bottomRow = yDisp + terminal.rows - 1
         let text = terminal.getText(
-            start: Position(col: 0, row: startRow),
+            start: Position(col: 0, row: 0),
             end: Position(col: terminal.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")

@@ -95,12 +95,10 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         // See ShellChannelController.lastLines for the long explanation.
         // tl;dr: terminal.getText uses buffer-absolute row indexing, not
         // viewport-relative, so we must offset by buffer.yDisp.
-        let visibleRows = term.rows
         let yDisp = term.buffer.yDisp
-        let bottomRow = yDisp + visibleRows - 1
-        let startRow = max(0, bottomRow - count + 1)
+        let bottomRow = yDisp + term.rows - 1
         let text = term.getText(
-            start: Position(col: 0, row: startRow),
+            start: Position(col: 0, row: 0),
             end: Position(col: term.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")
