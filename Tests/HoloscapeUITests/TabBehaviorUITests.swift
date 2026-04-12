@@ -52,6 +52,12 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
         // --restore-channels is ALSO passed (see MainWindowController.scheduleSaveState
         // and AppDelegate.applicationWillTerminate). Relaunch with --restore-channels
         // so the save/restore cycle actually runs for this test.
+        //
+        // TODO: This two-restart dance predates HOLOSCAPE_CONFIG_DIR. A cleaner
+        // pattern — per-test config directory + --restore-channels from the
+        // first launch — is used in DirectoryPersistenceUITests.setUpWithError
+        // and should be lifted into the base class so tests like this one can
+        // opt in via a single override instead of hand-rolling the restart.
         app.terminate()
         let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
         expectation(for: notRunning, evaluatedWith: app, handler: nil)
