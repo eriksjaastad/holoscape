@@ -15,7 +15,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
     private(set) var activatedAt: Date?
-    private var transcriptLines: [String] = []
 
     var displayLabel: String {
         let base: String
@@ -49,7 +48,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     func sendInput(_ text: String) {
         guard state == .active else { return }
         commandHistory.add(text)
-        transcriptLines.append(contentsOf: text.components(separatedBy: "\n"))
         let bytes = Array((text + "\n").utf8)
         terminalView.send(bytes)
     }
@@ -87,7 +85,15 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        Array(transcriptLines.suffix(count))
+        guard let terminal = terminalView.terminal else { return [] }
+        let totalRows = terminal.rows
+        let startRow = max(0, totalRows - count)
+        let text = terminal.getText(
+            start: Position(col: 0, row: startRow),
+            end: Position(col: terminal.cols - 1, row: totalRows - 1)
+        )
+        let lines = text.components(separatedBy: "\n")
+        return Array(lines.suffix(count))
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
