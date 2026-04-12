@@ -44,7 +44,13 @@ python3 - "$SETTINGS" <<'PYEOF'
 import json, os, sys
 
 settings_path = sys.argv[1]
-hook_command = os.path.expanduser('~/.holoscape/notify-hook.sh')
+holoscape_dir = os.path.expanduser('~/.holoscape/')
+hook_command = os.path.join(holoscape_dir, 'notify-hook.sh')
+desired_entry = {
+    'type': 'command',
+    'command': hook_command,
+    'timeout': 3,
+}
 
 try:
     with open(settings_path, 'r') as f:
@@ -53,32 +59,36 @@ except Exception:
     settings = {}
 
 hooks = settings.setdefault('hooks', {})
-changed = False
+
+def owned_by_holoscape(h):
+    cmd = h.get('command', '')
+    return os.path.expanduser(cmd).startswith(holoscape_dir)
+
+before = json.dumps(hooks, sort_keys=True)
 
 for event in ('Notification', 'Stop'):
     existing = hooks.get(event, [])
-    # Skip if our command is already registered (anywhere in any hook entry)
-    already_registered = any(
-        any(h.get('command') == hook_command for h in entry.get('hooks', []))
-        for entry in existing
-    )
-    if already_registered:
-        continue
-    existing.append({
-        'hooks': [{
-            'type': 'command',
-            'command': hook_command,
-            'timeout': 3,
-        }]
-    })
-    hooks[event] = existing
-    changed = True
-    print(f'  Added {event} hook')
+    cleaned = []
+    for entry in existing:
+        kept = [h for h in entry.get('hooks', []) if not owned_by_holoscape(h)]
+        if kept:
+            new_entry = dict(entry)
+            new_entry['hooks'] = kept
+            cleaned.append(new_entry)
+    cleaned.append({'hooks': [dict(desired_entry)]})
+    hooks[event] = cleaned
 
-if changed:
+# Drop any event keys that ended up empty (defensive; shouldn't happen here).
+for event in list(hooks.keys()):
+    if not hooks[event]:
+        del hooks[event]
+
+after = json.dumps(hooks, sort_keys=True)
+if before != after:
     with open(settings_path, 'w') as f:
         json.dump(settings, f, indent=2)
         f.write('\n')
+    print('  Reconciled Notification + Stop hooks')
 else:
     print('  Already configured')
 PYEOF
