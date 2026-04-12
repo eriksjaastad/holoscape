@@ -64,10 +64,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldRestore {
-            // Restore channels from saved state
+            // Restore channels from saved state.
+            //
+            // Order matters: we MUST set `controller.delegate` before calling
+            // `controller.activate()`. `activate()` fires `channelStateDidChange`
+            // delegate callbacks for .connecting and .active, and for shell
+            // channels drives `terminalView.startProcess(...)`. If the delegate
+            // is nil at that point (as it was when activate() lived inside
+            // `createChannelFromMetadata`), the state-change calls silently
+            // vanish — the restored shell runs but the tab bar / sidebar /
+            // splitPaneManager never learns about it, which is how the
+            // "restored shell's terminal buffer appears empty" bug reproduced
+            // in DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory.
+            // This mirrors the default-channel fix in PR #57.
             channelManager.restoreState { [weak self] metadata in
                 guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
                 controller.delegate = self.windowController
+                // agentAPI deliberately waits for a valid key before activating.
+                if metadata.type != .agentAPI {
+                    controller.activate()
+                }
                 return controller
             }
         }
@@ -172,6 +188,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     // MARK: - Private
 
     private func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
+        // NOTE: This method only CONSTRUCTS controllers. Activation is the
+        // caller's responsibility — the restore callback in
+        // `applicationDidFinishLaunching` calls `activate()` after setting
+        // `controller.delegate`, so delegate state-change callbacks aren't
+        // dropped. See the comment on that callback for details.
         switch metadata.type {
         case .shell:
             let defaultPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects").path
@@ -189,7 +210,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 label: label,
                 workingDirectory: dir
             )
-            controller.activate()
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
@@ -200,7 +220,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber
             )
-            controller.activate()
             return controller
         case .agentAPI:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
@@ -211,7 +230,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber
             )
-            // Don't auto-activate without a valid key
+            // agentAPI intentionally does not auto-activate — the restore
+            // callback in applicationDidFinishLaunching checks for this case.
             return controller
         case .groupChat:
             // Load chat config
@@ -230,18 +250,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             }
             guard !apiURL.isEmpty, !apiKey.isEmpty else { return nil }
             let controller = GroupChatChannelController(id: metadata.id, apiURL: apiURL, apiKey: apiKey)
-            controller.activate()
             return controller
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
             let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
             let controller = SSHChannelController(id: metadata.id, profile: profile, instanceNumber: metadata.instanceNumber)
-            controller.activate()
             return controller
         case .mcp:
             guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
             let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
-            controller.activate()
             return controller
         case .bridge:
             guard let cm = channelManagerRef else { return nil }
