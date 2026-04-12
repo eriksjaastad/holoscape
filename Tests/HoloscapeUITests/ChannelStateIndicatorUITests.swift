@@ -5,7 +5,7 @@ final class ChannelStateIndicatorUITests: HoloscapeUITestCase {
     // MARK: - Sidebar Entry Exists After Creation
 
     func testShellChannelHasSidebarEntry() throws {
-        let entry = sidebarEntry("Shell")
+        let entry = defaultShellSidebarEntry()
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Shell channel should have a sidebar entry on launch")
     }
 
@@ -21,7 +21,7 @@ final class ChannelStateIndicatorUITests: HoloscapeUITestCase {
         // Collapse sidebar to show tab bar — tab titles contain elapsed time
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        let tabButton = tabEntry("Shell")
+        let tabButton = defaultShellTabEntry()
         if tabButton.waitForExistence(timeout: 3) {
             let title = tabButton.title
             XCTAssertTrue(
