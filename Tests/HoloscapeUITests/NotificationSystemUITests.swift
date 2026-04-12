@@ -29,9 +29,11 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     /// Example: label "notify-green" + cwd "/tmp/notify-green" → match.
 
     func testIdlePromptTurnsTabGreen() throws {
+        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-green")
-        let entry = sidebarEntry("notify-green")
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        XCTAssertTrue(entry.identifier.contains("sidebar-notify-green") || entry.label.contains("notify-green"))
 
         // cwd last component must match label for resolveChannelByCwd
         try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-green")
@@ -45,9 +47,11 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     // MARK: - Permission Prompt (Amber)
 
     func testPermissionPromptTurnsTabAmber() throws {
+        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-amber")
-        let entry = sidebarEntry("notify-amber")
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        XCTAssertTrue(entry.identifier.contains("sidebar-notify-amber") || entry.label.contains("notify-amber"))
 
         try apiNotify(type: "permission_prompt", cwd: "/tmp/notify-amber")
         Thread.sleep(forTimeInterval: 0.5)
@@ -59,14 +63,15 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     // MARK: - Click Clears Notification
 
     func testClickingNotifiedTabClearsNotification() throws {
+        let countBefore = sidebarEntryCount()
         try apiCreateChannel(dir: "/tmp", label: "notify-clear")
+        let entry = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(entry.waitForExistence(timeout: 3))
+        XCTAssertTrue(entry.identifier.contains("sidebar-notify-clear") || entry.label.contains("notify-clear"))
 
         // Switch away from the notify-clear channel so it's not active
         app.typeKey("1", modifierFlags: .command)
         Thread.sleep(forTimeInterval: 0.5)
-
-        let entry = sidebarEntry("notify-clear")
-        XCTAssertTrue(entry.waitForExistence(timeout: 3))
 
         try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-clear")
         Thread.sleep(forTimeInterval: 0.5)

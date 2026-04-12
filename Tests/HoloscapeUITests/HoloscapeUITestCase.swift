@@ -382,6 +382,17 @@ class HoloscapeUITestCase: XCTestCase {
         return outputLines
     }
 
+    /// Read output lines from a channel via GET /channels/{id}/output using a stable identifier.
+    nonisolated func apiReadOutput(channelRef: String, lines: Int = 50) throws -> [String] {
+        let encoded = channelRef.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channelRef
+        let (data, _) = try apiRequest("GET", path: "/channels/\(encoded)/output?lines=\(lines)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outputLines = json["lines"] as? [String] else {
+            return []
+        }
+        return outputLines
+    }
+
     /// Send input to a channel via POST /channels/{label}/input.
     nonisolated func apiSendInput(label: String, text: String) throws {
         let encoded = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? label
@@ -430,16 +441,8 @@ class HoloscapeUITestCase: XCTestCase {
         return false
     }
 
-    nonisolated func apiReadOutput(channelRef: String, lines: Int = 50) throws -> [String] {
-        let encoded = channelRef.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channelRef
-        let (data, _) = try apiRequest("GET", path: "/channels/\(encoded)/output?lines=\(lines)")
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let outputLines = json["lines"] as? [String] else {
-            return []
-        }
-        return outputLines
-    }
-
+    /// Poll channel output until it contains the expected text, or timeout.
+    /// Uses a stable channel identifier to survive dynamic label changes.
     nonisolated func waitForAPIOutput(channelRef: String, containing text: String, timeout: TimeInterval = 15) throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

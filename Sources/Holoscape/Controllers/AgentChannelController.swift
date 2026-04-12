@@ -19,6 +19,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
 
+    var notificationDirectoryPath: String? {
+        workingDirectory?.path
+    }
+
     var displayLabel: String {
         if useRawLabel, let label = userLabel {
             if let num = instanceNumber {
