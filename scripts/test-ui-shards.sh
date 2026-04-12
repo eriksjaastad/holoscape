@@ -51,10 +51,16 @@ run_shard() {
     echo ""
 
     local outfile="$RESULTS_DIR/shard-${n}.txt"
+    local bundle="$RESULTS_DIR/shard-${n}.xcresult"
+
+    # xcodebuild refuses to write to an existing .xcresult bundle.
+    # Remove any prior bundle for this shard before the run.
+    rm -rf "$bundle"
 
     xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
+        -resultBundlePath "$bundle" \
         $args \
         2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
 
@@ -64,6 +70,7 @@ run_shard() {
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
+    echo "  Bundle:  $bundle"
 
     if [ "$failed" -gt 0 ]; then
         echo "$n" > "$RESUME_FILE"
@@ -131,8 +138,15 @@ case "${1:-all}" in
         for class in $FAILING_CLASSES; do
             args="$args -only-testing:HoloscapeUITests/$class"
         done
-        xcodebuild test -scheme "$SCHEME" -destination "$DEST" $args \
+        failing_bundle="$RESULTS_DIR/failing.xcresult"
+        rm -rf "$failing_bundle"
+        xcodebuild test \
+            -scheme "$SCHEME" \
+            -destination "$DEST" \
+            -resultBundlePath "$failing_bundle" \
+            $args \
             2>&1 | tee "$RESULTS_DIR/failing-only.txt" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
+        echo "  Bundle:  $failing_bundle"
         ;;
     *-*)
         # Range like 3-5
