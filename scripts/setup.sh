@@ -10,21 +10,21 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 echo "=== Holoscape Dev Setup ==="
 
 # 1. Build the MCP server binary
-echo "[1/5] Building HoloscapeMCP..."
+echo "[1/4] Building HoloscapeMCP..."
 cd "$REPO_DIR"
 swift build --target HoloscapeMCP 2>&1 | tail -3
 MCP_BIN="$(swift build --target HoloscapeMCP --show-bin-path)/HoloscapeMCP"
 echo "  Binary: $MCP_BIN"
 
 # 2. Install notification hook
-echo "[2/5] Installing notification hook..."
+echo "[2/4] Installing notification hook..."
 mkdir -p ~/.holoscape
 cp "$REPO_DIR/scripts/notify-hook.sh" ~/.holoscape/notify-hook.sh
 chmod +x ~/.holoscape/notify-hook.sh
 echo "  Installed: ~/.holoscape/notify-hook.sh"
 
 # 3. Register MCP server with Claude Code
-echo "[3/5] Registering Holoscape MCP server..."
+echo "[3/4] Registering Holoscape MCP server..."
 if claude mcp list 2>&1 | grep -q "holoscape:"; then
     echo "  Already registered, updating..."
     claude mcp remove holoscape -s user 2>/dev/null || true
@@ -32,53 +32,61 @@ fi
 claude mcp add holoscape -s user -- "$MCP_BIN"
 echo "  Registered: holoscape MCP server (user scope)"
 
-# 4. Set notification channel preference
-echo "[4/5] Setting notification preferences..."
-if ! grep -q '"preferredNotifChannel"' ~/.claude.json 2>/dev/null; then
-    # Insert at top of JSON object
-    python3 -c "
-import json
-with open('$HOME/.claude.json', 'r') as f:
-    config = json.load(f)
-config['preferredNotifChannel'] = 'ghostty'
-with open('$HOME/.claude.json', 'w') as f:
-    json.dump(config, f, indent=2)
-"
-    echo "  Set preferredNotifChannel=ghostty"
-else
-    echo "  Already configured"
+# 4. Add Notification + Stop hooks to Claude settings
+echo "[4/4] Registering Notification + Stop hooks..."
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS")"
+if [ ! -f "$SETTINGS" ]; then
+    echo '{}' > "$SETTINGS"
 fi
 
-# 5. Add Notification hook to Claude settings if not present
-echo "[5/5] Adding Notification hook to Claude settings..."
-SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS" ] && ! grep -q "Notification" "$SETTINGS"; then
-    python3 -c "
-import json
-with open('$SETTINGS', 'r') as f:
-    settings = json.load(f)
+python3 - "$SETTINGS" <<'PYEOF'
+import json, os, sys
+
+settings_path = sys.argv[1]
+hook_command = os.path.expanduser('~/.holoscape/notify-hook.sh')
+
+try:
+    with open(settings_path, 'r') as f:
+        settings = json.load(f)
+except Exception:
+    settings = {}
+
 hooks = settings.setdefault('hooks', {})
-if 'Notification' not in hooks:
-    hooks['Notification'] = [{
+changed = False
+
+for event in ('Notification', 'Stop'):
+    existing = hooks.get(event, [])
+    # Skip if our command is already registered (anywhere in any hook entry)
+    already_registered = any(
+        any(h.get('command') == hook_command for h in entry.get('hooks', []))
+        for entry in existing
+    )
+    if already_registered:
+        continue
+    existing.append({
         'hooks': [{
             'type': 'command',
-            'command': '\$HOME/.holoscape/notify-hook.sh',
-            'timeout': 3
+            'command': hook_command,
+            'timeout': 3,
         }]
-    }]
-    with open('$SETTINGS', 'w') as f:
+    })
+    hooks[event] = existing
+    changed = True
+    print(f'  Added {event} hook')
+
+if changed:
+    with open(settings_path, 'w') as f:
         json.dump(settings, f, indent=2)
-    print('  Added Notification hook')
+        f.write('\n')
 else:
     print('  Already configured')
-" 2>/dev/null || echo "  Skipped (settings.json not found or parse error)"
-else
-    echo "  Already configured"
-fi
+PYEOF
 
 echo ""
 echo "=== Setup Complete ==="
 echo "Next steps:"
 echo "  1. make bundle && open build/Holoscape.app"
-echo "  2. Start a Claude session in any tab"
-echo "  3. Tab lights up green when Claude finishes a task"
+echo "  2. Start a Claude Code session in any tab"
+echo "  3. Tab turns amber when Claude asks for permission,"
+echo "     green the moment Claude finishes a turn."
