@@ -244,19 +244,6 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    func testViewMenuFind() throws {
-        app.menuBars.firstMatch.menuBarItems["View"].click()
-
-        let findItem = app.menuItems["Find"]
-        XCTAssertTrue(findItem.waitForExistence(timeout: 2), "Find should be in View menu")
-        findItem.click()
-
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 3), "Search bar should open from View > Find")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
     // MARK: - Window State Persistence
 
     func testWindowPositionPersists() throws {

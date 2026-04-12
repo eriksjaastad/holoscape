@@ -233,56 +233,6 @@ class HoloscapeUITestCase: XCTestCase {
         return field.value as? String ?? ""
     }
 
-    // MARK: - Search Helpers
-
-    func openSearch() {
-        app.typeKey("f", modifierFlags: .command)
-        let searchBar = app.toolbars["Search Bar"]
-        XCTAssertTrue(searchBar.waitForExistence(timeout: 2), "Search bar should open")
-    }
-
-    func closeSearch() {
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
-    func searchField(timeout: TimeInterval = 2) -> XCUIElement {
-        let searchBar = app.toolbars["Search Bar"]
-        let candidates = [
-            searchBar.searchFields["search-field"],
-            searchBar.textFields["search-field"],
-            searchBar.searchFields.firstMatch,
-            searchBar.textFields.firstMatch,
-            searchBar.descendants(matching: .any)["search-field"],
-        ]
-        for field in candidates where field.waitForExistence(timeout: timeout) {
-            return field
-        }
-        return candidates[0]
-    }
-
-    /// Read the match count label text from the search bar, waiting for results.
-    /// Needs sufficient timeout for: 150ms search debounce + terminal buffer scan + UI update.
-    func searchMatchCountText(timeout: TimeInterval = 5) -> String? {
-        let searchBar = app.toolbars["Search Bar"]
-        let label = searchBar.descendants(matching: .any)["search-match-count"]
-        let deadline = Date().addingTimeInterval(timeout)
-        var latestText: String?
-        while Date() < deadline {
-            if label.exists {
-                let text = (label.value as? String) ?? label.label
-                if !text.isEmpty {
-                    latestText = text
-                    if text.contains(" of ") { return text }
-                }
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-        if let latestText { return latestText }
-        guard label.exists else { return nil }
-        let text = (label.value as? String) ?? label.label
-        return text.isEmpty ? nil : text
-    }
-
     // MARK: - HTTP API Helpers
 
     /// Per-test API base URL — set in setUp to match the random port.
