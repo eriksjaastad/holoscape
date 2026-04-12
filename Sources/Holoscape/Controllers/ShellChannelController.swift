@@ -69,6 +69,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         env["TERM_PROGRAM"] = "Apple_Terminal"
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
+        // Wire output notifications so channelDidReceiveOutput fires when the
+        // shell produces output — this drives the hasUnread / bullet indicator.
+        terminalView.onOutput = { [weak self] in
+            guard let self else { return }
+            self.delegate?.channelDidReceiveOutput(self)
+        }
+
         terminalView.startProcess(
             executable: shell,
             args: ["-o", "nopromptsp", "--login"],
