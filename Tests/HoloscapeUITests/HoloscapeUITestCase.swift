@@ -102,6 +102,24 @@ class HoloscapeUITestCase: XCTestCase {
         return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")).firstMatch
     }
 
+    /// Find the default shell's sidebar entry. Tries "Shell" first (pre-OSC 7),
+    /// then falls back to the first sidebar entry (which IS the default shell
+    /// since it's created at launch before any other channel).
+    func defaultShellSidebarEntry() -> XCUIElement {
+        let shell = sidebarEntry("Shell")
+        if shell.waitForExistence(timeout: 1) { return shell }
+        return firstSidebarEntry()
+    }
+
+    /// Find the default shell's tab bar entry. Tries "Shell" first, then falls
+    /// back to the first tab entry (same logic as defaultShellSidebarEntry).
+    func defaultShellTabEntry() -> XCUIElement {
+        let tab = tabEntry("Shell")
+        if tab.waitForExistence(timeout: 1) { return tab }
+        let window = app.windows["Holoscape"]
+        return window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+    }
+
     /// Count sidebar entries.
     func sidebarEntryCount() -> Int {
         let window = app.windows["Holoscape"]
