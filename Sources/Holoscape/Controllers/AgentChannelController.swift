@@ -126,11 +126,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func lastLines(_ count: Int) -> [String] {
         guard let terminal = terminalView.terminal else { return [] }
-        let totalRows = terminal.rows
-        let startRow = max(0, totalRows - count)
+        // See ShellChannelController.lastLines for the long explanation.
+        // tl;dr: terminal.getText uses buffer-absolute row indexing, not
+        // viewport-relative, so we must offset by buffer.yDisp.
+        let visibleRows = terminal.rows
+        let yDisp = terminal.buffer.yDisp
+        let bottomRow = yDisp + visibleRows - 1
+        let startRow = max(0, bottomRow - count + 1)
         let text = terminal.getText(
             start: Position(col: 0, row: startRow),
-            end: Position(col: terminal.cols - 1, row: totalRows - 1)
+            end: Position(col: terminal.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")
         return Array(lines.suffix(count))
