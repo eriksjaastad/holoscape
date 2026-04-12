@@ -7,10 +7,10 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
     private func generateOutput(_ text: String) {
         // Use API to send commands to the shell (PTY channels don't have input-box)
         let channels = try? apiListChannels()
-        if let label = channels?.first?["label"] as? String {
-            try? apiSendInput(label: label, text: "echo \(text)\n")
+        if let channelRef = channels?.first?["id"] as? String {
+            try? apiSendInput(channelRef: channelRef, text: "echo \(text)\n")
             // Wait for the echo to appear in the terminal buffer (API reads from SwiftTerm)
-            _ = try? waitForAPIOutput(label: label, containing: text, timeout: 10)
+            _ = try? waitForAPIOutput(channelRef: channelRef, containing: text, timeout: 10)
             // Extra settle time for SwiftTerm to finish rendering into the view buffer
             // so the search controller's lastLines() call sees the content
             Thread.sleep(forTimeInterval: 0.5)
@@ -24,7 +24,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("searchword")
@@ -55,7 +55,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("findme")
@@ -83,8 +83,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         generateOutput("enter-test data enter-test more")
 
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("enter-test")
@@ -110,8 +109,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         generateOutput("wraptest single")
 
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("wraptest")
@@ -121,7 +119,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         searchField.typeKey(.return, modifierFlags: [])
         let labelAfter = searchMatchCountText()
 
-        guard let before = labelBefore else {
+        guard labelBefore != nil else {
             XCTFail("Match count label not found")
             return
         }
@@ -136,7 +134,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("prevwrap")
@@ -163,8 +161,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         generateOutput("multi multi multi")
 
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("multi")
@@ -180,8 +177,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
     func testSearchNoMatchesShowsZero() throws {
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("zzz_nonexistent_string_xyz")
@@ -202,8 +198,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         generateOutput("uniqueterm12345")
 
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("uniqueterm12345")
@@ -222,7 +217,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
     func testSearchSpecialCharacters() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("[regex.*chars()")
@@ -234,7 +229,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
     func testSearchVeryLongQuery() throws {
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         let longQuery = String(repeating: "x", count: 500)
@@ -248,8 +243,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
         createChannel(type: "Shell")
 
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("channel-switch")
@@ -266,8 +260,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
     func testSearchClearedOnClose() throws {
         openSearch()
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("clear-test")
@@ -282,8 +275,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
     func testSearchFieldHasFocusOnOpen() throws {
         openSearch()
 
-        let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         // Verify focus by typing directly and checking the value
@@ -307,7 +299,7 @@ final class SearchAdvancedUITests: HoloscapeUITestCase {
 
         openSearch()
         let searchBar = app.toolbars["Search Bar"]
-        let searchField = searchBar.textFields.firstMatch
+        let searchField = searchField()
         XCTAssertTrue(searchField.waitForExistence(timeout: 2), "Search field should exist")
 
         searchField.typeText("navfocus")

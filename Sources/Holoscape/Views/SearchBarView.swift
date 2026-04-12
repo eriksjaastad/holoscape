@@ -39,6 +39,7 @@ class SearchBarView: NSView, NSTextFieldDelegate {
         searchField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         searchField.delegate = self
         searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.setAccessibilityIdentifier("search-field")
 
         matchCountLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         matchCountLabel.textColor = NSColor.gray

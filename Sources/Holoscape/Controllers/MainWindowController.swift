@@ -358,8 +358,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             searchBar.updateMatchInfo(total: count, current: currentSearchMatchIndex)
         } else {
             // PTY channels — search visible buffer
-            let lines = channel.lastLines(10000)
-            let count = lines.filter { $0.localizedCaseInsensitiveContains(query) }.count
+            let text = channel.lastLines(10000).joined(separator: "\n")
+            let count = countOccurrences(of: query, in: text)
             currentSearchQuery = query
             currentSearchMatchTotal = count
             currentSearchMatchIndex = count > 0 ? 1 : 0
@@ -390,7 +390,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private func searchTextView(query: String, in view: NSView) -> Int {
         guard let scrollView = view as? NSScrollView,
               let textView = scrollView.documentView as? NSTextView else { return 0 }
-        let content = textView.string
+        return countOccurrences(of: query, in: textView.string)
+    }
+
+    private func countOccurrences(of query: String, in content: String) -> Int {
+        guard !query.isEmpty else { return 0 }
         var count = 0
         var searchRange = content.startIndex..<content.endIndex
         while let range = content.range(of: query, options: .caseInsensitive, range: searchRange) {
