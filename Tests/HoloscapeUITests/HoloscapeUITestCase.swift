@@ -23,10 +23,7 @@ class HoloscapeUITestCase: XCTestCase {
         // Wait for the app to fully initialize before proceeding.
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after launch")
-        let sidebar = window.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
-        ).firstMatch
-        _ = sidebar.waitForExistence(timeout: 10)
+        XCTAssertTrue(ensureSidebarVisible(), "Sidebar should be visible after launch")
     }
 
     override func tearDownWithError() throws {
@@ -53,6 +50,22 @@ class HoloscapeUITestCase: XCTestCase {
     func sidebarEntry(_ label: String) -> XCUIElement {
         let window = app.windows["Holoscape"]
         return window.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "sidebar-\(label)")).firstMatch
+    }
+
+    /// Ensure the sidebar is visible. Some tests leave the app persisted in a
+    /// collapsed-sidebar state, and UI-test launch does not reset that config.
+    @discardableResult
+    func ensureSidebarVisible(timeout: TimeInterval = 10) -> Bool {
+        let window = app.windows["Holoscape"]
+        let sidebar = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
+        ).firstMatch
+        if sidebar.waitForExistence(timeout: timeout) {
+            return true
+        }
+
+        app.typeKey("s", modifierFlags: [.command, .shift])
+        return sidebar.waitForExistence(timeout: 3)
     }
 
     /// Click a sidebar entry, handling the case where it exists but isn't hittable
@@ -113,6 +126,41 @@ class HoloscapeUITestCase: XCTestCase {
             Thread.sleep(forTimeInterval: 0.2)
         }
         return entries.element(boundBy: expectedCount - 1)
+    }
+
+    @discardableResult
+    func waitForSidebarEntry(_ entry: XCUIElement, toContain text: String, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if entry.exists {
+                let identifier = entry.identifier
+                let label = entry.label
+                let title = entry.title
+                if identifier.contains(text) || label.contains(text) || title.contains(text) {
+                    return true
+                }
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        }
+        return false
+    }
+
+    @discardableResult
+    func waitForFirstSidebarEntry(toContain text: String, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let entry = firstSidebarEntry()
+            if entry.waitForExistence(timeout: 0.2) {
+                let identifier = entry.identifier
+                let label = entry.label
+                let title = entry.title
+                if identifier.contains(text) || label.contains(text) || title.contains(text) {
+                    return true
+                }
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        }
+        return false
     }
 
     /// Find a tab bar entry by partial identifier match.
