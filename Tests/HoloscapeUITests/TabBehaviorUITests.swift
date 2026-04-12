@@ -46,9 +46,30 @@ final class TabBehaviorUITests: HoloscapeUITestCase {
     // MARK: - Persistence Across Restart
 
     func testLabelsPeristAcrossRestart() throws {
+        // Channel state persistence is disabled under --ui-testing unless
+        // --restore-channels is ALSO passed (see MainWindowController.scheduleSaveState
+        // and AppDelegate.applicationWillTerminate). Relaunch with --restore-channels
+        // so the save/restore cycle actually runs for this test.
+        app.terminate()
+        let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
+        expectation(for: notRunning, evaluatedWith: app, handler: nil)
+        waitForExpectations(timeout: 5)
+
+        app.launchArguments.append("--restore-channels")
+        app.launch()
+        let window = app.windows["Holoscape"]
+        _ = window.waitForExistence(timeout: 10)
+        let sidebar = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'sidebar-'")
+        ).firstMatch
+        _ = sidebar.waitForExistence(timeout: 10)
+
         try apiCreateChannel(dir: "/tmp", label: "persist-test")
         let entry = sidebarEntry("persist-test")
         XCTAssertTrue(entry.waitForExistence(timeout: 3))
+
+        // Wait out the 1s debounce in scheduleSaveState + margin before terminating
+        Thread.sleep(forTimeInterval: 1.5)
 
         restartApp()
 

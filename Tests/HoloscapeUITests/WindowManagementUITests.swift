@@ -11,11 +11,14 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         window.buttons[XCUIIdentifierMinimizeWindow].click()
         Thread.sleep(forTimeInterval: 0.5)
 
-        // Restore via Window menu — macOS adds the window title automatically
+        // Restore via Window menu — scope search to the Window menu's own items
+        // to avoid matching "Force Quit Holoscape" in the Apple menu.
         app.activate()
-        app.menuBars.firstMatch.menuBarItems["Window"].click()
-        // Window title may include decorators when minimized — use CONTAINS match
-        let windowItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Holoscape'")).firstMatch
+        let windowMenu = app.menuBars.firstMatch.menuBarItems["Window"]
+        windowMenu.click()
+        let windowItem = windowMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'Holoscape'")
+        ).firstMatch
         if windowItem.waitForExistence(timeout: 2) {
             windowItem.click()
         } else {
@@ -82,8 +85,11 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         Thread.sleep(forTimeInterval: 0.5)
 
         app.activate()
-        app.menuBars.firstMatch.menuBarItems["Window"].click()
-        let windowItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'Holoscape'")).firstMatch
+        let windowMenu = app.menuBars.firstMatch.menuBarItems["Window"]
+        windowMenu.click()
+        let windowItem = windowMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'Holoscape'")
+        ).firstMatch
         if windowItem.waitForExistence(timeout: 2) {
             windowItem.click()
         } else {
@@ -107,14 +113,18 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(aboutItem.waitForExistence(timeout: 2), "About menu item should exist")
         aboutItem.click()
 
-        // The standard About panel may report invalid accessibility coordinates (INFINITY).
-        // Don't query the About panel directly — just close it and verify the main window.
-        // NOTE: Cmd+W is mapped to "Close Channel" — it won't close the About panel.
-        // Click the main window to bring it to front, which effectively dismisses the About panel.
+        // The standard macOS About panel reports invalid accessibility coordinates
+        // (INFINITY), which causes NSInternalInconsistencyException if XCUITest
+        // queries the panel's frame. Do not touch any About panel elements.
+        // Dismiss via Escape, then bring the main window forward using a fixed
+        // normalized coordinate (avoiding any AX geometry lookup).
         Thread.sleep(forTimeInterval: 1.0)
+        app.typeKey(.escape, modifierFlags: [])
+        Thread.sleep(forTimeInterval: 0.5)
+
         let mainWindow = app.windows["Holoscape"]
-        if mainWindow.exists {
-            mainWindow.click()
+        if mainWindow.exists && mainWindow.isHittable {
+            mainWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         }
         Thread.sleep(forTimeInterval: 0.3)
 
@@ -128,11 +138,14 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         let aboutItem = app.menuItems.matching(NSPredicate(format: "title CONTAINS 'About'")).firstMatch
         if aboutItem.waitForExistence(timeout: 2) {
             aboutItem.click()
+            // Don't touch About panel elements — INFINITY AX coords crash XCUITest.
             Thread.sleep(forTimeInterval: 1.0)
-            // Click the main window to dismiss the About panel — Cmd+W is "Close Channel"
+            app.typeKey(.escape, modifierFlags: [])
+            Thread.sleep(forTimeInterval: 0.5)
+
             let mainWindow = app.windows["Holoscape"]
-            if mainWindow.exists {
-                mainWindow.click()
+            if mainWindow.exists && mainWindow.isHittable {
+                mainWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
             }
             Thread.sleep(forTimeInterval: 0.3)
         } else {

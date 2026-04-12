@@ -424,6 +424,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     @objc func toggleSidebar() {
         sidebarExpanded.toggle()
         applySidebarState()
+        // Populate the tab bar synchronously so its buttons are present the moment
+        // the tab bar becomes visible. Without this, toggling the sidebar closed
+        // unhides an empty tab bar until the next refreshAllTabs cycle fires.
+        refreshAllTabsNow()
 
         // Persist
         var config = configService.load()
@@ -484,7 +488,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 // Small delay to let shell initialize before sending command
                 let channelRef = channel
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    channelRef.sendInput(cmd)
+                    // Append a newline if missing so the command actually executes
+                    // rather than being typed-but-not-submitted (affects URL scheme
+                    // cmd= parameter and any other caller passing a raw command).
+                    channelRef.sendInput(cmd.hasSuffix("\n") ? cmd : cmd + "\n")
                 }
             }
             switchToChannel(channel.channelId)
