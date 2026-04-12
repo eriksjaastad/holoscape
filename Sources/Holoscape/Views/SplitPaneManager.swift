@@ -45,6 +45,11 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
                 pane.leadingAnchor.constraint(equalTo: leadingAnchor),
                 pane.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
+        } else if let existingPane = panes.first(where: { $0.channelId == channelId }) {
+            // A channel has a single live content view. If the requested
+            // channel is already displayed in another pane, activate that pane
+            // instead of trying to reparent the same NSView across panes.
+            setActivePane(existingPane.paneId)
         } else if let activePane = panes.first(where: { $0.paneId == activePaneId }) {
             activePane.channelId = channelId
             activePane.showContent(view)

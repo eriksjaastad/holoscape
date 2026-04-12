@@ -1,10 +1,14 @@
 import XCTest
 
 final class SkinEngineUITests: HoloscapeUITestCase {
-    private let skinsDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".holoscape/skins/test-skin")
+    private var configDir: URL!
+    private var skinsDir: URL!
 
     override func setUpWithError() throws {
+        configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ui-skins-\(UUID().uuidString)")
+        skinsDir = configDir.appendingPathComponent("skins/test-skin")
+
         // Create a test skin directory and skin.json before launching app
         try FileManager.default.createDirectory(at: skinsDir, withIntermediateDirectories: true)
         let skinJson = """
@@ -26,12 +30,16 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         try super.setUpWithError()
     }
 
+    override func configureAppForLaunch(_ app: XCUIApplication) {
+        app.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] = configDir.path
+    }
+
     override func tearDownWithError() throws {
         // Call super to terminate the app
         try super.tearDownWithError()
 
-        // Clean up test skin
-        try? FileManager.default.removeItem(at: skinsDir)
+        // Clean up isolated config/skin directory
+        try? FileManager.default.removeItem(at: configDir)
     }
 
     // MARK: - Skin Discovery
@@ -48,6 +56,11 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         // app.menuItems can miss popup items on some macOS versions.
         let testSkinItem = skinPopup.menuItems["test-skin"]
         if !testSkinItem.waitForExistence(timeout: 2) {
+            let identifiedItem = app.menuItems.matching(NSPredicate(format: "identifier == %@", "skin-test-skin")).firstMatch
+            if identifiedItem.waitForExistence(timeout: 2) {
+                app.typeKey(.escape, modifierFlags: [])
+                return
+            }
             let globalItem = app.menuItems["test-skin"]
             XCTAssertTrue(globalItem.waitForExistence(timeout: 2), "Test skin should appear in skin picker")
         }
@@ -100,8 +113,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
 
     func testInvalidSkinFallsBackGracefully() throws {
         // Write an invalid skin.json
-        let invalidSkinDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/skins/bad-skin")
+        let invalidSkinDir = configDir.appendingPathComponent("skins/bad-skin")
         try FileManager.default.createDirectory(at: invalidSkinDir, withIntermediateDirectories: true)
         try "{ invalid json }}}".write(
             to: invalidSkinDir.appendingPathComponent("skin.json"),
