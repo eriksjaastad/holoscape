@@ -44,8 +44,13 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
-        let testSkinItem = app.menuItems["test-skin"]
-        XCTAssertTrue(testSkinItem.waitForExistence(timeout: 2), "Test skin should appear in skin picker")
+        // Search within the popup's own menu items first — the global
+        // app.menuItems can miss popup items on some macOS versions.
+        let testSkinItem = skinPopup.menuItems["test-skin"]
+        if !testSkinItem.waitForExistence(timeout: 2) {
+            let globalItem = app.menuItems["test-skin"]
+            XCTAssertTrue(globalItem.waitForExistence(timeout: 2), "Test skin should appear in skin picker")
+        }
 
         app.typeKey(.escape, modifierFlags: [])
     }
