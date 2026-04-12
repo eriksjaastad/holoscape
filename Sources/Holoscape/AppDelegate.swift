@@ -81,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             ) { id, _, _, instanceNum, _ in
                 ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
             }
+            channel.delegate = windowController
             channel.activate()
             windowController?.switchToChannel(channel.channelId)
         } else if let first = channelManager.allChannels().first {

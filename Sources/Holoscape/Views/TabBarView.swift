@@ -11,11 +11,14 @@ class TabBarView: NSView {
 
     private static let barBg = NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0).cgColor
     private static let activeTabBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+    private static let idleBg = NSColor(red: 0.10, green: 0.22, blue: 0.12, alpha: 1.0).cgColor
+    private static let permissionBg = NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0).cgColor
 
     private let scrollView = NSScrollView()
     private let contentView = NSView()
     private var tabButtons: [UUID: NSButton] = [:]
     private var activeChannelId: UUID?
+    private var notifications: [UUID: String] = [:]
 
     private let tabHeight: CGFloat = 32
     private let tabPadding: CGFloat = 8
@@ -57,8 +60,9 @@ class TabBarView: NSView {
         ])
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = []) {
+    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
         activeChannelId = activeId
+        self.notifications = notifications
 
         let currentIds = Set(channels.map { $0.channelId })
 
@@ -105,12 +109,18 @@ class TabBarView: NSView {
     private func updateTabButton(_ button: NSButton, for channel: any ChannelController) {
         let title = buildTabTitle(for: channel)
         button.title = title
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 4
 
         if channel.channelId == activeChannelId {
             button.contentTintColor = NSColor.white
-            button.wantsLayer = true
             button.layer?.backgroundColor = Self.activeTabBg
-            button.layer?.cornerRadius = 4
+        } else if notifications[channel.channelId] == "permission_prompt" {
+            button.contentTintColor = NSColor.white
+            button.layer?.backgroundColor = Self.permissionBg
+        } else if notifications[channel.channelId] == "idle_prompt" {
+            button.contentTintColor = NSColor.white
+            button.layer?.backgroundColor = Self.idleBg
         } else {
             button.contentTintColor = NSColor.lightGray
             button.layer?.backgroundColor = nil
@@ -118,6 +128,18 @@ class TabBarView: NSView {
 
         button.setAccessibilityTitle(title)
         button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+        if let notificationType = notifications[channel.channelId] {
+            switch notificationType {
+            case "idle_prompt":
+                button.setAccessibilityValue("ready")
+            case "permission_prompt":
+                button.setAccessibilityValue("needs-approval")
+            default:
+                button.setAccessibilityValue(notificationType)
+            }
+        } else {
+            button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
+        }
     }
 
     private func makeTabButton(for channel: any ChannelController) -> NSButton {
@@ -127,12 +149,12 @@ class TabBarView: NSView {
         button.bezelStyle = .recessed
         button.isBordered = false
         button.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 4
 
         if channel.channelId == activeChannelId {
             button.contentTintColor = NSColor.white
-            button.wantsLayer = true
             button.layer?.backgroundColor = Self.activeTabBg
-            button.layer?.cornerRadius = 4
         } else {
             button.contentTintColor = NSColor.lightGray
         }
@@ -145,6 +167,7 @@ class TabBarView: NSView {
         button.setAccessibilityRole(.button)
         button.setAccessibilityTitle(title)
         button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+        updateTabButton(button, for: channel)
         return button
     }
 
