@@ -93,28 +93,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func lastLines(_ count: Int) -> [String] {
         guard let terminal = terminalView.terminal else { return [] }
-        // SwiftTerm's getText(start:end:) uses BUFFER-ABSOLUTE coordinates
-        // (it indexes buf.lines[start.row] directly — Terminal.swift
-        // getSelectedLines), so Position.row 0 is the oldest scrollback line,
-        // NOT the top of the visible viewport. The visible area starts at
-        // `buffer.yDisp` in buffer coordinates.
-        //
-        // The old `Position(row: 0)..Position(row: rows-1)` pattern accidentally
-        // worked only for terminals with no scrollback (yDisp == 0). As soon as
-        // shell login output (path_helper, .zshrc banners, oh-my-zsh, etc.)
-        // scrolled past the visible area, yDisp advanced and lastLines started
-        // returning the oldest scrollback content instead of the recent output —
-        // which is why every test that called waitForAPIOutput was silently
-        // failing after the round-9 delegate-wiring fix actually let OSC 7 fire.
-        //
-        // Read the last `count` lines ending at the bottom of the current visible
-        // area, walking backwards into scrollback as needed.
-        let visibleRows = terminal.rows
-        let yDisp = terminal.buffer.yDisp
-        let bottomRow = yDisp + visibleRows - 1
-        let startRow = max(0, bottomRow - count + 1)
+        // SwiftTerm's getText(start:end:) uses buffer-absolute row indexing.
+        // Read from row 0 up to the bottom of the visible area — getText
+        // returns empty for rows beyond the cursor, so this is safe even when
+        // the buffer has fewer lines than `count`. We take the last `count`
+        // lines from the result via .suffix().
+        let bottomRow = terminal.buffer.yDisp + terminal.rows - 1
         let text = terminal.getText(
-            start: Position(col: 0, row: startRow),
+            start: Position(col: 0, row: 0),
             end: Position(col: terminal.cols - 1, row: bottomRow)
         )
         let lines = text.components(separatedBy: "\n")
