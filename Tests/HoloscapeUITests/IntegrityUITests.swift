@@ -854,11 +854,12 @@ final class IntegrityUITests: HoloscapeUITestCase {
         app.typeKey("t", modifierFlags: .command)
         Thread.sleep(forTimeInterval: 0.3)
 
-        // Send a command to see if output still works
+        // Send a command to see if output still works. Use UUID (not label)
+        // because OSC 7 may rename the default shell's label after launch.
         let defaultChannel = try apiListChannels().first
-        if let label = defaultChannel?["label"] as? String {
-            try apiSendInput(label: label, text: "echo TIMESTAMP-TEST")
-            let found = try waitForAPIOutput(label: label, containing: "TIMESTAMP-TEST", timeout: 5)
+        if let channelRef = defaultChannel?["id"] as? String {
+            try apiSendInput(channelRef: channelRef, text: "echo TIMESTAMP-TEST")
+            let found = try waitForAPIOutput(channelRef: channelRef, containing: "TIMESTAMP-TEST", timeout: 5)
             XCTAssertTrue(found, "Output should work with timestamps enabled")
         }
 

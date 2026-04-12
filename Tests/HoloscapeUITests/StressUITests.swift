@@ -116,34 +116,36 @@ final class StressUITests: HoloscapeUITestCase {
 
     func testSubmit50Commands() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        // Use UUID (not label) because OSC 7 may rename the default shell
+        // after launch, making a cached label stale.
+        guard let channelRef = channels.first?["id"] as? String else {
             XCTFail("No channels found")
             return
         }
 
         for i in 0..<50 {
-            try apiSendInput(label: label, text: "echo cmd-\(i)\n")
+            try apiSendInput(channelRef: channelRef, text: "echo cmd-\(i)\n")
         }
 
         // Verify the last command produced output
-        let found = try waitForAPIOutput(label: label, containing: "cmd-49", timeout: 10)
+        let found = try waitForAPIOutput(channelRef: channelRef, containing: "cmd-49", timeout: 10)
         XCTAssertTrue(found, "All 50 commands should execute successfully")
     }
 
     func testCommandHistory100Entries() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = channels.first?["id"] as? String else {
             XCTFail("No channels found")
             return
         }
 
         for i in 0..<100 {
-            try apiSendInput(label: label, text: "echo hist-\(i)\n")
+            try apiSendInput(channelRef: channelRef, text: "echo hist-\(i)\n")
         }
 
         // Verify output contains entries from throughout the run
-        let foundEarly = try waitForAPIOutput(label: label, containing: "hist-10", timeout: 10)
-        let foundLate = try waitForAPIOutput(label: label, containing: "hist-99", timeout: 5)
+        let foundEarly = try waitForAPIOutput(channelRef: channelRef, containing: "hist-10", timeout: 10)
+        let foundLate = try waitForAPIOutput(channelRef: channelRef, containing: "hist-99", timeout: 5)
         XCTAssertTrue(foundEarly, "Early history entries should be in output")
         XCTAssertTrue(foundLate, "Late history entries should be in output")
     }
