@@ -229,7 +229,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
         selectTheme("Nord")
         closeSettings()
 
-        let tabButton = tabEntry("Shell")
+        let tabButton = defaultShellTabEntry()
         XCTAssertTrue(tabButton.waitForExistence(timeout: 3), "Tab bar entry should exist after theme change")
         XCTAssertTrue(tabButton.isHittable, "Tab bar entry should be hittable after theme change")
 
