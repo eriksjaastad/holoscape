@@ -6,12 +6,12 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
     func testCdChangesLabelToDirectoryName() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
-        try apiSendInput(label: label, text: "cd /tmp\n")
+        try apiSendInput(channelRef: channelRef, text: "cd /tmp\n")
 
         let tmpEntry = sidebarEntry("tmp")
         XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5), "Tab label should change to 'tmp' after cd")
@@ -21,15 +21,19 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
     func testDirectoryPersistsAcrossRestart() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
         // cd to /tmp and wait for label update
-        try apiSendInput(label: label, text: "cd /tmp\n")
+        try apiSendInput(channelRef: channelRef, text: "cd /tmp\n")
         let tmpEntry = sidebarEntry("tmp")
         XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5), "Label should update to 'tmp'")
+
+        if !app.launchArguments.contains("--restore-channels") {
+            app.launchArguments.append("--restore-channels")
+        }
 
         // Quit and reopen — use restartApp() to wait for full process exit
         restartApp()
@@ -40,15 +44,19 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
     func testRestoredChannelStartsInSavedDirectory() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
         // cd to /tmp
-        try apiSendInput(label: label, text: "cd /tmp\n")
+        try apiSendInput(channelRef: channelRef, text: "cd /tmp\n")
         let tmpEntry = sidebarEntry("tmp")
         XCTAssertTrue(tmpEntry.waitForExistence(timeout: 5))
+
+        if !app.launchArguments.contains("--restore-channels") {
+            app.launchArguments.append("--restore-channels")
+        }
 
         // Quit and reopen — use restartApp() to wait for full process exit
         restartApp()

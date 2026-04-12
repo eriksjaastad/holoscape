@@ -26,7 +26,7 @@ final class TerminalInputUITests: HoloscapeUITestCase {
     func testTerminalViewAcceptsKeystrokes() throws {
         // Get the default channel label from the API
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
@@ -39,7 +39,7 @@ final class TerminalInputUITests: HoloscapeUITestCase {
         // Type a command — the keystrokes go directly to the terminal
         app.typeText("echo typing-test-123\n")
 
-        let found = try waitForAPIOutput(label: label, containing: "typing-test-123", timeout: 5)
+        let found = try waitForAPIOutput(channelRef: channelRef, containing: "typing-test-123", timeout: 5)
         XCTAssertTrue(found, "Terminal should accept keystrokes and produce output")
     }
 
@@ -55,7 +55,7 @@ final class TerminalInputUITests: HoloscapeUITestCase {
         Thread.sleep(forTimeInterval: 0.5)
 
         let channels = try apiListChannels()
-        guard let firstLabel = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
@@ -67,13 +67,13 @@ final class TerminalInputUITests: HoloscapeUITestCase {
         }
         app.typeText("echo focus-check\n")
 
-        let found = try waitForAPIOutput(label: firstLabel, containing: "focus-check", timeout: 5)
+        let found = try waitForAPIOutput(channelRef: channelRef, containing: "focus-check", timeout: 5)
         XCTAssertTrue(found, "Terminal should have focus after channel switch")
     }
 
     func testTerminalFocusAfterAppReactivation() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
@@ -94,7 +94,7 @@ final class TerminalInputUITests: HoloscapeUITestCase {
         }
         app.typeText("echo refocus-test\n")
 
-        let found = try waitForAPIOutput(label: label, containing: "refocus-test", timeout: 5)
+        let found = try waitForAPIOutput(channelRef: channelRef, containing: "refocus-test", timeout: 5)
         XCTAssertTrue(found, "Terminal should regain focus after app reactivation")
     }
 
@@ -102,13 +102,13 @@ final class TerminalInputUITests: HoloscapeUITestCase {
 
     func testCopyFromTerminal() throws {
         let channels = try apiListChannels()
-        guard let label = channels.first?["label"] as? String else {
+        guard let channelRef = (channels.first?["id"] as? String) ?? (channels.first?["label"] as? String) else {
             XCTFail("No channels found")
             return
         }
 
         // Send known text via API
-        try apiSendInput(label: label, text: "echo COPY_TARGET_TEXT\n")
+        try apiSendInput(channelRef: channelRef, text: "echo COPY_TARGET_TEXT\n")
         Thread.sleep(forTimeInterval: 1)
 
         // Select all and copy

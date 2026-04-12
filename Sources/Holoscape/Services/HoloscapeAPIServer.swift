@@ -235,9 +235,31 @@ class HoloscapeAPIServer {
 
     private func resolveChannelByCwd(cwd: String) -> (any ChannelController)? {
         guard let cm = channelManager else { return nil }
-        let cwdName = URL(fileURLWithPath: cwd).lastPathComponent
-        // Match by directory name in display label
-        return cm.allChannels().first { $0.displayLabel.lowercased() == cwdName.lowercased() }
+        let normalizedCwd = normalizePath(cwd)
+
+        if let exactMatch = cm.allChannels().first(where: { channel in
+            switch channel {
+            case let shell as ShellChannelController:
+                guard let path = shell.notificationDirectoryPath else { return false }
+                return normalizePath(path) == normalizedCwd
+            case let agent as AgentChannelController:
+                guard let path = agent.notificationDirectoryPath else { return false }
+                return normalizePath(path) == normalizedCwd
+            default:
+                return false
+            }
+        }) {
+            return exactMatch
+        }
+
+        let cwdName = URL(fileURLWithPath: normalizedCwd).lastPathComponent.lowercased()
+        // Fallback for older tests/callers that still encode the target in the label.
+        return cm.allChannels().first { $0.displayLabel.lowercased() == cwdName }
+    }
+
+    private func normalizePath(_ path: String) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
     private func sendDesktopNotification(type: String, channel: String) {
