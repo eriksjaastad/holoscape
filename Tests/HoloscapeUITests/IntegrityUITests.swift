@@ -659,9 +659,21 @@ final class IntegrityUITests: HoloscapeUITestCase {
         app.typeKey("m", modifierFlags: .command)
         Thread.sleep(forTimeInterval: 1.0)
 
-        // Click dock icon to restore (use the app's activate method)
+        // Restore via Window menu — app.activate() alone doesn't un-minimize
+        // on macOS. Same pattern as testWindowRestoreAfterMinimize which passes.
         app.activate()
-        Thread.sleep(forTimeInterval: 1.0)
+        let windowMenu = app.menuBars.firstMatch.menuBarItems["Window"]
+        windowMenu.click()
+        let windowItem = windowMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'Holoscape'")
+        ).firstMatch
+        if windowItem.waitForExistence(timeout: 2) {
+            windowItem.click()
+        } else {
+            app.typeKey(.escape, modifierFlags: [])
+            app.activate()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
 
         // Window should be responsive
         let window = app.windows["Holoscape"]
