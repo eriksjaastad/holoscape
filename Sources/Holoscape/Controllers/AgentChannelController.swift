@@ -102,6 +102,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         // Find claude CLI
         let claudePath = "/opt/homebrew/bin/claude"
 
+        terminalView.onOutput = { [weak self] in
+            guard let self else { return }
+            self.delegate?.channelDidReceiveOutput(self)
+        }
+
         terminalView.startProcess(
             executable: claudePath,
             args: [],
