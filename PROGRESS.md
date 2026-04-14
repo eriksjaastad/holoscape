@@ -22,7 +22,7 @@ Investigate Ghostty's shader + overall architecture to (a) inform the skin scope
 ## Second pass — in progress
 Sharpen, verify, deepen against live source:
 
-1. **Verified citations.** First pass's "around line 2200" and "~3045" both confirmed. Prefix length corrected 50 → 53. Selection fg/bg order corrected.
+1. **Verified citations.** First pass's "around line 2200" and "~3045" both confirmed. Prefix length corrected 50 → 52. Selection fg/bg order corrected.
 2. **Expanded A.2 with verbatim code.** Diff-and-stamp block at `generic.zig:2197-2207` included. Added the two-path update model — state-driven `updateCustomShaderUniformsFromState` at :2010 (gated on `terminal_state.dirty`, handles palette/colors/cursor-style) and per-frame `updateCustomShaderUniformsForFrame` at :2102 (cursor-position diff + focus stamping). The draft's "each frame, diff" was oversimplified.
 3. **New A.4: agent-state uniform extension — design.** Load-bearing new content. Lists the event categories worth exposing (output, command lifecycle, agent state, channel state, notifications), proposes concrete uniform names, reuses Ghostty's diff-and-stamp pattern, includes a worked shader example.
 4. **New decision table in A.9** (old A.7): adopt / extend / skip columns for each Ghostty subsystem.
