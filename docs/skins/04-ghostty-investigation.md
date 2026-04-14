@@ -41,7 +41,7 @@ Pipeline inside the engine (`src/renderer/shadertoy.zig`, 427 lines):
 
 Two things jump out:
 
-1. **Users write Shadertoy shaders, not Metal shaders.** `src/renderer/shaders/shadertoy_prefix.glsl` is **53 lines** and provides the Globals UBO, `iChannel0` sampler binding, and a `main()` that calls `mainImage(out fragColor, in fragCoord)`. That's the same entry point shadertoy.com uses. Any existing Shadertoy shader runs in Ghostty with zero modification.
+1. **Users write Shadertoy shaders, not Metal shaders.** `src/renderer/shaders/shadertoy_prefix.glsl` is **52 lines** and provides the Globals UBO, `iChannel0` sampler binding, and a `main()` that calls `mainImage(out fragColor, in fragCoord)`. That's the same entry point shadertoy.com uses. Any existing Shadertoy shader runs in Ghostty with zero modification.
 2. **The pipeline is portable by design.** GLSL → SPIR-V → MSL means the same user shader also compiles to OpenGL on Linux. Holoscape is macOS-only and could skip the SPIR-V hop and ship Metal directly — simpler, one fewer dependency, but we lose the Shadertoy ecosystem. **Recommendation: do what Ghostty does.** The glslang + spirv-cross dependency is cheap and the payoff (thousands of existing shaders) is enormous. This recommendation is committed in Part E.1.
 
 ### A.2 The uniform block — Ghostty's reactivity surface
