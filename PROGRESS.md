@@ -1,63 +1,51 @@
-# Holoscape Test Suite — Round 11 Wrap-Up
+# Holoscape — Session Handoff (2026-04-14)
 
-## Status
+## Read this first
+- Branch: `docs/ghostty-investigation` — not yet pushed, not yet PR'd.
+- The prior 2026-04-12 handoff (New Channel UX cluster, permissions audit, notifications) is still valid as a backlog map. We just aren't working on it right now — we're in research mode for the skin system. Don't pivot back to those cards without Erik saying so.
 
-Round 11 cluster is closed on `main`.
-- Base branch: `main`
-- Remaining failures from the full run: `3`
-- Current verified status of that cluster: `3 fixed / 0 remaining`
-- Reliable targeted result bundle: `/tmp/round11-final-cluster.xcresult`
+## Current focus
+Investigate Ghostty's shader + overall architecture to (a) inform the skin scope doc (#5887) and (b) identify non-skin subsystems worth borrowing. Companion to `docs/skins/01-research-winamp-and-modern-equivalents.md`, which has a stale §6 that this investigation corrects.
 
-## Verified fixes
+**Reference checkout:** `~/projects/github-repos/ghostty` (shallow, read-only). Always cite file + line when making claims about Ghostty's implementation.
 
-1. `StressUITests.testCommandHistory100Entries`
-- Root cause: UI-test helper only read the last `50` lines, so early history entries naturally fell out of the window.
-- Fix: added a `lines:` parameter to `waitForAPIOutput(...)` and requested a larger window in the stress test.
+## First pass — done
+`docs/skins/04-ghostty-investigation.md` covers:
+- Shader pipeline (GLSL → SPIR-V → MSL via glslang + spirv-cross)
+- Uniform block and the current/previous/timestamp reactivity pattern
+- Correction to `01-research` §6: reactivity is not the differentiator; **agent-state reactivity** is
+- Power/animation mode, shader loading mechanics, compile-failure robustness
+- Part B: six general-architecture subsystems (Command Palette, Global Keybinds, QuickTerminal, Splits, App Intents/AppleScript, `NSTextInputClient`)
+- Part C: proposed cards bucketed into skinning vs. general
+- Part D: open questions
 
-2. `SplitPaneAdvancedUITests.testChannelSwitchInActivePaneOnly`
-- Root cause: split-pane switching tried to reparent a single live terminal `NSView` into another pane when the channel was already visible elsewhere.
-- Fix: `SplitPaneManager.showContent(...)` now activates the pane already displaying that channel instead of reparenting the view.
+## Second pass — in progress
+Sharpen, verify, deepen against live source:
 
-3. `SkinEngineUITests.testTestSkinAppearsInPicker`
-- Root cause: the skin engine used `~/.holoscape/skins`, while UI tests already isolate config with `HOLOSCAPE_CONFIG_DIR`; the app and test were looking in different places.
-- Fix: `SkinEngine` now honors `HOLOSCAPE_CONFIG_DIR`, and the skin UI tests write skins into that isolated config root.
+1. **Verified citations.** First pass's "around line 2200" and "~3045" both confirmed. Prefix length corrected 50 → 53. Selection fg/bg order corrected.
+2. **Expanded A.2 with verbatim code.** Diff-and-stamp block at `generic.zig:2197-2207` included. Added the two-path update model — state-driven `updateCustomShaderUniformsFromState` at :2010 (gated on `terminal_state.dirty`, handles palette/colors/cursor-style) and per-frame `updateCustomShaderUniformsForFrame` at :2102 (cursor-position diff + focus stamping). The draft's "each frame, diff" was oversimplified.
+3. **New A.4: agent-state uniform extension — design.** Load-bearing new content. Lists the event categories worth exposing (output, command lifecycle, agent state, channel state, notifications), proposes concrete uniform names, reuses Ghostty's diff-and-stamp pattern, includes a worked shader example.
+4. **New decision table in A.9** (old A.7): adopt / extend / skip columns for each Ghostty subsystem.
+5. **New Part E: Decisions.** Pipeline choice (GLSL → SPIR-V → MSL) promoted from open question to committed decision with reasoning.
 
-## Verification
+## After second pass lands
+1. Open PR from this branch (draft → Erik review → merge).
+2. Follow-up small PR: update `01-research` §6 with the corrected positioning.
+3. Create cards from Part C after Erik reviews buckets:
+   - **Skinning bucket:** port shader pipeline, write `05-reactive-uniforms.md` (if the A.4 design graduates), write `06-chrome-skinning.md`, research-doc correction.
+   - **General bucket:** Command Palette spike, Global Keybinds spike, Splits spike, `NSTextInputClient` spike, threading audit. `libghostty-vt` audit deferred until it tags a version.
+4. Feed skinning-bucket output into scope doc #5887.
 
-```bash
-xcodebuild test -scheme Holoscape -destination 'platform=macOS' \
-  -resultBundlePath /tmp/round11-final-cluster.xcresult \
-  -only-testing:HoloscapeUITests/StressUITests/testCommandHistory100Entries \
-  -only-testing:HoloscapeUITests/SplitPaneAdvancedUITests/testChannelSwitchInActivePaneOnly \
-  -only-testing:HoloscapeUITests/SkinEngineUITests/testTestSkinAppearsInPicker
-```
+## Don't
+- Don't push this branch yet — second pass isn't finished.
+- Don't open cards from Part C until Erik reviews the doc.
+- Don't reopen Round 11 or the 2026-04-12 backlog clusters. They're parked.
 
-Result: `3 tests, 0 failures`
+## Housekeeping (this session)
+- On branch entry, the WIP was committed as `7ec6c14 chore: wip snapshot of ghostty investigation branch` to enable a brief excursion to `main` (which turned out to be unnecessary — the `claude-review` workflow disable is already at `33ca335` on both local and origin).
+- Two `Odin_macOS_app_icon_*.png` concept images moved from repo root into `app-icon-replacements/`. They are AI-generated app-icon candidates; one variant is already in use, the rest are kept for reference.
 
-## Files changed
-
-- `Sources/Holoscape/Services/SkinEngine.swift`
-- `Sources/Holoscape/Views/AppearanceSettingsView.swift`
-- `Sources/Holoscape/Views/SplitPaneManager.swift`
-- `Tests/HoloscapeUITests/HoloscapeUITestCase.swift`
-- `Tests/HoloscapeUITests/SkinEngineUITests.swift`
-- `Tests/HoloscapeUITests/StressUITests.swift`
-
-| Round | Passed | Failed | Skipped | Rate | Key fix |
-|-------|--------|--------|---------|------|---------|
-| 7 | 297 | 73 | 6 | 80.3% | — |
-| 8 | 316 | 48 | 6 | 86.8% | MainActor deadlock fix, ensureAPIReady timeout |
-| 9 | 306 | 58 | 6 | 84.1% | P0 apiRequest non-2xx throw (intentional regression for signal) |
-| 10 | 323 | 21 | 7 | 93.9% | HTTPParser rewrite, delegate wiring, tab-state regressions |
-| 11 | 344 | 0 | 6 | 100% | last three failures fixed: history window, split-pane pane routing, skin config-dir lookup |
-
-## What landed between round 10 and round 11
-
-| PR | Tests fixed | Root cause |
-|---|---|---|
-| #61 | 7 | `lastLines` read from row 5 but content was in rows 0-3 |
-| #62 | 3 | Tests cached label that drifted when OSC 7 fired |
-| #63 | 2 | `terminalView.onOutput` never wired → `hasUnread` never set |
-| #65 | 4 | Hardcoded `sidebarEntry("Shell")` / `tabEntry("Shell")` |
-| #66 | 2 | About menu search matched "About This Mac" from Apple menu |
-| #68 | 2 | `app.activate()` doesn't un-minimize; skin popup scope |
+## First moves next session
+1. `git status && git log --oneline -5` — confirm branch state.
+2. Re-read `docs/skins/04-ghostty-investigation.md` before editing.
+3. If second pass is already merged, move on to PR-ing the `01-research` §6 correction.
