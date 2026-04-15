@@ -174,8 +174,26 @@ These are the decisions the scope doc has to make. They're here so the scope doc
 
 ## 6. Closing note
 
-The core finding: **Erik's vision is technically realistic on macOS + Metal, and Ghostty has already proven the "live shader behind a terminal" half works at production quality.** What Holoscape would add on top is the scene-graph / reactivity layer that makes skins feel like *programs* rather than wallpapers — which is the Winamp 5 Maki idea, updated.
+> **Revised 2026-04-14 after reading Ghostty's source directly** (see [`04-ghostty-investigation.md`](./04-ghostty-investigation.md)). The earlier version of this section framed Holoscape as "Ghostty shaders + Winamp 5 scene graph + reactivity driven by agent state," which turned out to be partially wrong in a load-bearing way. The corrected framing follows.
 
-Ghostty is 80% of the ceiling on raw shader rendering. Winamp 5 is 80% of the ceiling on reactive scene graphs. Combine them on a modern Metal stack and the result is something neither product has, which is exactly the niche Holoscape is pointed at.
+The core finding still holds: **Erik's vision is technically realistic on macOS + Metal, and Ghostty has already proven the "live shader behind a terminal" half works at production quality.** The part that changed is *what Holoscape actually adds on top*.
 
-Next doc: [`02-scope-and-format-v1.md`](./02-scope-and-format-v1.md) (blocked on #5886 review, addresses the questions in §5).
+**What Ghostty already does** (confirmed by reading `src/renderer/shadertoy.zig`, `shaders/shadertoy_prefix.glsl`, and `generic.zig:2010-2221`):
+
+- Shadertoy-format GLSL shaders compiled through glslang → SPIR-V → MSL.
+- A live reactivity surface: cursor position, cursor color, focus state, selection colors, and the full 256-color palette are all exposed as uniforms with `current`/`previous` pairs and `iTime*Change` timestamps. Shaders can pulse on focus, tween on cursor move, and react to theme changes today.
+- Multi-shader stacking, `custom-shader-animation` power modes, and robust compile-failure handling (log + skip, never crash).
+
+So **"reactivity" is not Holoscape's differentiator** — Ghostty already has it. The original framing in this section suggested Holoscape would *add* a reactivity layer; that's wrong. Ghostty has a reactivity layer. What it lacks is reactivity to *our* semantic events.
+
+**What Holoscape actually adds on top**, corrected:
+
+1. **Agent-state reactivity.** New uniforms appended to Ghostty's Globals UBO that expose Holoscape-specific semantic events: new-output notifications, command lifecycle and exit codes, agent idle/thinking/tool-use/error state, channel identity and unread counts, user-facing notification kinds. Same diff-and-stamp pattern Ghostty already uses — just a longer uniform struct. This is the narrow, real novelty. Concrete design in `04-ghostty-investigation.md` §A.4.
+2. **Non-shader chrome skinning.** Ghostty's shader system only skins the terminal viewport background. It can't restyle the tab bar, input box, window chrome, or settings panel. If we want curved translucent input boxes and animated chrome on *every surface* — the actual Winamp-5-feeling stuff — shaders alone are not enough. We need a second layer (CALayer compositing, SwiftUI view modifiers gated on skin state, or a declarative skin manifest) that describes non-terminal surface appearance. **This is the real Winamp 5 analog and the real novelty vs. Ghostty.**
+3. **Reactive overlays.** Particles, animated glyphs, and other visual elements overlaid on top of the terminal but *below* input chrome. Ghostty has no equivalent. This is where `CAEmitterLayer` from §2.3 of this doc earns its place.
+
+The "scene graph" framing from the earlier version was also imprecise: Ghostty composes multiple shaders in order (`custom-shader` is a `RepeatablePath`) but it does not have a scene graph — no containers, layers, buttons, animated sprites. For pure shader-behind-terminal effects you don't need one. Whether Holoscape's chrome skinning layer (#2 above) should be a declarative scene-graph-ish manifest (Winamp 5 Maki style) or imperative SwiftUI-with-skin-state is **still an open decision**, and belongs in the scope doc (#5887), not here.
+
+**Corrected one-liner:** Holoscape's skin system is **Ghostty's shader model, extended with a semantic-event uniform layer for agent/terminal state, plus a second skinning layer for non-shader chrome that Ghostty has no equivalent for.** Ghostty compat is the floor; the three items above are the ceiling.
+
+Next doc: [`02-scope-and-format-v1.md`](./02-scope-and-format-v1.md) (blocked on #5886 review, addresses the questions in §5). The scope doc (#5887) should use the corrected framing above, not the earlier "reactivity layer on top of Ghostty" language.
