@@ -20,7 +20,7 @@ A skin infrastructure already exists in the codebase but is **shallow and mostly
 
 **Models / services** (`Sources/Holoscape/`)
 
-- [`Models/SkinDefinition.swift`](../../Sources/Holoscape/Models/SkinDefinition.swift) — a flat `Codable` struct with 11 optional fields: `windowBackground`, `titleBarBackground`, `sidebarBackground`, `tabActiveColor`, `tabInactiveColor`, `textForeground`, `ansiColors[16]`, and three background-image paths (`windowBackgroundImage`, `sidebarBackgroundImage`, `tabBarBackgroundImage`).
+- [`Models/SkinDefinition.swift`](../../Sources/Holoscape/Models/SkinDefinition.swift) — a flat `Codable` struct with 10 optional fields: `windowBackground`, `titleBarBackground`, `sidebarBackground`, `tabActiveColor`, `tabInactiveColor`, `textForeground`, `ansiColors[16]`, and three background-image paths (`windowBackgroundImage`, `sidebarBackgroundImage`, `tabBarBackgroundImage`).
 - [`Services/SkinEngine.swift`](../../Sources/Holoscape/Services/SkinEngine.swift) — loads `skin.json` from `~/.holoscape/skins/<name>/` (or `$HOLOSCAPE_CONFIG_DIR/skins/<name>/`), applies color fields to `AppearanceConfig`, ignores image fields.
 - [`Services/ColorTheme.swift`](../../Sources/Holoscape/Services/ColorTheme.swift) — six built-in themes (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) mapping to background / foreground / 16 ANSI colors.
 - [`Models/HoloscapeConfig.swift`](../../Sources/Holoscape/Models/HoloscapeConfig.swift) `AppearanceConfig` — the runtime skin state: `backgroundColor`, `transparency`, `fontFamily`, `fontSize`, `ansiColors`, `themeName`, `themeOverrides`, `skinName`.
@@ -33,7 +33,7 @@ A skin infrastructure already exists in the codebase but is **shallow and mostly
 
 **What's broken / missing** (the design below is how we fix these)
 
-1. **Chrome views hardcode their colors.** `TabBarView.swift` defines `static let activeTabBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor` and uses it at compile time. The skin system literally cannot reach these values — changing `skin.json` does nothing to the tab bar's actual appearance. 18 hardcoded color call sites across 6 view files (`SessionLauncherView`, `AppearanceSettingsView`, `InputBoxView`, `TabBarView`, `TerminalContainerView`, `SidebarView`).
+1. **Chrome views hardcode their colors.** `TabBarView.swift` defines `static let activeTabBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor` and uses it at compile time. The skin system literally cannot reach these values — changing `skin.json` does nothing to the tab bar's actual appearance. A `grep -rn 'NSColor(red:' Sources/Holoscape/Views/` finds **15 hardcoded RGB call sites across 5 view files**: `TabBarView` (4), `SidebarView` (7), `TerminalContainerView` (2), `SessionLauncherView` (1), `InputBoxView` (1). (This count only catches the `NSColor(red:g:b:a:)` literal form; further skin-bypass call sites may exist via `NSColor.named` or `.withAlphaComponent`, and should be audited as part of the migration in §10.)
 2. **No image asset path resolution.** `SkinDefinition` declares `windowBackgroundImage` and two other image fields, but `SkinEngine.apply(skin:to:)` never touches them.
 3. **No ninepatch / stretchable images.** A background image is a flat PNG. You can't describe "this image is a button frame whose center stretches."
 4. **No surface descriptors.** There's no way to say "the tab bar has this shape, this corner radius, this border, this animation curve." Everything surface-level is hardcoded.
@@ -200,37 +200,76 @@ Curve names: `linear`, `easeIn`, `easeOut`, `easeInOut`, `spring`. No custom bez
 
 ### 7.5 `states`
 
-The reactive dimension. Every surface can define state-variant overrides. States are keyed by a small enum and a match expression. The match expression is a tiny subset of JSON that checks values from the shared `ReactiveUniformSnapshot` (same source as shader uniforms):
+The reactive dimension. Every surface can define state-variant overrides. `states` is a **JSON array** (not an object) so iteration order is well-defined across JSON parsers. Each entry has a `name`, a `match` expression, and any subset of the surface descriptor fields to override when the match succeeds:
 
 ```json
 {
-  "states": {
-    "agentThinking": {
+  "states": [
+    {
+      "name": "agentThinking",
       "match": { "agentState": 1 },
       "fill": { "kind": "color", "value": "#2a2a50" }
     },
-    "agentError": {
+    {
+      "name": "agentError",
       "match": { "agentState": 3 },
       "fill": { "kind": "color", "value": "#5a1a1a" },
       "animation": { "fill": { "duration": 0.4, "curve": "easeOut" } }
     }
-  }
+  ]
 }
 ```
 
-States are evaluated in order; the last matching state wins. If no state matches, the surface's base descriptor is used. The manifest can describe arbitrary states on arbitrary surfaces — a skin can tint the sidebar red when *any* agent errors, or only when the *current channel's* agent errors, by using different match keys.
+**Evaluation rules.**
 
-**Allowed `match` keys** (all from `ReactiveUniformSnapshot`):
+1. States are evaluated in **array order**. All matching states are applied in sequence; for any property, the **last** matching state wins (CSS-cascade semantics). This is deterministic across parsers because `states` is an array.
+2. If no state matches, the surface's base descriptor is used.
+3. A state with no `match` key always matches (escape hatch for an unconditional override; rarely needed).
 
-- `agentState` (int): 0/1/2/3
-- `commandState` (int): 0/1/2
-- `lastCommandExitCode` (int)
-- `channelIsActive` (int): 0/1
-- `channelUnread` (int): compared with `==`, `>=`, etc. via `{ "channelUnread": { "$gte": 1 } }`
-- `notificationKind` (int): 0/1/2/3
-- `timeSince` (object): `{ "timeSince": { "iTimeAgentStateChange": { "$lt": 0.6 } } }` — computed as `(now - iTimeX)`, useful for chrome-side fades
+**Match keys** are the Holoscape extension uniforms from [`05-reactive-uniforms.md`](./05-reactive-uniforms.md) §5, with the GLSL `i` prefix dropped because JSON config has no use for the GLSL naming convention. The full mapping:
 
-The match DSL is deliberately tiny. If a skin needs more than this, it's a sign the scripting ceiling (out of scope for v2) is pulling on us; we should push back on the request, not extend the match language.
+| JSON match key | Source uniform in 05 §5 | Type | Valid values / notes |
+|---|---|---|---|
+| `agentState` | `iAgentState` | int | `0=idle, 1=thinking, 2=toolUse, 3=error` |
+| `previousAgentState` | `iPreviousAgentState` | int | same enum as above |
+| `commandState` | `iCommandState` | int | `0=idle, 1=running, 2=completed` |
+| `previousCommandState` | `iPreviousCommandState` | int | same enum as above |
+| `lastCommandExitCode` | `iLastCommandExitCode` | int | meaningful only when `commandState == 2` |
+| `channelId` | `iChannelId` | int | stable hash; compare with `$eq` to pin a surface to a specific channel |
+| `channelIsActive` | `iChannelIsActive` | int | `0` or `1` |
+| `channelUnread` | `iChannelUnread` | int | unread count |
+| `notificationKind` | `iNotificationKind` | int | `0=none, 1=info, 2=warn, 3=error` |
+| `outputEventCount` | `iOutputEventCount` | int | monotonic counter |
+| `timeSince` | *computed* | object | see below |
+
+`timeSince` is a computed convenience. Its sub-keys name a Holoscape timestamp uniform (`iTimeAgentStateChange`, `iTimeLastOutput`, `iTimeLastNotification`, `iTimeCommandStart`, `iTimeCommandEnd`) and the value is the elapsed time **in seconds** since that stamp. Example:
+
+```json
+{ "match": { "timeSince": { "iTimeAgentStateChange": { "$lt": 0.6 } } } }
+```
+
+This matches for 0.6 seconds after any agent-state transition. The unit is seconds, matching `iTime` in 05 §6. `timeSince` sub-keys intentionally keep the `i` prefix because they explicitly reference uniform names and reusing those names verbatim makes the source of truth obvious.
+
+**Operators.** A bare scalar value is shorthand for equality: `{ "agentState": 3 }` is equivalent to `{ "agentState": { "$eq": 3 } }`. The allowed operator set is closed:
+
+| Operator | Meaning |
+|---|---|
+| `$eq` | equal |
+| `$ne` | not equal |
+| `$gt` | greater than |
+| `$gte` | greater than or equal |
+| `$lt` | less than |
+| `$lte` | less than or equal |
+
+No `$in`, `$or`, `$and`, regex, etc. If a skin needs more than this, it's a sign the scripting ceiling (out of scope for v2) is pulling on us; we should push back on the request, not extend the match language.
+
+**Multi-key semantics.** When a `match` object has multiple keys, they are combined with **logical AND**. Example:
+
+```json
+{ "match": { "agentState": 3, "channelIsActive": 1 } }
+```
+
+matches only when the agent is errored *and* this is the foreground channel. There is no OR operator. To express OR, declare two separate state entries with the same overrides — remember that `states` is an array, so both can match and the last one wins, which is equivalent to OR for purposes of "did any match fire."
 
 ## 8. Images and ninepatch
 
@@ -407,30 +446,33 @@ Chrome reactivity reads from the same `ReactiveUniformSnapshot` that drives the 
       "font": { "family": "Px437 IBM VGA 8x16", "size": 11.0 },
       "text": { "color": "#ffffff" },
       "animation": { "default": { "duration": 0.2, "curve": "easeOut" } },
-      "states": {
-        "agentError": {
+      "states": [
+        {
+          "name": "agentThinking",
+          "match": { "agentState": 1 },
+          "fill": { "kind": "color", "value": "#1a2a5a" }
+        },
+        {
+          "name": "agentError",
           "match": { "agentState": 3 },
           "fill": { "kind": "color", "value": "#5a1a1a" },
           "animation": { "fill": { "duration": 0.35, "curve": "easeOut" } }
-        },
-        "agentThinking": {
-          "match": { "agentState": 1 },
-          "fill": { "kind": "color", "value": "#1a2a5a" }
         }
-      }
+      ]
     },
 
     "tabBar.tab.normal": {
       "fill": { "kind": "color", "value": "#1a1a2e" },
       "corner": { "radius": [8, 8, 0, 0] },
       "text": { "color": "#8080a0" },
-      "states": {
-        "unreadHasArrived": {
+      "states": [
+        {
+          "name": "unreadHasArrived",
           "match": { "channelUnread": { "$gte": 1 } },
           "fill": { "kind": "color", "value": "#2a2a50" },
           "text": { "color": "#ffffff" }
         }
-      }
+      ]
     },
 
     "sidebar.container": {
@@ -472,9 +514,9 @@ Assets shipped alongside:
 
 This is the core dogfooding story — a skin author edits `skin.json` in their editor and sees the change live in Holoscape with no restart.
 
-## 15. Implementation checklist (for follow-up cards, not #5930)
+## 15. Implementation checklist (chrome skinning tracks separately from #5930)
 
-The skin system is independent of the shader pipeline, so #5930 (port Ghostty's shader pipeline) does **not** need to wait for chrome skinning. Chrome skinning can land in parallel. Future cards to file from this doc:
+Chrome skinning is **technically independent** of the shader pipeline (#5930). They share the `ReactiveUniformSnapshot` source of truth but otherwise touch different subsystems: #5930 wires glslang/spirv-cross/Metal behind the terminal viewport, chrome skinning wires AppKit views to a `SkinContext`. When this doc lands, #5930's tracker blocker on #5929 should be cleared — the two tracks can proceed in parallel. Future cards to file from this doc:
 
 - [ ] **Extend `SkinDefinition` with v2 optional fields.** Add a `surfaces` dictionary, keep all v1 fields for backward compat, add a `version` tag. One PR, no behavior change yet.
 - [ ] **Build `SkinContext` and the resolver.** Loads v1 + v2 skins, produces `ResolvedSurface` per surface key, owns the `ReactiveUniformSnapshot` reference. Shipped with unit tests covering v1-compat, v2 inheritance, state match evaluation.
