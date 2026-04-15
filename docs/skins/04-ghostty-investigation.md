@@ -119,76 +119,27 @@ This is **exactly the hook pattern we'd extend for agent state** (see A.4).
 
 ### A.4 Agent-state uniform extension — design
 
-The load-bearing contribution of this doc. The question: *what events from Holoscape's terminal layer are worth exposing to shaders, and how do we encode them without breaking Ghostty-shader compatibility?*
+> **This section is now a summary. The full design lives in [`05-reactive-uniforms.md`](./05-reactive-uniforms.md).** Graduated 2026-04-15 via #5928.
 
-**Compatibility rule.** We only *extend* the Globals UBO — we never reorder, rename, or remove existing fields. Ghostty shaders reading `iTime`, `iCurrentCursor`, etc. still run in Holoscape. New uniforms are appended and namespaced with Holoscape-relevant prefixes (`iAgent*`, `iCommand*`, `iChannel*`, `iOutput*`, `iNotification*`).
+The load-bearing contribution of this investigation is a set of new uniforms appended to Ghostty's Globals UBO that expose Holoscape-specific semantic events to shader authors. Five event categories:
 
-**Event categories.**
+- **Output events** — new output chunk arrived on this channel
+- **Command lifecycle** — command started, finished, exit code
+- **Agent state** — idle / thinking / tool-use / errored (the main differentiator)
+- **Channel state** — channel id, foreground, unread count
+- **Notifications** — info / warn / error one-shot events
 
-| Category | What Holoscape knows | Why a shader author would care |
-|---|---|---|
-| Output events | New output chunk arrived on this channel | Pulse/ripple on new content; "living terminal" feel |
-| Command lifecycle | Command started, command finished, exit code | Celebrate success, flash red on failure |
-| Agent state | Agent idle / thinking / tool-use / errored | **The big one.** Ambient state the user can feel without reading text |
-| Channel state | Channel id, active/inactive, unread count | Tint per-channel, dim inactive, badge unread |
-| Notifications | Info / warn / error notification fired | One-shot visual alerts |
+The extension reuses Ghostty's diff-and-stamp pattern from `generic.zig:2197-2207` and its two-path update split (`updateCustomShaderUniformsFromState` at `:2010` vs. `updateCustomShaderUniformsForFrame` at `:2102`) verbatim. The UBO is append-only; every Ghostty shader runs unmodified under Holoscape.
 
-**Proposed uniforms** (first draft — open for iteration in `docs/skins/05-reactive-uniforms.md` when we graduate this):
+Three design decisions locked in during second-pass review (2026-04-14) and carried forward into `05-reactive-uniforms.md`:
 
-```glsl
-// --- Output events ---
-uniform int   iOutputEventCount;        // monotonic counter; changes ⇒ new output
-uniform float iTimeLastOutput;          // iTime stamp of most recent new-output event
+1. **Atomic snapshot strategy: per-field atomic int**, with an in-code comment flagging the upgrade path to a double-buffered snapshot if multi-field consistency ever becomes necessary.
+2. **Every transition stamps**, in both directions. No focus-gain-only asymmetry like Ghostty's `generic.zig:2218`.
+3. **No bidirectional Ghostty compat.** Holoscape shaders target Holoscape; `#ifdef HOLOSCAPE` guards are available for authors who want dual-target shaders.
 
-// --- Command lifecycle ---
-uniform int   iCommandState;            // 0=idle, 1=running, 2=completed
-uniform int   iPreviousCommandState;
-uniform int   iLastCommandExitCode;     // meaningful only when iCommandState==2
-uniform float iTimeCommandStart;
-uniform float iTimeCommandEnd;
+See `05-reactive-uniforms.md` for the full uniform list, update-path assignment per field, atomic-snapshot code sketch, compatibility contract with upstream Ghostty, six worked shader examples (one per category), and the implementation checklist for card #5930.
 
-// --- Agent state (the differentiator) ---
-uniform int   iAgentState;              // 0=idle, 1=thinking, 2=toolUse, 3=error
-uniform int   iPreviousAgentState;
-uniform float iTimeAgentStateChange;
-
-// --- Channel state ---
-uniform int   iChannelId;               // stable hash of channel identity
-uniform int   iChannelIsActive;         // 1 if foreground channel, else 0
-uniform int   iChannelUnread;           // unread count, clamped to int range
-
-// --- Notifications ---
-uniform int   iNotificationKind;        // 0=none, 1=info, 2=warn, 3=error
-uniform float iTimeLastNotification;
-```
-
-**Update-path assignment.** Following Ghostty's split:
-- `updateCustomShaderUniformsFromState` (state-driven): `iChannelId`, `iChannelIsActive`, `iChannelUnread`, `iCommandState`, `iLastCommandExitCode`. Gated on "channel/command model dirty."
-- `updateCustomShaderUniformsForFrame` (per-frame diff-and-stamp): `iAgentState` (tightly coupled to tween time, so fast-path), `iOutputEventCount` (cheap atomic counter read), `iNotificationKind`.
-
-**Diff-and-stamp reuse.** For every uniform with a `Previous*` companion, the renderer runs the same block Ghostty uses at `generic.zig:2197-2207`: check equality, if changed shift `current → previous`, write new `current`, stamp the associated `iTime*`.
-
-**Worked shader example** — pulse red on agent error, fade over 0.6s:
-
-```glsl
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    vec4 base = texture(iChannel0, fragCoord / iResolution.xy);
-    float sinceError = iTime - iTimeAgentStateChange;
-    float errorPulse = 0.0;
-    if (iAgentState == 3 && sinceError < 0.6) {
-        errorPulse = 1.0 - (sinceError / 0.6);
-    }
-    fragColor = vec4(mix(base.rgb, vec3(1.0, 0.1, 0.1), errorPulse * 0.5), base.a);
-}
-```
-
-**Committed design decisions** (locked in with Erik, 2026-04-14):
-
-- **Atomic snapshot strategy: per-field atomic int.** Each Holoscape-extension uniform is backed by a single `std::atomic<int>` (or `atomic<float>` for timestamps) written from whichever thread owns that state and read by the renderer without a lock. Simple, cheap, correct for independent fields. **Leave a code comment at the implementation site** noting that a double-buffered snapshot may become necessary if we ever need multiple fields to update atomically together (e.g. agent state + start timestamp + associated command id in one consistent read). Not needed now — revisit only if a multi-field consistency bug appears.
-- **Focus asymmetry / every-transition stamping.** Every agent-state transition stamps `iTimeAgentStateChange`, in both directions (idle → thinking *and* thinking → idle). Simpler, gives shader authors more optionality. Unlike Ghostty's focus-gain-only pattern, we don't filter transitions at the source — shaders can filter if they want.
-- **Bidirectional Ghostty compat: dropped.** Holoscape is the target. Shaders are built for Holoscape's UBO and aren't required to be portable back to Ghostty. This frees us to extend the UBO layout however makes sense without worrying about GLSL default-init semantics.
-
-**Not a shader concern, but filed here so we don't lose it:** the *millisecond-scale* agent-state timestamp in this section is purely for shader animation (pulse over 0.6s, fade in over 0.3s, etc.). It is **not** the same thing as a per-tab "last user interaction" timestamp for spotting forgotten/stale channels (e.g. "you haven't touched this tab in 2 hours"). That's a separate chrome-level feature worth its own Kanban card — see Part C bucket 2.
+**Not a shader concern but filed here so we don't lose it:** the millisecond-scale agent-state timestamps in the design above are purely for shader animation (0.3-1.0 second transitions). They are **not** the same thing as a per-tab "last user interaction" wall-clock timestamp for spotting forgotten channels. That is a separate chrome-level feature — see card #5936.
 
 ### A.5 Correcting §6 of the research doc
 
