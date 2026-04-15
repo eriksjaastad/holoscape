@@ -1,0 +1,6 @@
+[submodule "Vendor/glslang"]
+	path = Vendor/glslang
+	url = https://github.com/KhronosGroup/glslang
+[submodule "Vendor/spirv-cross"]
+	path = Vendor/spirv-cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross
