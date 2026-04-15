@@ -1,4 +1,5 @@
 module Cglslang {
     header "glslang_c_interface.h"
+    header "glslang_resource_limits.h"
     export *
 }

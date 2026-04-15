@@ -153,8 +153,18 @@ let package = Package(
         ),
         .executableTarget(
             name: "Holoscape",
-            dependencies: ["SwiftTerm"],
-            path: "Sources/Holoscape"
+            dependencies: ["SwiftTerm", "Cglslang", "Cspirv_cross"],
+            path: "Sources/Holoscape",
+            resources: [
+                // GLSL shader prefix prepended to every user shader before
+                // compilation. See docs/skins/07-shader-pipeline-plan.md and
+                // Sources/Holoscape/Services/ShaderCompiler.swift.
+                .process("Resources/ShaderPrefix"),
+                // AppIcon.icns is consumed by the .app bundling step, not
+                // SwiftPM's resource pipeline. Declaring it as .copy stops
+                // the "unhandled file" warning without processing it.
+                .copy("Resources/AppIcon.icns"),
+            ]
         ),
         .executableTarget(
             name: "HoloscapeMCP",
