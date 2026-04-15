@@ -27,6 +27,15 @@ cp "$BUILD_DIR/Holoscape" "$APP_DIR/Contents/MacOS/Holoscape"
 # Copy app icon
 cp "$SCRIPT_DIR/Sources/Holoscape/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
+# Copy any SwiftPM-built resource bundles (e.g. Holoscape_Holoscape.bundle
+# which ships the shader prefix for ShaderCompiler, and SwiftTerm_SwiftTerm.bundle).
+# Bundle.module resolves to these at runtime via the main bundle's Resources dir.
+for res_bundle in "$BUILD_DIR"/*.bundle; do
+    if [ -d "$res_bundle" ]; then
+        cp -R "$res_bundle" "$APP_DIR/Contents/Resources/"
+    fi
+done
+
 # Copy Info.plist and resolve Xcode variables
 sed -e 's/$(EXECUTABLE_NAME)/Holoscape/g' \
     -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.synthinsightlabs.holoscape/g' \
