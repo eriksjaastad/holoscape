@@ -47,6 +47,110 @@ let package = Package(
                 ]),
             ]
         ),
+        // Cglslang uses the same shim-directory pattern as Cspirv_cross, but
+        // with directory-level symlinks because glslang's source tree uses
+        // parent-relative quote-form includes like `#include "../Include/Common.h"`.
+        // Clang resolves those relative to the source file's directory (the
+        // symlink path, not the realpath — per card 2's finding), so the tree
+        // structure must exist under Vendor/Cglslang/.
+        //
+        // Layout: `glslang/` and `SPIRV/` are directory symlinks into the
+        // submodule at Vendor/glslang/. `include/` is a repo-owned directory
+        // with the module.modulemap, `glslang_c_interface.h`, and its transitive
+        // include `glslang_c_shader_types.h` (both symlinked).
+        //
+        // The override header path comes BEFORE the submodule in the header
+        // search order so that `#include "glslang/build_info.h"` (which two
+        // source files use) resolves to our pinned override file rather than
+        // looking for an auto-generated file upstream doesn't ship.
+        .target(
+            name: "Cglslang",
+            path: "Vendor/Cglslang",
+            exclude: [
+                // Everything under glslang/ and SPIRV/ that isn't in sources
+                // below. SwiftPM walks the symlinked dirs and treats unlisted
+                // files as unhandled, so we exclude the known-unused subtrees.
+                "glslang/HLSL",
+                "glslang/OSDependent/Web",
+                "glslang/OSDependent/Windows",
+                "SPIRV/SPVRemapper.cpp",
+                "SPIRV/SpvTools.cpp",
+                "SPIRV/spirv.hpp",
+            ],
+            sources: [
+                "glslang/GenericCodeGen/CodeGen.cpp",
+                "glslang/GenericCodeGen/Link.cpp",
+                "glslang/MachineIndependent/glslang_tab.cpp",
+                "glslang/MachineIndependent/attribute.cpp",
+                "glslang/MachineIndependent/Constant.cpp",
+                "glslang/MachineIndependent/iomapper.cpp",
+                "glslang/MachineIndependent/InfoSink.cpp",
+                "glslang/MachineIndependent/Initialize.cpp",
+                "glslang/MachineIndependent/IntermTraverse.cpp",
+                "glslang/MachineIndependent/Intermediate.cpp",
+                "glslang/MachineIndependent/ParseContextBase.cpp",
+                "glslang/MachineIndependent/ParseHelper.cpp",
+                "glslang/MachineIndependent/PoolAlloc.cpp",
+                "glslang/MachineIndependent/RemoveTree.cpp",
+                "glslang/MachineIndependent/Scan.cpp",
+                "glslang/MachineIndependent/ShaderLang.cpp",
+                "glslang/MachineIndependent/SpirvIntrinsics.cpp",
+                "glslang/MachineIndependent/SymbolTable.cpp",
+                "glslang/MachineIndependent/Versions.cpp",
+                "glslang/MachineIndependent/intermOut.cpp",
+                "glslang/MachineIndependent/limits.cpp",
+                "glslang/MachineIndependent/linkValidate.cpp",
+                "glslang/MachineIndependent/parseConst.cpp",
+                "glslang/MachineIndependent/reflection.cpp",
+                "glslang/MachineIndependent/preprocessor/Pp.cpp",
+                "glslang/MachineIndependent/preprocessor/PpAtom.cpp",
+                "glslang/MachineIndependent/preprocessor/PpContext.cpp",
+                "glslang/MachineIndependent/preprocessor/PpScanner.cpp",
+                "glslang/MachineIndependent/preprocessor/PpTokens.cpp",
+                "glslang/MachineIndependent/propagateNoContraction.cpp",
+                "glslang/CInterface/glslang_c_interface.cpp",
+                "glslang/ResourceLimits/ResourceLimits.cpp",
+                "glslang/ResourceLimits/resource_limits_c.cpp",
+                "glslang/OSDependent/Unix/ossource.cpp",
+                "SPIRV/GlslangToSpv.cpp",
+                "SPIRV/InReadableOrder.cpp",
+                "SPIRV/Logger.cpp",
+                "SPIRV/SpvBuilder.cpp",
+                "SPIRV/SpvPostProcess.cpp",
+                "SPIRV/doc.cpp",
+                "SPIRV/disassemble.cpp",
+                "SPIRV/CInterface/spirv_c_interface.cpp",
+            ],
+            publicHeadersPath: "include",
+            cxxSettings: [
+                // Header search path ordering is load-bearing. All three
+                // paths are required; do not delete any of them.
+                //   1. `../glslang-override` — contains ONLY our pinned
+                //      `glslang/build_info.h`. Must be first so it wins
+                //      against any other root (upstream does not ship this
+                //      file; it's normally CMake-generated).
+                //   2. `.` (= `Vendor/Cglslang`) — resolves `glslang/...` and
+                //      `SPIRV/...` rooted includes via the directory symlinks
+                //      at the shim root. Needed by source files that do
+                //      `#include "glslang/Include/Common.h"` style rooted
+                //      quote-form includes.
+                //   3. `../glslang` (= the submodule root) — resolves rooted
+                //      includes like `#include "StandAlone/DirStackFileIncluder.h"`
+                //      that point at subtrees we didn't symlink into the shim.
+                .headerSearchPath("../glslang-override"),
+                .headerSearchPath("."),
+                .headerSearchPath("../glslang"),
+                // Intentionally no ENABLE_HLSL define: glslang gates HLSL
+                // code with `#ifdef ENABLE_HLSL`, so defining it to any
+                // value (including 0) activates the branch. Leaving it
+                // undefined keeps HLSL symbols out of the compiled objects,
+                // which matches our source list (no glslang/HLSL/*.cpp).
+                .unsafeFlags([
+                    "-fno-sanitize=undefined",
+                    "-fno-sanitize-trap=undefined",
+                ]),
+            ]
+        ),
         .executableTarget(
             name: "Holoscape",
             dependencies: ["SwiftTerm"],
@@ -61,7 +165,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HoloscapeTests",
-            dependencies: ["Holoscape", "Cspirv_cross"],
+            dependencies: ["Holoscape", "Cspirv_cross", "Cglslang"],
             path: "Tests/HoloscapeTests"
         ),
         .testTarget(

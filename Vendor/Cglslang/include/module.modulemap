@@ -1,0 +1,4 @@
+module Cglslang {
+    header "glslang_c_interface.h"
+    export *
+}
