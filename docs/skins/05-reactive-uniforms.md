@@ -1,7 +1,7 @@
 # Reactive Uniforms — Agent-State Shader Extension for Holoscape
 
 > **Status:** Design, draft 1 (#5928). Graduates the inline `§A.4` design from [`04-ghostty-investigation.md`](./04-ghostty-investigation.md) into a standalone specification.
-> **Feeds:** scope doc #5887, and implementation card [#5930](../../README.md#backlog) (port Ghostty's shader pipeline into Holoscape).
+> **Feeds:** scope doc #5887, and implementation card #5930 (port Ghostty's shader pipeline into Holoscape).
 > **Reference checkout:** `~/projects/github-repos/ghostty` (shallow, read-only). Source citations in this doc all point there.
 
 ---
