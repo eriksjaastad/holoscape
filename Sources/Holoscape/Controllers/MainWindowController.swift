@@ -936,8 +936,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         if shaderPath.hasPrefix("/") || shaderPath.hasPrefix("~") {
             url = URL(fileURLWithPath: (shaderPath as NSString).expandingTildeInPath)
         } else if let bundled = Bundle.module.url(
-            forResource: (shaderPath as NSString).deletingPathExtension,
-            withExtension: (shaderPath as NSString).pathExtension
+            forResource: (shaderPath as NSString).lastPathComponent.replacingOccurrences(of: ".glsl", with: ""),
+            withExtension: "glsl"
         ) {
             url = bundled
         } else {
