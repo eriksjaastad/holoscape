@@ -141,12 +141,15 @@ class HoloscapeAPIServer {
 
     private func handleListChannels() -> HTTPResponse {
         guard let cm = channelManager else { return .error("Not ready", status: 500) }
+        let activeId = windowController?.activeChannelId
         let channels = cm.allChannels().map { channel -> [String: Any] in
             [
                 "id": channel.channelId.uuidString,
                 "label": channel.displayLabel,
                 "type": channel.channelType.rawValue,
-                "state": channel.state.rawValue
+                "state": channel.state.rawValue,
+                "notification_type": channelNotifications[channel.channelId] as Any,
+                "is_active": channel.channelId == activeId
             ]
         }
         return .json(channels)
