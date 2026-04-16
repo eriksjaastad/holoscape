@@ -85,7 +85,7 @@ class SplitPaneView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
-            compositor?.stop()
+            stopCompositor()
         }
     }
 

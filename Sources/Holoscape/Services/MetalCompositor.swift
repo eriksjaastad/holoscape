@@ -159,9 +159,14 @@ final class MetalCompositor {
         updateUniforms(width: Float(pixelW), height: Float(pixelH))
         frameCount += 1
 
-        // 3. Get drawable
+        // 3. Get drawable (transient failures are normal during resize/pressure)
         metalLayer.drawableSize = CGSize(width: pixelW, height: pixelH)
-        guard let drawable = metalLayer.nextDrawable() else { return }
+        guard let drawable = metalLayer.nextDrawable() else {
+            #if DEBUG
+            NSLog("MetalCompositor: nextDrawable() returned nil (frame %d)", frameCount)
+            #endif
+            return
+        }
 
         // 4. Render
         let passDesc = MTLRenderPassDescriptor()
@@ -171,7 +176,12 @@ final class MetalCompositor {
         passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 
         guard let cmdBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else { return }
+              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+            #if DEBUG
+            NSLog("MetalCompositor: command buffer/encoder creation failed (frame %d)", frameCount)
+            #endif
+            return
+        }
 
         encoder.setRenderPipelineState(pipelineState)
         encoder.setFragmentTexture(captureTexture, index: 0)
@@ -193,7 +203,10 @@ final class MetalCompositor {
             .bytesPerRow: width * 4,
             .pixelFormat: kCVPixelFormatType_32BGRA,
         ]
-        guard let surface = IOSurface(properties: properties) else { return }
+        guard let surface = IOSurface(properties: properties) else {
+            NSLog("MetalCompositor: IOSurface creation failed (%dx%d)", width, height)
+            return
+        }
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
@@ -204,7 +217,10 @@ final class MetalCompositor {
             bytesPerRow: surface.bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-        ) else { return }
+        ) else {
+            NSLog("MetalCompositor: CGContext creation failed (%dx%d)", width, height)
+            return
+        }
 
         // Flip Y for CoreGraphics (origin at bottom-left) vs Metal (top-left)
         ctx.translateBy(x: 0, y: CGFloat(height))
@@ -217,7 +233,10 @@ final class MetalCompositor {
             mipmapped: false
         )
         texDesc.usage = [.shaderRead]
-        guard let texture = device.makeTexture(descriptor: texDesc, iosurface: surface, plane: 0) else { return }
+        guard let texture = device.makeTexture(descriptor: texDesc, iosurface: surface, plane: 0) else {
+            NSLog("MetalCompositor: MTLTexture creation from IOSurface failed (%dx%d)", width, height)
+            return
+        }
 
         self.ioSurface = surface
         self.captureContext = ctx
@@ -227,6 +246,10 @@ final class MetalCompositor {
 
     // MARK: - Uniform buffer
 
+    /// Populates the subset of Globals UBO fields needed for card 5 (identity render).
+    /// Only iResolution, iTime, and iFrame are written; all other fields remain
+    /// zero-initialized by Metal. Cursor/palette uniforms land in card 6 (#5944),
+    /// agent-state uniforms in card 7 (#5945).
     private func updateUniforms(width: Float, height: Float) {
         let ptr = uniformBuffer.contents()
         let now = Float(CFAbsoluteTimeGetCurrent() - startTime)
