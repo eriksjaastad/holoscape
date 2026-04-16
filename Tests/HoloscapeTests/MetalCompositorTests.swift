@@ -42,6 +42,17 @@ final class MetalCompositorTests: XCTestCase {
             "spirv-cross should name the entry point main0")
     }
 
+    func testScanlinesShaderCompiles() throws {
+        guard let url = Bundle.module.url(forResource: "scanlines", withExtension: "glsl") else {
+            XCTFail("scanlines.glsl not found in bundle")
+            return
+        }
+        let compiler = ShaderCompiler()
+        let compiled = try compiler.compile(glslPath: url)
+        XCTAssertFalse(compiled.mslSource.isEmpty)
+        XCTAssertTrue(compiled.mslSource.contains("main0"))
+    }
+
     func testMetalCompositorInitWithIdentityShader() throws {
         guard let url = Bundle.module.url(forResource: "identity", withExtension: "glsl") else {
             XCTFail("identity.glsl not found in bundle")
