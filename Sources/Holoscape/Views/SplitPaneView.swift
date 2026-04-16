@@ -35,8 +35,14 @@ class SplitPaneView: NSView {
     }
 
     func showContent(_ view: NSView, compiledShader: CompiledShader? = nil) {
-        // Skip reparenting if this view is already displayed
-        guard contentView !== view else { return }
+        if contentView === view {
+            // Same view — just update the compositor
+            stopCompositor()
+            if let compiledShader {
+                startCompositor(shader: compiledShader, sourceView: view)
+            }
+            return
+        }
         contentView?.removeFromSuperview()
         stopCompositor()
         contentView = view
@@ -64,6 +70,7 @@ class SplitPaneView: NSView {
     // MARK: - Metal compositor
 
     private func startCompositor(shader: CompiledShader, sourceView: NSView) {
+        NSLog("[SHADER] SplitPaneView.startCompositor called, MSL length: \(shader.mslSource.count)")
         do {
             let comp = try MetalCompositor(
                 compiledShader: shader,
@@ -72,12 +79,16 @@ class SplitPaneView: NSView {
             )
             comp.start()
             compositor = comp
+            NSLog("[SHADER] compositor started successfully")
         } catch {
-            NSLog("MetalCompositor: failed to initialize: \(error)")
+            NSLog("[SHADER] MetalCompositor init FAILED: \(error)")
         }
     }
 
     private func stopCompositor() {
+        if compositor != nil {
+            NSLog("[SHADER] stopping compositor")
+        }
         compositor?.stop()
         compositor = nil
     }
