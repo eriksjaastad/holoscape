@@ -197,6 +197,128 @@ final class MetalCompositorTests: XCTestCase {
         XCTAssertEqual(a, 255, "Alpha should be 255 (got \(a))")
     }
 
+    func testScanlinesProduceAlternatingRows() throws {
+        // Full pipeline test: solid white input → scanlines shader → verify
+        // alternating bright/dark rows in the output. Proves the shader
+        // actually modifies pixels, not just passes through.
+
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            XCTFail("No Metal device"); return
+        }
+        guard let queue = device.makeCommandQueue() else {
+            XCTFail("No command queue"); return
+        }
+
+        guard let url = Bundle.module.url(forResource: "scanlines", withExtension: "glsl") else {
+            XCTFail("scanlines.glsl not found"); return
+        }
+        let compiled = try ShaderCompiler().compile(glslPath: url)
+
+        let vertexLib = try device.makeLibrary(source: MetalCompositor.vertexShaderSource, options: nil)
+        let fragLib = try device.makeLibrary(source: compiled.mslSource, options: nil)
+        guard let vertexFn = vertexLib.makeFunction(name: "fullscreen_vertex"),
+              let fragFn = fragLib.makeFunction(name: "main0") else {
+            XCTFail("Could not find shader functions"); return
+        }
+
+        let pipeDesc = MTLRenderPipelineDescriptor()
+        pipeDesc.vertexFunction = vertexFn
+        pipeDesc.fragmentFunction = fragFn
+        pipeDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        let pipeline = try device.makeRenderPipelineState(descriptor: pipeDesc)
+
+        let width = 64, height = 64
+
+        // Solid white input
+        let inputDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        inputDesc.usage = [.shaderRead]
+        inputDesc.storageMode = .shared
+        guard let inputTexture = device.makeTexture(descriptor: inputDesc) else {
+            XCTFail("Could not create input texture"); return
+        }
+        var whitePixels = [UInt8](repeating: 255, count: width * height * 4)
+        inputTexture.replace(
+            region: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: width, height: height, depth: 1)),
+            mipmapLevel: 0, withBytes: whitePixels, bytesPerRow: width * 4)
+
+        // Output texture
+        let outputDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        outputDesc.usage = [.renderTarget, .shaderRead]
+        outputDesc.storageMode = .shared
+        guard let outputTexture = device.makeTexture(descriptor: outputDesc) else {
+            XCTFail("Could not create output texture"); return
+        }
+
+        // UBO with resolution set
+        guard let uboBuffer = device.makeBuffer(length: GlobalsUBOLayout.totalSize, options: .storageModeShared) else {
+            XCTFail("Could not create UBO buffer"); return
+        }
+        let ptr = uboBuffer.contents()
+        ptr.storeBytes(of: Float(width), toByteOffset: GlobalsUBOLayout.iResolution, as: Float.self)
+        ptr.storeBytes(of: Float(height), toByteOffset: GlobalsUBOLayout.iResolution + 4, as: Float.self)
+        ptr.storeBytes(of: Float(1.0), toByteOffset: GlobalsUBOLayout.iResolution + 8, as: Float.self)
+
+        // Sampler
+        let samplerDesc = MTLSamplerDescriptor()
+        samplerDesc.minFilter = .linear
+        samplerDesc.magFilter = .linear
+        guard let sampler = device.makeSamplerState(descriptor: samplerDesc) else {
+            XCTFail("Could not create sampler"); return
+        }
+
+        // Render
+        let passDesc = MTLRenderPassDescriptor()
+        passDesc.colorAttachments[0].texture = outputTexture
+        passDesc.colorAttachments[0].loadAction = .clear
+        passDesc.colorAttachments[0].storeAction = .store
+        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        guard let cmdBuffer = queue.makeCommandBuffer(),
+              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+            XCTFail("Could not create render encoder"); return
+        }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(inputTexture, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentBuffer(uboBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        cmdBuffer.commit()
+        cmdBuffer.waitUntilCompleted()
+
+        // Read back and verify alternating rows
+        var outputPixels = [UInt8](repeating: 0, count: width * height * 4)
+        outputTexture.getBytes(
+            &outputPixels,
+            bytesPerRow: width * 4,
+            from: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: width, height: height, depth: 1)),
+            mipmapLevel: 0)
+
+        // The scanlines shader darkens every row where mod(fragCoord.y, 3.0) < 1.0
+        // to 40%. On white input (255), dark rows should be ~102, bright rows ~255.
+        var darkRows = 0
+        var brightRows = 0
+        let midX = width / 2
+        for y in 0..<height {
+            let idx = (y * width + midX) * 4
+            let g = outputPixels[idx + 1]  // green channel
+            if g < 150 {
+                darkRows += 1
+            } else {
+                brightRows += 1
+            }
+        }
+
+        print("=== Scanline test: \(darkRows) dark rows, \(brightRows) bright rows out of \(height) ===")
+
+        // Roughly 1/3 should be dark (mod 3 < 1), 2/3 bright
+        XCTAssertGreaterThan(darkRows, 10, "Should have dark scanline rows (got \(darkRows))")
+        XCTAssertGreaterThan(brightRows, 30, "Should have bright rows between scanlines (got \(brightRows))")
+        XCTAssertNotEqual(darkRows, 0, "If all rows are the same brightness, the shader isn't working")
+    }
+
     func testMetalCompositorInitWithIdentityShader() throws {
         guard let url = Bundle.module.url(forResource: "identity", withExtension: "glsl") else {
             XCTFail("identity.glsl not found in bundle")
