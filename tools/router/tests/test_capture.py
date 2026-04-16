@@ -36,10 +36,11 @@ class TestResponseCapture:
     def test_truncates_at_max_chars(self):
         capture = ResponseCapture()
         long_lines = ["x" * 1000] * 5  # 5000 chars total
+        truncation_suffix = "\n[...truncated at 4000 chars]"
         with patch("urllib.request.urlopen") as mock_open:
             mock_open.return_value = mock_output_response(long_lines)
             result = capture.capture("chan-1", max_chars=100)
-        assert len(result) < 200
+        assert len(result) <= 100 + len(truncation_suffix)
         assert "[...truncated" in result
 
     def test_returns_error_on_connection_failure(self):
