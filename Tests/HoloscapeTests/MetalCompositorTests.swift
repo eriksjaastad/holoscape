@@ -64,7 +64,8 @@ final class MetalCompositorTests: XCTestCase {
             sourceView: sourceView,
             hostView: hostView
         )
-        // If we got here, init succeeded — pipeline state was created
-        XCTAssertNotNil(compositor)
+        // Verify stop/start lifecycle doesn't crash on headless init
+        compositor.stop()
+        compositor.stop() // idempotent
     }
 }
