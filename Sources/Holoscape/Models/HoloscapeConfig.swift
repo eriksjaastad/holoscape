@@ -40,6 +40,7 @@ struct AppearanceConfig: Codable, Equatable, Sendable {
     var themeName: String?
     var themeOverrides: [String: String]?
     var skinName: String?
+    var customShaderPath: String?
 
     static let `default` = AppearanceConfig(
         backgroundColor: "#1a1a2e",

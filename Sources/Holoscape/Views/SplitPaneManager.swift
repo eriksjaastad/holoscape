@@ -28,12 +28,12 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
     }
 
     /// Show content in the single pane (or active pane if split).
-    func showContent(_ view: NSView, channelId: UUID) {
+    func showContent(_ view: NSView, channelId: UUID, compiledShader: CompiledShader? = nil) {
         if panes.isEmpty {
             // Create initial single pane
             let pane = createPane()
             pane.channelId = channelId
-            pane.showContent(view)
+            pane.showContent(view, compiledShader: compiledShader)
             pane.isActivePane = true
             activePaneId = pane.paneId
 
@@ -52,7 +52,7 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
             setActivePane(existingPane.paneId)
         } else if let activePane = panes.first(where: { $0.paneId == activePaneId }) {
             activePane.channelId = channelId
-            activePane.showContent(view)
+            activePane.showContent(view, compiledShader: compiledShader)
         }
     }
 
