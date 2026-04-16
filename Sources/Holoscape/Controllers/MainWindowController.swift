@@ -20,7 +20,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
-    private var activeChannelId: UUID?
+    private(set) var activeChannelId: UUID?
     private var sidebarExpanded: Bool = true
     nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
