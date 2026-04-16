@@ -528,10 +528,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     private func createAgentChannel(authType: AgentAuthType) {
+        let projectsDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("projects")
+        let defaultDir = FileManager.default.fileExists(atPath: projectsDir.path)
+            ? projectsDir
+            : URL(fileURLWithPath: NSHomeDirectory())
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
             role: nil,
-            workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            workingDirectory: defaultDir
         ) { id, type, _, instanceNum, workDir in
             AgentChannelController(
                 id: id,
