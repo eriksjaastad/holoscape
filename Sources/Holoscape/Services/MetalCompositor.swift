@@ -1,7 +1,6 @@
 import AppKit
 import Metal
 import QuartzCore
-import IOSurface
 
 /// Renders a user shader behind the terminal view using Metal.
 ///
@@ -15,16 +14,15 @@ final class MetalCompositor {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
+    private let samplerState: MTLSamplerState
     private let metalLayer: CAMetalLayer
     private let uniformBuffer: MTLBuffer
 
     private var frameCount: Int = 0
     private var startTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
 
-    // IOSurface capture pipeline
-    private var ioSurface: IOSurface?
+    // Capture pipeline
     private var captureTexture: MTLTexture?
-    private var captureContext: CGContext?
     private var currentPixelSize: (w: Int, h: Int) = (0, 0)
 
     private var displayLink: CADisplayLink?
@@ -82,6 +80,17 @@ final class MetalCompositor {
             throw MetalCompositorError.pipelineCreationFailed(error.localizedDescription)
         }
 
+        // Sampler for iChannel0 — spirv-cross emits [[sampler(0)]]
+        let samplerDesc = MTLSamplerDescriptor()
+        samplerDesc.minFilter = .linear
+        samplerDesc.magFilter = .linear
+        samplerDesc.sAddressMode = .clampToEdge
+        samplerDesc.tAddressMode = .clampToEdge
+        guard let sampler = device.makeSamplerState(descriptor: samplerDesc) else {
+            throw MetalCompositorError.bufferCreationFailed
+        }
+        self.samplerState = sampler
+
         // Uniform buffer (~4.7 KB for the Globals UBO)
         guard let buffer = device.makeBuffer(
             length: GlobalsUBOLayout.totalSize,
@@ -134,7 +143,7 @@ final class MetalCompositor {
     // MARK: - Per-frame render
 
     @objc private func renderFrame(_ link: CADisplayLink) {
-        guard let sourceView, let sourceLayer = sourceView.layer else { return }
+        guard let sourceView else { return }
 
         let scale = metalLayer.contentsScale
         let bounds = metalLayer.bounds
@@ -147,17 +156,47 @@ final class MetalCompositor {
             rebuildCapture(width: pixelW, height: pixelH)
         }
 
-        guard let captureContext, let captureTexture else { return }
+        guard let captureTexture else { return }
 
-        // 1. Capture terminal layer into IOSurface-backed CGContext
-        captureContext.saveGState()
-        captureContext.scaleBy(x: scale, y: scale)
-        sourceLayer.render(in: captureContext)
-        captureContext.restoreGState()
+        // 1. Capture terminal view as it appears on screen
+        guard let rep = sourceView.bitmapImageRepForCachingDisplay(in: sourceView.bounds) else { return }
+        sourceView.cacheDisplay(in: sourceView.bounds, to: rep)
+        guard let cgImage = rep.cgImage else { return }
+
+        // 2. Draw CGImage into a pixel buffer with Metal-compatible format
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerRow = pixelW * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * pixelH)
+        guard let ctx = CGContext(
+            data: &pixels,
+            width: pixelW,
+            height: pixelH,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else { return }
+
+        // Draw CGImage into context — CGContext origin is bottom-left,
+        // so this naturally flips the image for Metal's top-left convention
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: pixelW, height: pixelH))
+
+        captureTexture.replace(
+            region: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: pixelW, height: pixelH, depth: 1)),
+            mipmapLevel: 0,
+            withBytes: pixels,
+            bytesPerRow: bytesPerRow
+        )
 
         // 2. Update uniform buffer
         updateUniforms(width: Float(pixelW), height: Float(pixelH))
         frameCount += 1
+        if frameCount == 1 || frameCount % 300 == 0 {
+            let msg = "\(Date()): renderFrame #\(frameCount), size: \(pixelW)x\(pixelH)\n"
+            if let h = FileHandle(forWritingAtPath: "/tmp/holoscape-shader.log") {
+                h.seekToEndOfFile(); h.write(msg.data(using: .utf8)!); h.closeFile()
+            }
+        }
 
         // 3. Get drawable (transient failures are normal during resize/pressure)
         metalLayer.drawableSize = CGSize(width: pixelW, height: pixelH)
@@ -185,6 +224,7 @@ final class MetalCompositor {
 
         encoder.setRenderPipelineState(pipelineState)
         encoder.setFragmentTexture(captureTexture, index: 0)
+        encoder.setFragmentSamplerState(samplerState, index: 0)
         encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
@@ -196,40 +236,6 @@ final class MetalCompositor {
     // MARK: - IOSurface capture pipeline
 
     private func rebuildCapture(width: Int, height: Int) {
-        let alignment = device.minimumLinearTextureAlignment(for: .bgra8Unorm)
-        let unalignedBPR = width * 4
-        let bytesPerRow = (unalignedBPR + alignment - 1) / alignment * alignment
-
-        let properties: [IOSurfacePropertyKey: Any] = [
-            .width: width,
-            .height: height,
-            .bytesPerElement: 4,
-            .bytesPerRow: bytesPerRow,
-            .pixelFormat: kCVPixelFormatType_32BGRA,
-        ]
-        guard let surface = IOSurface(properties: properties) else {
-            NSLog("MetalCompositor: IOSurface creation failed (%dx%d)", width, height)
-            return
-        }
-
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: surface.baseAddress,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: surface.bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-        ) else {
-            NSLog("MetalCompositor: CGContext creation failed (%dx%d)", width, height)
-            return
-        }
-
-        // Flip Y for CoreGraphics (origin at bottom-left) vs Metal (top-left)
-        ctx.translateBy(x: 0, y: CGFloat(height))
-        ctx.scaleBy(x: 1, y: -1)
-
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
             width: width,
@@ -237,13 +243,11 @@ final class MetalCompositor {
             mipmapped: false
         )
         texDesc.usage = [.shaderRead]
-        guard let texture = device.makeTexture(descriptor: texDesc, iosurface: surface, plane: 0) else {
-            NSLog("MetalCompositor: MTLTexture creation from IOSurface failed (%dx%d)", width, height)
+        texDesc.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: texDesc) else {
+            NSLog("MetalCompositor: MTLTexture creation failed (%dx%d)", width, height)
             return
         }
-
-        self.ioSurface = surface
-        self.captureContext = ctx
         self.captureTexture = texture
         self.currentPixelSize = (width, height)
     }
@@ -272,7 +276,7 @@ final class MetalCompositor {
 
     // MARK: - Vertex shader
 
-    private static let vertexShaderSource = """
+    static let vertexShaderSource = """
     #include <metal_stdlib>
     using namespace metal;
 

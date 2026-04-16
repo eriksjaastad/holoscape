@@ -925,28 +925,45 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
+    private func shaderLog(_ msg: String) {
+        let line = "\(Date()): \(msg)\n"
+        let logPath = "/tmp/holoscape-shader.log"
+        if let handle = FileHandle(forWritingAtPath: logPath) {
+            handle.seekToEndOfFile()
+            handle.write(line.data(using: .utf8)!)
+            handle.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: logPath, contents: line.data(using: .utf8))
+        }
+    }
+
     private func recompileShader(path: String?) {
+        shaderLog("recompileShader called with path: \(path ?? "nil")")
         guard let shaderPath = path else {
+            shaderLog(" path is nil, clearing cachedShader")
             cachedShader = nil
-            // Re-show current channel without compositor
             if let id = activeChannelId { switchToChannel(id) }
             return
         }
         let url: URL
         if shaderPath.hasPrefix("/") || shaderPath.hasPrefix("~") {
             url = URL(fileURLWithPath: (shaderPath as NSString).expandingTildeInPath)
+            shaderLog(" resolved as absolute path: \(url.path)")
         } else if let bundled = Bundle.module.url(
             forResource: (shaderPath as NSString).lastPathComponent.replacingOccurrences(of: ".glsl", with: ""),
             withExtension: "glsl"
         ) {
             url = bundled
+            shaderLog(" resolved from bundle: \(url.path)")
         } else {
             url = URL(fileURLWithPath: shaderPath)
+            shaderLog(" WARNING: fallback to relative path: \(url.path)")
         }
         do {
             cachedShader = try ShaderCompiler().compile(glslPath: url)
+            shaderLog(" compilation SUCCESS, MSL length: \(cachedShader!.mslSource.count) chars")
         } catch {
-            NSLog("ShaderCompiler: failed to compile \(shaderPath): \(error)")
+            shaderLog(" compilation FAILED: \(error)")
             cachedShader = nil
         }
         // Re-show current channel with new (or no) compositor

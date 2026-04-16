@@ -53,6 +53,150 @@ final class MetalCompositorTests: XCTestCase {
         XCTAssertTrue(compiled.mslSource.contains("main0"))
     }
 
+    func testMSLTextureBindingIndex() throws {
+        // Print the compiled MSL to see how iChannel0 is declared
+        guard let url = Bundle.module.url(forResource: "identity", withExtension: "glsl") else {
+            XCTFail("identity.glsl not found"); return
+        }
+        let compiled = try ShaderCompiler().compile(glslPath: url)
+
+        // Find the texture declaration in the MSL
+        let msl = compiled.mslSource
+        let lines = msl.components(separatedBy: "\n")
+        let textureLines = lines.filter { $0.contains("texture") || $0.contains("sampler") }
+        print("=== MSL texture/sampler declarations ===")
+        for line in textureLines { print(line) }
+
+        // Find the main0 function signature
+        let main0Lines = lines.filter { $0.contains("main0") }
+        print("=== MSL main0 signature ===")
+        for line in main0Lines { print(line) }
+
+        // Check what binding index the texture uses
+        let hasTexture0 = msl.contains("texture(0)")
+        let hasTexture1 = msl.contains("texture(1)")
+        print("Contains [[texture(0)]]: \(hasTexture0)")
+        print("Contains [[texture(1)]]: \(hasTexture1)")
+
+        // The texture should be at index 0 (binding=0 in GLSL)
+        XCTAssertTrue(hasTexture0, "iChannel0 should be at [[texture(0)]]")
+    }
+
+    func testOffscreenRenderWithKnownTexture() throws {
+        // This test creates a green input texture, renders through the identity
+        // shader, reads back the output, and verifies the pixels are green (not black).
+        // This isolates whether the texture binding works.
+
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            XCTFail("No Metal device"); return
+        }
+        guard let queue = device.makeCommandQueue() else {
+            XCTFail("No command queue"); return
+        }
+
+        // Compile identity shader
+        guard let url = Bundle.module.url(forResource: "identity", withExtension: "glsl") else {
+            XCTFail("identity.glsl not found"); return
+        }
+        let compiled = try ShaderCompiler().compile(glslPath: url)
+
+        // Build pipeline
+        let vertexLib = try device.makeLibrary(source: MetalCompositor.vertexShaderSource, options: nil)
+        let fragLib = try device.makeLibrary(source: compiled.mslSource, options: nil)
+        guard let vertexFn = vertexLib.makeFunction(name: "fullscreen_vertex"),
+              let fragFn = fragLib.makeFunction(name: "main0") else {
+            XCTFail("Could not find shader functions"); return
+        }
+
+        let pipeDesc = MTLRenderPipelineDescriptor()
+        pipeDesc.vertexFunction = vertexFn
+        pipeDesc.fragmentFunction = fragFn
+        pipeDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        let pipeline = try device.makeRenderPipelineState(descriptor: pipeDesc)
+
+        let width = 64, height = 64
+
+        // Create input texture (solid green) — this is iChannel0
+        let inputDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        inputDesc.usage = [.shaderRead]
+        inputDesc.storageMode = .shared
+        guard let inputTexture = device.makeTexture(descriptor: inputDesc) else {
+            XCTFail("Could not create input texture"); return
+        }
+
+        // Fill with solid green (BGRA: B=0, G=255, R=0, A=255)
+        var greenPixels = [UInt8](repeating: 0, count: width * height * 4)
+        for i in stride(from: 0, to: greenPixels.count, by: 4) {
+            greenPixels[i + 0] = 0     // B
+            greenPixels[i + 1] = 255   // G
+            greenPixels[i + 2] = 0     // R
+            greenPixels[i + 3] = 255   // A
+        }
+        inputTexture.replace(
+            region: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: width, height: height, depth: 1)),
+            mipmapLevel: 0, withBytes: greenPixels, bytesPerRow: width * 4)
+
+        // Create output texture (render target)
+        let outputDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        outputDesc.usage = [.renderTarget, .shaderRead]
+        outputDesc.storageMode = .shared
+        guard let outputTexture = device.makeTexture(descriptor: outputDesc) else {
+            XCTFail("Could not create output texture"); return
+        }
+
+        // Create UBO buffer (all zeros is fine for identity shader)
+        guard let uboBuffer = device.makeBuffer(length: GlobalsUBOLayout.totalSize, options: .storageModeShared) else {
+            XCTFail("Could not create UBO buffer"); return
+        }
+        // Set iResolution so the shader can compute UVs
+        let ptr = uboBuffer.contents()
+        ptr.storeBytes(of: Float(width), toByteOffset: GlobalsUBOLayout.iResolution, as: Float.self)
+        ptr.storeBytes(of: Float(height), toByteOffset: GlobalsUBOLayout.iResolution + 4, as: Float.self)
+        ptr.storeBytes(of: Float(1.0), toByteOffset: GlobalsUBOLayout.iResolution + 8, as: Float.self)
+
+        // Render
+        let passDesc = MTLRenderPassDescriptor()
+        passDesc.colorAttachments[0].texture = outputTexture
+        passDesc.colorAttachments[0].loadAction = .clear
+        passDesc.colorAttachments[0].storeAction = .store
+        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        guard let cmdBuffer = queue.makeCommandBuffer(),
+              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+            XCTFail("Could not create render encoder"); return
+        }
+
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(inputTexture, index: 0)
+        encoder.setFragmentBuffer(uboBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        cmdBuffer.commit()
+        cmdBuffer.waitUntilCompleted()
+
+        // Read back output pixels
+        var outputPixels = [UInt8](repeating: 0, count: width * height * 4)
+        outputTexture.getBytes(
+            &outputPixels,
+            bytesPerRow: width * 4,
+            from: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: width, height: height, depth: 1)),
+            mipmapLevel: 0)
+
+        // Check center pixel — should be green, not black
+        let centerIdx = (height / 2 * width + width / 2) * 4
+        let b = outputPixels[centerIdx + 0]
+        let g = outputPixels[centerIdx + 1]
+        let r = outputPixels[centerIdx + 2]
+        let a = outputPixels[centerIdx + 3]
+        print("=== Center pixel: R=\(r) G=\(g) B=\(b) A=\(a) ===")
+
+        XCTAssertGreaterThan(g, 200, "Green channel should be bright (got \(g)) — iChannel0 texture binding is broken if this fails")
+        XCTAssertLessThan(r, 50, "Red channel should be near zero (got \(r))")
+        XCTAssertEqual(a, 255, "Alpha should be 255 (got \(a))")
+    }
+
     func testMetalCompositorInitWithIdentityShader() throws {
         guard let url = Bundle.module.url(forResource: "identity", withExtension: "glsl") else {
             XCTFail("identity.glsl not found in bundle")
