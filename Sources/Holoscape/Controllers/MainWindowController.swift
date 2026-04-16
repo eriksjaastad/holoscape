@@ -21,6 +21,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let inputContainer: NSScrollView
 
     private(set) var activeChannelId: UUID?
+    private var cachedShader: CompiledShader?
     private var sidebarExpanded: Bool = true
     nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
@@ -65,9 +66,26 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         inputBox.textContainer?.widthTracksTextView = true
 
-        // Load sidebar state
+        // Load sidebar state and compile shader if configured
         let config = configService.load()
         self.sidebarExpanded = config.sidebarExpanded ?? true
+
+        if let shaderPath = config.appearance.customShaderPath {
+            let url: URL
+            if shaderPath.hasPrefix("/") || shaderPath.hasPrefix("~") {
+                url = URL(fileURLWithPath: (shaderPath as NSString).expandingTildeInPath)
+            } else if shaderPath == "demos/identity.glsl",
+                      let bundled = Bundle.module.url(forResource: "identity", withExtension: "glsl") {
+                url = bundled
+            } else {
+                url = URL(fileURLWithPath: shaderPath)
+            }
+            do {
+                self.cachedShader = try ShaderCompiler().compile(glslPath: url)
+            } catch {
+                NSLog("ShaderCompiler: failed to compile \(shaderPath): \(error)")
+            }
+        }
 
         super.init()
 
@@ -410,7 +428,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         activeChannelId = id
         channel.hasUnread = false
         apiServer?.clearNotification(for: id)
-        splitPaneManager.showContent(channel.contentView, channelId: id)
+        splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
 
