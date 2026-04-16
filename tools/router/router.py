@@ -142,9 +142,17 @@ class MessagePoller:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
+                logging.getLogger("router").info("ERROR | poll | pt message returned exit code %d: %s", result.returncode, result.stderr[:200])
                 return []
             data = json.loads(result.stdout)
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        except subprocess.TimeoutExpired:
+            logging.getLogger("router").info("ERROR | poll | pt message timed out after 10s")
+            return []
+        except json.JSONDecodeError as e:
+            logging.getLogger("router").info("ERROR | poll | invalid JSON from pt message: %s", e)
+            return []
+        except FileNotFoundError:
+            logging.getLogger("router").info("ERROR | poll | pt command not found")
             return []
 
         messages = []
@@ -184,7 +192,8 @@ class ChannelResolver:
             req = urllib.request.Request(f"{self.api_url}/channels")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
-        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            logging.getLogger("router").info("ERROR | fetch_channels | Holoscape not reachable on %s: %s", self.api_url, e)
             return []
         return [
             Channel(
@@ -199,14 +208,10 @@ class ChannelResolver:
         ]
 
     def resolve(self, recipient: str, channels: list[Channel]) -> Channel | None:
-        """Resolve recipient name to a channel. Case-insensitive label match, with alias fallback."""
+        """Resolve recipient name to a channel. Case-insensitive exact match + alias lookup only."""
         target_name = self.aliases.get(recipient.lower(), recipient).lower()
         for ch in channels:
             if ch.label.lower() == target_name:
-                return ch
-        # Partial match: channel label contains the target name
-        for ch in channels:
-            if target_name in ch.label.lower():
                 return ch
         return None
 
@@ -257,15 +262,14 @@ class ResponseDetector:
             except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
                 continue
 
-            for ch in channels:
-                if ch["id"] == channel_id:
-                    notif = ch.get("notification_type")
-                    if notif == "idle_prompt":
-                        return "complete"
-                    if notif == "permission_prompt":
-                        # Agent is waiting for permission — keep waiting
-                        continue
-                    break
+            # Find our target channel and check its notification state
+            target = next((ch for ch in channels if ch["id"] == channel_id), None)
+            if target is None:
+                continue  # Channel disappeared — retry
+            notif = target.get("notification_type")
+            if notif == "idle_prompt":
+                return "complete"
+            # permission_prompt or no notification — keep polling
         return "timeout"
 
 
@@ -381,6 +385,13 @@ class RouterDaemon:
             self.poller.mark_processed(msg.id)
             return
 
+        # Disconnected channel — bounce
+        if channel.state == "disconnected":
+            self.logger.bounce(msg.sender, recipient, "channel is disconnected")
+            ReplyRouter.send_bounce(msg.sender, recipient, "agent channel is disconnected")
+            self.poller.mark_processed(msg.id)
+            return
+
         # Foreground protection: hold if target is active tab
         if channel.is_active:
             self.logger.hold(msg.sender, recipient, "target is foreground tab")
@@ -411,7 +422,8 @@ class RouterDaemon:
         if status == "timeout":
             reply_body = f"[Response from {recipient} (partial — timed out after {RESPONSE_TIMEOUT}s)]\n\n{response}"
 
-        ReplyRouter.send_reply(msg.sender, reply_body, reply_to=msg.id)
+        if not ReplyRouter.send_reply(msg.sender, reply_body, reply_to=msg.id):
+            self.logger.error("reply", f"Failed to send reply back to {msg.sender} for message #{msg.id}")
 
         self.logger.exchange(
             sender=msg.sender,
@@ -467,14 +479,16 @@ class RouterDaemon:
 
                     # Poll for new messages
                     messages = self.poller.poll(since=self.watermark)
+                    last_processed_ts = None
                     for msg in messages:
                         if not self.running:
                             break
                         self._process_message(msg, channels)
+                        last_processed_ts = msg.ts
 
-                    # Update watermark to latest message timestamp
-                    if messages:
-                        self.watermark = messages[-1].ts
+                    # Only advance watermark to last actually-processed message
+                    if last_processed_ts:
+                        self.watermark = last_processed_ts
 
                 except Exception as e:
                     self.logger.error("main_loop", str(e))

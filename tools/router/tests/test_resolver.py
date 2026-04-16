@@ -32,11 +32,12 @@ class TestChannelResolver:
         assert result is not None
         assert result.label == "projects"
 
-    def test_partial_match(self):
+    def test_no_partial_match(self):
+        """Partial matches must NOT resolve — only exact + alias."""
         resolver = ChannelResolver(aliases={})
         channels = [make_channel(label="ai-memory 2")]
         result = resolver.resolve("ai-memory", channels)
-        assert result is not None
+        assert result is None
 
     def test_no_match_returns_none(self):
         resolver = ChannelResolver(aliases={})
@@ -51,3 +52,11 @@ class TestChannelResolver:
         result = resolver.resolve("holoscape", channels)
         assert result is not None
         assert result.is_active is True
+
+    def test_disconnected_state_exposed(self):
+        resolver = ChannelResolver(aliases={})
+        ch = make_channel(label="holoscape", state="disconnected")
+        channels = [ch]
+        result = resolver.resolve("holoscape", channels)
+        assert result is not None
+        assert result.state == "disconnected"

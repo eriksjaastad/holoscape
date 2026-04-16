@@ -41,10 +41,13 @@ class TestDaemonLifecycle:
             assert not lock.exists()
 
     def test_watermark_set_on_init(self):
+        from datetime import datetime
         daemon = RouterDaemon()
         daemon._set_watermark()
         assert daemon.watermark is not None
-        assert "2026" in daemon.watermark or "T" in daemon.watermark
+        # Verify it's a valid ISO-8601 timestamp
+        parsed = datetime.fromisoformat(daemon.watermark)
+        assert parsed.year >= 2026
 
     def test_signal_sets_running_false(self):
         daemon = RouterDaemon()
