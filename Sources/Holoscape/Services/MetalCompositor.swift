@@ -196,11 +196,15 @@ final class MetalCompositor {
     // MARK: - IOSurface capture pipeline
 
     private func rebuildCapture(width: Int, height: Int) {
+        let alignment = device.minimumLinearTextureAlignment(for: .bgra8Unorm)
+        let unalignedBPR = width * 4
+        let bytesPerRow = (unalignedBPR + alignment - 1) / alignment * alignment
+
         let properties: [IOSurfacePropertyKey: Any] = [
             .width: width,
             .height: height,
             .bytesPerElement: 4,
-            .bytesPerRow: width * 4,
+            .bytesPerRow: bytesPerRow,
             .pixelFormat: kCVPixelFormatType_32BGRA,
         ]
         guard let surface = IOSurface(properties: properties) else {
