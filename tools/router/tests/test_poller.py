@@ -81,3 +81,18 @@ class TestMessagePoller:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("pt", 10)):
             result = poller.poll()
         assert result == []
+
+    def test_poll_skips_router_bounce_messages(self, tmp_processed):
+        """Bounce-loop prevention: router's own messages must be filtered out."""
+        poller = MessagePoller(processed_file=tmp_processed)
+        msgs = [
+            sample_message(id=1, body="[Router] Message to 'agent-b' bounced: offline"),
+            sample_message(id=2, body="[Response from agent-b]\n\nSome response text"),
+            sample_message(id=3, body="Normal message from an agent"),
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=make_pt_output(msgs))
+            result = poller.poll()
+        assert len(result) == 1
+        assert result[0].id == 3
+        assert result[0].body == "Normal message from an agent"
