@@ -32,6 +32,9 @@ LOG_FILE = ROUTER_DIR / "router.log"
 LOCK_FILE = ROUTER_DIR / "router.lock"
 PROCESSED_FILE = ROUTER_DIR / "processed_ids.json"
 
+# pt is aliased in zsh but subprocess doesn't expand aliases
+PT_CMD = Path.home() / "projects" / "project-tracker" / "pt"
+
 DEFAULT_INTERVAL = 4  # seconds
 DEFAULT_API_URL = "http://localhost:7865"
 RESPONSE_TIMEOUT = 120  # seconds
@@ -136,7 +139,7 @@ class MessagePoller:
 
     def poll(self, since: str | None = None) -> list[Message]:
         """Fetch directed messages (recipient not null) newer than since."""
-        cmd = ["pt", "message", "list", "--json", "--limit", "20"]
+        cmd = [str(PT_CMD), "message", "list", "--json", "--limit", "20"]
         if since:
             cmd += ["--since", since]
         try:
@@ -157,8 +160,13 @@ class MessagePoller:
 
         messages = []
         for m in data.get("messages", []):
-            if m.get("recipient") and m["id"] not in self._processed_ids:
-                messages.append(Message(
+            # Skip: broadcasts, already processed, and router's own bounce/response messages
+            if not m.get("recipient") or m["id"] in self._processed_ids:
+                continue
+            body = m.get("body", "")
+            if body.startswith("[Router]") or body.startswith("[Response from"):
+                continue
+            messages.append(Message(
                     id=m["id"],
                     sender=m["sender"],
                     recipient=m.get("recipient"),
@@ -290,10 +298,11 @@ class ResponseCapture:
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             return "[Router: failed to capture response]"
 
-        output = data.get("output", "")
-        if not output:
+        lines = data.get("lines", [])
+        if not lines:
             return "[Router: empty response]"
 
+        output = "\n".join(lines)
         # Truncate if needed
         if len(output) > max_chars:
             output = output[:max_chars] + "\n[...truncated at 4000 chars]"
@@ -307,7 +316,7 @@ class ResponseCapture:
 class ReplyRouter:
     @staticmethod
     def send_reply(recipient: str, body: str, reply_to: int | None = None) -> bool:
-        cmd = ["pt", "message", "send", body, "--to", recipient]
+        cmd = [str(PT_CMD), "message", "send", body, "--to", recipient]
         if reply_to:
             cmd += ["--reply-to", str(reply_to)]
         try:
