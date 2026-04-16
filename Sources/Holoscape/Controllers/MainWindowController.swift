@@ -71,7 +71,16 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.sidebarExpanded = config.sidebarExpanded ?? true
 
         super.init()
-        recompileShader(path: config.appearance.customShaderPath)
+
+        // --shader launch argument overrides config (used by UI tests)
+        let shaderPath: String?
+        if let idx = CommandLine.arguments.firstIndex(of: "--shader"),
+           idx + 1 < CommandLine.arguments.count {
+            shaderPath = CommandLine.arguments[idx + 1]
+        } else {
+            shaderPath = config.appearance.customShaderPath
+        }
+        recompileShader(path: shaderPath)
 
         window.delegate = self
         window.title = "Holoscape"
