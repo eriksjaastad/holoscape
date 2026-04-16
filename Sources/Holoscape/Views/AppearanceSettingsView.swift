@@ -17,6 +17,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private let transparencySlider = NSSlider()
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
+    private let shaderPopup = NSPopUpButton()
     private let skinEngine = SkinEngine()
     private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
     private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
@@ -79,6 +80,14 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         skinPopup.setAccessibilityIdentifier("skin-popup")
         skinPopup.menu?.delegate = self
         stack.addArrangedSubview(skinRow)
+
+        // Shader
+        let shaderRow = makeRow(label: "Shader:", control: shaderPopup)
+        shaderPopup.addItems(withTitles: ["None", "Identity", "Scanlines"])
+        shaderPopup.target = self
+        shaderPopup.action = #selector(shaderChanged(_:))
+        shaderPopup.setAccessibilityIdentifier("shader-popup")
+        stack.addArrangedSubview(shaderRow)
 
         // Background color
         let colorRow = makeRow(label: "Background Color:", control: colorWell)
@@ -153,8 +162,19 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         return row
     }
 
+    private static let shaderPathMap: [String: String?] = [
+        "None": nil,
+        "Identity": "demos/identity.glsl",
+        "Scanlines": "demos/scanlines.glsl",
+    ]
+
     private func loadCurrentValues() {
         refreshSkinPopupItems(selectedTitle: config.skinName ?? skinPopup.titleOfSelectedItem)
+
+        // Shader
+        let selectedShader = Self.shaderPathMap.first { $0.value == config.customShaderPath }?.key ?? "None"
+        shaderPopup.selectItem(withTitle: selectedShader)
+
         let themeName = config.themeName ?? "Dark"
         themePopup.selectItem(withTitle: themeName)
         let skinName = config.skinName ?? "Default"
@@ -193,6 +213,12 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
             config = skinEngine.apply(skin: skin, to: config)
         }
         loadCurrentValues()
+        applyAndSave()
+    }
+
+    @objc private func shaderChanged(_ sender: NSPopUpButton) {
+        let title = sender.titleOfSelectedItem ?? "None"
+        config.customShaderPath = Self.shaderPathMap[title] ?? nil
         applyAndSave()
     }
 
