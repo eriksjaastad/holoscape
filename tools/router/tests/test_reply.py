@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from router import ReplyRouter
+from router import ReplyRouter, PT_CMD
 
 
 class TestReplyRouter:
@@ -15,7 +15,7 @@ class TestReplyRouter:
             result = ReplyRouter.send_reply("agent-a", "response text")
         assert result is True
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["pt", "message", "send", "response text", "--to", "agent-a"]
+        assert cmd == [str(PT_CMD), "message", "send", "response text", "--to", "agent-a"]
 
     def test_send_reply_with_reply_to(self):
         with patch("subprocess.run") as mock_run:
