@@ -70,24 +70,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let config = configService.load()
         self.sidebarExpanded = config.sidebarExpanded ?? true
 
-        if let shaderPath = config.appearance.customShaderPath {
-            let url: URL
-            if shaderPath.hasPrefix("/") || shaderPath.hasPrefix("~") {
-                url = URL(fileURLWithPath: (shaderPath as NSString).expandingTildeInPath)
-            } else if shaderPath == "demos/identity.glsl",
-                      let bundled = Bundle.module.url(forResource: "identity", withExtension: "glsl") {
-                url = bundled
-            } else {
-                url = URL(fileURLWithPath: shaderPath)
-            }
-            do {
-                self.cachedShader = try ShaderCompiler().compile(glslPath: url)
-            } catch {
-                NSLog("ShaderCompiler: failed to compile \(shaderPath): \(error)")
-            }
-        }
-
         super.init()
+        recompileShader(path: config.appearance.customShaderPath)
 
         window.delegate = self
         window.title = "Holoscape"
@@ -935,6 +919,38 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         if old.skinName != settings.skinName {
             historyBuffer.recordSettingsChange(setting: "skin", oldValue: old.skinName ?? "Default", newValue: settings.skinName ?? "Default")
         }
+        if old.customShaderPath != settings.customShaderPath {
+            historyBuffer.recordSettingsChange(setting: "shader", oldValue: old.customShaderPath ?? "None", newValue: settings.customShaderPath ?? "None")
+            recompileShader(path: settings.customShaderPath)
+        }
+    }
+
+    private func recompileShader(path: String?) {
+        guard let shaderPath = path else {
+            cachedShader = nil
+            // Re-show current channel without compositor
+            if let id = activeChannelId { switchToChannel(id) }
+            return
+        }
+        let url: URL
+        if shaderPath.hasPrefix("/") || shaderPath.hasPrefix("~") {
+            url = URL(fileURLWithPath: (shaderPath as NSString).expandingTildeInPath)
+        } else if let bundled = Bundle.module.url(
+            forResource: (shaderPath as NSString).lastPathComponent.replacingOccurrences(of: ".glsl", with: ""),
+            withExtension: "glsl"
+        ) {
+            url = bundled
+        } else {
+            url = URL(fileURLWithPath: shaderPath)
+        }
+        do {
+            cachedShader = try ShaderCompiler().compile(glslPath: url)
+        } catch {
+            NSLog("ShaderCompiler: failed to compile \(shaderPath): \(error)")
+            cachedShader = nil
+        }
+        // Re-show current channel with new (or no) compositor
+        if let id = activeChannelId { switchToChannel(id) }
     }
 
     // MARK: - Bug Report
