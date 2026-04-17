@@ -7,13 +7,15 @@ final class SidebarUITests: HoloscapeUITestCase {
     func testToggleSidebarViaShortcut() throws {
         let window = app.windows["Holoscape"]
 
-        // Sidebar should be visible on launch (default expanded)
+        // Tab bar lives in the titlebar and is always visible, in both
+        // sidebar states. Assert it's present before and after the toggle.
+        let tabBar = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should be visible in titlebar while sidebar expanded")
+
         // Toggle sidebar off with Cmd+Shift+S
         app.typeKey("s", modifierFlags: [.command, .shift])
 
-        // Tab bar should appear when sidebar is collapsed
-        let tabBar = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should show when sidebar collapsed")
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should remain visible in titlebar after collapsing sidebar")
 
         // Toggle sidebar back on
         app.typeKey("s", modifierFlags: [.command, .shift])
@@ -30,10 +32,11 @@ final class SidebarUITests: HoloscapeUITestCase {
         XCTAssertTrue(toggleItem.exists, "Toggle Sidebar menu item should exist")
         toggleItem.click()
 
-        // Tab bar should appear when sidebar is collapsed
+        // Tab bar lives in the titlebar and is always visible regardless
+        // of sidebar state.
         let window = app.windows["Holoscape"]
         let tabBar = window.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tab-'")).firstMatch
-        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should show when sidebar collapsed")
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 2), "Tab bar should remain visible in titlebar after collapsing sidebar")
 
         // Toggle back
         app.menuBars.firstMatch.menuBarItems["File"].click()
