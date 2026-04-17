@@ -50,6 +50,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// that surround the window content. Collapses the band's size
     /// constraint to zero. Independent of internal panel state.
     private let regionManager: ChromeRegionManager
+
+    /// Runtime density switch (Full / Minimal / Off). Owned here because
+    /// MainWindowController already holds `configService` and needs to
+    /// read / update menu-item checkmark state on `.densityModeDidChange`.
+    /// Exposed `internal` so AppDelegate can pass it to AppearanceSettings.
+    let densityModeManager: DensityModeManager
+
+    // References to Density menu items so we can flip the checkmark
+    // `.state` when `.densityModeDidChange` fires. Weak because AppKit
+    // retains menu items through the menu graph.
+    private weak var densityFullMenuItem: NSMenuItem?
+    private weak var densityMinimalMenuItem: NSMenuItem?
+    private weak var densityOffMenuItem: NSMenuItem?
     nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
     let historyBuffer = HistoryBuffer()
@@ -102,10 +115,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.sidebarExpanded = config.sidebarExpanded ?? true
 
         self.regionManager = ChromeRegionManager(configService: configService)
+        self.densityModeManager = DensityModeManager(configService: configService)
 
         super.init()
 
         self.regionManager.delegate = self
+
+        // Update density menu checkmarks whenever mode changes.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(densityModeDidChange(_:)),
+            name: .densityModeDidChange,
+            object: nil
+        )
 
         // --shader launch argument overrides config (used by UI tests)
         let shaderPath: String?
@@ -359,6 +381,35 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             let toggleLeftItem = NSMenuItem(title: "Toggle Left Chrome", action: #selector(toggleLeftChrome), keyEquivalent: "")
             toggleLeftItem.target = self
             viewMenu.addItem(toggleLeftItem)
+
+            viewMenu.addItem(NSMenuItem.separator())
+
+            // Density mode picker — a submenu with three mutually-exclusive
+            // items that show a checkmark on the active mode. Living in the
+            // menu bar (not a settings window) so it's one click away, the
+            // same way Settings itself is reachable.
+            let densityMenuItem = NSMenuItem(title: "Density", action: nil, keyEquivalent: "")
+            let densityMenu = NSMenu(title: "Density")
+
+            let fullItem = NSMenuItem(title: "Full", action: #selector(setDensityFull), keyEquivalent: "")
+            fullItem.target = self
+            densityMenu.addItem(fullItem)
+            densityFullMenuItem = fullItem
+
+            let minimalItem = NSMenuItem(title: "Minimal", action: #selector(setDensityMinimal), keyEquivalent: "")
+            minimalItem.target = self
+            densityMenu.addItem(minimalItem)
+            densityMinimalMenuItem = minimalItem
+
+            let offItem = NSMenuItem(title: "Off", action: #selector(setDensityOff), keyEquivalent: "")
+            offItem.target = self
+            densityMenu.addItem(offItem)
+            densityOffMenuItem = offItem
+
+            densityMenuItem.submenu = densityMenu
+            viewMenu.addItem(densityMenuItem)
+
+            updateDensityMenuChecks(for: densityModeManager.mode)
         }
 
         // Cmd+1-9 channel switching via local event monitor
@@ -509,6 +560,39 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     @objc func toggleLeftChrome() {
         regionManager.toggleRegion(.left)
+    }
+
+    // MARK: - Density mode menu
+
+    @objc func setDensityFull() {
+        densityModeManager.setMode(.full)
+    }
+
+    @objc func setDensityMinimal() {
+        densityModeManager.setMode(.minimal)
+    }
+
+    @objc func setDensityOff() {
+        densityModeManager.setMode(.off)
+    }
+
+    @objc private func densityModeDidChange(_ notification: Notification) {
+        guard
+            let rawValue = notification.userInfo?["current"] as? String,
+            let mode = DensityModeManager.Mode(rawValue: rawValue)
+        else {
+            // Malformed notification — log so the desync between menu
+            // checkmarks and actual mode is visible rather than silent.
+            NSLog("MainWindowController: .densityModeDidChange received with malformed userInfo: \(String(describing: notification.userInfo))")
+            return
+        }
+        updateDensityMenuChecks(for: mode)
+    }
+
+    private func updateDensityMenuChecks(for mode: DensityModeManager.Mode) {
+        densityFullMenuItem?.state = (mode == .full) ? .on : .off
+        densityMinimalMenuItem?.state = (mode == .minimal) ? .on : .off
+        densityOffMenuItem?.state = (mode == .off) ? .on : .off
     }
 
     // MARK: - NSWindowDelegate
