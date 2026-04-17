@@ -301,6 +301,88 @@ final class AnimationEngineTests: XCTestCase {
                        "Stale-token callback must not drain the current tracking entry")
     }
 
+    // MARK: - Density-mode gate
+
+    /// In-test persistence stub for DensityModeManager. Hoisted so every
+    /// gate test shares the same type instead of re-declaring it inline.
+    private final class StubDensityWriter: DensityModeConfigWriter {
+        func writeDensityMode(_ modeRawValue: String) {}
+    }
+
+    /// When the density manager says `shouldAnimate() == false`, every
+    /// queued property must take its instant-application branch — no
+    /// CAAnimation is added to the layer, no tracking entry is kept.
+    /// This enforces Requirement 13.5 ("state changes apply instantly").
+    func testDensityGateMinimalForcesInstantApplication() {
+        let density = DensityModeManager(initialMode: .minimal, configWriter: StubDensityWriter())
+        let engine = AnimationEngine(densityModeManager: density)
+        let layer = CALayer()
+        let curve = makeCurve(duration: 1.0)
+        let anim = SkinContext.ResolvedAnimation(default: curve, fill: nil, corner: nil)
+        let resolved = makeResolved(fillColor: .red, borderColor: .yellow, borderWidth: 2, animation: anim)
+
+        engine.animateSurface(.tabBarContainer, to: resolved, on: layer, with: anim)
+
+        XCTAssertTrue(engine.activeAnimations.isEmpty,
+                      "Minimal density must bypass animation queue entirely")
+        XCTAssertNil(layer.animation(forKey: "fill"), "fill not animated in minimal")
+        XCTAssertNil(layer.animation(forKey: "corner"), "corner not animated in minimal")
+        XCTAssertNil(layer.animation(forKey: "borderWidth"), "borderWidth not animated in minimal")
+        XCTAssertNil(layer.animation(forKey: "borderColor"), "borderColor not animated in minimal")
+        // Model values still apply: the visible state is the destination.
+        XCTAssertEqual(layer.borderWidth, 2)
+    }
+
+    func testDensityGateOffForcesInstantApplication() {
+        let density = DensityModeManager(initialMode: .off, configWriter: StubDensityWriter())
+        let engine = AnimationEngine(densityModeManager: density)
+        let layer = CALayer()
+        let anim = SkinContext.ResolvedAnimation(default: makeCurve(), fill: nil, corner: nil)
+        let resolved = makeResolved(fillColor: .red, borderColor: .yellow, borderWidth: 2, animation: anim)
+
+        engine.animateSurface(.tabBarContainer, to: resolved, on: layer, with: anim)
+
+        XCTAssertTrue(engine.activeAnimations.isEmpty)
+        // Parity with the .minimal test: every animatable property must
+        // take its instant branch — a future divergence between the
+        // .minimal and .off code paths would otherwise slip through.
+        XCTAssertNil(layer.animation(forKey: "fill"), "fill not animated in off")
+        XCTAssertNil(layer.animation(forKey: "corner"), "corner not animated in off")
+        XCTAssertNil(layer.animation(forKey: "borderWidth"), "borderWidth not animated in off")
+        XCTAssertNil(layer.animation(forKey: "borderColor"), "borderColor not animated in off")
+        XCTAssertEqual(layer.borderWidth, 2, "model value still applied")
+    }
+
+    func testDensityGateFullAllowsAnimation() {
+        let density = DensityModeManager(initialMode: .full, configWriter: StubDensityWriter())
+        let engine = AnimationEngine(densityModeManager: density)
+        let layer = CALayer()
+        let anim = SkinContext.ResolvedAnimation(default: makeCurve(), fill: nil, corner: nil)
+        let resolved = makeResolved(animation: anim)
+
+        engine.animateSurface(.tabBarContainer, to: resolved, on: layer, with: anim)
+
+        XCTAssertFalse(engine.activeAnimations.isEmpty,
+                       "Full density must not suppress animation")
+        XCTAssertNotNil(layer.animation(forKey: "fill"))
+        XCTAssertNotNil(layer.animation(forKey: "corner"),
+                        "Default curve also covers corner animation in full mode")
+    }
+
+    /// When no DensityModeManager is wired, the gate defaults open so
+    /// animation behavior matches the pre-DensityModeManager era.
+    func testNoDensityManagerDefaultsToAnimationAllowed() {
+        let engine = AnimationEngine()  // no density manager
+        let layer = CALayer()
+        let anim = SkinContext.ResolvedAnimation(default: makeCurve(), fill: nil, corner: nil)
+        let resolved = makeResolved(animation: anim)
+
+        engine.animateSurface(.tabBarContainer, to: resolved, on: layer, with: anim)
+
+        XCTAssertFalse(engine.activeAnimations.isEmpty,
+                       "Nil density manager must not suppress animation")
+    }
+
     /// Conversely, a completion callback carrying the CURRENT token must
     /// drain the entry — that's how normal animation completion works.
     func testCurrentTokenCompletionDrainsEntry() {
