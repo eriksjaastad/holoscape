@@ -4,6 +4,13 @@ import Foundation
 class SkinEngine {
     private let skinsDirectory: URL
 
+    /// Density gate. When `isSkinActive()` returns false (Off mode), `apply`
+    /// returns its input unchanged so chrome views render the pre-skinning
+    /// hardcoded defaults — enforcing the zero-overhead-idle-chrome guarantee
+    /// (Property 7, Requirement 15.1). When nil, skin application proceeds
+    /// normally (pre-DensityModeManager default).
+    weak var densityModeManager: DensityModeManager?
+
     init() {
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
             self.skinsDirectory = URL(fileURLWithPath: override).appendingPathComponent("skins")
@@ -50,7 +57,20 @@ class SkinEngine {
     }
 
     /// Apply a skin's colors to an AppearanceConfig.
+    ///
+    /// When density mode is `.off`, returns the input unchanged — the skin
+    /// engine is fully bypassed in that mode.
+    ///
+    /// TODO (Task 8.1): When image loading lands in SkinEngine, check
+    /// `densityModeManager?.shouldRenderImages()` at the loadImages call
+    /// site and substitute color fallbacks when false. That's the correct
+    /// insertion point per the plan — retrofitting SkinContext (which is
+    /// immutable post-construction) would be wrong.
     func apply(skin: SkinDefinition, to config: AppearanceConfig) -> AppearanceConfig {
+        guard densityModeManager?.isSkinActive() ?? true else {
+            return config
+        }
+
         var result = config
         if let bg = skin.windowBackground {
             result.backgroundColor = bg

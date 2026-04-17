@@ -65,14 +65,21 @@ final class AnimationEngine {
     /// just never entered.
     weak var hostView: NSView?
 
+    /// Density gate. When `shouldAnimate()` returns false (Minimal or Off
+    /// modes), curves are nil-ed out at animate-entry so every per-property
+    /// method hits its instant-application path. When nil, animation is
+    /// assumed allowed — matches the pre-DensityModeManager default.
+    weak var densityModeManager: DensityModeManager?
+
     /// Monotonically increasing counter for AnimationState tokens.
     /// UInt64 wrap would require ~18 quintillion animations in a session.
     private var tokenCounter: UInt64 = 0
 
     // MARK: - Init
 
-    init(hostView: NSView? = nil) {
+    init(hostView: NSView? = nil, densityModeManager: DensityModeManager? = nil) {
         self.hostView = hostView
+        self.densityModeManager = densityModeManager
     }
 
     // MARK: - Public API
@@ -80,15 +87,23 @@ final class AnimationEngine {
     /// Transition `layer` to match `resolved`, using the supplied `animation`
     /// curves per property. Properties without a curve (neither per-property
     /// nor `default`) are applied instantly.
+    ///
+    /// When `densityModeManager?.shouldAnimate() == false`, all curves are
+    /// ignored — every property takes its instant-application branch. This
+    /// enforces the spec's "state changes apply instantly" contract for
+    /// Minimal and Off density modes (Requirement 13.5).
     func animateSurface(
         _ key: SurfaceKey,
         to resolved: SkinContext.ResolvedSurface,
         on layer: CALayer,
         with animation: SkinContext.ResolvedAnimation?
     ) {
-        let defaultCurve = animation?.default
-        let fillCurve = animation?.fill ?? defaultCurve
-        let cornerCurve = animation?.corner ?? defaultCurve
+        let animationAllowed = densityModeManager?.shouldAnimate() ?? true
+        let effective = animationAllowed ? animation : nil
+
+        let defaultCurve = effective?.default
+        let fillCurve = effective?.fill ?? defaultCurve
+        let cornerCurve = effective?.corner ?? defaultCurve
         let borderCurve = defaultCurve
 
         applyFill(to: layer, for: key, resolved: resolved, curve: fillCurve)

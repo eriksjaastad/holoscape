@@ -18,6 +18,9 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
     private let shaderPopup = NSPopUpButton()
+    // TODO(chrome-skinning PR C): wire `skinEngine.densityModeManager` from
+    // the app-level DensityModeManager once the object graph is built. Until
+    // then the density gate on `apply()` defaults open here.
     private let skinEngine = SkinEngine()
     private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
     private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
