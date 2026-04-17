@@ -5,3 +5,13 @@ xcuserdata/
 DerivedData/
 .DS_Store
 Package.resolved
+
+# Router daemon runtime state
+tools/router/__pycache__/
+tools/router/tests/__pycache__/
+tools/router/processed_ids.json
+tools/router/router.log
+tools/router/router.lock
+
+# Local plan files from plan mode
+.claude/plans/
