@@ -20,10 +20,14 @@ struct NinepatchSidecar: Codable, Equatable, Sendable {
     /// stretchable band of the source image.
     var stretchY: [Int]
 
-    /// True when both ranges are two elements and start ≤ end.
+    /// True when both ranges are two elements and define non-degenerate
+    /// (non-zero-width) stretch bands. Zero-width bands (start == end)
+    /// produce a zero-area `contentsCenter` rect on CALayer which bypasses
+    /// the stretch fallback silently — treated as invalid.
     /// Callers fall back to `.stretch` tile mode when this is false.
     var isValid: Bool {
         guard stretchX.count == 2, stretchY.count == 2 else { return false }
-        return stretchX[0] <= stretchX[1] && stretchY[0] <= stretchY[1]
+        guard stretchX[0] >= 0, stretchY[0] >= 0 else { return false }
+        return stretchX[0] < stretchX[1] && stretchY[0] < stretchY[1]
     }
 }

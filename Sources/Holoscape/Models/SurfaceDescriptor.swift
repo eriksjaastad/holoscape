@@ -112,6 +112,11 @@ enum CornerDescriptor: Codable, Equatable, Sendable {
             return
         }
         var array = try decoder.unkeyedContainer()
+        if let expected = array.count, expected != 4 {
+            throw DecodingError.dataCorruptedError(
+                in: array,
+                debugDescription: "CornerDescriptor asymmetric form requires exactly 4 elements, got \(expected)")
+        }
         let tl = try array.decode(Double.self)
         let tr = try array.decode(Double.self)
         let br = try array.decode(Double.self)
@@ -218,21 +223,36 @@ enum MatchValue: Codable, Equatable, Sendable {
             self = .scalar(value)
             return
         }
-        // Operator dicts have keys starting with `$` (e.g., `$gte`).
-        // timeSince dicts have bare uniform names as keys (e.g., `iTimeAgentStateChange`).
-        if let ops = try? c.decode([String: Double].self),
-           ops.keys.allSatisfy({ $0.hasPrefix("$") })
-        {
+        // Decode as a generic nested dict so we can inspect keys.
+        // Operator dicts have all keys starting with `$` (e.g., `$gte`).
+        // timeSince dicts have bare uniform names (e.g., `iTimeAgentStateChange`).
+        guard let nested = try? c.decode([String: MatchValue].self), !nested.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                in: c,
+                debugDescription: "MatchValue expected scalar, operator dict, or timeSince dict")
+        }
+        let hasDollarKey = nested.keys.contains { $0.hasPrefix("$") }
+        let allDollarKeys = nested.keys.allSatisfy { $0.hasPrefix("$") }
+        if hasDollarKey && allDollarKeys {
+            // All keys start with `$` — must be an operator dict with Double values.
+            var ops: [String: Double] = [:]
+            for (key, value) in nested {
+                guard case .scalar(let scalar) = value else {
+                    throw DecodingError.dataCorruptedError(
+                        in: c,
+                        debugDescription: "Operator '\(key)' must have a numeric value")
+                }
+                ops[key] = scalar
+            }
             self = .operators(ops)
-            return
-        }
-        if let nested = try? c.decode([String: MatchValue].self) {
+        } else if hasDollarKey {
+            // Mixed `$`-keys and bare keys — malformed.
+            throw DecodingError.dataCorruptedError(
+                in: c,
+                debugDescription: "MatchValue mixes operator keys ($-prefixed) with bare keys")
+        } else {
             self = .timeSince(nested)
-            return
         }
-        throw DecodingError.dataCorruptedError(
-            in: c,
-            debugDescription: "MatchValue expected scalar, operator dict, or timeSince dict")
     }
 
     func encode(to encoder: Encoder) throws {

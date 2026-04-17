@@ -77,7 +77,7 @@ final class SkinDefinitionErrorTests: XCTestCase {
 
         let skin = try JSONDecoder().decode(SkinDefinition.self, from: json)
         let surface = try XCTUnwrap(skin.surfaces?["tabBar.container"])
-        XCTAssertNotNil(surface.fill)
+        XCTAssertEqual(surface.fill, .color("#000000"))
         XCTAssertNil(surface.border)
         XCTAssertNil(surface.corner)
         XCTAssertNil(surface.states)
@@ -103,6 +103,44 @@ final class SkinDefinitionErrorTests: XCTestCase {
         XCTAssertNotNil(skin.surfaces?["future.surface.we.dont.know"])
     }
 
+    // MARK: - CornerDescriptor edge cases
+
+    func testCornerAsymmetricRejectsExtraElements() {
+        // 5-element array must throw, not silently discard the extra value.
+        let json = "[12, 12, 0, 0, 99]".data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(CornerDescriptor.self, from: json))
+    }
+
+    func testCornerAsymmetricRejectsTooFewElements() {
+        let json = "[12, 12, 0]".data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(CornerDescriptor.self, from: json))
+    }
+
+    // MARK: - MatchValue operator dict validation
+
+    func testMatchValueOperatorsRejectsStringValues() {
+        // {"$gte": "active"} must throw — operator values must be numeric.
+        let json = """
+        { "channelUnread": { "$gte": "active" } }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(MatchExpression.self, from: json))
+    }
+
+    func testMatchValueRejectsMixedDollarAndBareKeys() {
+        // {"$gte": 1, "iTimeFoo": 2} is malformed — can't mix operator and timeSince keys.
+        let json = """
+        { "mixed": { "$gte": 1, "iTimeFoo": 2 } }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(MatchExpression.self, from: json))
+    }
+
+    func testMatchValueRejectsEmptyDict() {
+        let json = """
+        { "empty": {} }
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(MatchExpression.self, from: json))
+    }
+
     // MARK: - NinepatchSidecar validation
 
     func testNinepatchValidRanges() {
@@ -116,5 +154,21 @@ final class SkinDefinitionErrorTests: XCTestCase {
 
         let wrongLength = NinepatchSidecar(stretchX: [16], stretchY: [8, 24])
         XCTAssertFalse(wrongLength.isValid, "Single-element stretchX should be invalid")
+    }
+
+    func testNinepatchZeroWidthBandIsInvalid() {
+        // stretchX = [16, 16] produces a zero-area contentsCenter rect
+        // which CALayer silently treats as .zero and bypasses ninepatch.
+        // Must be rejected by isValid.
+        let zeroX = NinepatchSidecar(stretchX: [16, 16], stretchY: [8, 24])
+        XCTAssertFalse(zeroX.isValid, "Zero-width stretchX should be invalid")
+
+        let zeroY = NinepatchSidecar(stretchX: [16, 48], stretchY: [8, 8])
+        XCTAssertFalse(zeroY.isValid, "Zero-height stretchY should be invalid")
+    }
+
+    func testNinepatchNegativeRangeIsInvalid() {
+        let negative = NinepatchSidecar(stretchX: [-1, 48], stretchY: [8, 24])
+        XCTAssertFalse(negative.isValid, "Negative pixel offset should be invalid")
     }
 }
