@@ -88,4 +88,43 @@ final class SkinEngineDensityGateTests: XCTestCase {
         XCTAssertEqual(output.backgroundColor, "#123456",
                        "Nil density manager must not suppress skin application")
     }
+
+    // MARK: - AppearanceSettingsWindowController wiring
+
+    /// The settings window's internal `SkinEngine` must pick up the density
+    /// manager passed at init — otherwise the gate is default-open in the
+    /// one place in production that actually calls `skinEngine.apply()`.
+    func testAppearanceSettingsWiresDensityManagerIntoSkinEngine() throws {
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("holoscape-sews-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: temp) }
+
+        let service = ConfigService(configDir: temp)
+        let manager = DensityModeManager(configService: service)
+
+        let wc = AppearanceSettingsWindowController(
+            config: service.load().appearance,
+            configService: service,
+            densityModeManager: manager
+        )
+
+        // Behavioral verification: the settings window's internal SkinEngine
+        // must hold the exact same manager instance we passed in. A broken
+        // wiring (e.g., nil assignment) or an accidental re-init would fail
+        // this identity check.
+        XCTAssertTrue(wc._densityManagerOnSkinEngine === manager,
+                      "Settings SkinEngine must be wired to the passed-in DensityModeManager")
+    }
+
+    func testAppearanceSettingsDefaultsGateOpenWhenNoManagerPassed() {
+        let service = ConfigService()  // production config dir; read-only for this test
+        let wc = AppearanceSettingsWindowController(
+            config: service.load().appearance,
+            configService: service,
+            densityModeManager: nil
+        )
+        XCTAssertNil(wc._densityManagerOnSkinEngine,
+                     "Nil densityModeManager leaves the SkinEngine gate default-open")
+    }
 }

@@ -174,7 +174,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     @objc func openSettings() {
         let config = configService.load()
-        let controller = AppearanceSettingsWindowController(config: config.appearance, configService: configService)
+        let controller = AppearanceSettingsWindowController(
+            config: config.appearance,
+            configService: configService,
+            densityModeManager: windowController?.densityModeManager
+        )
         controller.settingsDelegate = self
         controller.showWindow(nil)
         controller.window?.center()
