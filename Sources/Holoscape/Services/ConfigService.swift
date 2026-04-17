@@ -23,6 +23,14 @@ class ConfigService {
         self.configURL = configDir.appendingPathComponent("config.json")
     }
 
+    /// Test-only init that injects the config directory directly. Avoids the
+    /// setenv/unsetenv pattern, which is a process-global mutation unsafe
+    /// under parallel XCTest execution.
+    init(configDir: URL) {
+        self.configDir = configDir
+        self.configURL = configDir.appendingPathComponent("config.json")
+    }
+
     func load() -> HoloscapeConfig {
         if let cached = cachedConfig {
             return cached
