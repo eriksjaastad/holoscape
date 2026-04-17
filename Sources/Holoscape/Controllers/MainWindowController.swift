@@ -20,15 +20,36 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
+    // External chrome bands — decorative strips around the window content
+    // area that a skin can paint graphics into (Winamp-style). Default
+    // size is zero in both axes; skin engine inflates them at load time
+    // in a later task. Existence here means a skin's `surfaces.top.*`
+    // etc. have real NSViews + layers to paint into.
+    private let topChromeBand = NSView()
+    private let rightChromeBand = NSView()
+    private let bottomChromeBand = NSView()
+    private let leftChromeBand = NSView()
+    private var topChromeBandHeight: NSLayoutConstraint?
+    private var rightChromeBandWidth: NSLayoutConstraint?
+    private var bottomChromeBandHeight: NSLayoutConstraint?
+    private var leftChromeBandWidth: NSLayoutConstraint?
+
+    /// Expanded size for external chrome bands (pre-skin default).
+    /// Zero today because no skin paints them yet; when skins define
+    /// band backgrounds, the skin engine will set the non-zero size.
+    /// Keeping this as a named constant documents the extension point.
+    private let externalBandDefaultExpandedSize: CGFloat = 0
+
     private(set) var activeChannelId: UUID?
     private var cachedShader: CompiledShader?
-    /// Single source of truth for which chrome regions are collapsed.
-    /// Drives `isSidebarExpanded` (derived from `.left` membership) and
-    /// the state of every "Toggle X Chrome" menu item.
+    /// Internal left-nav section state. Distinct from the external chrome
+    /// bands managed by `regionManager` — the sidebar is a panel INSIDE
+    /// the window content area, not a decorative edge band.
+    private var sidebarExpanded: Bool = true
+    /// Manages the four EXTERNAL chrome bands (top/right/bottom/left)
+    /// that surround the window content. Collapses the band's size
+    /// constraint to zero. Independent of internal panel state.
     private let regionManager: ChromeRegionManager
-    private var isSidebarExpanded: Bool {
-        !regionManager.collapsedRegions.contains(.left)
-    }
     nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
     let historyBuffer = HistoryBuffer()
@@ -72,23 +93,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         inputBox.textContainer?.widthTracksTextView = true
 
-        // One-time migration: seed the new ChromeRegionState.leftCollapsed
-        // from the legacy sidebarExpanded field so upgrading users don't
-        // lose their sidebar preference on first launch of this version.
-        //
-        // Paths:
-        //  - chromeRegions present: already migrated; skip.
-        //  - chromeRegions nil AND sidebarExpanded nil: new install; skip
-        //    (ChromeRegionManager.restoreState reads defaults).
-        //  - chromeRegions nil AND sidebarExpanded set: upgrade case;
-        //    write the migrated state so restoreState picks it up.
-        var config = configService.load()
-        if config.chromeRegions == nil, let expanded = config.sidebarExpanded {
-            var regions = ChromeRegionState.default
-            regions.leftCollapsed = !expanded
-            config.chromeRegions = regions
-            configService.save(config)
-        }
+        // Load config and restore the internal sidebar's expanded/collapsed
+        // state. `sidebarExpanded` is an INTERNAL-section field — it controls
+        // the in-panel left nav, not the external chrome band. External
+        // chrome bands (top/right/bottom/left decorative strips around the
+        // whole window) are managed separately via ChromeRegionManager.
+        let config = configService.load()
+        self.sidebarExpanded = config.sidebarExpanded ?? true
 
         self.regionManager = ChromeRegionManager(configService: configService)
 
@@ -123,11 +134,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         window.makeFirstResponder(inputBox)
 
-        // Defer region state application until after layout — restoreState
-        // drives the delegate (self) to apply every region without animation.
-        // setSidebarCollapsed already calls refreshAllTabsNow internally, so
-        // we don't duplicate it here.
+        // Defer layout-dependent state application until after setupLayout.
+        // Internal sidebar state restores via applySidebarState; external
+        // chrome band state restores via regionManager.restoreState (which
+        // drives the delegate to set constraint constants on each band).
         DispatchQueue.main.async { [self] in
+            self.applySidebarState(animated: false)
             self.regionManager.restoreState()
         }
 
@@ -159,7 +171,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private func setupLayout() {
         guard let contentView = window.contentView else { return }
 
-        // Configure split view
+        // External chrome bands — four edge strips that surround the main
+        // content. Added first so they live behind/beside the split view.
+        // Default to zero size; a skin with `surfaces.top.background` etc.
+        // will inflate them via the skin engine in a later task.
+        for band in [topChromeBand, rightChromeBand, bottomChromeBand, leftChromeBand] {
+            band.translatesAutoresizingMaskIntoConstraints = false
+            band.wantsLayer = true
+            contentView.addSubview(band)
+        }
+
+        // Configure split view (holds the three internal sections)
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.delegate = self
@@ -234,11 +256,47 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitView.addArrangedSubview(sidebarContainer)
         splitView.addArrangedSubview(rightPane)
 
+        // External band sizing. Width/height constants default to zero so
+        // the bands don't affect layout until a skin inflates them.
+        let topH = topChromeBand.heightAnchor.constraint(equalToConstant: 0)
+        let rightW = rightChromeBand.widthAnchor.constraint(equalToConstant: 0)
+        let bottomH = bottomChromeBand.heightAnchor.constraint(equalToConstant: 0)
+        let leftW = leftChromeBand.widthAnchor.constraint(equalToConstant: 0)
+        topChromeBandHeight = topH
+        rightChromeBandWidth = rightW
+        bottomChromeBandHeight = bottomH
+        leftChromeBandWidth = leftW
+
         NSLayoutConstraint.activate([
-            splitView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            splitView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            splitView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            splitView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            // Top band pinned across the window top
+            topChromeBand.topAnchor.constraint(equalTo: contentView.topAnchor),
+            topChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            topChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            topH,
+
+            // Bottom band pinned across the window bottom
+            bottomChromeBand.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            bottomChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            bottomChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            bottomH,
+
+            // Left band between the top and bottom bands, on the leading edge
+            leftChromeBand.topAnchor.constraint(equalTo: topChromeBand.bottomAnchor),
+            leftChromeBand.bottomAnchor.constraint(equalTo: bottomChromeBand.topAnchor),
+            leftChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            leftW,
+
+            // Right band between the top and bottom bands, on the trailing edge
+            rightChromeBand.topAnchor.constraint(equalTo: topChromeBand.bottomAnchor),
+            rightChromeBand.bottomAnchor.constraint(equalTo: bottomChromeBand.topAnchor),
+            rightChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            rightW,
+
+            // Split view fills the interior between all four bands
+            splitView.topAnchor.constraint(equalTo: topChromeBand.bottomAnchor),
+            splitView.bottomAnchor.constraint(equalTo: bottomChromeBand.topAnchor),
+            splitView.leadingAnchor.constraint(equalTo: leftChromeBand.trailingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: rightChromeBand.leadingAnchor),
         ])
 
         // Set holding priorities
@@ -281,20 +339,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
             viewMenu.addItem(NSMenuItem.separator())
 
-            // Chrome region toggles. Left (sidebar) and Bottom (input box)
-            // are live today; Top and Right are placeholders until their
-            // chrome views are added — disabled with a user-facing tooltip
-            // so users don't click into silent no-ops.
+            // External chrome region toggles. All four bands exist as
+            // dedicated NSViews; their expanded size is zero until a skin
+            // paints them. The toggle is a real state change — the user's
+            // preference is persisted so when a skin loads, the skin engine
+            // honors it (inflate if expanded, keep 0 if collapsed).
             let toggleTopItem = NSMenuItem(title: "Toggle Top Chrome", action: #selector(toggleTopChrome), keyEquivalent: "")
             toggleTopItem.target = self
-            toggleTopItem.isEnabled = false
-            toggleTopItem.toolTip = "Top chrome region is not available in this version."
             viewMenu.addItem(toggleTopItem)
 
             let toggleRightItem = NSMenuItem(title: "Toggle Right Chrome", action: #selector(toggleRightChrome), keyEquivalent: "")
             toggleRightItem.target = self
-            toggleRightItem.isEnabled = false
-            toggleRightItem.toolTip = "Right chrome region is not available in this version."
             viewMenu.addItem(toggleRightItem)
 
             let toggleBottomItem = NSMenuItem(title: "Toggle Bottom Chrome", action: #selector(toggleBottomChrome), keyEquivalent: "")
@@ -357,21 +412,22 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         configService.save(config)
     }
 
-    // MARK: - Region collapse primitives
+    // MARK: - Internal sidebar (left nav)
 
-    /// Apply collapsed/expanded state to the sidebar. When sidebar is
-    /// collapsed the tab bar takes its vertical slot; when expanded the
-    /// tab bar hides and the sidebar's own tab list does the work.
-    private func setSidebarCollapsed(_ collapsed: Bool, animated: Bool) {
+    /// Apply the internal sidebar's expanded/collapsed state. This is the
+    /// in-panel left nav — NOT an external chrome band. When collapsed,
+    /// the top tab bar takes over the top of the right pane so tabs are
+    /// still reachable; when expanded, the tab bar hides.
+    private func applySidebarState(animated: Bool) {
         let work = { [self] in
-            if collapsed {
-                splitView.setPosition(0, ofDividerAt: 0)
-                sidebarContainer.isHidden = true
-                tabBar.isHidden = false
-            } else {
+            if sidebarExpanded {
                 splitView.setPosition(sidebarWidth, ofDividerAt: 0)
                 sidebarContainer.isHidden = false
                 tabBar.isHidden = true
+            } else {
+                splitView.setPosition(0, ofDividerAt: 0)
+                sidebarContainer.isHidden = true
+                tabBar.isHidden = false
             }
         }
         if animated {
@@ -383,53 +439,60 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         } else {
             work()
         }
-        // Populate the tab bar so its buttons are present the moment the
-        // tab bar becomes visible. Without this, collapsing the sidebar
-        // unhides an empty tab bar until the next refreshAllTabs cycle.
         refreshAllTabsNow()
     }
 
-    /// Apply collapsed/expanded state to the bottom input chrome.
-    /// Auto Layout reclaims the freed space for the split pane manager.
-    private func setBottomCollapsed(_ collapsed: Bool, animated: Bool) {
-        let work = { [self] in
-            inputContainer.isHidden = collapsed
-        }
-        if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                work()
-            }
-        } else {
-            work()
-        }
+    @objc func toggleSidebar() {
+        sidebarExpanded.toggle()
+        applySidebarState(animated: true)
+
+        var config = configService.load()
+        config.sidebarExpanded = sidebarExpanded
+        configService.save(config)
     }
 
-    // MARK: - ChromeRegionManagerDelegate
+    // MARK: - External chrome bands (ChromeRegionManagerDelegate)
 
+    /// Toggles one of the four external decorative chrome bands by
+    /// modulating its size constraint. When expanded, the band shows at
+    /// `externalBandDefaultExpandedSize` (zero today — the skin engine
+    /// will inflate bands at skin-apply time in a later task). When
+    /// collapsed, the size goes to zero unconditionally.
     func regionManager(
         _ manager: ChromeRegionManager,
         setRegion region: ChromeRegionManager.Region,
         collapsed: Bool,
         animated: Bool
     ) {
+        let target: CGFloat = collapsed ? 0 : externalBandDefaultExpandedSize
+        // setupLayout assigns all four constraints unconditionally; a nil
+        // here means the delegate fired before layout ran, which is a
+        // programming error we want to surface, not swallow.
+        let constraint: NSLayoutConstraint
         switch region {
-        case .left:
-            setSidebarCollapsed(collapsed, animated: animated)
+        case .top:
+            guard let c = topChromeBandHeight else { preconditionFailure("topChromeBandHeight not set — delegate fired before setupLayout") }
+            constraint = c
+        case .right:
+            guard let c = rightChromeBandWidth else { preconditionFailure("rightChromeBandWidth not set — delegate fired before setupLayout") }
+            constraint = c
         case .bottom:
-            setBottomCollapsed(collapsed, animated: animated)
-        case .top, .right:
-            // Views don't exist yet. ChromeRegionState persists the flag
-            // for when Task 9 adds top/right chrome views.
-            break
+            guard let c = bottomChromeBandHeight else { preconditionFailure("bottomChromeBandHeight not set — delegate fired before setupLayout") }
+            constraint = c
+        case .left:
+            guard let c = leftChromeBandWidth else { preconditionFailure("leftChromeBandWidth not set — delegate fired before setupLayout") }
+            constraint = c
         }
-    }
 
-    // MARK: - Region toggle entry points
-
-    @objc func toggleSidebar() {
-        regionManager.toggleRegion(.left)
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                constraint.animator().constant = target
+            }
+        } else {
+            constraint.constant = target
+        }
     }
 
     @objc func toggleTopChrome() {
@@ -444,11 +507,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         regionManager.toggleRegion(.bottom)
     }
 
-    /// View menu entry point. Routes to `toggleSidebar` so the sidebar has
-    /// exactly one canonical toggle path — keyboard shortcut (File menu)
-    /// and menu click (View menu) can never drift apart.
     @objc func toggleLeftChrome() {
-        toggleSidebar()
+        regionManager.toggleRegion(.left)
     }
 
     // MARK: - NSWindowDelegate
@@ -614,7 +674,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func handleNewSession() {
-        if isSidebarExpanded {
+        if sidebarExpanded {
             sessionLauncher.focus()
         } else {
             showChannelPicker()
