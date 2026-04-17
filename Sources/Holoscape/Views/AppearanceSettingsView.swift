@@ -18,10 +18,11 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
     private let shaderPopup = NSPopUpButton()
-    // TODO(chrome-skinning PR C): wire `skinEngine.densityModeManager` from
-    // the app-level DensityModeManager once the object graph is built. Until
-    // then the density gate on `apply()` defaults open here.
     private let skinEngine = SkinEngine()
+
+    /// Internal read-only accessor exposing the current density gate wiring
+    /// for test verification. Production code must not rely on this.
+    var _densityManagerOnSkinEngine: DensityModeManager? { skinEngine.densityModeManager }
     private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
     private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
     private let notifAgentCheckbox = NSButton(checkboxWithTitle: "Agent", target: nil, action: nil)
@@ -29,7 +30,11 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private let notifMCPCheckbox = NSButton(checkboxWithTitle: "MCP", target: nil, action: nil)
     private let notifGroupChatCheckbox = NSButton(checkboxWithTitle: "Group Chat", target: nil, action: nil)
 
-    init(config: AppearanceConfig, configService: ConfigService) {
+    init(
+        config: AppearanceConfig,
+        configService: ConfigService,
+        densityModeManager: DensityModeManager? = nil
+    ) {
         self.config = config
         self.configService = configService
 
@@ -42,6 +47,9 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         window.title = "Appearance Settings"
 
         super.init(window: window)
+        // Wire the density gate on our SkinEngine so a user with mode=.off
+        // sees skin.apply() return config unchanged rather than paint colors.
+        skinEngine.densityModeManager = densityModeManager
         setupUI()
         loadCurrentValues()
     }
