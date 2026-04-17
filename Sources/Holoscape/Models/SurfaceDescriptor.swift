@@ -199,6 +199,10 @@ struct StateVariant: Codable, Equatable, Sendable {
 struct MatchExpression: Codable, Equatable, Sendable {
     var conditions: [String: MatchValue]
 
+    init(conditions: [String: MatchValue]) {
+        self.conditions = conditions
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         conditions = try c.decode([String: MatchValue].self)
