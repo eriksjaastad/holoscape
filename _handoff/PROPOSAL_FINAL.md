@@ -3,7 +3,7 @@
 ## Feature: Agent-to-Agent Router Daemon
 **Date:** 2026-04-16
 **PRD:** docs/agent-router-prd.md
-**Kiro Specs:** .kiro/specs/agent-router-daemon/
+**Kiro Specs:** claude-specs/agent-router-daemon/
 **Traceability:** TRACED — 2 descoped gaps (rate limiting, shutdown notification), both with clean rationales. No dropped requirements.
 
 ## Objective
