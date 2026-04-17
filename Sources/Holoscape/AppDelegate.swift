@@ -360,7 +360,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
-        // View menu
+        // View menu — items are populated by MainWindowController in
+        // setupKeyboardShortcuts so menu targets resolve to `self` on the
+        // controller rather than depending on the responder chain.
         let viewMenuItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
