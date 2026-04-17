@@ -92,7 +92,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let windowRect = NSRect(x: 100, y: 100, width: 1000, height: 700)
         self.window = NSWindow(
             contentRect: windowRect,
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -142,6 +142,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.delegate = self
         window.title = "Holoscape"
         window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.backgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0)
         window.isOpaque = false
 
@@ -242,17 +243,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        rightPane.addSubview(tabBar)
+        // Tab bar lives in the title-bar strip (Warp-style). It sits directly
+        // on contentView, spanning from just past the traffic-light buttons
+        // to the right edge. Traffic-light zone is ~78pt; leaving 80 here.
+        contentView.addSubview(tabBar)
         rightPane.addSubview(splitPaneManager)
         rightPane.addSubview(inputContainer)
 
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: rightPane.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            tabBar.topAnchor.constraint(equalTo: contentView.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
+            tabBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: 32),
 
-            splitPaneManager.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            splitPaneManager.topAnchor.constraint(equalTo: rightPane.topAnchor),
             splitPaneManager.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
             splitPaneManager.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
             splitPaneManager.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
@@ -290,8 +294,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         leftChromeBandWidth = leftW
 
         NSLayoutConstraint.activate([
-            // Top band pinned across the window top
-            topChromeBand.topAnchor.constraint(equalTo: contentView.topAnchor),
+            // Top band pinned just below the tab bar
+            topChromeBand.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             topChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             topChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             topH,
@@ -466,19 +470,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - Internal sidebar (left nav)
 
     /// Apply the internal sidebar's expanded/collapsed state. This is the
-    /// in-panel left nav — NOT an external chrome band. When collapsed,
-    /// the top tab bar takes over the top of the right pane so tabs are
-    /// still reachable; when expanded, the tab bar hides.
+    /// in-panel left nav — NOT an external chrome band. The tab bar lives
+    /// permanently in the title bar (Warp-style) so it stays visible in
+    /// both states.
     private func applySidebarState(animated: Bool) {
         let work = { [self] in
             if sidebarExpanded {
                 splitView.setPosition(sidebarWidth, ofDividerAt: 0)
                 sidebarContainer.isHidden = false
-                tabBar.isHidden = true
             } else {
                 splitView.setPosition(0, ofDividerAt: 0)
                 sidebarContainer.isHidden = true
-                tabBar.isHidden = false
             }
         }
         if animated {
