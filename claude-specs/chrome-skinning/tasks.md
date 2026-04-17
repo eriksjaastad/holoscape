@@ -178,9 +178,9 @@ The implementation order is: data models → core services → chrome view migra
   - [ ] 7.1 Create `DensityModeManager`
     - Create `Sources/Holoscape/Services/DensityModeManager.swift` as `@MainActor final class`
     - `Mode` enum with `.full`, `.minimal`, `.off` cases, Codable
-    - `setMode(_ newMode: Mode)` triggers 200ms transition
+    - `setMode(_ newMode: Mode)` completes the transition within 200ms (Req 10.2 is a latency cap, not an animation duration — a synchronous state change + chrome re-layout trivially satisfies it)
     - `isSkinActive()`, `shouldRenderImages()`, `shouldAnimate()` query methods
-    - Persist mode to `HoloscapeConfig.appearance.densityMode` (add field)
+    - Persist mode to `HoloscapeConfig.chromeRegions.densityMode` (field already exists on `ChromeRegionState`)
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
   - [ ]* 7.1b Property test: Animation suppression leakage
