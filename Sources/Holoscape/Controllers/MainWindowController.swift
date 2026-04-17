@@ -4,7 +4,7 @@ import AppKit
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
-    SplitPaneManagerDelegate {
+    SplitPaneManagerDelegate, ChromeRegionManagerDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -22,7 +22,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private(set) var activeChannelId: UUID?
     private var cachedShader: CompiledShader?
-    private var sidebarExpanded: Bool = true
+    /// Single source of truth for which chrome regions are collapsed.
+    /// Drives `isSidebarExpanded` (derived from `.left` membership) and
+    /// the state of every "Toggle X Chrome" menu item.
+    private let regionManager: ChromeRegionManager
+    private var isSidebarExpanded: Bool {
+        !regionManager.collapsedRegions.contains(.left)
+    }
     nonisolated(unsafe) private var elapsedTimeTimer: Timer?
     private var notificationService: NotificationService?
     let historyBuffer = HistoryBuffer()
@@ -66,11 +72,29 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         inputBox.textContainer?.widthTracksTextView = true
 
-        // Load sidebar state and compile shader if configured
-        let config = configService.load()
-        self.sidebarExpanded = config.sidebarExpanded ?? true
+        // One-time migration: seed the new ChromeRegionState.leftCollapsed
+        // from the legacy sidebarExpanded field so upgrading users don't
+        // lose their sidebar preference on first launch of this version.
+        //
+        // Paths:
+        //  - chromeRegions present: already migrated; skip.
+        //  - chromeRegions nil AND sidebarExpanded nil: new install; skip
+        //    (ChromeRegionManager.restoreState reads defaults).
+        //  - chromeRegions nil AND sidebarExpanded set: upgrade case;
+        //    write the migrated state so restoreState picks it up.
+        var config = configService.load()
+        if config.chromeRegions == nil, let expanded = config.sidebarExpanded {
+            var regions = ChromeRegionState.default
+            regions.leftCollapsed = !expanded
+            config.chromeRegions = regions
+            configService.save(config)
+        }
+
+        self.regionManager = ChromeRegionManager(configService: configService)
 
         super.init()
+
+        self.regionManager.delegate = self
 
         // --shader launch argument overrides config (used by UI tests)
         let shaderPath: String?
@@ -99,9 +123,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         window.makeFirstResponder(inputBox)
 
-        // Defer sidebar state application until after layout
+        // Defer region state application until after layout — restoreState
+        // drives the delegate (self) to apply every region without animation.
+        // setSidebarCollapsed already calls refreshAllTabsNow internally, so
+        // we don't duplicate it here.
         DispatchQueue.main.async { [self] in
-            self.applySidebarState()
+            self.regionManager.restoreState()
         }
 
         // Refresh elapsed time on tabs every 60 seconds
@@ -241,11 +268,42 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             fileMenu.addItem(toggleSidebarItem)
         }
 
-        // View menu with timestamp toggle
+        // View menu: timestamp toggle + four chrome region toggles.
+        // Building these here (not in AppDelegate) lets us set
+        // `target = self` explicitly, which is consistent with every other
+        // MainWindowController-owned menu item. Responder-chain dispatch
+        // would otherwise silently fail to fire under certain focused-view
+        // conditions (sheets, popovers, text field focus).
         if let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu {
             let timestampItem = NSMenuItem(title: "Show Timestamps", action: #selector(toggleTimestamps), keyEquivalent: "t")
             timestampItem.target = self
             viewMenu.addItem(timestampItem)
+
+            viewMenu.addItem(NSMenuItem.separator())
+
+            // Chrome region toggles. Left (sidebar) and Bottom (input box)
+            // are live today; Top and Right are placeholders until their
+            // chrome views are added — disabled with a user-facing tooltip
+            // so users don't click into silent no-ops.
+            let toggleTopItem = NSMenuItem(title: "Toggle Top Chrome", action: #selector(toggleTopChrome), keyEquivalent: "")
+            toggleTopItem.target = self
+            toggleTopItem.isEnabled = false
+            toggleTopItem.toolTip = "Top chrome region is not available in this version."
+            viewMenu.addItem(toggleTopItem)
+
+            let toggleRightItem = NSMenuItem(title: "Toggle Right Chrome", action: #selector(toggleRightChrome), keyEquivalent: "")
+            toggleRightItem.target = self
+            toggleRightItem.isEnabled = false
+            toggleRightItem.toolTip = "Right chrome region is not available in this version."
+            viewMenu.addItem(toggleRightItem)
+
+            let toggleBottomItem = NSMenuItem(title: "Toggle Bottom Chrome", action: #selector(toggleBottomChrome), keyEquivalent: "")
+            toggleBottomItem.target = self
+            viewMenu.addItem(toggleBottomItem)
+
+            let toggleLeftItem = NSMenuItem(title: "Toggle Left Chrome", action: #selector(toggleLeftChrome), keyEquivalent: "")
+            toggleLeftItem.target = self
+            viewMenu.addItem(toggleLeftItem)
         }
 
         // Cmd+1-9 channel switching via local event monitor
@@ -299,32 +357,98 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         configService.save(config)
     }
 
-    private func applySidebarState() {
-        if sidebarExpanded {
-            splitView.setPosition(sidebarWidth, ofDividerAt: 0)
-            sidebarContainer.isHidden = false
-            tabBar.isHidden = true
+    // MARK: - Region collapse primitives
+
+    /// Apply collapsed/expanded state to the sidebar. When sidebar is
+    /// collapsed the tab bar takes its vertical slot; when expanded the
+    /// tab bar hides and the sidebar's own tab list does the work.
+    private func setSidebarCollapsed(_ collapsed: Bool, animated: Bool) {
+        let work = { [self] in
+            if collapsed {
+                splitView.setPosition(0, ofDividerAt: 0)
+                sidebarContainer.isHidden = true
+                tabBar.isHidden = false
+            } else {
+                splitView.setPosition(sidebarWidth, ofDividerAt: 0)
+                sidebarContainer.isHidden = false
+                tabBar.isHidden = true
+            }
+        }
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                work()
+            }
         } else {
-            splitView.setPosition(0, ofDividerAt: 0)
-            sidebarContainer.isHidden = true
-            tabBar.isHidden = false
+            work()
+        }
+        // Populate the tab bar so its buttons are present the moment the
+        // tab bar becomes visible. Without this, collapsing the sidebar
+        // unhides an empty tab bar until the next refreshAllTabs cycle.
+        refreshAllTabsNow()
+    }
+
+    /// Apply collapsed/expanded state to the bottom input chrome.
+    /// Auto Layout reclaims the freed space for the split pane manager.
+    private func setBottomCollapsed(_ collapsed: Bool, animated: Bool) {
+        let work = { [self] in
+            inputContainer.isHidden = collapsed
+        }
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                work()
+            }
+        } else {
+            work()
         }
     }
 
-    // MARK: - Sidebar Toggle
+    // MARK: - ChromeRegionManagerDelegate
+
+    func regionManager(
+        _ manager: ChromeRegionManager,
+        setRegion region: ChromeRegionManager.Region,
+        collapsed: Bool,
+        animated: Bool
+    ) {
+        switch region {
+        case .left:
+            setSidebarCollapsed(collapsed, animated: animated)
+        case .bottom:
+            setBottomCollapsed(collapsed, animated: animated)
+        case .top, .right:
+            // Views don't exist yet. ChromeRegionState persists the flag
+            // for when Task 9 adds top/right chrome views.
+            break
+        }
+    }
+
+    // MARK: - Region toggle entry points
 
     @objc func toggleSidebar() {
-        sidebarExpanded.toggle()
-        applySidebarState()
-        // Populate the tab bar synchronously so its buttons are present the moment
-        // the tab bar becomes visible. Without this, toggling the sidebar closed
-        // unhides an empty tab bar until the next refreshAllTabs cycle fires.
-        refreshAllTabsNow()
+        regionManager.toggleRegion(.left)
+    }
 
-        // Persist
-        var config = configService.load()
-        config.sidebarExpanded = sidebarExpanded
-        configService.save(config)
+    @objc func toggleTopChrome() {
+        regionManager.toggleRegion(.top)
+    }
+
+    @objc func toggleRightChrome() {
+        regionManager.toggleRegion(.right)
+    }
+
+    @objc func toggleBottomChrome() {
+        regionManager.toggleRegion(.bottom)
+    }
+
+    /// View menu entry point. Routes to `toggleSidebar` so the sidebar has
+    /// exactly one canonical toggle path — keyboard shortcut (File menu)
+    /// and menu click (View menu) can never drift apart.
+    @objc func toggleLeftChrome() {
+        toggleSidebar()
     }
 
     // MARK: - NSWindowDelegate
@@ -490,7 +614,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func handleNewSession() {
-        if sidebarExpanded {
+        if isSidebarExpanded {
             sessionLauncher.focus()
         } else {
             showChannelPicker()
