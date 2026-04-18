@@ -9,6 +9,17 @@ protocol SplitPaneManagerDelegate: AnyObject {
 class SplitPaneManager: NSView, SplitPaneViewDelegate {
     weak var splitDelegate: SplitPaneManagerDelegate?
 
+    /// Forward-propagated to every `SplitPaneView` we spawn. Assigning
+    /// after the fact also retrofits any existing panes so a skin swap
+    /// from MainWindowController reaches deep into the split graph.
+    var skinContext: SkinContext? {
+        didSet {
+            for pane in panes {
+                pane.skinContext = skinContext
+            }
+        }
+    }
+
     private var panes: [SplitPaneView] = []
     private var rootSplitView: NSSplitView?
     private(set) var activePaneId: UUID?
@@ -178,6 +189,7 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
     private func createPane() -> SplitPaneView {
         let pane = SplitPaneView(paneId: UUID())
         pane.paneDelegate = self
+        pane.skinContext = skinContext
         panes.append(pane)
         return pane
     }

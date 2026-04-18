@@ -7,7 +7,7 @@ protocol SplitPaneViewDelegate: AnyObject {
 
 @MainActor
 class SplitPaneView: NSView {
-    private static let activeBorder = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
+    private static let defaultActiveBorder = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
     private static let clearBorder = NSColor.clear.cgColor
 
     let paneId: UUID
@@ -16,11 +16,31 @@ class SplitPaneView: NSView {
     private var contentView: NSView?
     private var compositor: MetalCompositor?
 
+    /// Skin context source. Nil falls back to the hardcoded active-border
+    /// color below (standalone rendering path).
+    var skinContext: SkinContext? {
+        didSet { refreshFromSkin() }
+    }
+
     var isActivePane: Bool = false {
-        didSet {
-            layer?.borderColor = isActivePane ? Self.activeBorder : Self.clearBorder
-            layer?.borderWidth = isActivePane ? 2 : 0
+        didSet { applyBorder() }
+    }
+
+    private func applyBorder() {
+        let active = activeBorderColor()
+        layer?.borderColor = isActivePane ? active : Self.clearBorder
+        layer?.borderWidth = isActivePane ? 2 : 0
+    }
+
+    /// Resolve the active-pane border color from the splitPane.divider
+    /// surface's `border` field if a skin defines one; otherwise use
+    /// the hardcoded system-blue default.
+    private func activeBorderColor() -> CGColor {
+        guard let ctx = skinContext,
+              let border = ctx.currentState(for: .splitPaneDivider).border else {
+            return Self.defaultActiveBorder
         }
+        return border.color.cgColor
     }
 
     init(paneId: UUID) {
@@ -28,6 +48,30 @@ class SplitPaneView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 2
+        setupSkinObserver()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupSkinObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(skinDidChange(_:)),
+            name: .skinDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func skinDidChange(_ note: Notification) {
+        refreshFromSkin()
+    }
+
+    private func refreshFromSkin() {
+        // Re-apply the current active/inactive state so a skin change
+        // picks up a new active-border color without any other push.
+        applyBorder()
     }
 
     required init?(coder: NSCoder) {

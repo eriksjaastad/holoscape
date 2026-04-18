@@ -133,10 +133,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         super.init()
 
-        // Hand the tab bar the current skin context so its colors come
-        // from `SkinContext.currentState(for:)` rather than hardcoded
-        // CGColor constants. Other chrome views will follow in Task 9.x.
+        // Hand each migrated chrome view the current skin context so
+        // their colors come from `SkinContext.currentState(for:)` rather
+        // than hardcoded constants. SplitPaneView instances are created
+        // inside SplitPaneManager; they get wired through that bridge
+        // in `setupLayout` via `splitPaneManager.skinContext = ...`.
         tabBar.skinContext = skinContext
+        inputBox.skinContext = skinContext
+        sessionLauncher.skinContext = skinContext
+        splitPaneManager.skinContext = skinContext
 
         self.regionManager.delegate = self
 
