@@ -172,6 +172,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         applyAppearance(settings)
     }
 
+    func appearanceSettingsDidSelectSkin(_ name: String) {
+        // Route the v2 chrome reload through MainWindowController, which
+        // owns the SkinEngine instance, the active SkinFontBundle, and
+        // the chrome view references `applySkin` re-injects into.
+        windowController?.reloadSkin(named: name)
+    }
+
     @objc func openSettings() {
         let config = configService.load()
         let controller = AppearanceSettingsWindowController(
