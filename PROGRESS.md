@@ -1,109 +1,67 @@
-# Holoscape — Session Progress (2026-04-16 evening)
+# Holoscape — Session Progress (2026-04-17 → 04-18 overnight)
 
 ## Start here tomorrow
 
-The chrome skinning spec is ready. First order of business: open `claude-specs/chrome-skinning/tasks.md` and work through the task list. 94 sub-tasks across 16 groups, each tagged to requirements and correctness properties.
+Chrome skinning Task Groups 1–9 are complete. Next work should be:
 
-Sequence for tomorrow:
-1. Read `claude-specs/chrome-skinning/requirements.md` → `design.md` → `tasks.md` (in that order)
-2. Read `_handoff/` if a proposal exists; otherwise the three spec files are the source of truth
-3. Start at **Task Group 1** (data model extensions: SkinDefinition v2 fields, SurfaceKey enum, descriptor types, NinepatchSidecar)
-4. After Task Group 1, Checkpoint #2 validates incremental progress before moving to SkinContext
+1. **Task Group 13 (reference skin)** — ship an actual skin manifest with colors/images/fonts. This is the "first visible graphics" moment. `MainWindowController.applySkin(_:)` is the entry point — it takes `[SurfaceKey: SkinContext.ResolvedSurface]?` and re-injects into all chrome views.
+2. **Task Group 10 (checkpoint)** — regression verify: build with no skin loaded, confirm identical look to pre-migration.
+3. **Task Group 11 (hot reload)** — FSEventStream watcher on `~/.holoscape/skins/`, skin-picker in Appearance Settings, `.skinDidChange` wiring.
+4. **Task Group 12 (Reader Mode)** — separate NSPanel.
 
-## What shipped this session
+## What shipped this overnight session
 
-### 8 PRs merged (shader pipeline + router daemon + infrastructure)
+### 11 PRs merged
 
-| PR | Card | What |
-|----|------|------|
-| #81 | Router daemon | Agent-to-agent message relay, 34 tests |
-| #82 | Router fixes | Response capture format, pt path, bounce loop, 39 tests |
-| #83 | #5868 (critical) | Agent channel defaults to `~/projects` instead of `/` |
-| #84 | #5942 | Metal compositor + identity render, MetalCompositor.swift |
-| #85 | #5942 fix | IOSurface bytesPerRow alignment crash fix |
-| #86 | #5944 | Scanlines demo shader + shader picker in settings |
-| #87 | Shader debug | Missing MTLSamplerState (iChannel0 was always black) + capture via NSView.cacheDisplay |
-| #88 | Shader test | Offscreen pixel-level verification (22 dark rows / 42 bright rows = scanlines confirmed) |
-| #89 | Shader test | Screenshot-based XCUITest for visible scanline verification |
+| PR | Scope |
+|----|-------|
+| #98 | Tabs-in-titlebar (Warp-style — recovered ~32pt of vertical real estate) |
+| #99 | 8.1 + 8.3 — image loading with two-layer sandbox (string gate + symlink resolution) |
+| #100 | 8.2 — ninepatch sidecar loading |
+| #101 | 8.4 — font registration with `CTFontManagerRegisterFontsForURL`, process scope, symmetric drain |
+| #102 | 8.5 — backing-scale parameter on `SkinContext.applyFill` |
+| #103 | 9.1 — `TabBarView` → SkinContext |
+| #104 | 9.3/9.4/9.6 — `InputBoxView`, `SessionLauncherView`, `SplitPaneView` → SkinContext |
+| #105 | 9.2 — `SidebarView` + `SidebarTabEntry` → SkinContext (base fills) |
+| #106 | 9.7/9.8 — window.background + `applySkin(_:)` entry point |
+| #107 | 9.5 — `TerminalContainerView` **deleted** (dead code since April 5) |
+| #108 | Option B — per-entry `ReactiveUniformSnapshot` on `SidebarTabEntry`, finishes the 8 deferred notification/indicator colors via state variants |
 
-**Router daemon status:** Fully shipped and integration-tested. Message #56 sent → injected → response captured → reply #57 delivered back. Works on this machine; won't work on Mac Mini (no `pt` CLI there).
+460 tests green (up from 400 at session start).
 
-**Shader pipeline status:** Cards 1-6 done (PRs #76-#89). Cards 7-8 (agent-state reactivity + discovery/hot reload) remain.
+## Architectural decisions made tonight
 
-### Spec workflow infrastructure built
+1. **Tab bar lives in the titlebar band permanently.** `titleVisibility = .hidden` + `.fullSizeContentView` style mask. Tab bar pinned to `contentView.topAnchor` with 80pt leading inset for traffic lights. Always visible regardless of sidebar state.
+2. **Path sandboxing is two-layer.** `validateAssetPath` catches `..` / absolute / `http(s)://` / `file://`. `assertPathResolvesInside` follows symlinks and blocks any resolved path that escapes the skin directory. Belt-and-suspenders — neither alone is sufficient.
+3. **Font deregistration must match exactly what was registered.** `SkinFontBundle.registeredURLs` is the mandatory input to `unregisterFonts`. A CGFont-decode failure after a successful register triggers immediate rollback; rollback failures log loudly because the font has leaked into process scope.
+4. **`MainWindowController.applySkin(_:)` does NOT post `.skinDidChange`.** Direct property assignments to the 5 chrome view slots already trigger each view's `didSet` → `refreshFromSkin`. Posting the notification on top would fire every repaint twice. Callers who need observers outside the controller post it themselves.
+5. **Per-entry `ReactiveUniformSnapshot` over shared snapshot** for sidebar rows. Each `SidebarTabEntry` owns its own snapshot; `applyConfigure` writes `channelUnread`, `notificationKind`, `channelConnectionState`; state variants on `sidebarRowNormal` / `sidebarRowIndicator` resolve per-row. Two rows with different unread flags resolve to different colors at the same instant — impossible with a shared snapshot.
+6. **`SkinContext.currentState(for: with snapshot:)` override.** Let callers resolve state variants against a specific snapshot instead of the context's shared one. Makes per-entry state possible without context proliferation.
+7. **`sidebarRowIndicator` base fill is systemGreen (active), not clear.** An unmatched variant stays visible as the "active" color rather than silently going invisible. Bugs surface rather than hide.
+8. **`SkinContext.builtInDefaults` now seeds state variants** on `sidebarRowNormal` (unread / idle / permission) and `sidebarRowIndicator` (connecting / disconnected). The skinned path reproduces the pre-skinning colors in hex; `SidebarTabEntry` also retains `fallback*` helpers for standalone-render paths. A parity test guards against drift.
 
-**Three new reviewer agents** (under `~/.claude/agents/` and pushed to Mac Mini):
-- `spec-requirements-reviewer` (haiku) — S1-S6, E1-E3, G1-G5, C1-C5, N1-N6 checks, auto-fixes mechanical issues
-- `spec-design-reviewer` (sonnet — architectural judgment) — S1-S14, C1-C3, B1-B5, A1-A5 checks
-- `spec-tasks-reviewer` (haiku) — S1-S7, T1-T4, C1-C3, B1-B3, O1-O5, N1-N2 checks
+## Assets / data-model extension points
 
-Merged the best of our initial review skills with the Mac Mini team's design (they had auto-fix + three-tier verdicts APPROVED/REVISED/FAIL; we added codebase-alignment B-checks and ordering O-checks).
-
-### Chrome skinning system — discovery, PRD, specs complete
-
-Full pipeline executed:
-- `/discover` → `docs/skins/09-chrome-skinning-discovery.md`
-- `/strategy` → `docs/chrome-skinning-prd.md`
-- `/spec` → `claude-specs/chrome-skinning/` (3 files, all reviewer-approved)
-
-**Phase verdicts from reviewer agents:**
-- Phase 1 (requirements.md): **APPROVED** — 24/24 checks passed first read
-- Phase 2 (design.md): **REVISED** — 10 auto-fixes for orphaned requirement coverage
-- Phase 3 (tasks.md): **APPROVED** — 10 auto-fixes for property test coverage
-
-**Final counts:**
-- 16 requirements, 98 acceptance criteria
-- 25 correctness properties (all tagged to requirements)
-- 94 sub-tasks (70 mandatory, 24 optional), 100% property coverage
-- All 11 modified file paths verified against live codebase
-- State match key mapping table added (borrowed from Kiro IDE comparison)
-
-## Comparison: our spec skill vs Kiro IDE
-
-Ran both against the same PRD. Kiro output at `chrome-skinning-system/` (deleted this session — kept only our version).
-
-**Honest assessment:**
-- Kiro is better at: requirement granularity (23 vs our 16)
-- We are better at: systematic error handling, property organization with `Validates:` tags, codebase-verified file paths, AI skin builder scoping (correctly excluded to separate PRD)
-- Roughly equivalent on: architectural reasoning, mermaid diagrams, cross-card dependency calls (we added this), visual communication
-
-The reviewer pipeline brought us to parity or ahead of Kiro on architectural artifacts we were missing on first pass, while keeping us ahead on rigor/verification.
-
-## Active architectural decisions carried forward
-
-1. **SkinContext injection at view construction time** (not singleton) — per design §3.
-2. **State transition animations fire simultaneously from same timestamp** — cohesive mood change, not per-surface drift.
-3. **Collapsible region layout: 200ms ease-out slide + terminal expansion into freed space.**
-4. **Reader Mode: full terminal scrollback as plain text, ANSI stripped, SF Mono 14pt.**
-5. **Skin Builder: separate PRD, not included in this spec's scope.**
-6. **Density modes: Full / Minimal / Off with `.off` = zero overhead (no SkinContext allocation, no FSEventStream watcher, no CADisplayLink).**
+- `SurfaceKey.terminalContainerPadding` stays in the enum (spec-level). No view paints it today — the terminal hierarchy routes through `SplitPaneView` + `MetalCompositor`. A future terminal-wrapping view can pick it up without a spec change.
+- `SurfaceKey.windowTitleBar` deferred. The tab bar covers the titlebar band via `tabBar.container`. A dedicated title-bar accessory view would honor this surface.
 
 ## Outstanding architectural dependencies
 
-- **ReactiveUniformSnapshot** (required by chrome state reactivity) does not yet exist in the codebase. Shared with shader card #5945. If #5945 is blocked, chrome state reactivity falls back to AppKit notifications as a bridge.
-- **XCUITests** (including the new ShaderVisualTests) can't run on Mac Mini until the Xcode project is synced with SwiftPM sources. Card #5988 filed.
+- **Task 13 reference skin** — requires skin loader that converts a `SkinDefinition` manifest → `[SurfaceKey: ResolvedSurface]` map for `applySkin`. `SkinContext.convert(_:for:imageCache:)` already exists.
+- **Task 11 hot reload** — FSEventStream + SkinDidChange + AppearanceSettings skin picker integration.
+- **XCUITests on Mac Mini** — still blocked on Xcode-project sync (#5988).
 
-## Uncommitted changes on working tree
+## Clean working tree
 
-- `claude-specs/chrome-skinning/` — all three spec files (requirements, design, tasks) + `.config.kiro`
-- `docs/skins/09-chrome-skinning-discovery.md` — discovery brief
-- `docs/chrome-skinning-prd.md` — PRD
+- No uncommitted changes.
+- No open PRs.
+- No stale branches.
+- `claude-specs/chrome-skinning/tasks.md` unchecked boxes still reflect "not done" even for Tasks 1–9; the `[ ]` markers in the file were never mechanically flipped. A PR that walks the tasks file and checks the completed ones would be a small tidy-up next session.
 
-All are new docs, ready to commit on a branch tomorrow if desired, or just left in place as working reference.
+## Today's session summary (numbers)
 
-## Today's session summary
-
-- Router daemon shipped end-to-end
-- Shader pipeline cards 5-6 shipped with visual verification
-- Fixed 3 shader bugs (sampler, capture pipeline, compositor wiring)
-- Built full spec-review pipeline with 3 specialist agents (one per phase)
-- Produced a complete, reviewed, codebase-verified spec for chrome skinning
-- Discovered our spec skill and Kiro IDE are peers — neither dominates, each has strengths
-
-## Housekeeping
-
-- No open PRs
-- No stale branches
-- Shader pipeline cards 5940, 5941, 5942, 5944 moved to Done
-- Kiro spec output (`chrome-skinning-system/`) deleted — canonical spec is `chrome-skinning/`
-- State match key mapping table ported from Kiro to our design.md
+- 11 PRs merged in one session.
+- +60 tests (400 → 460), all green.
+- 1 dead class deleted (`TerminalContainerView`).
+- 1 architectural fix that finished the 8 deferred sidebar state colors rather than leaving them as TODO (Option B per-entry snapshot).
+- 0 code-reviewer FAILs shipped — every PR passed local code review (several required iterations to get there).
