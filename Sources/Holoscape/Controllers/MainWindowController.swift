@@ -4,7 +4,7 @@ import AppKit
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
-    SplitPaneManagerDelegate, ChromeRegionManagerDelegate {
+    SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate {
 
     let window: NSWindow
     let channelManager: ChannelManager
@@ -82,6 +82,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// font registration symmetric (Property 9 invariant).
     private var currentFontBundle: SkinFontBundle = SkinFontBundle(fonts: [:], registeredURLs: [])
 
+    /// Debounce slot for FSEventStream-driven reloads (Task 11). The
+    /// file watcher fires on every write inside the active skin's
+    /// directory — editors frequently issue a cluster of syscalls
+    /// (rename / write-tempfile / move-over) per user save, so we
+    /// coalesce to a single `reloadSkin` call 200 ms after the last
+    /// event. Cancelled whenever the user picks a different skin
+    /// manually so stale disk events can't race with the selection.
+    private var pendingReloadWorkItem: DispatchWorkItem?
+
     // References to Density menu items so we can flip the checkmark
     // `.state` when `.densityModeDidChange` fires. Weak because AppKit
     // retains menu items through the menu graph.
@@ -157,6 +166,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.skinContext = skinContext
 
         self.regionManager.delegate = self
+
+        // Wire the skin engine's file-watcher delegate to self. The
+        // launch-time reloadSkin below will call startWatching to begin
+        // the actual FSEventStream; before that call the delegate is
+        // still set so a racing file-watcher event can't fire into a
+        // nil delegate.
+        self.skinEngine.fileWatcherDelegate = self
 
         // Update density menu checkmarks whenever mode changes.
         NotificationCenter.default.addObserver(
@@ -589,6 +605,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// and is the reason fonts are unregistered AFTER the new load
     /// succeeds rather than before.
     func reloadSkin(named name: String) {
+        // Cancel any pending file-watcher debounce — user-driven skin
+        // switches must win over a stale disk-change event from a
+        // different skin directory.
+        pendingReloadWorkItem?.cancel()
+        pendingReloadWorkItem = nil
+
         do {
             let loaded = try skinEngine.loadComposite(named: name)
             // Drain previous fonts only after the new load committed —
@@ -600,6 +622,34 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         } catch {
             NSLog("MainWindowController: reloadSkin('\(name)') failed: \(error) — keeping previous SkinContext")
         }
+
+        // Re-point the file watcher at the new skin's directory. Runs
+        // regardless of load success so even a failed-to-parse skin
+        // gets watched — the author edits the broken file, the
+        // debouncer fires, and reloadSkin runs again (hopefully with
+        // a valid file this time). For Default, startWatching is a
+        // no-op (nothing to watch).
+        skinEngine.startWatching(skinName: name)
+    }
+
+    // MARK: - SkinEngineFileWatcherDelegate (Task 11)
+
+    /// FSEventStream fired inside the active skin's directory. Schedule
+    /// a debounced reload — coalesce the event cluster from a single
+    /// save (editors commonly fire 3–5 events per write) into one
+    /// `reloadSkin` call 200ms after the last event.
+    ///
+    /// Cancels any already-pending work item so the timer always
+    /// restarts from the most recent event — standard debounce.
+    /// Matches the `scheduleSaveState()` pattern elsewhere in this file.
+    func skinEngineDidDetectChange(in directory: URL) {
+        pendingReloadWorkItem?.cancel()
+        let skinName = directory.lastPathComponent
+        let item = DispatchWorkItem { [weak self] in
+            self?.reloadSkin(named: skinName)
+        }
+        pendingReloadWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: item)
     }
 
     /// Pure helper: build the SkinContext the controller should hold

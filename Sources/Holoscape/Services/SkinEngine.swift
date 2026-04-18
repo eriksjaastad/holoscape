@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreText
+import CoreServices
 
 /// Result of registering a skin's fonts.
 ///
@@ -22,6 +23,25 @@ enum SkinAssetError: Error, Equatable {
     /// a symlink to somewhere outside the skin directory. The `path`
     /// field is the offending manifest value.
     case invalidPath(String)
+}
+
+/// Callback channel for `SkinEngine.startWatching(skinName:)`.
+///
+/// The engine posts `skinEngineDidDetectChange(in:)` on the main thread
+/// whenever FSEventStream reports any change inside the actively-watched
+/// skin's directory. `MainWindowController` conforms and debounces the
+/// hits before re-running `reloadSkin(named:)` — a single delegate call
+/// means a single test surface and avoids the "global notification →
+/// 5 chrome views each repaint twice" problem (Task 11.3 no-double-paint
+/// rule established in PR #106).
+@MainActor
+protocol SkinEngineFileWatcherDelegate: AnyObject {
+    /// The watched skin directory fired one or more filesystem events.
+    /// Called on the main thread. The `directory` is the skin root —
+    /// the delegate can read `directory.lastPathComponent` to recover
+    /// the skin name. Fires after the FSEvents → main-queue hop but
+    /// BEFORE any debounce; the delegate is expected to debounce.
+    func skinEngineDidDetectChange(in directory: URL)
 }
 
 /// Errors raised by `SkinEngine.loadComposite(named:)`.
@@ -90,6 +110,35 @@ class SkinEngine {
     /// (Property 7, Requirement 15.1). When nil, skin application proceeds
     /// normally (pre-DensityModeManager default).
     weak var densityModeManager: DensityModeManager?
+
+    /// Receiver of FSEventStream fires. `MainWindowController` conforms;
+    /// it debounces the events and calls `reloadSkin(named:)` on the
+    /// trailing edge. Weak because the delegate outlives the engine via
+    /// the app's object graph.
+    weak var fileWatcherDelegate: SkinEngineFileWatcherDelegate?
+
+    // MARK: - File-watcher state (Task 11)
+    //
+    // Only one skin is watched at a time (the currently-loaded one). The
+    // picker flips skins by calling stopWatching() + startWatching(newName).
+    // Watching the full skins root would wake the debouncer on every save
+    // to every sibling skin — no user benefit.
+
+    /// `nonisolated(unsafe)` because deinit on a `@MainActor` class is
+    /// nonisolated in Swift 6. FSEventStream* C APIs are thread-safe, so
+    /// the teardown in deinit is safe even though the compiler can't
+    /// verify the OpaquePointer is Sendable. Reads/writes in normal
+    /// paths (`startWatching`, `stopWatching`, `fileWatcherDidFireSomeEvents`)
+    /// all happen on the main actor. Matches the project convention for
+    /// this shape (cf. `MainWindowController.elapsedTimeTimer`).
+    nonisolated(unsafe) private var currentStream: FSEventStreamRef?
+    private var currentWatchedDir: URL?
+
+    /// Dedicated serial queue FSEvents posts its callbacks on. Separate
+    /// from main so the callback doesn't contend with UI work; the
+    /// callback immediately hops back to main before touching any engine
+    /// state.
+    private let watcherQueue = DispatchQueue(label: "holoscape.skin.watcher")
 
     init() {
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
@@ -398,6 +447,109 @@ class SkinEngine {
                 let detail = error?.takeRetainedValue().localizedDescription ?? "unknown"
                 NSLog("SkinEngine: Failed to unregister font '\(url.lastPathComponent)': \(detail)")
             }
+        }
+    }
+
+    // MARK: - File-system watcher (Task 11)
+
+    /// Start watching `~/.holoscape/skins/<skinName>/` for any file change.
+    /// On fire, hops back to the main thread and notifies
+    /// `fileWatcherDelegate`. Replaces any previously-active stream —
+    /// safe to call repeatedly; callers do `startWatching(skinName:)`
+    /// on every skin switch without first calling `stopWatching()`.
+    ///
+    /// No-op for `"Default"` (no directory to watch) or when the
+    /// skin directory doesn't exist yet. The latter matters for the
+    /// launch path: if the persisted `skinName` points at a missing
+    /// folder, we log and skip rather than fail.
+    ///
+    /// FSEvents coalescing latency is deliberately short (0.05s) so our
+    /// 200ms debounce on the delegate side remains the authoritative
+    /// window — FSEvents itself shouldn't be batching events across a
+    /// wider interval than we plan for.
+    func startWatching(skinName: String) {
+        stopWatching()
+        guard skinName != "Default" else { return }
+        let skinDir = skinsDirectory.appendingPathComponent(skinName)
+        guard FileManager.default.fileExists(atPath: skinDir.path) else {
+            NSLog("SkinEngine: Cannot watch '\(skinName)' — directory does not exist")
+            return
+        }
+
+        // FSEventStreamContext carries `self` across the C boundary via
+        // an opaque pointer. passUnretained is safe because the stream
+        // lifetime is bounded by this instance: we invalidate it in
+        // stopWatching() (called from deinit), so the callback can never
+        // outlive `self`.
+        var ctx = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let paths = [skinDir.path] as CFArray
+
+        let callback: FSEventStreamCallback = { (_, info, _, _, _, _) in
+            // C-function-pointer callback: nonisolated, runs on
+            // watcherQueue. Retrieve self and immediately hop to main
+            // before touching any engine state. Number of events and
+            // their specific paths are ignored — the debounce on the
+            // delegate side coalesces all events into one reload pass.
+            guard let info else { return }
+            let engine = Unmanaged<SkinEngine>.fromOpaque(info).takeUnretainedValue()
+            DispatchQueue.main.async {
+                engine.fileWatcherDidFireSomeEvents()
+            }
+        }
+
+        guard let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &ctx,
+            paths,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            /* latency (FSEvents coalescing) */ 0.05,
+            UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+        ) else {
+            NSLog("SkinEngine: FSEventStreamCreate failed for '\(skinName)'")
+            return
+        }
+
+        FSEventStreamSetDispatchQueue(stream, watcherQueue)
+        FSEventStreamStart(stream)
+        currentStream = stream
+        currentWatchedDir = skinDir
+    }
+
+    /// Stop watching the currently-watched skin directory. Three-call
+    /// teardown (Stop → Invalidate → Release) is the canonical pattern —
+    /// missing any of them leaks the stream into the system event graph.
+    func stopWatching() {
+        guard let stream = currentStream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        currentStream = nil
+        currentWatchedDir = nil
+    }
+
+    /// Called after the main-queue hop from the FSEventStream callback.
+    /// Simply forwards the event to the delegate; the delegate debounces.
+    private func fileWatcherDidFireSomeEvents() {
+        guard let dir = currentWatchedDir else { return }
+        fileWatcherDelegate?.skinEngineDidDetectChange(in: dir)
+    }
+
+    deinit {
+        // Teardown inline rather than calling stopWatching() — deinit is
+        // nonisolated on a @MainActor class, so instance methods are not
+        // callable synchronously. FSEventStream* C calls have no actor
+        // affinity and are safe to invoke here.
+        if let stream = currentStream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
         }
     }
 
