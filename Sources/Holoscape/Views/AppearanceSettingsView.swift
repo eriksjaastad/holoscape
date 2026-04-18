@@ -3,6 +3,19 @@ import AppKit
 @MainActor
 protocol AppearanceSettingsDelegate: AnyObject {
     func appearanceSettingsDidChange(_ settings: AppearanceConfig)
+
+    /// The skin picker selected a skin. Receiver should reload the v2
+    /// chrome pipeline for `name` — load images, register fonts (while
+    /// unregistering the previous bundle), convert surfaces, and call
+    /// `MainWindowController.applySkin(_:)`. Implemented in
+    /// `MainWindowController` as `reloadSkin(named:)`.
+    ///
+    /// Kept separate from `appearanceSettingsDidChange` because that
+    /// hook covers AppearanceConfig-level edits (background color,
+    /// font, ANSI palette — the v1 path). The v2 chrome pipeline needs
+    /// its own signal so this PR can wire it without disturbing any
+    /// existing observers of `didChange`.
+    func appearanceSettingsDidSelectSkin(_ name: String)
 }
 
 @MainActor
@@ -220,9 +233,19 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     @objc private func skinChanged(_ sender: NSPopUpButton) {
         let skinName = sender.titleOfSelectedItem ?? "Default"
         config.skinName = skinName
+        // v1 path — transfers `windowBackground` / `ansiColors` /
+        // `textForeground` from the skin manifest to the AppearanceConfig
+        // used by the terminal. Retained unchanged; v2 chrome surfaces
+        // are handled by the delegate call below.
         if skinName != "Default", let skin = skinEngine.loadSkin(named: skinName) {
             config = skinEngine.apply(skin: skin, to: config)
         }
+        // v2 path — tells MainWindowController to rebuild its SkinContext
+        // from the selected skin's surfaces dict and re-inject into every
+        // chrome view. Before this delegate existed the v2 pipeline was
+        // orphaned: the plumbing was there, nothing called it. See PR A
+        // description of task 11 for full context.
+        settingsDelegate?.appearanceSettingsDidSelectSkin(skinName)
         loadCurrentValues()
         applyAndSave()
     }

@@ -70,6 +70,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// notification fired by chrome views.
     private(set) var skinContext: SkinContext
 
+    /// Owner of the one `SkinEngine` instance the app shares. Picker,
+    /// launch-time load, and (Task 11) hot-reload all go through this
+    /// engine so CTFontManager registrations, image caches, and the
+    /// currently-watched skin directory stay in one lifecycle.
+    let skinEngine = SkinEngine()
+
+    /// Fonts currently registered at process scope. Tracked so the next
+    /// `reloadSkin(named:)` can pass the exact URL set to
+    /// `unregisterFonts(_:)` before registering the new bundle — keeps
+    /// font registration symmetric (Property 9 invariant).
+    private var currentFontBundle: SkinFontBundle = SkinFontBundle(fonts: [:], registeredURLs: [])
+
     // References to Density menu items so we can flip the checkmark
     // `.state` when `.densityModeDidChange` fires. Weak because AppKit
     // retains menu items through the menu graph.
@@ -170,6 +182,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.titleVisibility = .hidden
         window.isOpaque = false
         applyWindowSurfaces()
+
+        // If the user had a non-Default skin selected at last quit, load
+        // it now so the chrome reflects the persisted choice. On failure
+        // (missing skin dir, malformed JSON) we log and stay on defaults;
+        // reloadSkin is intentionally silent-on-error so a bad skin folder
+        // never prevents the app from launching.
+        if let persistedSkin = config.appearance.skinName, persistedSkin != "Default" {
+            reloadSkin(named: persistedSkin)
+        }
 
         tabBar.tabDelegate = self
         sidebarView.sidebarDelegate = self
@@ -547,6 +568,33 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         sessionLauncher.skinContext = skinContext
         splitPaneManager.skinContext = skinContext
         applyWindowSurfaces()
+    }
+
+    /// Atomic "load-and-apply a skin by name" path shared by the Appearance
+    /// Settings picker, the launch-time persisted-skin load, and (Task 11)
+    /// the FSEventStream hot-reload callback.
+    ///
+    /// On success: unregisters the previous font bundle, stores the new
+    /// one, and calls `applySkin` with the v2 surfaces from the manifest
+    /// (or nil for `"Default"`, which resets to built-in defaults).
+    ///
+    /// On failure: logs via NSLog and keeps the previous `SkinContext` and
+    /// `SkinFontBundle` untouched — the UI stays on last-known-good state.
+    /// This matches Task 11.2's "keep previous SkinContext active" rule
+    /// and is the reason fonts are unregistered AFTER the new load
+    /// succeeds rather than before.
+    func reloadSkin(named name: String) {
+        do {
+            let loaded = try skinEngine.loadComposite(named: name)
+            // Drain previous fonts only after the new load committed —
+            // preserves symmetric register/unregister pairing on the
+            // happy path and leaves the old fonts alive on failure.
+            skinEngine.unregisterFonts(currentFontBundle)
+            currentFontBundle = loaded.fonts
+            applySkin(loaded.surfaces)
+        } catch {
+            NSLog("MainWindowController: reloadSkin('\(name)') failed: \(error) — keeping previous SkinContext")
+        }
     }
 
     /// Pure helper: build the SkinContext the controller should hold
