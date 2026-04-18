@@ -24,9 +24,65 @@ enum SkinAssetError: Error, Equatable {
     case invalidPath(String)
 }
 
+/// Errors raised by `SkinEngine.loadComposite(named:)`.
+enum SkinLoadError: Error, Equatable {
+    /// No folder at `~/.holoscape/skins/<name>/` or its `skin.json` is
+    /// missing / unreadable.
+    case notFound(String)
+    /// `skin.json` parsed or asset load failed. Carries a short reason
+    /// for logging; callers keep their previous `SkinContext` on this.
+    case parseFailure(String)
+}
+
+/// Everything `MainWindowController` needs to apply a skin in one atomic unit.
+///
+/// Returned by `SkinEngine.loadComposite(named:)`. Three consumers funnel
+/// through this: the Appearance-Settings picker, the launch-time persistence
+/// load, and Task 11's hot-reload path. Keeps those three code paths from
+/// drifting.
+///
+/// `surfaces` is nil for "Default" — callers pass it straight to
+/// `MainWindowController.applySkin(_:)` which interprets nil as
+/// "restore built-in defaults."
+struct LoadedSkin {
+    /// The skin folder name (or `"Default"`).
+    let name: String
+    /// Converted per-surface appearance map, ready for `applySkin(_:)`.
+    /// Nil for `.defaults`.
+    let surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?
+    /// Registered fonts. Empty bundle for `.defaults`. Callers must pass
+    /// the PREVIOUS bundle to `unregisterFonts(_:)` before storing this
+    /// one, so process-scope registrations stay symmetric (Property 9).
+    let fonts: SkinFontBundle
+    /// Decoded images keyed by their manifest path. Empty for `.defaults`.
+    let images: [String: NSImage]
+    /// Absolute URL of the skin's directory. Nil for `.defaults`. Used
+    /// by Task 11 to scope its FSEventStream watcher.
+    let skinDir: URL?
+
+    /// Sentinel returned when the requested skin is `"Default"` — lets
+    /// callers treat Default as "no skin loaded" without a special case.
+    ///
+    /// `@MainActor` because `LoadedSkin` holds `NSImage` (non-Sendable);
+    /// the sentinel is only read from main-thread code paths (picker,
+    /// MainWindowController), so main-actor isolation is correct.
+    @MainActor
+    static let defaults = LoadedSkin(
+        name: "Default",
+        surfaces: nil,
+        fonts: SkinFontBundle(fonts: [:], registeredURLs: []),
+        images: [:],
+        skinDir: nil
+    )
+}
+
 @MainActor
 class SkinEngine {
-    private let skinsDirectory: URL
+    /// Absolute path to the skins root — `~/.holoscape/skins/` or the
+    /// test-override directory from `HOLOSCAPE_CONFIG_DIR`. Exposed so
+    /// Task 11's FSEventStream watcher reads from the same location the
+    /// loader does.
+    let skinsDirectory: URL
 
     /// Density gate. When `isSkinActive()` returns false (Off mode), `apply`
     /// returns its input unchanged so chrome views render the pre-skinning
@@ -343,5 +399,84 @@ class SkinEngine {
                 NSLog("SkinEngine: Failed to unregister font '\(url.lastPathComponent)': \(detail)")
             }
         }
+    }
+
+    // MARK: - Composite load (Task 11 prep)
+
+    /// Load a skin fully — manifest, images, surfaces map, fonts — in one
+    /// atomic unit. Picker, launch-time persistence, and Task 11 hot reload
+    /// all funnel through this so the "apply a skin" sequence stays
+    /// in a single code path.
+    ///
+    /// Throws:
+    /// - `SkinLoadError.notFound` when the named skin folder or its
+    ///   `skin.json` can't be read.
+    /// - `SkinLoadError.parseFailure` when the manifest JSON is malformed,
+    ///   the surfaces dict fails to convert, or image loading throws.
+    ///
+    /// Any throw leaves process state unchanged — no partial font
+    /// registration leaks because fonts are registered LAST, after every
+    /// other fallible step succeeds. Callers keep their previous
+    /// `SkinContext` and `SkinFontBundle` on error.
+    ///
+    /// `Default` returns `LoadedSkin.defaults` immediately without touching
+    /// disk — the sentinel lets callers treat "no skin" uniformly.
+    func loadComposite(named name: String) throws -> LoadedSkin {
+        if name == "Default" {
+            return .defaults
+        }
+
+        guard let manifest = loadSkin(named: name) else {
+            throw SkinLoadError.notFound(name)
+        }
+
+        let skinDir = skinsDirectory.appendingPathComponent(name)
+
+        // Images may throw SkinAssetError.invalidPath — surface as parseFailure
+        // so callers have one error type to handle.
+        let images: [String: NSImage]
+        do {
+            images = try loadImages(from: skinDir, manifest: manifest)
+        } catch {
+            throw SkinLoadError.parseFailure("image load failed for '\(name)': \(error)")
+        }
+
+        // Convert v2 surfaces descriptor → ResolvedSurface map. Each surface's
+        // fill/state variants are resolved against the image cache. Unknown
+        // SurfaceKey raw values in the manifest are logged and skipped — they
+        // come from forward-compat manifests and don't invalidate the load.
+        var resolvedSurfaces: [SurfaceKey: SkinContext.ResolvedSurface] = [:]
+        if let rawSurfaces = manifest.surfaces {
+            for (rawKey, descriptor) in rawSurfaces {
+                guard let key = SurfaceKey(rawValue: rawKey) else {
+                    NSLog("SkinEngine: Unknown surface key '\(rawKey)' in skin '\(name)' — ignoring")
+                    continue
+                }
+                resolvedSurfaces[key] = SkinContext.convert(descriptor, for: key, imageCache: images)
+            }
+        }
+
+        // Register fonts LAST. Any earlier throw returns without touching
+        // CTFontManager state. If registerFonts itself partially registers
+        // and then has an internal failure, its returned bundle already
+        // reflects what actually registered (loadComposite doesn't retry),
+        // so callers can still drain symmetrically.
+        let fonts = registerFonts(from: skinDir)
+
+        // `surfaces` nil means "manifest had no v2 surfaces block" — caller
+        // should fall back to built-in defaults. An empty non-nil map means
+        // "v2 surfaces block existed but every key was unknown" — treat
+        // the same as nil so chrome views pick defaults rather than
+        // rendering an empty resolved state.
+        let effectiveSurfaces: [SurfaceKey: SkinContext.ResolvedSurface]? =
+            resolvedSurfaces.isEmpty ? nil : resolvedSurfaces
+
+        return LoadedSkin(
+            name: name,
+            surfaces: effectiveSurfaces,
+            fonts: fonts,
+            images: images,
+            skinDir: skinDir
+        )
     }
 }
