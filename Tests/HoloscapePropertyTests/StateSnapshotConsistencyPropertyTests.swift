@@ -129,6 +129,13 @@ final class StateSnapshotConsistencyPropertyTests: XCTestCase {
     /// Write `value` to the field associated with `key`. The typed setters
     /// mutate lock-protected storage; we route through them so the test
     /// exercises the production write path, not a synthetic back door.
+    ///
+    /// Derived fields (`previousAgentState`, `previousCommandState`,
+    /// `lastCommandExitCode`) are set as a SIDE EFFECT of state
+    /// transitions — no dedicated setter exists. We drive them through
+    /// the transition that actually populates them, so the "written
+    /// value is readable" invariant holds end-to-end rather than only
+    /// for the initial-zero case.
     private func write(_ value: Int32, to key: String, on snap: ReactiveUniformSnapshot) {
         switch key {
         case "agentState":
@@ -149,12 +156,26 @@ final class StateSnapshotConsistencyPropertyTests: XCTestCase {
             // property test the value-after-write invariant still holds
             // because the writer runs once; we just ignore `value`.
             snap.recordOutputEvent()
-        case "previousAgentState", "previousCommandState", "lastCommandExitCode":
-            // Derived/internal fields; their values are set as a side
-            // effect of state transitions. The lookup invariant still
-            // applies — intValue(forMatchKey:) returns non-nil whether
-            // the value was explicitly written or remains zero.
-            break
+        case "previousAgentState":
+            // setAgentState copies the current agentState into
+            // previousAgentState before updating. Seed the "previous"
+            // slot by setting agent state once to `value`, then again
+            // to a different sentinel — the first value becomes the
+            // previous.
+            snap.setAgentState(value)
+            snap.setAgentState(value &+ 1)
+        case "previousCommandState":
+            // Mirror agent-state pattern: setCommandState copies current
+            // into previous before updating. Non-zero initial value is
+            // required because setCommandState early-returns when the
+            // new value equals the current one (both initially 0).
+            snap.setCommandState(value == 0 ? 1 : value)
+            snap.setCommandState((value == 0 ? 1 : value) &+ 1)
+        case "lastCommandExitCode":
+            // lastCommandExitCode is stamped only on the idle→completed
+            // transition (newValue == 2). Drive the full sequence.
+            snap.setCommandState(1)                    // start
+            snap.setCommandState(2, exitCode: value)   // complete with exit code
         default:
             break
         }
