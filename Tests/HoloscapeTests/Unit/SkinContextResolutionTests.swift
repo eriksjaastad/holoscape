@@ -259,6 +259,32 @@ final class SkinContextResolutionTests: XCTestCase {
         XCTAssertNotNil(layer.backgroundColor)
     }
 
+    func testApplyFillSetsContentsScaleToBackingScale() {
+        // Task 8.5 — backing-scale factor threaded through so image
+        // assets on Retina render at native resolution.
+        let snap = ReactiveUniformSnapshot()
+        let ctx = SkinContext.builtInDefaults(reactive: snap)
+        let layer = CALayer()
+        let resolved = ctx.resolve(.tabBarContainer)
+
+        ctx.applyFill(to: layer, from: resolved, backingScale: 3.0)
+        XCTAssertEqual(layer.contentsScale, 3.0,
+                       "contentsScale must track the backing scale passed in")
+    }
+
+    func testApplyFillDefaultsContentsScaleWhenNoWindow() {
+        // Default (no-arg) call path: 2.0 is the right assumption for
+        // modern Macs when the layer isn't yet attached to a window.
+        let snap = ReactiveUniformSnapshot()
+        let ctx = SkinContext.builtInDefaults(reactive: snap)
+        let layer = CALayer()
+        let resolved = ctx.resolve(.tabBarContainer)
+
+        ctx.applyFill(to: layer, from: resolved)
+        XCTAssertEqual(layer.contentsScale, 2.0,
+                       "Default backingScale falls back to 2.0 (Retina-safe)")
+    }
+
     func testApplyGradientFillInsertsSublayer() {
         let snap = ReactiveUniformSnapshot()
         let ctx = SkinContext.builtInDefaults(reactive: snap)

@@ -133,9 +133,17 @@ final class SkinContext {
     /// fill variants: `color` via `backgroundColor`, `image` via `contents`
     /// (with optional ninepatch `contentsCenter`), and `gradient` by
     /// inserting a dedicated `CAGradientLayer` sublayer.
-    func applyFill(to layer: CALayer, from resolved: ResolvedSurface) {
+    ///
+    /// `backingScale` sets `layer.contentsScale` so image assets render
+    /// crisply on Retina displays (Requirement 7.3). Callers that know
+    /// the hosting window pass `view.window?.backingScaleFactor ?? 2.0`;
+    /// the default of `2.0` is the correct assumption for modern Macs
+    /// when the window isn't yet available.
+    func applyFill(to layer: CALayer, from resolved: ResolvedSurface, backingScale: CGFloat = 2.0) {
         // Clear any previously installed gradient sublayer before reapplying.
         removeGradientSublayer(from: layer)
+
+        layer.contentsScale = backingScale
 
         switch resolved.fill {
         case .color(let color):
