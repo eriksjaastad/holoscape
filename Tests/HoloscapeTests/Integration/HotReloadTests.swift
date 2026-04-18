@@ -44,7 +44,7 @@ final class HotReloadTests: XCTestCase {
 
     // MARK: - Happy path: a write fires the delegate
 
-    func testFileWriteFiresDelegate() {
+    func testFileWriteFiresDelegate() throws {
         let engine = SkinEngine()
         let spy = CountingSpy()
         engine.fileWatcherDelegate = spy
@@ -54,15 +54,16 @@ final class HotReloadTests: XCTestCase {
 
         engine.startWatching(skinName: "TestSkin")
 
-        // FSEventStreamStart can take a moment to become ready after
-        // SetDispatchQueue + Start. Give it a beat before the first
-        // write so the event isn't pre-stream.
-        let writeExpectation = expectation(description: "write completes")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
-            try? writeSkinJson(windowColor: "#00ff00")
-            writeExpectation.fulfill()
-        }
-        wait(for: [writeExpectation], timeout: 1.0)
+        // FSEventStreamStart needs a beat to become ready after
+        // SetDispatchQueue + Start. Wait synchronously, then do the
+        // triggering write with `try` so a filesystem failure fails
+        // the test loudly rather than being swallowed into a vacuous
+        // "no fire" outcome.
+        let ready = expectation(description: "stream start settles")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { ready.fulfill() }
+        wait(for: [ready], timeout: 1.0)
+
+        try writeSkinJson(windowColor: "#00ff00")
         wait(for: [didFire], timeout: 3.0)
 
         XCTAssertGreaterThan(spy.fireCount, 0,
@@ -72,7 +73,7 @@ final class HotReloadTests: XCTestCase {
 
     // MARK: - stopWatching silences subsequent writes
 
-    func testStopWatchingSilencesFires() {
+    func testStopWatchingSilencesFires() throws {
         let engine = SkinEngine()
         let spy = CountingSpy()
         engine.fileWatcherDelegate = spy
@@ -80,10 +81,10 @@ final class HotReloadTests: XCTestCase {
         engine.startWatching(skinName: "TestSkin")
         engine.stopWatching()
 
-        // Write AFTER stopWatching — delegate must not fire. Wait longer
-        // than the FSEvents latency (0.05s) + dispatch-queue hop to be
-        // confident no stray fire is in flight.
-        try? writeSkinJson(windowColor: "#0000ff")
+        // Write AFTER stopWatching — delegate must not fire. `try`
+        // (not `try?`) so a silent write failure can't vacuously
+        // satisfy the no-fire assertion.
+        try writeSkinJson(windowColor: "#0000ff")
 
         let noFire = expectation(description: "no fire within 1s window")
         noFire.isInverted = true
@@ -143,24 +144,24 @@ final class HotReloadTests: XCTestCase {
 
     // MARK: - Default and missing-skin startWatching is a safe no-op
 
-    func testStartWatchingDefaultIsNoOp() {
+    func testStartWatchingDefaultIsNoOp() throws {
         let engine = SkinEngine()
         let spy = CountingSpy()
         engine.fileWatcherDelegate = spy
 
         engine.startWatching(skinName: "Default")
 
-        // No stream was created; no fires are possible. We only assert
-        // the call didn't crash, and that a subsequent write doesn't
-        // somehow trigger the delegate.
-        try? writeSkinJson(windowColor: "#ff00ff")
+        // No stream was created; no fires are possible. `try` (not
+        // `try?`) so a write failure fails the test rather than
+        // silently passing the no-fire assertion.
+        try writeSkinJson(windowColor: "#ff00ff")
         let noFire = expectation(description: "no fire for Default")
         noFire.isInverted = true
         spy.onFire = { _ in noFire.fulfill() }
         wait(for: [noFire], timeout: 0.5)
     }
 
-    func testStartWatchingMissingSkinIsNoOp() {
+    func testStartWatchingMissingSkinIsNoOp() throws {
         let engine = SkinEngine()
         let spy = CountingSpy()
         engine.fileWatcherDelegate = spy
@@ -170,7 +171,7 @@ final class HotReloadTests: XCTestCase {
         // (our tempDir root) must not fire the delegate.
         engine.startWatching(skinName: "NonExistent")
 
-        try? Data("unrelated".utf8).write(to: tempDir.appendingPathComponent("sibling.txt"))
+        try Data("unrelated".utf8).write(to: tempDir.appendingPathComponent("sibling.txt"))
         let noFire = expectation(description: "no fire for missing skin")
         noFire.isInverted = true
         spy.onFire = { _ in noFire.fulfill() }
