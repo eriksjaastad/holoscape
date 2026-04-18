@@ -11,6 +11,14 @@ protocol SessionLauncherDelegate: AnyObject {
 class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     weak var launcherDelegate: SessionLauncherDelegate?
 
+    /// Skin context source. Nil falls back to the hardcoded default
+    /// below (standalone rendering path).
+    var skinContext: SkinContext? {
+        didSet { refreshFromSkin() }
+    }
+
+    private static let containerBg = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+
     private let comboBox = NSComboBox()
     private let refreshButton = NSButton()
     private var items: [LauncherItem] = []
@@ -18,16 +26,49 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     override init(frame: NSRect) {
         super.init(frame: frame)
         setupViews()
+        setupSkinObserver()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupViews()
+        setupSkinObserver()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupSkinObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(skinDidChange(_:)),
+            name: .skinDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func skinDidChange(_ note: Notification) {
+        refreshFromSkin()
+    }
+
+    private func refreshFromSkin() {
+        guard let ctx = skinContext else {
+            layer?.backgroundColor = Self.containerBg
+            return
+        }
+        let fill = ctx.currentState(for: .sessionLauncherContainer).fill
+        if case .color(let ns) = fill {
+            layer?.backgroundColor = ns.cgColor
+        } else {
+            NSLog("SessionLauncherView: non-color fill for '\(SurfaceKey.sessionLauncherContainer.rawValue)' not yet supported; falling back")
+            layer?.backgroundColor = Self.containerBg
+        }
     }
 
     private func setupViews() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+        layer?.backgroundColor = Self.containerBg
 
         comboBox.isEditable = true
         comboBox.completes = true
