@@ -382,45 +382,44 @@ The implementation order is: data models → core services → chrome view migra
     - Shipped as `Tests/HoloscapeTests/Integration/HotReloadTests.swift` — 5 tests covering: write-fires-delegate, stopWatching silences, skin-switch re-points the watcher, Default-name is a safe no-op, missing-skin-dir is a safe no-op. Uses `HOLOSCAPE_CONFIG_DIR` to point at a per-test temp dir. `MainWindowController` debounce is verified indirectly via the Mac-Mini dogfood — standing up a full controller in a unit test is more ceremony than the invariant warrants, and the debounce pattern (`DispatchWorkItem` cancel-and-reschedule) is a direct mirror of `scheduleSaveState()` which the existing 518-test suite already exercises.
     - _Requirements: 14.2, 14.3_
 
-- [ ] 12. Reader Mode
-  - [ ] 12.1 Create `ReaderModeController`
-    - Create `Sources/Holoscape/Controllers/ReaderModeController.swift` as `@MainActor final class`
-    - Add `panel: NSPanel?`, `savedAlpha`, `animationsSuppressed` properties
-    - `activate(for channel: Channel)`, `dismiss()`, `isActive` getter
+- [x] 12. Reader Mode
+  - [x] 12.1 Create `ReaderModeController`
+    - Shipped as `Sources/Holoscape/Controllers/ReaderModeController.swift` as `@MainActor final class` conforming to `NSWindowDelegate`.
+    - Holds `panel: NSPanel?`, `textView: NSTextView?`, `savedAlpha: CGFloat`, `parentWindow: NSWindow?` (weak). `animationsSuppressed` was not needed — the engine's `suppressAll()` is stateless on the controller side.
+    - `activate(for:parentWindow:animationEngine:)`, `dismiss()`, `isActive` getter. `windowWillClose` routes close-button clicks through `dismiss` so alpha restoration runs.
     - _Requirements: 11.1, 11.3_
 
-  - [ ] 12.2 Implement scrollback capture with ANSI stripping
-    - `captureScrollback(from channel:) -> String` reads channel's scrollback buffer
-    - Strip ANSI escape codes via regex (CSI sequences, SGR codes)
-    - Return plain text
+  - [x] 12.2 Implement scrollback capture with ANSI stripping
+    - Uses `ChannelController.lastLines(_ count: Int) -> [String]` (protocol declared at `Sources/Holoscape/Protocols/ChannelController.swift:17`; implemented by `ShellChannelController`, `AgentChannelController`, `SSHChannelController` via SwiftTerm's `terminal.getText`). Calls `channel.lastLines(10_000)`.
+    - Stripping extracted to its own value-type helper `Sources/Holoscape/Services/ANSIStripper.swift` for testability. Handles CSI (params 0x30–0x3F, intermediates 0x20–0x2F, final 0x40–0x7E), OSC (terminated by BEL or ST), lone two-byte escapes (ESC + 0x40–0x5F), and bare BEL. Order-sensitive: CSI runs first so lone-escape doesn't eat CSI prefixes. Covered by 14 unit tests in `Tests/HoloscapeTests/Unit/ANSIStripperTests.swift` including a realistic prompt+colored-output sample.
     - _Requirements: 11.1, 11.6_
 
-  - [ ] 12.3 Implement main window dim
-    - `dimMainWindow()` saves current alpha, sets to 0.4 via animation
-    - Calls `AnimationEngine.suppressAll()` to pause skin animations
-    - `restoreMainWindow()` restores alpha and resumes animations
+  - [x] 12.3 Implement main window dim
+    - `activate` captures `parentWindow.alphaValue` into `savedAlpha`, animates to 0.4 over 200ms via `NSAnimationContext.runAnimationGroup` + `animator().alphaValue`. Matches the codebase's existing constraint-animation pattern. `dismiss` reverses with the saved alpha.
+    - `animationEngine?.suppressAll()` is called when an engine is wired. Currently the app's object graph does not own a shared `AnimationEngine` instance (`DensityModeManager.animationEngine` is nil in production — latent since Task 7 landed). Controller accepts `AnimationEngine?` as optional and skips suppression when nil. **Backlog followup**: wire a shared AnimationEngine alongside DensityModeManager so this and the density-mode suppression path both fire.
+    - No "resume animations" call on dismiss — `AnimationEngine` re-queues naturally on the next state transition; this is the intended semantics per the spec.
     - _Requirements: 11.2, 11.5_
 
-  - [ ] 12.4 Configure NSPanel appearance
-    - Panel uses SF Mono at 14pt regardless of active skin
-    - No toolbar, no navigation, scrollable NSScrollView with NSTextView
-    - Panel is draggable and resizable
+  - [x] 12.4 Configure NSPanel appearance
+    - Panel uses `NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)` — hardcoded, not read from SkinContext. The Reader surface is deliberately skin-neutral.
+    - No toolbar. Content is a single `NSScrollView` with an `NSTextView` (`isEditable: false`, `isSelectable: true` so the user can copy/paste, `isRichText: false`, 12pt text-container inset). Pattern directly borrowed from `BugReportDialog.swift:60-66`.
+    - `styleMask: [.titled, .closable, .resizable, .nonactivatingPanel]` — draggable via title bar, resizable, with a close button.
     - _Requirements: 11.3, 11.6_
 
-  - [ ] 12.5 Maintain focus in main window while panel open
-    - Panel uses `NSPanel.StyleMask` without `.titled` focus stealing
-    - Console input focus stays in MainWindowController's first responder chain
+  - [x] 12.5 Maintain focus in main window while panel open
+    - `.nonactivatingPanel` style mask plus `panel.isFloatingPanel = true` means the panel floats above the main window without becoming the key window. Main window's first-responder chain (e.g. `inputBox`) stays intact.
+    - Panel is shown via `orderFront(nil)` not `makeKeyAndOrderFront(nil)` — no key-window steal.
+    - `panel.hidesOnDeactivate = false` so the panel stays visible if Holoscape loses focus (user might tab to another app while reading).
     - _Requirements: 11.4_
 
-  - [ ] 12.6 Add menu item for toggle
-    - Modify `Sources/Holoscape/AppDelegate.swift` to add "Reader Mode" under View menu
-    - Calls `ReaderModeController.activate` / `dismiss`
+  - [x] 12.6 Add menu item for toggle
+    - Added to `MainWindowController.setupKeyboardShortcuts()` (not AppDelegate — MainWindowController owns the handler so responder-chain dispatch is reliable, matching existing timestamp/chrome-toggle pattern).
+    - Shortcut: `⌘⇧R` (not `⌘R` to avoid clash with common "reload" semantics in dev tools).
+    - Handler `@objc func toggleReaderMode()` toggles activate/dismiss; logs and no-ops when no channel is active.
     - _Requirements: 11.7_
 
   - [ ]* 12.7 Integration test: Reader Mode with active skin
-    - Create `Tests/HoloscapeTests/Integration/ReaderModeIntegrationTests.swift`
-    - Load skin, activate reader mode, verify main window dims within 100ms and scrollback appears
-    - Dismiss and verify restoration
+    - Deferred per the `*` optional marker. ANSIStripper has 14 unit tests covering the load-bearing regex correctness; the controller's NSPanel lifecycle is verified via Mac-Mini dogfood. Standing up a full `MainWindowController` + real window in a unit test is heavier than the invariant warrants for this first ship.
     - _Requirements: 11.4, 11.5_
 
 - [ ] 13. Reference skin
