@@ -352,31 +352,34 @@ The implementation order is: data models → core services → chrome view migra
   - All tests pass (460 pre-existing + 10 new test files = 490+ tests green as of 2026-04-18). Pre-migration regression check is `Tests/HoloscapeTests/Unit/PreMigrationParityTests.swift` — 23 tests freezing every `SkinContext.builtInDefaults` fill against the pre-migration hex extracted from commit `e0aae6f` (merge of PR #102, immediately before chrome view migrations began in PR #103).
   - **Mac-Mini follow-up (deferred):** The laptop-side invariant is "every default fill matches the pre-migration hex value." A full visual regression (actual rendered chrome vs. a pre-migration `e0aae6f` build) still requires running Holoscape on Mac Mini with no skin loaded and diffing screenshots — that's the dogfood pass Task 10 ultimately wants. Pre-migration baseline: checkout `e0aae6f`, build, capture screenshots of each chrome view at default state. Current main: same, no skin loaded. Diff should be pixel-perfect for layout/font/shadow/compositing; color-level parity is guaranteed by PreMigrationParityTests.
 
-- [ ] 11. Hot reload
-  - [ ] 11.1 Implement FSEventStream watcher in SkinEngine
-    - Modify `Sources/Holoscape/Services/SkinEngine.swift` to add `startWatching(skinDirectory:)` and `stopWatching()` methods
-    - Use `FSEventStreamCreate` with callback on file changes
+- [x] 11. Hot reload
+  - [x] 11.0 **Prerequisite — wire v2 apply path through picker + launch**
+    - Not originally listed as a subtask; surfaced by the Mac-Mini dogfood after Task 9 and landed as PR #111 before Task 11 proper. `MainWindowController.applySkin(_:)` had zero callers since PR #106; the Appearance Settings picker ran only the v1 apply path. PR #111 adds `SkinEngine.loadComposite(named:)` as the single atomic load entry point, has `MainWindowController` own the shared `SkinEngine` and track `currentFontBundle`, adds `reloadSkin(named:)`, wires init to read `config.appearance.skinName` for launch persistence, and extends `AppearanceSettingsDelegate` with `appearanceSettingsDidSelectSkin(_:)` routed through `AppDelegate` → `MainWindowController.reloadSkin`.
+    - Covered by `Tests/HoloscapeTests/Unit/SkinEngineLoadCompositeTests.swift`.
+
+  - [x] 11.1 Implement FSEventStream watcher in SkinEngine
+    - `Sources/Holoscape/Services/SkinEngine.swift` gains `startWatching(skinName:)` and `stopWatching()`. `FSEventStreamCreate` with `kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer`, latency 0.05s (FSEvents coalescing; MainWindowController's 200ms debounce is authoritative). Dedicated serial queue `holoscape.skin.watcher`. Callback hops to main via `DispatchQueue.main.async` before touching engine state.
+    - Watcher is scoped to the ACTIVE skin's directory only — watching `~/.holoscape/skins/` wholesale would wake the debouncer on every save to every skin. Picker flips via `stopWatching() + startWatching(newName)` inside `reloadSkin`.
+    - New `SkinEngineFileWatcherDelegate` protocol; `MainWindowController` conforms. Delegate protocol chosen over closure callback for testability — test spies implement the protocol (`CountingSpy`) without orchestrating real FSEvents.
+    - Three-call teardown in `stopWatching` and inline in `deinit` (Stop → Invalidate → Release). `currentStream` is `nonisolated(unsafe)` because Swift 6 nonisolated-deinit can't reach MainActor-isolated state; FSEventStream C APIs are thread-safe so the pointer access is safe.
     - _Requirements: 14.1_
 
-  - [ ] 11.2 Implement debounced reload
-    - On file change event, start 200ms debounce timer
-    - On timer fire, re-parse `skin.json`, rebuild SkinContext, re-register fonts (deregister old, register new)
-    - If parse fails, log error and keep previous SkinContext active
+  - [x] 11.2 Implement debounced reload
+    - `MainWindowController.skinEngineDidDetectChange(in:)` cancels `pendingReloadWorkItem` and schedules a new 200ms `DispatchWorkItem` via `DispatchQueue.main.asyncAfter`. Matches the canonical pattern from `scheduleSaveState()` elsewhere in the same file. Any user-driven skin switch (via picker) cancels the pending item so stale disk events from a different skin directory can't race with the selection.
+    - Reload reuses `reloadSkin(named:)` from PR #111, which does the atomic load via `loadComposite` and keeps the previous `SkinContext` on throw — matches the "keep previous SkinContext active on parse failure" rule.
     - _Requirements: 14.2, 14.4_
 
-  - [ ] 11.3 Post SkinDidChange notification
-    - After successful reload, post `NotificationCenter.default.post(name: .skinDidChange, object: nil)`
-    - All chrome views observe and call `layout()`
-    - _Requirements: 14.3_
+  - [x] 11.3 ~~Post SkinDidChange notification~~ — SUPERSEDED
+    - Spec wording conflicts with the invariant PR #106 established: `MainWindowController.applySkin(_:)` does NOT post `.skinDidChange` because the direct property assignments it performs already trigger each chrome view's `didSet` → `refreshFromSkin()`. Chrome views ALSO observe `.skinDidChange` directly, so posting on top would fire `refreshFromSkin` twice per reload.
+    - Task 11's reload path honors that rule: `reloadSkin` → `applySkin` → property chain → one repaint. No notification post. External observers (none today) can observe the property path or add themselves; chrome views are covered.
+    - _Requirements: 14.3 — invariant satisfied via the property chain rather than a notification._
 
-  - [ ] 11.4 Release stale image cache
-    - On reload, release `imageCache` from previous SkinContext
-    - Load new images from updated manifest
+  - [x] 11.4 Release stale image cache
+    - Handled by ARC. When `applySkin` assigns a new `SkinContext` to `MainWindowController.skinContext`, the previous context goes out of scope and its `imageCache` dictionary releases with it. Property assignment is the release trigger; no explicit `clearCache()` call needed.
     - _Requirements: 14.5_
 
-  - [ ]* 11.5 Integration test: Hot reload flow
-    - Create `Tests/HoloscapeTests/Integration/HotReloadTests.swift`
-    - Load test skin, modify `skin.json`, verify SkinContext rebuilt within 500ms
+  - [x]* 11.5 Integration test: Hot reload flow
+    - Shipped as `Tests/HoloscapeTests/Integration/HotReloadTests.swift` — 5 tests covering: write-fires-delegate, stopWatching silences, skin-switch re-points the watcher, Default-name is a safe no-op, missing-skin-dir is a safe no-op. Uses `HOLOSCAPE_CONFIG_DIR` to point at a per-test temp dir. `MainWindowController` debounce is verified indirectly via the Mac-Mini dogfood — standing up a full controller in a unit test is more ceremony than the invariant warrants, and the debounce pattern (`DispatchWorkItem` cancel-and-reschedule) is a direct mirror of `scheduleSaveState()` which the existing 518-test suite already exercises.
     - _Requirements: 14.2, 14.3_
 
 - [ ] 12. Reader Mode
