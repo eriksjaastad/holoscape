@@ -1,5 +1,13 @@
 import AppKit
 
+// NOTE: Task 9.5 calls for a SkinContext migration on this class, but
+// nothing in the current production code instantiates it — the terminal
+// hierarchy routes through `SplitPaneView` + `MetalCompositor` instead.
+// The migration has been intentionally held back until a call site
+// returns, so it doesn't ship as dead code. When TCV is re-adopted,
+// replicate the `skinContext`/`.skinDidChange` pattern from the other
+// chrome views and wire `MainWindowController` to inject the context.
+
 @MainActor
 class TerminalContainerView: NSView {
     private var currentContentView: NSView?
