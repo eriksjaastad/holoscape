@@ -1,0 +1,77 @@
+{
+  "version": "2.0",
+  "name": "Holoscape Synthwave",
+  "author": "Holoscape team",
+  "description": "Retro synthwave dark — purple window gradient, teal-to-cyan tab bar, neon pink accents, ninepatch sidebar.",
+  "surfaces": {
+    "window.background": {
+      "fill": {
+        "kind": "gradient",
+        "direction": "vertical",
+        "stops": [
+          { "offset": 0.0, "color": "#1a0933" },
+          { "offset": 1.0, "color": "#3d1a5e" }
+        ]
+      }
+    },
+    "tabBar.container": {
+      "fill": {
+        "kind": "gradient",
+        "direction": "horizontal",
+        "stops": [
+          { "offset": 0.0, "color": "#0d4d6b" },
+          { "offset": 1.0, "color": "#1a9fd4" }
+        ]
+      }
+    },
+    "tabBar.tab.active": {
+      "fill": { "kind": "color", "value": "#ff4dd1" }
+    },
+    "tabBar.tab.idle": {
+      "fill": { "kind": "color", "value": "#1a4d38" }
+    },
+    "tabBar.tab.permission": {
+      "fill": { "kind": "color", "value": "#996633" }
+    },
+    "tabBar.tab.normal": {
+      "fill": { "kind": "color", "value": "#1a2142" }
+    },
+    "sidebar.container": {
+      "fill": {
+        "kind": "image",
+        "path": "assets/sidebar-tile.png",
+        "tile": "ninepatch"
+      }
+    },
+    "sidebar.row.selected": {
+      "fill": { "kind": "color", "value": "#ff4dd1" }
+    },
+    "sidebar.row.indicator": {
+      "fill": { "kind": "color", "value": "#1aff8c" },
+      "states": [
+        {
+          "name": "connecting",
+          "match": { "channelConnectionState": 1 },
+          "fill": { "kind": "color", "value": "#ffcc00" }
+        },
+        {
+          "name": "disconnected",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#ff3b30" }
+        }
+      ]
+    },
+    "inputBox.container": {
+      "fill": { "kind": "color", "value": "#0f0820" }
+    },
+    "inputBox.field": {
+      "fill": { "kind": "color", "value": "#1a0f33" }
+    },
+    "sessionLauncher.container": {
+      "fill": { "kind": "color", "value": "#0d0820" }
+    },
+    "splitPane.divider": {
+      "fill": { "kind": "color", "value": "#ff4dd1" }
+    }
+  }
+}
