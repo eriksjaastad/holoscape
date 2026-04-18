@@ -91,6 +91,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// manually so stale disk events can't race with the selection.
     private var pendingReloadWorkItem: DispatchWorkItem?
 
+    /// Reader Mode controller (Task 12) — floating NSPanel that shows
+    /// the active channel's scrollback as plain text. Constructed eagerly
+    /// at init (cheap: no panel built until first `activate`) and retained
+    /// for the window-controller's lifetime so `⌘⇧R` toggling reuses the
+    /// same instance.
+    private let readerModeController = ReaderModeController()
+
     // References to Density menu items so we can flip the checkmark
     // `.state` when `.densityModeDidChange` fires. Weak because AppKit
     // retains menu items through the menu graph.
@@ -430,6 +437,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             timestampItem.target = self
             viewMenu.addItem(timestampItem)
 
+            // Reader Mode — floating NSPanel with the active channel's
+            // scrollback as plain text (ANSI stripped). ⌘⇧R rather than
+            // ⌘R because ⌘R is too commonly "reload" in dev tools; the
+            // shift modifier keeps the shortcut specific to Holoscape.
+            let readerModeItem = NSMenuItem(
+                title: "Reader Mode",
+                action: #selector(toggleReaderMode),
+                keyEquivalent: "r"
+            )
+            readerModeItem.keyEquivalentModifierMask = [.command, .shift]
+            readerModeItem.target = self
+            viewMenu.addItem(readerModeItem)
+
             viewMenu.addItem(NSMenuItem.separator())
 
             // External chrome region toggles. All four bands exist as
@@ -532,6 +552,33 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let current = config.showTimestamps ?? false
         config.showTimestamps = !current
         configService.save(config)
+    }
+
+    /// View menu "Reader Mode" action (⌘⇧R). Toggles the floating
+    /// reader panel for the active channel. Silently no-ops when no
+    /// channel is active — the menu item stays available but a toggle
+    /// with no channel just logs and returns.
+    ///
+    /// `animationEngine: nil` is intentional: the app's object graph
+    /// does not currently own a shared AnimationEngine (backlog card to
+    /// wire one alongside DensityModeManager). When nil, Reader Mode
+    /// skips its chrome-animation suppression step; the dim already
+    /// conveys "not in interactive mode."
+    @objc func toggleReaderMode() {
+        if readerModeController.isActive {
+            readerModeController.dismiss()
+            return
+        }
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else {
+            NSLog("MainWindowController: Reader Mode invoked with no active channel — ignoring")
+            return
+        }
+        readerModeController.activate(
+            for: channel,
+            parentWindow: window,
+            animationEngine: nil
+        )
     }
 
     // MARK: - Internal sidebar (left nav)
