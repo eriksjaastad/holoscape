@@ -149,36 +149,109 @@ class SkinEngine {
         }
     }
 
-    /// List all available skin names. Always includes "Default" first.
+    /// List all available skin names. Always includes "Default" first,
+    /// followed by BUNDLED reference skins (shipped inside the .app at
+    /// `Bundle.main.resourceURL/Skins/`), followed by USER skins at
+    /// `~/.holoscape/skins/`. Names are deduped: if a user installs a
+    /// skin with the same folder name as a bundled one, the user's
+    /// override wins — but the name appears only once in the picker.
     func availableSkins() -> [String] {
         var skins = ["Default"]
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: skinsDirectory, includingPropertiesForKeys: [.isDirectoryKey]
-        ) else {
-            return skins
+        var seen: Set<String> = []
+        for name in bundledSkinNames() where seen.insert(name).inserted {
+            skins.append(name)
         }
-        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir), isDir.boolValue {
-                let skinJson = entry.appendingPathComponent("skin.json")
-                if FileManager.default.fileExists(atPath: skinJson.path) {
-                    skins.append(entry.lastPathComponent)
-                }
-            }
+        for name in userSkinNames() where seen.insert(name).inserted {
+            skins.append(name)
         }
         return skins
     }
 
-    /// Load a skin definition by name. Returns nil for "Default" or invalid skins.
-    func loadSkin(named name: String) -> SkinDefinition? {
+    /// Enumerate skin folder names under the user's `~/.holoscape/skins/`
+    /// (or the `HOLOSCAPE_CONFIG_DIR` test override).
+    private func userSkinNames() -> [String] {
+        enumerateSkinFolders(at: skinsDirectory)
+    }
+
+    /// Enumerate skin folder names under the app bundle's `Resources/Skins/`.
+    /// Empty in unit tests (no Bundle.main.resourceURL) or when no bundled
+    /// skins are shipped.
+    private func bundledSkinNames() -> [String] {
+        guard let root = bundledSkinsDirectory() else { return [] }
+        return enumerateSkinFolders(at: root)
+    }
+
+    /// Absolute URL of the app bundle's bundled-skins directory, or nil
+    /// when running in an environment without a resource bundle.
+    ///
+    /// Uses `Bundle.module` — SwiftPM's auto-generated accessor for the
+    /// Holoscape target's resource bundle (`Holoscape_Holoscape.bundle`
+    /// inside the .app). `Bundle.main.resourceURL` points one level up
+    /// and doesn't include the nested `Skins/` tree.
+    ///
+    /// Respects the `HOLOSCAPE_BUNDLE_SKINS_DIR` env var for tests —
+    /// lets integration tests stage a fake bundled-skins directory
+    /// without having to mock the module bundle.
+    private func bundledSkinsDirectory() -> URL? {
+        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_BUNDLE_SKINS_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+        return Bundle.module.resourceURL?.appendingPathComponent("Skins")
+    }
+
+    /// Shared directory-walk: return sorted folder names under `root`
+    /// that contain a `skin.json` file. Missing or unreadable `root` is
+    /// not an error — callers treat it as "no skins in this location."
+    private func enumerateSkinFolders(at root: URL) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey]
+        ) else {
+            return []
+        }
+        var names: [String] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+            let skinJson = entry.appendingPathComponent("skin.json")
+            if FileManager.default.fileExists(atPath: skinJson.path) {
+                names.append(entry.lastPathComponent)
+            }
+        }
+        return names
+    }
+
+    /// Resolve a skin name to its on-disk directory. User-installed skins
+    /// at `~/.holoscape/skins/` take precedence over bundled skins of the
+    /// same name — matches the "user override wins" rule in `availableSkins`.
+    /// Returns nil for "Default" (no directory) and for unknown names.
+    private func resolveSkinDir(named name: String) -> URL? {
         guard name != "Default" else { return nil }
-        let skinDir = skinsDirectory.appendingPathComponent(name)
+        let userDir = skinsDirectory.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: userDir.appendingPathComponent("skin.json").path) {
+            return userDir
+        }
+        if let bundleRoot = bundledSkinsDirectory() {
+            let bundleDir = bundleRoot.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: bundleDir.appendingPathComponent("skin.json").path) {
+                return bundleDir
+            }
+        }
+        return nil
+    }
+
+    /// Load a skin definition by name. Returns nil for "Default" or invalid
+    /// skins. Resolves through `resolveSkinDir` so bundled skins load just
+    /// as cleanly as user-installed ones; callers don't care which source.
+    func loadSkin(named name: String) -> SkinDefinition? {
+        guard let skinDir = resolveSkinDir(named: name) else { return nil }
         let skinJson = skinDir.appendingPathComponent("skin.json")
         guard let data = try? Data(contentsOf: skinJson) else {
             NSLog("SkinEngine: Could not read skin.json for '\(name)'")
             return nil
         }
-        guard var skin = try? JSONDecoder().decode(SkinDefinition.self, from: data) else {
+        guard let skin = try? JSONDecoder().decode(SkinDefinition.self, from: data) else {
             NSLog("SkinEngine: Invalid skin.json for '\(name)'")
             return nil
         }
@@ -582,7 +655,12 @@ class SkinEngine {
             throw SkinLoadError.notFound(name)
         }
 
-        let skinDir = skinsDirectory.appendingPathComponent(name)
+        // Resolve to user dir or bundled dir — loadSkin already succeeded
+        // via resolveSkinDir, so this second call is guaranteed to find
+        // the same directory.
+        guard let skinDir = resolveSkinDir(named: name) else {
+            throw SkinLoadError.notFound(name)
+        }
 
         // Images may throw SkinAssetError.invalidPath — surface as parseFailure
         // so callers have one error type to handle.
@@ -591,6 +669,19 @@ class SkinEngine {
             images = try loadImages(from: skinDir, manifest: manifest)
         } catch {
             throw SkinLoadError.parseFailure("image load failed for '\(name)': \(error)")
+        }
+
+        // For each loaded image, attempt to load its `.ninepatch.json`
+        // sidecar. A missing sidecar is not an error — the image just
+        // won't have ninepatch metadata when a surface references it
+        // with `tile: "ninepatch"` (applyTileMode falls back to stretch).
+        // This is the wiring fix from Task 13 — previously SkinContext
+        // always received nil sidecars regardless of what was on disk.
+        var ninepatches: [String: NinepatchSidecar] = [:]
+        for path in images.keys {
+            if let sidecar = try? loadNinepatchSidecar(for: path, in: skinDir) {
+                ninepatches[path] = sidecar
+            }
         }
 
         // Convert v2 surfaces descriptor → ResolvedSurface map. Each surface's
@@ -604,7 +695,12 @@ class SkinEngine {
                     NSLog("SkinEngine: Unknown surface key '\(rawKey)' in skin '\(name)' — ignoring")
                     continue
                 }
-                resolvedSurfaces[key] = SkinContext.convert(descriptor, for: key, imageCache: images)
+                resolvedSurfaces[key] = SkinContext.convert(
+                    descriptor,
+                    for: key,
+                    imageCache: images,
+                    ninepatches: ninepatches
+                )
             }
         }
 
