@@ -41,11 +41,11 @@ The implementation order is: data models → core services → chrome view migra
     - Test unknown fields are ignored (forward compat)
     - _Requirements: 1.2, 1.3_
 
-  - [ ]* 1.6 Property test: V1 backward compatibility
+  - [x]* 1.6 Property test: V1 backward compatibility
     - **Property 1: V1 skin backward compatibility**
     - **Validates: Requirements 1.1, 1.2, 1.3, 1.4**
-    - Create `Tests/HoloscapePropertyTests/Tests/V1CompatibilityPropertyTests.swift`
-    - Generate random v1 manifests via SwiftCheck, decode, verify output matches legacy SkinEngine.apply output byte-for-byte
+    - Shipped as `Tests/HoloscapePropertyTests/V1CompatibilityPropertyTests.swift` (flat layout, matching the existing property-test convention)
+    - Generates random v1 manifests via SwiftCheck, round-trips through Codable, asserts `SkinEngine.apply(skin:to:)` transfers `windowBackground` / `ansiColors` (16 entries only) / `textForeground`, and that unknown top-level keys decode without error
 
   - [x]* 1.7 Unit tests for SurfaceKey exhaustiveness
     - Create `Tests/HoloscapeTests/Unit/SurfaceKeyTests.swift`
@@ -95,17 +95,17 @@ The implementation order is: data models → core services → chrome view migra
     - Unknown keys/operators logged and skipped (no crash)
     - _Requirements: 12.1, 12.2, 12.3, 12.4_
 
-  - [ ]* 3.5 Property test: State variant determinism
+  - [x]* 3.5 Property test: State variant determinism
     - **Property 5: State variant determinism**
     - **Validates: Requirements 12.1, 12.2, 12.4, 12.5, 12.6**
-    - Create `Tests/HoloscapePropertyTests/Tests/StateDeterminismPropertyTests.swift`
-    - Generate random (surface, snapshot) pairs; evaluate 10 times; verify identical results
+    - Shipped as `Tests/HoloscapePropertyTests/StateDeterminismPropertyTests.swift`
+    - Evaluates `currentState(for:with:)` 10 times per random `(SurfaceKey, snapshot)` pair and asserts all 10 results are equal; a cheaper companion property tests `evaluateMatch` directly for the same determinism invariant
 
-  - [ ]* 3.6 Property test: Match operator totality
+  - [x]* 3.6 Property test: Match operator totality
     - **Property 6: Match operator totality**
     - **Validates: Requirement 12.3**
-    - Create `Tests/HoloscapePropertyTests/Tests/OperatorTotalityPropertyTests.swift`
-    - Verify no operator throws, no nil returns, no crashes on random inputs
+    - Shipped as `Tests/HoloscapePropertyTests/OperatorTotalityPropertyTests.swift`
+    - Hammers `evaluateMatch` with random (key, operator, value) triples spanning known and unknown keys/operators, bare-scalar shorthand, multi-key AND, and `timeSince` expressions; every call must return a `Bool`
 
   - [x]* 3.7 Unit tests for SkinContext resolution
     - Create `Tests/HoloscapeTests/Unit/SkinContextResolutionTests.swift`
@@ -114,12 +114,11 @@ The implementation order is: data models → core services → chrome view migra
     - Test state variant evaluation with last-match-wins CSS cascade semantics
     - _Requirements: 3.3, 12.4_
 
-  - [ ]* 3.8 Property test: State snapshot consistency
+  - [x]* 3.8 Property test: State snapshot consistency
     - **Property 15: State snapshot consistency**
     - **Validates: Requirements 12.1, 12.2, 12.5, 12.6**
-    - Create `Tests/HoloscapePropertyTests/Tests/StateSnapshotConsistencyPropertyTests.swift`
-    - Verify chrome layer and shader layer read identical snapshot values on state transition
-    - Verify all specified match keys are supported and evaluate deterministically
+    - Shipped as `Tests/HoloscapePropertyTests/StateSnapshotConsistencyPropertyTests.swift`
+    - Covers the CHROME half of Property 15 (documented match keys resolve via `intValue(forMatchKey:)`; documented timestamp uniforms resolve via `timestamp(named:)`; unknown keys return nil; double-reads agree). The shader half (chrome↔shader cross-reader agreement) is deferred to card #5945; once that lands, a cross-reader consistency test can join this file.
 
 - [x] 4. ReactiveUniformSnapshot
   - [x] 4.1 Create `ReactiveUniformSnapshot` with atomic fields
@@ -167,11 +166,11 @@ The implementation order is: data models → core services → chrome view migra
     - Test suppression in minimal mode applies final state instantly
     - _Requirements: 13.3, 13.5_
 
-  - [ ]* 5.5 Property test: Display link idleness
+  - [x]* 5.5 Property test: Display link idleness
     - **Property 8: Display link idleness**
     - **Validates: Requirements 13.3, 15.4**
-    - Create `Tests/HoloscapePropertyTests/Tests/DisplayLinkIdlenessPropertyTests.swift`
-    - Verify CADisplayLink is not running when no animation is active
+    - Shipped as `Tests/HoloscapePropertyTests/DisplayLinkIdlenessPropertyTests.swift`
+    - Generates random operation sequences (animate / complete / suppress) and asserts the per-step invariant `activeAnimations.isEmpty ⇒ displayLink == nil`. A host-view-backed smoke test covers the create-on-active direction that the window-less property case can't observe (AnimationEngine's `startDisplayLinkIfNeeded` short-circuits on missing hostView).
 
 - [x] 6. Checkpoint
   - Ensure all tests pass. Verify SkinContext, ReactiveUniformSnapshot, and AnimationEngine compile and interact correctly via unit tests.
@@ -185,11 +184,11 @@ The implementation order is: data models → core services → chrome view migra
     - Persist mode to `HoloscapeConfig.chromeRegions.densityMode` (field already exists on `ChromeRegionState`)
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
-  - [ ]* 7.1b Property test: Animation suppression leakage
+  - [x]* 7.1b Property test: Animation suppression leakage
     - **Property 16: No animation suppression leakage**
     - **Validates: Requirements 13.5, 13.1, 13.2, 13.4**
-    - Create `Tests/HoloscapePropertyTests/Tests/AnimationSuppressionLeakagePropertyTests.swift`
-    - Verify animations suppressed in Minimal/Off do not replay on transition to Full
+    - Shipped as `Tests/HoloscapePropertyTests/AnimationSuppressionLeakagePropertyTests.swift`
+    - Runs random `Full → (Minimal|Off) → Full` sequences with variable animation counts per phase and asserts that returning to Full never replays suppressed animations. A companion property ensures queueing during non-full modes never populates the active set regardless of call count.
 
   - [x] 7.2 Wire DensityModeManager into AnimationEngine and SkinEngine
     - Modify `AnimationEngine` to query `densityModeManager.shouldAnimate()` before starting animations
@@ -263,21 +262,21 @@ The implementation order is: data models → core services → chrome view migra
     - Covered by `SkinEngineFontRegistrationTests.swift`
     - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
 
-  - [ ]* 8.4b Property test: Font registration symmetry
+  - [x]* 8.4b Property test: Font registration symmetry
     - **Property 9: Font registration symmetry**
     - **Validates: Requirement 8.3**
-    - Create `Tests/HoloscapePropertyTests/Tests/FontRegistrationSymmetryPropertyTests.swift`
-    - Verify fonts deregistered on skin unload match exactly those that were registered
+    - Shipped as `Tests/HoloscapePropertyTests/FontRegistrationSymmetryPropertyTests.swift`
+    - Runs `register(dir) → unregister → register(dir)` on random directories containing a mix of valid fonts (copies of `/System/Library/Fonts/Menlo.ttc`), corrupt `.ttf` files, and non-font siblings. The registered URL sets from both cycles must be identical — a leaked registration from cycle 1 would block cycle 2's re-register. Runs with `maxAllowableSuccessfulTests: 15` because each iteration does a full round-trip with disk I/O.
 
   - [x] 8.5 Wire backing scale factor to image layers
     - `SkinContext.applyFill(to:from:backingScale:)` takes a `backingScale` parameter; callers pass `layer.window?.backingScaleFactor ?? 2.0` (PR #102)
     - _Requirements: 7.3_
 
-  - [ ]* 8.6 Property test: Asset path sandboxing
+  - [x]* 8.6 Property test: Asset path sandboxing
     - **Property 2: Asset path sandboxing**
     - **Validates: Requirement 1.6**
-    - Create `Tests/HoloscapePropertyTests/Tests/PathSandboxingPropertyTests.swift`
-    - Generate random unsafe paths; verify validator rejects every pattern
+    - Shipped as `Tests/HoloscapePropertyTests/PathSandboxingPropertyTests.swift`
+    - Four properties cover the shape space: absolute paths, `http://` / `https://` / `file://` URLs (case-insensitive), any path containing a `..` segment, and a negative-control property that safe relative paths DO pass. Every rejection must carry the offending path in the thrown `SkinAssetError.invalidPath` so logs point at the right string.
 
   - [x]* 8.7 Unit tests for ninepatch loading
     - Create `Tests/HoloscapeTests/Unit/NinepatchSidecarTests.swift` (shipped as `NinepatchSidecarLoadingTests.swift`)
@@ -342,15 +341,16 @@ The implementation order is: data models → core services → chrome view migra
     - `MainWindowController.applySkin(_:)` is the entry point for re-injection: takes `[SurfaceKey: SkinContext.ResolvedSurface]?` and re-assigns the 5 chrome view slots. Direct property assignment triggers each view's `didSet` → `refreshFromSkin`, so `applySkin(_:)` does NOT post `.skinDidChange` itself — posting it on top would fire every repaint twice. Callers who need observers outside the controller post it themselves. (PR #106)
     - _Requirements: 3.2, 3.5_
 
-  - [ ]* 9.9 Integration test: Chrome view migration
-    - Create `Tests/HoloscapeTests/Integration/ChromeViewMigrationTests.swift`
-    - Load a test skin that overrides every chrome surface
-    - Render each view offscreen via `NSView.cacheDisplay(in:to:)`
-    - Sample pixel colors via `NSBitmapImageRep`; assert no hardcoded defaults bleed through
+  - [x]* 9.9 Integration test: Chrome view migration
+    - Shipped as `Tests/HoloscapeTests/Integration/ChromeViewMigrationTests.swift` (new directory under HoloscapeTests target; SwiftPM auto-discovers the subdirectory)
+    - Five tests — one per migrated view (TabBar, Sidebar, InputBox, SessionLauncher, SplitPane) — build a SkinContext with a distinctive per-view color override, assign it, trigger layout, and render the layer tree into an `NSBitmapImageRep` via `CALayer.render(in:)`. Each test also asserts the sampled pixel does NOT equal the built-in default — the "no hardcoded defaults bleed through" guarantee.
+    - Uses `CALayer.render(in:)` rather than the spec's `NSView.cacheDisplay(in:to:)`: cacheDisplay produces blank bitmaps for layer-hosted views offscreen without a window (draw(_:in:) never fires, CA's compositor doesn't run). `CALayer.render(in:)` walks the layer tree into a supplied CGContext, which is what the spec actually wants. Rationale captured in the test file header.
+    - TerminalContainerView is NOT covered — deleted in PR #107 (task 9.5).
     - _Requirements: 3.6, 4.1-4.5, 5.1-5.7, 6.1-6.7_
 
-- [ ] 10. Checkpoint
-  - Ensure all tests pass. Verify Holoscape renders identically to pre-migration build when no skin loaded (regression check).
+- [x] 10. Checkpoint
+  - All tests pass (460 pre-existing + 10 new test files = 490+ tests green as of 2026-04-18). Pre-migration regression check is `Tests/HoloscapeTests/Unit/PreMigrationParityTests.swift` — 23 tests freezing every `SkinContext.builtInDefaults` fill against the pre-migration hex extracted from commit `e0aae6f` (merge of PR #102, immediately before chrome view migrations began in PR #103).
+  - **Mac-Mini follow-up (deferred):** The laptop-side invariant is "every default fill matches the pre-migration hex value." A full visual regression (actual rendered chrome vs. a pre-migration `e0aae6f` build) still requires running Holoscape on Mac Mini with no skin loaded and diffing screenshots — that's the dogfood pass Task 10 ultimately wants. Pre-migration baseline: checkout `e0aae6f`, build, capture screenshots of each chrome view at default state. Current main: same, no skin loaded. Diff should be pixel-perfect for layout/font/shadow/compositing; color-level parity is guaranteed by PreMigrationParityTests.
 
 - [ ] 11. Hot reload
   - [ ] 11.1 Implement FSEventStream watcher in SkinEngine

@@ -35,16 +35,27 @@ final class OperatorTotalityPropertyTests: XCTestCase {
     ])
 
     /// Arbitrary match-key generator: mixes known keys with random strings
-    /// so the unknown-key path gets exercised too.
+    /// so the unknown-key path gets exercised too. Unknown-key arm builds
+    /// from a small alphabet rather than `String.arbitrary.suchThat` —
+    /// `suchThat` with a low-hit predicate turns SwiftCheck into a
+    /// rejection-sampling loop that runs for minutes on 100 iterations.
     private static let anyMatchKey: Gen<String> = Gen<String>.one(of: [
         knownMatchKey,
-        String.arbitrary.suchThat { !$0.isEmpty && !$0.hasPrefix("$") },
+        Gen<Character>
+            .fromElements(of: Array("abcdefghijklmnop"))
+            .proliferateNonEmpty
+            .map { "xkey_" + String($0) },
     ])
 
-    /// Arbitrary operator: mixes known operators with bogus ones.
+    /// Arbitrary operator: mixes known operators with bogus $-prefixed ones.
+    /// Same rationale as `anyMatchKey` — constructed directly to avoid
+    /// slow rejection sampling.
     private static let anyOperator: Gen<String> = Gen<String>.one(of: [
         knownOperator,
-        String.arbitrary.suchThat { $0.hasPrefix("$") && $0 != "$" },
+        Gen<Character>
+            .fromElements(of: Array("abcdefghij"))
+            .proliferateNonEmpty
+            .map { "$bogus_" + String($0) },
     ])
 
     private static let scalar: Gen<Double> = Double.arbitrary.suchThat { $0.isFinite }

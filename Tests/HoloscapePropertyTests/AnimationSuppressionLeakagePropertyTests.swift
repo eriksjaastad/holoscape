@@ -110,12 +110,26 @@ final class AnimationSuppressionLeakagePropertyTests: XCTestCase {
             for _ in 0..<returnPhaseCount {
                 engine.animateSurface(.inputBoxContainer, to: resolved, on: layer, with: anim)
             }
-            // Count must match only the fresh Phase 3 animations. The default
-            // curve covers fill AND corner, so each animateSurface queues two
-            // entries. A count above 2 * returnPhaseCount would indicate
-            // leakage from earlier phases.
-            let expectedMax = 2 * returnPhaseCount
-            return engine.activeAnimations.count == expectedMax
+            // Leakage check: every surviving entry must come from Phase 3
+            // (`.inputBoxContainer`). Any `.tabBarContainer` or
+            // `.sidebarContainer` entry would mean an earlier phase leaked
+            // through — which is the invariant this test guards.
+            //
+            // Count is NOT a stable assertion: repeated animateSurface calls
+            // with the same (surfaceKey, property) on the same layer
+            // OVERWRITE their activeAnimations slot (AnimationID is Hashable
+            // and the key is identical). So 5 calls on one surface yield
+            // 2 entries (fill + corner), not 10.
+            for id in engine.activeAnimations.keys where id.surfaceKey != .inputBoxContainer {
+                return false
+            }
+            if returnPhaseCount == 0 {
+                return engine.activeAnimations.isEmpty
+            }
+            // At least the fill/corner entries for the Phase 3 surface
+            // must be present — proves Phase 3 did queue something, so
+            // the test isn't trivially true.
+            return !engine.activeAnimations.isEmpty
         }
     }
 
