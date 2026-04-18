@@ -305,6 +305,15 @@ final class SkinContext {
 
     private func applyVariant(_ variant: StateVariant, to resolved: inout ResolvedSurface) {
         if let fill = variant.fill {
+            // Ninepatch limitation: state-variant image fills with tile mode
+            // `ninepatch` get a nil sidecar here because SkinContext doesn't
+            // currently store the ninepatches map alongside imageCache. No
+            // shipped skin uses a state-variant image fill yet; if one does,
+            // add a `ninepatches: [String: NinepatchSidecar]` property on
+            // SkinContext alongside `imageCache` and thread it through at
+            // both the init-time wiring (SkinEngine.loadComposite) and this
+            // call site. Until then, the tile mode falls back to stretch
+            // for state-variant image fills.
             if let converted = Self.convertFill(fill, imageCache: imageCache) {
                 resolved.fill = converted
             }
