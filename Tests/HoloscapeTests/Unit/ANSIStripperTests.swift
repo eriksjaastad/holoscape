@@ -45,6 +45,21 @@ final class ANSIStripperTests: XCTestCase {
         XCTAssertEqual(ANSIStripper.strip(input), "beforeafter")
     }
 
+    func testCSIFinalByteAtLowerBoundary() {
+        // `@` is 0x40 — the lower boundary of the CSI final-byte range.
+        // Pin it so a future widening of that character class doesn't
+        // silently regress what's accepted.
+        let input = "x\u{1B}[@y"
+        XCTAssertEqual(ANSIStripper.strip(input), "xy")
+    }
+
+    func testCSIFinalByteAtUpperBoundary() {
+        // `~` is 0x7E — the upper boundary of the CSI final-byte range.
+        // Companion to the lower-boundary pin above.
+        let input = "x\u{1B}[~y"
+        XCTAssertEqual(ANSIStripper.strip(input), "xy")
+    }
+
     // MARK: - OSC
 
     func testOSCTerminatedByBELRemoved() {
@@ -105,6 +120,27 @@ final class ANSIStripperTests: XCTestCase {
         // as any known sequence. Conservative rule: leave it alone.
         let input = "abc\u{1B}"
         XCTAssertEqual(ANSIStripper.strip(input), "abc\u{1B}")
+    }
+
+    func testTruncatedOSCLosesOnlyPrefixNotPayload() {
+        // OSC with no terminator reaches end of input mid-payload.
+        // The OSC regex (non-greedy, requires BEL or ST terminator)
+        // can't match. But the subsequent lone-escape rule DOES match
+        // `ESC ]` (0x5D is in the 0x40–0x5F range), so the two-byte
+        // prefix gets eaten and the unterminated payload survives.
+        //
+        // That's acceptable degradation: the user sees malformed-but-
+        // readable text rather than control-character gibberish. The
+        // alternative — adding lookahead to the lone-escape rule to
+        // skip `]`-after-ESC — adds complexity for a niche case that
+        // only manifests when a terminal emits a truncated OSC,
+        // something well-behaved shells don't do.
+        //
+        // This test pins the partial-strip cascade so a future change
+        // to the regex order or to the lone-escape character class
+        // surfaces loudly.
+        let input = "before\u{1B}]0;title-without-terminator"
+        XCTAssertEqual(ANSIStripper.strip(input), "before0;title-without-terminator")
     }
 
     func testEmptyStringPassesThrough() {

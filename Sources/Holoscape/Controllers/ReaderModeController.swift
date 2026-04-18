@@ -66,7 +66,12 @@ final class ReaderModeController: NSObject, NSWindowDelegate {
         // dogfood if real sessions exceed this.
         let lines = channel.lastLines(10_000)
         let raw = lines.joined(separator: "\n")
-        textView?.string = ANSIStripper.strip(raw)
+        let stripped = ANSIStripper.strip(raw)
+        // Empty-scrollback UX: a freshly-connected channel or a
+        // disconnected-but-present tab can return zero lines. Show a
+        // placeholder so the user sees "no output yet" instead of a
+        // silent empty panel that looks broken.
+        textView?.string = stripped.isEmpty ? "No output captured." : stripped
         // Scroll to the bottom so the user sees the most-recent output
         // first (matching the terminal's "newest at bottom" orientation).
         textView?.scrollToEndOfDocument(nil)
