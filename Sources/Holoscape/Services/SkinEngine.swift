@@ -1,5 +1,19 @@
 import Foundation
 import AppKit
+import CoreText
+
+/// Result of registering a skin's fonts.
+///
+/// `fonts` maps PostScript names to the decoded `CGFont` instances so
+/// callers can resolve a `font.family` reference without re-parsing the
+/// file. `registeredURLs` is the list callers must pass back to
+/// `unregisterFonts(urls:)` on skin unload — pairing the register/
+/// unregister calls keeps process-scope font registration symmetric
+/// (Requirement 8.3).
+struct SkinFontBundle {
+    var fonts: [String: CGFont]
+    var registeredURLs: [URL]
+}
 
 /// Errors raised while loading or validating a skin's asset references.
 enum SkinAssetError: Error, Equatable {
@@ -242,5 +256,92 @@ class SkinEngine {
         }
 
         return sidecar
+    }
+
+    // MARK: - Font registration (Task 8.4)
+
+    /// Scan `assets/fonts/` under the skin directory for `.otf` / `.ttf`
+    /// files, register each with Core Text at process scope, and return
+    /// a bundle the caller can hand back on skin unload.
+    ///
+    /// A missing `assets/fonts/` directory is not an error — returns
+    /// `.empty`. A file that fails to decode or register is logged and
+    /// skipped so siblings still load (Requirement 8.4 fallback).
+    ///
+    /// Process scope (not persistent) is required by Requirement 8.2 —
+    /// skin fonts must not leak into Font Book.
+    func registerFonts(from skinDir: URL) -> SkinFontBundle {
+        let fontsDir = skinDir.appendingPathComponent("assets/fonts")
+
+        // Distinguish "directory doesn't exist" (fine) from "directory
+        // exists but couldn't be read" (permission denied, I/O error —
+        // worth logging so silent empty bundles don't mask a real bug).
+        if !FileManager.default.fileExists(atPath: fontsDir.path) {
+            return SkinFontBundle(fonts: [:], registeredURLs: [])
+        }
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: fontsDir,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            NSLog("SkinEngine: Could not read fonts directory '\(fontsDir.path)': \(error.localizedDescription)")
+            return SkinFontBundle(fonts: [:], registeredURLs: [])
+        }
+
+        var fonts: [String: CGFont] = [:]
+        var registeredURLs: [URL] = []
+
+        for url in entries {
+            let ext = url.pathExtension.lowercased()
+            guard ext == "otf" || ext == "ttf" else { continue }
+
+            var registerError: Unmanaged<CFError>?
+            guard CTFontManagerRegisterFontsForURL(url as CFURL, .process, &registerError) else {
+                let detail = registerError?.takeRetainedValue().localizedDescription ?? "unknown"
+                NSLog("SkinEngine: Failed to register font '\(url.lastPathComponent)': \(detail)")
+                continue
+            }
+
+            guard let dataProvider = CGDataProvider(url: url as CFURL),
+                  let cgFont = CGFont(dataProvider) else {
+                NSLog("SkinEngine: Registered font '\(url.lastPathComponent)' but could not decode CGFont; rolling back")
+                var rollbackError: Unmanaged<CFError>?
+                if !CTFontManagerUnregisterFontsForURL(url as CFURL, .process, &rollbackError) {
+                    // Registration succeeded but rollback failed — the font
+                    // is now leaked into process scope. Log so the failure
+                    // is visible rather than silently rotting.
+                    let detail = rollbackError?.takeRetainedValue().localizedDescription ?? "unknown"
+                    NSLog("SkinEngine: Rollback failed for '\(url.lastPathComponent)' — font leaked into process scope: \(detail)")
+                }
+                continue
+            }
+
+            let name = (cgFont.postScriptName as String?) ?? url.deletingPathExtension().lastPathComponent
+            if fonts[name] != nil {
+                // Two files decoded to the same PostScript name. Last wins
+                // (simple, deterministic) but log so the map/URL-list size
+                // mismatch is visible to anyone chasing a "registered but
+                // can't look up" bug.
+                NSLog("SkinEngine: Duplicate PostScript name '\(name)' in fonts directory; last file wins")
+            }
+            fonts[name] = cgFont
+            registeredURLs.append(url)
+        }
+
+        return SkinFontBundle(fonts: fonts, registeredURLs: registeredURLs)
+    }
+
+    /// Deregister every URL in the bundle. Idempotent — calling twice
+    /// on the same bundle logs the second failure and returns.
+    func unregisterFonts(_ bundle: SkinFontBundle) {
+        for url in bundle.registeredURLs {
+            var error: Unmanaged<CFError>?
+            if !CTFontManagerUnregisterFontsForURL(url as CFURL, .process, &error) {
+                let detail = error?.takeRetainedValue().localizedDescription ?? "unknown"
+                NSLog("SkinEngine: Failed to unregister font '\(url.lastPathComponent)': \(detail)")
+            }
+        }
     }
 }
