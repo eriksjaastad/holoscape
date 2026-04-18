@@ -181,15 +181,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isOpaque = false
-        applyWindowSurfaces()
 
         // If the user had a non-Default skin selected at last quit, load
-        // it now so the chrome reflects the persisted choice. On failure
-        // (missing skin dir, malformed JSON) we log and stay on defaults;
-        // reloadSkin is intentionally silent-on-error so a bad skin folder
-        // never prevents the app from launching.
+        // it now so the chrome reflects the persisted choice. reloadSkin
+        // internally calls applySkin → applyWindowSurfaces, so the window
+        // background gets painted correctly in one pass. On failure
+        // (missing skin dir, malformed JSON) we log and fall through to
+        // the Default branch below; reloadSkin is intentionally
+        // silent-on-error so a bad skin folder never prevents launch.
         if let persistedSkin = config.appearance.skinName, persistedSkin != "Default" {
             reloadSkin(named: persistedSkin)
+        } else {
+            // Default path: no skin surfaces to inject, so paint the
+            // window chrome from built-in defaults directly.
+            applyWindowSurfaces()
         }
 
         tabBar.tabDelegate = self
