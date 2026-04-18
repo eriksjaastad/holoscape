@@ -400,9 +400,22 @@ final class SkinContext {
     /// Convert a parsed `SurfaceDescriptor` from a skin manifest into the
     /// runtime `ResolvedSurface` used by chrome views. Missing fields fall
     /// back to the default for that surface key.
-    static func convert(_ descriptor: SurfaceDescriptor, for key: SurfaceKey, imageCache: [String: NSImage] = [:]) -> ResolvedSurface {
+    ///
+    /// `ninepatches` maps manifest image paths to their loaded `.ninepatch.json`
+    /// sidecars. `SkinEngine.loadComposite` builds this map alongside the
+    /// image cache so image fills with `tile: "ninepatch"` can resolve their
+    /// stretch regions. Default empty dict keeps existing callers (tests,
+    /// legacy apply path) compatible — they get `nil` sidecars which is
+    /// the pre-wiring behavior.
+    static func convert(
+        _ descriptor: SurfaceDescriptor,
+        for key: SurfaceKey,
+        imageCache: [String: NSImage] = [:],
+        ninepatches: [String: NinepatchSidecar] = [:]
+    ) -> ResolvedSurface {
         var base = defaultSurface(for: key)
-        if let fill = descriptor.fill, let converted = convertFill(fill, imageCache: imageCache) {
+        if let fill = descriptor.fill,
+           let converted = convertFill(fill, imageCache: imageCache, ninepatches: ninepatches) {
             base.fill = converted
         }
         if let border = descriptor.border, let converted = convertBorder(border) {
@@ -432,7 +445,11 @@ final class SkinContext {
         return base
     }
 
-    private static func convertFill(_ fill: FillDescriptor, imageCache: [String: NSImage]) -> ResolvedFill? {
+    private static func convertFill(
+        _ fill: FillDescriptor,
+        imageCache: [String: NSImage],
+        ninepatches: [String: NinepatchSidecar] = [:]
+    ) -> ResolvedFill? {
         switch fill {
         case .color(let hex):
             guard let color = NSColor(hex: hex) else { return nil }
@@ -442,11 +459,12 @@ final class SkinContext {
                 NSLog("SkinContext: image '\(path)' not in cache, fill falls back")
                 return nil
             }
-            // Ninepatch sidecar is loaded by SkinEngine at skin-apply time;
-            // the image cache key convention stores the sidecar under the
-            // image path + ".ninepatch" — for now, pass nil and let a
-            // future SkinEngine pass it through.
-            return .image(image, tile, nil)
+            // Ninepatch sidecar lookup — callers (SkinEngine.loadComposite)
+            // populate the ninepatches dict keyed by the manifest image path.
+            // A nil sidecar here is the legitimate "no sidecar file exists"
+            // case; applyTileMode treats ninepatch-without-sidecar as the
+            // stretch fallback.
+            return .image(image, tile, ninepatches[path])
         case .gradient(let direction, let stops):
             guard stops.count >= 2 else { return nil }
             return .gradient(direction, stops)
