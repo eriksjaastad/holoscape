@@ -160,6 +160,16 @@ let package = Package(
                 // compilation. See docs/skins/07-shader-pipeline-plan.md and
                 // Sources/Holoscape/Services/ShaderCompiler.swift.
                 .process("Resources/ShaderPrefix"),
+                // Bundled reference skins (Task 13). `.copy` (not `.process`)
+                // because we need the nested `Skins/<name>/{skin.json,
+                // assets/*}` directory structure preserved. `.process`
+                // flattens all files to the bundle root, which would
+                // break both the dedup rule (multiple skins can't share
+                // filenames) and the ninepatch sidecar lookup (which
+                // keys on the image's manifest-relative path).
+                // SkinEngine enumerates + resolves via
+                // `Bundle.main.resourceURL/Skins/`.
+                .copy("Resources/Skins"),
                 // AppIcon.icns is consumed by the .app bundling step, not
                 // SwiftPM's resource pipeline. Declaring it as .copy stops
                 // the "unhandled file" warning without processing it.

@@ -422,26 +422,30 @@ The implementation order is: data models → core services → chrome view migra
     - Deferred per the `*` optional marker. ANSIStripper has 14 unit tests covering the load-bearing regex correctness; the controller's NSPanel lifecycle is verified via Mac-Mini dogfood. Standing up a full `MainWindowController` + real window in a unit test is heavier than the invariant warrants for this first ship.
     - _Requirements: 11.4, 11.5_
 
-- [ ] 13. Reference skin
-  - [ ] 13.1 Author `Holoscape Classic Winamp` reference skin
-    - Create `Sources/Holoscape/Resources/Skins/HoloscapeClassicWinamp/skin.json` with v2 manifest
-    - Include surface descriptors for tab bar (gradient + image), sidebar (ninepatch), input box, window background
-    - Include state variants for agent state (thinking, error)
+- [x] 13. Reference skin
+  - [x] 13.1 Author reference skin (Holoscape Synthwave)
+    - Shipped as `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave/skin.json`. Aesthetic diverged from the spec's literal "Holoscape Classic Winamp" name — the synthwave palette (purple gradient window, teal→cyan tab bar, neon pink accents) is distinctive and buildable with procedural gradients + one ninepatch PNG, without real art assets.
+    - Surface descriptors cover: window.background (vertical gradient), tabBar.container (horizontal gradient), tabBar.tab.active/idle/permission/normal (colors), sidebar.container (ninepatch image), sidebar.row.selected (color), sidebar.row.indicator (color + state variants), inputBox.container, inputBox.field, sessionLauncher.container, splitPane.divider.
+    - State variants wired on `sidebarRowIndicator` for `channelConnectionState` (connecting / disconnected). Agent-state variants would require extending `ReactiveUniformSnapshot` with agent-state uniforms — out of scope for a skin manifest; the variant machinery is demonstrated via the connection-state path.
     - _Requirements: 16.1, 16.2, 16.3, 16.4_
 
-  - [ ] 13.2 Ship reference skin assets
-    - Create `Sources/Holoscape/Resources/Skins/HoloscapeClassicWinamp/assets/tab-active.png` (@2x)
-    - Create `Sources/Holoscape/Resources/Skins/HoloscapeClassicWinamp/assets/sidebar-bg.png` with `.ninepatch.json` sidecar
-    - Create `Sources/Holoscape/Resources/Skins/HoloscapeClassicWinamp/assets/fonts/Px437_IBM_VGA_8x16.ttf` (open source pixel font)
+  - [x] 13.2 Ship reference skin assets
+    - `assets/sidebar-tile.png` — 32×32 three-band PNG (pink border + dark purple center). Procedurally generated via Python/PIL. Center stretches under ninepatch tile mode.
+    - `assets/sidebar-tile.ninepatch.json` — `{"stretchX": [8, 24], "stretchY": [8, 24]}`, carving out the middle 16×16 as the scalable region.
+    - **No TTF font.** `FontDescriptor` flows through `SkinContext.convert` into `ResolvedSurface.font`, but no chrome view currently consumes that property — shipping a font would register with CTFontManager and render nothing. Deferred to a future card after chrome-view font consumption lands.
     - _Requirements: 16.2, 16.5_
 
-  - [ ] 13.3 Add reference skin to bundle resources
-    - Modify `Package.swift` to add `.process("Resources/Skins")` to Holoscape target resources
-    - Ensure SkinEngine discovers the bundled skin at launch
+  - [x] 13.3 Add reference skin to bundle resources
+    - `Package.swift` resources gains `.copy("Resources/Skins")` — NOT `.process`. `.process` flattens nested resources (all files end up at the bundle root), which would break both the dedup rule and the ninepatch path lookup. `.copy` preserves the `Skins/<name>/{skin.json, assets/*}` structure.
+    - **Discovery path**: `Bundle.module.resourceURL?.appendingPathComponent("Skins")` — NOT `Bundle.main`. SwiftPM resources live under the target's resource bundle (`Holoscape_Holoscape.bundle`), not the app bundle's root Resources. `Bundle.module` is the auto-generated accessor for the Holoscape target's bundle.
     - _Requirements: 16.5_
 
-  - [ ] 13.4 Make reference skin selectable from Appearance Settings
-    - Modify `Sources/Holoscape/Views/AppearanceSettingsView.swift` to list bundled skins alongside `~/.holoscape/skins/*`
+  - [x] 13.4 Make reference skin selectable from Appearance Settings
+    - `SkinEngine.availableSkins()` now walks both `Bundle.module.resourceURL/Skins/` (bundled) and `~/.holoscape/skins/` (user), merging and deduping by name — user skins override bundled ones of the same folder name.
+    - `SkinEngine.loadComposite(named:)` resolves through a new private `resolveSkinDir(named:)` that checks user dir first then bundle. Bundled vs user is invisible to callers.
+    - **Ninepatch wiring fix (Task 13 prerequisite)**: `SkinContext.convert` gains a `ninepatches: [String: NinepatchSidecar]` parameter. `SkinEngine.loadComposite` walks the loaded images, calls `loadNinepatchSidecar(for:in:)` for each, and passes the resulting map through. Previously the convertFill image branch always passed nil for the sidecar, regardless of what was on disk (there was a TODO comment acknowledging the gap). Covered by `testNinepatchSidecarFlowsThroughConvert` in `BundledSkinTests`.
+    - **Picker wiring**: `AppearanceSettingsView`'s popup-menu refresh already calls `skinEngine.availableSkins()` — bundled skins appear automatically in the picker. No separate change to the view was needed.
+    - `HOLOSCAPE_BUNDLE_SKINS_DIR` test-override env var added alongside `HOLOSCAPE_CONFIG_DIR` so unit tests can stage fake bundled skins without mocking `Bundle.module`.
     - _Requirements: 16.2_
 
 - [ ] 14. Checkpoint
