@@ -150,8 +150,8 @@ class SkinEngine {
     }
 
     /// List all available skin names. Always includes "Default" first,
-    /// followed by BUNDLED reference skins (shipped inside the .app at
-    /// `Bundle.main.resourceURL/Skins/`), followed by USER skins at
+    /// followed by BUNDLED reference skins (shipped inside the .app via
+    /// `Bundle.module.resourceURL/Skins/`), followed by USER skins at
     /// `~/.holoscape/skins/`. Names are deduped: if a user installs a
     /// skin with the same folder name as a bundled one, the user's
     /// override wins — but the name appears only once in the picker.
