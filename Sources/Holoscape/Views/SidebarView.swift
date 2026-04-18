@@ -10,6 +10,20 @@ protocol SidebarViewDelegate: AnyObject {
 class SidebarView: NSView {
     weak var sidebarDelegate: SidebarViewDelegate?
 
+    /// Skin context source. When set, propagates to every existing and
+    /// newly created `SidebarTabEntry` so a skin swap reaches the rows.
+    /// Nil falls back to the pre-skinning hardcoded constants.
+    var skinContext: SkinContext? {
+        didSet {
+            refreshFromSkin()
+            for entry in tabEntries.values {
+                entry.skinContext = skinContext
+            }
+        }
+    }
+
+    private static let containerBg = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
     private var tabEntries: [UUID: SidebarTabEntry] = [:]
@@ -21,16 +35,48 @@ class SidebarView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         setupViews()
+        setupSkinObserver()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupViews()
+        setupSkinObserver()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupSkinObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(skinDidChange(_:)),
+            name: .skinDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func skinDidChange(_ note: Notification) {
+        refreshFromSkin()
+    }
+
+    private func refreshFromSkin() {
+        guard let ctx = skinContext else {
+            layer?.backgroundColor = Self.containerBg
+            return
+        }
+        if case .color(let ns) = ctx.currentState(for: .sidebarContainer).fill {
+            layer?.backgroundColor = ns.cgColor
+        } else {
+            NSLog("SidebarView: non-color fill for 'sidebar.container' not yet supported; falling back")
+            layer?.backgroundColor = Self.containerBg
+        }
     }
 
     private func setupViews() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+        layer?.backgroundColor = Self.containerBg
 
         stackView.orientation = .vertical
         stackView.alignment = .leading
@@ -93,6 +139,7 @@ class SidebarView: NSView {
             } else {
                 // New channel — create entry
                 let entry = SidebarTabEntry(frame: .zero)
+                entry.skinContext = skinContext
                 entry.configure(
                     label: channel.displayLabel,
                     channelType: channel.channelType,
@@ -150,17 +197,36 @@ class SidebarView: NSView {
 /// AppKit control classes. NSButton gets this natively.
 @MainActor
 class SidebarTabEntry: NSButton {
-    // Pre-computed CGColors — avoids NSColor→CGColor conversion on every configure() call
-    private static let activeBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
+    // Pre-computed CGColors — avoids NSColor→CGColor conversion on every configure() call.
+    //
+    // Migration status (Task 9.2): `activeBg` and the clear-row state
+    // are resolved from `SkinContext` when one is wired. The four
+    // notification-state colors below (permission/idle/unread + their
+    // text colors) and the three status-indicator colors remain
+    // hardcoded — they correspond to state variants on the
+    // `sidebar.row.*` surfaces that aren't yet wired through to
+    // `ReactiveUniformSnapshot`. Lands with Task 11 hot-reload /
+    // reactive plumbing.
+    private static let defaultActiveBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
     private static let permissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
     private static let permissionText = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
     private static let idleBg = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
     private static let idleText = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
     private static let unreadBg = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
-    private static let clearBg = NSColor.clear.cgColor
     private static let greenStatus = NSColor.systemGreen.cgColor
     private static let yellowStatus = NSColor.systemYellow.cgColor
     private static let redStatus = NSColor.systemRed.cgColor
+
+    /// Skin context source. Drives `sidebar.row.selected` and
+    /// `sidebar.row.normal` fills; notification-state variants stay
+    /// hardcoded until the reactive-match plumbing lands.
+    var skinContext: SkinContext? {
+        didSet { configureLast() }
+    }
+
+    /// Cached last-configure arguments so a skin swap can re-apply
+    /// the current state without the caller re-running updateTabs.
+    private var lastConfigure: (() -> Void)?
 
     var channelId: UUID?
     private var stableTypePrefix = "Shell"
@@ -173,11 +239,47 @@ class SidebarTabEntry: NSButton {
     override init(frame: NSRect) {
         super.init(frame: frame)
         setupViews()
+        setupSkinObserver()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupViews()
+        setupSkinObserver()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupSkinObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(skinDidChange(_:)),
+            name: .skinDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func skinDidChange(_ note: Notification) {
+        configureLast()
+    }
+
+    /// Re-run the most recent configure call so skin changes take effect.
+    /// No-op before the first `configure(...)` lands.
+    private func configureLast() {
+        lastConfigure?()
+    }
+
+    /// Resolve a row fill via SkinContext; nil when no context is wired
+    /// or the fill isn't a color.
+    private func cgRowFill(for key: SurfaceKey) -> CGColor? {
+        guard let ctx = skinContext else { return nil }
+        if case .color(let ns) = ctx.currentState(for: key).fill {
+            return ns.cgColor
+        }
+        NSLog("SidebarTabEntry: non-color fill for '\(key.rawValue)' not yet supported; falling back")
+        return nil
     }
 
     private func setupViews() {
@@ -242,6 +344,19 @@ class SidebarTabEntry: NSButton {
     }
 
     func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
+        // Stash the call so a later skin swap can re-apply the same
+        // state without the caller re-running updateTabs.
+        lastConfigure = { [weak self] in
+            self?.applyConfigure(
+                label: label, channelType: channelType, hasUnread: hasUnread,
+                state: state, isActive: isActive, elapsedTime: elapsedTime,
+                isPinned: isPinned, notificationType: notificationType
+            )
+        }
+        lastConfigure?()
+    }
+
+    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?) {
         self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
@@ -259,7 +374,7 @@ class SidebarTabEntry: NSButton {
         }
 
         if isActive {
-            layer?.backgroundColor = Self.activeBg
+            layer?.backgroundColor = cgRowFill(for: .sidebarRowSelected) ?? Self.defaultActiveBg
             labelField.textColor = NSColor.white
         } else if notificationType == "permission_prompt" {
             layer?.backgroundColor = Self.permissionBg
@@ -273,7 +388,9 @@ class SidebarTabEntry: NSButton {
             layer?.backgroundColor = Self.unreadBg
             labelField.textColor = NSColor.white
         } else {
-            layer?.backgroundColor = Self.clearBg
+            // Normal row — skin-specified fill on `sidebar.row.normal` if
+            // present; otherwise transparent (matching pre-migration).
+            layer?.backgroundColor = cgRowFill(for: .sidebarRowNormal)
             labelField.textColor = NSColor.lightGray
         }
 

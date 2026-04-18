@@ -139,6 +139,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // inside SplitPaneManager; they get wired through that bridge
         // in `setupLayout` via `splitPaneManager.skinContext = ...`.
         tabBar.skinContext = skinContext
+        sidebarView.skinContext = skinContext
         inputBox.skinContext = skinContext
         sessionLauncher.skinContext = skinContext
         splitPaneManager.skinContext = skinContext
