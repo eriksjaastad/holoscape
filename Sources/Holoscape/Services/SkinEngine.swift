@@ -193,4 +193,54 @@ class SkinEngine {
         }
         return images
     }
+
+    /// Load the ninepatch sidecar for an image, if one exists.
+    ///
+    /// For an image at `assets/tab-bg.png` in a skin, the sidecar is
+    /// expected at `assets/tab-bg.ninepatch.json` alongside it. Returns
+    /// `nil` for the common case where no sidecar is present.
+    ///
+    /// Sidecars that parse but fail `NinepatchSidecar.isValid` (degenerate
+    /// ranges, negative starts, wrong element count) are logged and
+    /// dropped — the caller should fall back to `.stretch` tile mode,
+    /// per Requirement 2.3's "zero-width bands are treated as invalid".
+    func loadNinepatchSidecar(for imagePath: String, in skinDir: URL) throws -> NinepatchSidecar? {
+        try validateAssetPath(imagePath)
+
+        let imageURL = skinDir.appendingPathComponent(imagePath)
+        // Strip the image extension (e.g. `.png`) and append `.ninepatch.json`
+        // so `assets/tab-bg.png` → `assets/tab-bg.ninepatch.json`.
+        let sidecarURL = imageURL
+            .deletingPathExtension()
+            .appendingPathExtension("ninepatch.json")
+
+        // Build the sidecar's relative path so an escape error names the
+        // actual offender (the sidecar file), not the image that implied it.
+        let sidecarRelPath = (imagePath as NSString)
+            .deletingPathExtension
+            .appending(".ninepatch.json")
+
+        try assertPathResolvesInside(sidecarURL, root: skinDir, originalPath: sidecarRelPath)
+
+        guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
+            return nil
+        }
+
+        guard let data = try? Data(contentsOf: sidecarURL) else {
+            NSLog("SkinEngine: Could not read ninepatch sidecar at '\(sidecarURL.path)'")
+            return nil
+        }
+
+        guard let sidecar = try? JSONDecoder().decode(NinepatchSidecar.self, from: data) else {
+            NSLog("SkinEngine: Invalid ninepatch sidecar JSON at '\(sidecarURL.path)'")
+            return nil
+        }
+
+        guard sidecar.isValid else {
+            NSLog("SkinEngine: Ninepatch sidecar at '\(sidecarURL.path)' has invalid stretch ranges; falling back to stretch tile mode")
+            return nil
+        }
+
+        return sidecar
+    }
 }
