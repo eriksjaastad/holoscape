@@ -119,9 +119,18 @@ final class SkinContext {
     /// Return the surface with matching state variants applied in CSS-cascade
     /// order (later matches overwrite earlier ones).
     func currentState(for key: SurfaceKey) -> ResolvedSurface {
+        currentState(for: key, with: reactive)
+    }
+
+    /// Resolve `key` with state variants evaluated against an override
+    /// `snapshot` instead of the context's shared one. Lets per-row
+    /// views (sidebar tab entries) carry their own state — unread,
+    /// notificationKind, connection state — and get correct
+    /// per-row matching without polluting the shared snapshot.
+    func currentState(for key: SurfaceKey, with snapshot: ReactiveUniformSnapshot) -> ResolvedSurface {
         var resolved = resolve(key)
         guard !resolved.states.isEmpty else { return resolved }
-        for variant in resolved.states where evaluateMatch(variant.match) {
+        for variant in resolved.states where evaluateMatch(variant.match, with: snapshot) {
             applyVariant(variant, to: &resolved)
         }
         return resolved
@@ -206,24 +215,28 @@ final class SkinContext {
     /// Multi-key matches are combined with logical AND. Unknown keys or
     /// operators are logged once and treated as non-matching.
     func evaluateMatch(_ expr: MatchExpression) -> Bool {
+        evaluateMatch(expr, with: reactive)
+    }
+
+    func evaluateMatch(_ expr: MatchExpression, with snapshot: ReactiveUniformSnapshot) -> Bool {
         for (key, value) in expr.conditions {
-            if !evaluateCondition(key: key, value: value) {
+            if !evaluateCondition(key: key, value: value, snapshot: snapshot) {
                 return false
             }
         }
         return true
     }
 
-    private func evaluateCondition(key: String, value: MatchValue) -> Bool {
+    private func evaluateCondition(key: String, value: MatchValue, snapshot: ReactiveUniformSnapshot) -> Bool {
         // Special-case `timeSince` — the key is the JSON literal, the value
         // is a nested dict keyed by timestamp uniform name.
         if key == "timeSince" {
             guard case .timeSince(let nested) = value else { return false }
-            return evaluateTimeSince(nested)
+            return evaluateTimeSince(nested, snapshot: snapshot)
         }
 
         // All other keys read an Int32 scalar from the snapshot.
-        guard let snapshotValue = reactive.intValue(forMatchKey: key) else {
+        guard let snapshotValue = snapshot.intValue(forMatchKey: key) else {
             // Unknown match key — log and skip (Requirement 12.3).
             NSLog("SkinContext: unknown match key '\(key)', skipping")
             return false
@@ -251,9 +264,9 @@ final class SkinContext {
     /// Evaluate a `timeSince` expression. Nested dict keys are timestamp
     /// uniform names (e.g., `iTimeAgentStateChange`); values are the
     /// scalar-or-operators expressions to compare elapsed seconds against.
-    private func evaluateTimeSince(_ nested: [String: MatchValue]) -> Bool {
+    private func evaluateTimeSince(_ nested: [String: MatchValue], snapshot: ReactiveUniformSnapshot) -> Bool {
         for (uniformName, condition) in nested {
-            guard let stamp = reactive.timestamp(named: uniformName) else {
+            guard let stamp = snapshot.timestamp(named: uniformName) else {
                 NSLog("SkinContext: unknown timestamp '\(uniformName)' in timeSince, skipping")
                 return false
             }
@@ -504,6 +517,13 @@ final class SkinContext {
     /// view colors. Future refactor wires these per-surface from the
     /// existing view files; for now all surfaces share a neutral default
     /// so the absence of a skin doesn't crash.
+    ///
+    /// A handful of surfaces seed state variants that reproduce the old
+    /// notification-state and connection-status colors (`sidebarRowNormal`
+    /// picks up permission/idle/unread variants, `sidebarRowIndicator`
+    /// picks up connection-state variants). Per-entry snapshots drive
+    /// these so two sidebar rows can resolve to different colors at the
+    /// same time.
     static func defaultSurface(for key: SurfaceKey) -> ResolvedSurface {
         let fill: ResolvedFill
         switch key {
@@ -525,7 +545,13 @@ final class SkinContext {
             fill = .color(NSColor.clear)
         case .sidebarRowSelected:
             fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
-        case .sidebarRowIndicator, .sidebarSectionHeader:
+        case .sidebarRowIndicator:
+            // Base is "active" green so an unmatched connection-state
+            // variant still produces a visible dot (bug-visible rather
+            // than silently invisible). Variants override for the
+            // connecting and disconnected states.
+            fill = .color(NSColor.systemGreen)
+        case .sidebarSectionHeader:
             fill = .color(NSColor.clear)
         case .inputBoxContainer, .inputBoxField:
             fill = .color(NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0))
@@ -543,6 +569,9 @@ final class SkinContext {
             fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
         }
 
+        let text = defaultText(for: key)
+        let states = defaultStates(for: key)
+
         return ResolvedSurface(
             fill: fill,
             border: nil,
@@ -550,10 +579,86 @@ final class SkinContext {
             padding: NSEdgeInsets(),
             shadow: nil,
             font: nil,
-            text: ResolvedText(color: .white, shadow: nil),
+            text: text,
             animation: nil,
-            states: []
+            states: states
         )
+    }
+
+    /// Built-in default text color — currently uniform (`.white`) except
+    /// on the sidebar "normal" row where the pre-skinning label color is
+    /// light gray. State variants override where needed.
+    private static func defaultText(for key: SurfaceKey) -> ResolvedText {
+        switch key {
+        case .sidebarRowNormal, .sidebarRowHover:
+            return ResolvedText(color: .lightGray, shadow: nil)
+        default:
+            return ResolvedText(color: .white, shadow: nil)
+        }
+    }
+
+    /// Built-in state variants. Reproduces the pre-skinning per-row
+    /// notification and connection-state colors so `SidebarTabEntry`
+    /// can write `notificationKind`, `channelUnread`, and
+    /// `channelConnectionState` into its own snapshot and let state
+    /// resolution produce the right color.
+    ///
+    /// Notification kind mapping (matches design.md Requirement 12):
+    ///   0 = none, 1 = info (idle prompt), 2 = warn (permission prompt),
+    ///   3 = error (reserved).
+    private static func defaultStates(for key: SurfaceKey) -> [StateVariant] {
+        switch key {
+        case .sidebarRowNormal:
+            return [
+                StateVariant(
+                    name: "unread",
+                    match: MatchExpression(conditions: [
+                        "channelUnread": .operators(["$gte": 1]),
+                    ]),
+                    fill: .color("#1a1a38"),
+                    text: TextDescriptor(color: "#ffffff", shadow: nil)
+                ),
+                StateVariant(
+                    name: "idle",
+                    match: MatchExpression(conditions: [
+                        "notificationKind": .scalar(1),
+                    ]),
+                    fill: .color("#0d4019"),
+                    text: TextDescriptor(color: "#66ff80", shadow: nil)
+                ),
+                StateVariant(
+                    name: "permission",
+                    match: MatchExpression(conditions: [
+                        "notificationKind": .scalar(2),
+                    ]),
+                    fill: .color("#66400d"),
+                    text: TextDescriptor(color: "#ffcc4d", shadow: nil)
+                ),
+            ]
+        case .sidebarRowIndicator:
+            // Base fill is systemGreen (active). No need for an "active"
+            // variant — the absence of a match falls through to the
+            // base, which IS the active color. Variants paint the two
+            // non-default states.
+            return [
+                StateVariant(
+                    name: "connecting",
+                    match: MatchExpression(conditions: [
+                        "channelConnectionState": .scalar(1),
+                    ]),
+                    fill: .color("#ffcc00")  // approximates NSColor.systemYellow
+                ),
+                StateVariant(
+                    name: "disconnected",
+                    match: MatchExpression(conditions: [
+                        "channelConnectionState": .scalar(2),
+                    ]),
+                    fill: .color("#ff3b30")  // approximates NSColor.systemRed
+                ),
+            ]
+        default:
+            return []
+        }
     }
 }
 
