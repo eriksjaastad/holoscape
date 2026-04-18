@@ -168,8 +168,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.title = "Holoscape"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0)
         window.isOpaque = false
+        applyWindowSurfaces()
 
         tabBar.tabDelegate = self
         sidebarView.sidebarDelegate = self
@@ -493,6 +493,73 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     // MARK: - Internal sidebar (left nav)
+
+    // MARK: - Skin injection and window surfaces (Task 9.7, 9.8)
+
+    /// Resolve `window.background` + `window.titleBar` from the current
+    /// skin context and apply them to the NSWindow. Called once at init
+    /// and again whenever the skin context swaps. Fallback stays on the
+    /// pre-skinning dark-purple background when the skin doesn't ship
+    /// a `.color` fill for the `window.background` surface.
+    ///
+    /// `window.titleBar` is reserved for future styling (the title bar
+    /// hosts the tab bar today — see Task 9.1 migration). A dedicated
+    /// title-bar accessory view would honor this surface's fill; for
+    /// now the tab bar's own `tabBar.container` surface covers the
+    /// visible titlebar band, so this method only wires the window bg.
+    private func applyWindowSurfaces() {
+        window.backgroundColor = Self.resolveWindowBackground(from: skinContext)
+    }
+
+    /// Pure helper: map a `SkinContext` to the NSColor that should land
+    /// on `NSWindow.backgroundColor`. Extracted as a static seam so a
+    /// unit test can exercise the mapping without constructing a real
+    /// `MainWindowController` (which needs a ChannelManager, a window,
+    /// a config service). Non-color fills log and return the default.
+    static func resolveWindowBackground(from context: SkinContext) -> NSColor {
+        let defaultBg = NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0)
+        if case .color(let ns) = context.currentState(for: .windowBackground).fill {
+            return ns
+        }
+        NSLog("MainWindowController: non-color fill for 'window.background' not yet supported; falling back")
+        return defaultBg
+    }
+
+    /// Swap the active skin. Rebuilds the `SkinContext`, re-injects into
+    /// every chrome view, and re-applies window surfaces.
+    ///
+    /// Passing `nil` resets to the built-in defaults (the "unload skin"
+    /// path). Called by the skin loader in Task 11 hot reload; safe to
+    /// invoke at any time after init.
+    ///
+    /// Why no `.skinDidChange` post here: the direct property
+    /// assignments below already trigger each view's `didSet` →
+    /// `refreshFromSkin()`. Posting the notification on top of that
+    /// would fire the same repaint a second time on every subscriber.
+    /// Callers that need to wake up observers outside this controller
+    /// (future views added after this PR, or tests) can post
+    /// `.skinDidChange` themselves after `applySkin` returns.
+    func applySkin(_ surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?) {
+        skinContext = Self.buildSkinContext(overriding: surfaces, reactive: reactiveSnapshot)
+        tabBar.skinContext = skinContext
+        sidebarView.skinContext = skinContext
+        inputBox.skinContext = skinContext
+        sessionLauncher.skinContext = skinContext
+        splitPaneManager.skinContext = skinContext
+        applyWindowSurfaces()
+    }
+
+    /// Pure helper: build the SkinContext the controller should hold
+    /// given an optional surfaces map. Extracted as a static seam so
+    /// unit tests can verify the build-and-reset semantics without
+    /// constructing a real controller.
+    static func buildSkinContext(overriding surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
+                                 reactive: ReactiveUniformSnapshot) -> SkinContext {
+        if let surfaces {
+            return SkinContext(surfaces: surfaces, reactive: reactive)
+        }
+        return SkinContext.builtInDefaults(reactive: reactive)
+    }
 
     /// Apply the internal sidebar's expanded/collapsed state. This is the
     /// in-panel left nav — NOT an external chrome band. The tab bar lives
