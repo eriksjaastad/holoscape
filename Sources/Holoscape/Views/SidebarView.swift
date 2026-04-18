@@ -197,29 +197,29 @@ class SidebarView: NSView {
 /// AppKit control classes. NSButton gets this natively.
 @MainActor
 class SidebarTabEntry: NSButton {
-    // Pre-computed CGColors — avoids NSColor→CGColor conversion on every configure() call.
-    //
-    // Migration status (Task 9.2): `activeBg` and the clear-row state
-    // are resolved from `SkinContext` when one is wired. The four
-    // notification-state colors below (permission/idle/unread + their
-    // text colors) and the three status-indicator colors remain
-    // hardcoded — they correspond to state variants on the
-    // `sidebar.row.*` surfaces that aren't yet wired through to
-    // `ReactiveUniformSnapshot`. Lands with Task 11 hot-reload /
-    // reactive plumbing.
+    // Fallback colors for the standalone rendering path (no SkinContext
+    // wired). The skinned path reproduces these exact values through
+    // `SkinContext.builtInDefaults` state variants on `sidebarRowNormal`
+    // and `sidebarRowIndicator`, so per-row notification / connection
+    // state flows through state-variant resolution driven by this
+    // entry's own `ReactiveUniformSnapshot` — two rows can paint
+    // different colors at the same moment without a shared snapshot
+    // lighting them both up.
     private static let defaultActiveBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
-    private static let permissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
-    private static let permissionText = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
-    private static let idleBg = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
-    private static let idleText = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
-    private static let unreadBg = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
-    private static let greenStatus = NSColor.systemGreen.cgColor
-    private static let yellowStatus = NSColor.systemYellow.cgColor
-    private static let redStatus = NSColor.systemRed.cgColor
+    private static let defaultPermissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
+    private static let defaultPermissionText = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
+    private static let defaultIdleBg = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
+    private static let defaultIdleText = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
+    private static let defaultUnreadBg = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
 
-    /// Skin context source. Drives `sidebar.row.selected` and
-    /// `sidebar.row.normal` fills; notification-state variants stay
-    /// hardcoded until the reactive-match plumbing lands.
+    // Per-entry reactive snapshot. Isolated from the shared snapshot
+    // that drives global animations — writes here affect ONLY this
+    // row's state-variant resolution.
+    private let snapshot = ReactiveUniformSnapshot()
+
+    /// Skin context source. Drives all per-state row colors (selected,
+    /// unread, permission, idle) plus the connection-state indicator,
+    /// via state variants evaluated against this entry's own snapshot.
     var skinContext: SkinContext? {
         didSet { configureLast() }
     }
@@ -271,15 +271,56 @@ class SidebarTabEntry: NSButton {
         lastConfigure?()
     }
 
-    /// Resolve a row fill via SkinContext; nil when no context is wired
-    /// or the fill isn't a color.
+    /// Resolve a row fill via SkinContext against this entry's own
+    /// snapshot — so state variants (unread, permission, idle) read the
+    /// per-row values written in `applyConfigure`. Returns nil when no
+    /// context is wired or the fill isn't a color.
     private func cgRowFill(for key: SurfaceKey) -> CGColor? {
         guard let ctx = skinContext else { return nil }
-        if case .color(let ns) = ctx.currentState(for: key).fill {
+        if case .color(let ns) = ctx.currentState(for: key, with: snapshot).fill {
             return ns.cgColor
         }
         NSLog("SidebarTabEntry: non-color fill for '\(key.rawValue)' not yet supported; falling back")
         return nil
+    }
+
+    /// Resolve the text color driven by the current row's state variants
+    /// (e.g. permission-prompt rows get a gold label, idle-prompt rows
+    /// get a green label). Falls back to nil when no skin is wired.
+    private func nsRowText(for key: SurfaceKey) -> NSColor? {
+        guard let ctx = skinContext else { return nil }
+        return ctx.currentState(for: key, with: snapshot).text.color
+    }
+
+    // MARK: - Standalone-rendering fallbacks
+    //
+    // When no SkinContext is wired (XCUITest fixtures, previews,
+    // standalone harnesses), these reproduce the pre-skinning per-
+    // state colors so the row still renders correctly. The skinned
+    // path produces identical colors via `SkinContext.builtInDefaults`
+    // state variants — Task 11 hot reload can override any of these.
+
+    private func fallbackNormalBg(hasUnread: Bool, notificationType: String?) -> CGColor? {
+        if notificationType == "permission_prompt" { return Self.defaultPermissionBg }
+        if notificationType == "idle_prompt" { return Self.defaultIdleBg }
+        if hasUnread { return Self.defaultUnreadBg }
+        return nil  // Transparent — the pre-skinning default.
+    }
+
+    private func fallbackText(isActive: Bool, hasUnread: Bool, notificationType: String?) -> NSColor {
+        if isActive { return .white }
+        if notificationType == "permission_prompt" { return Self.defaultPermissionText }
+        if notificationType == "idle_prompt" { return Self.defaultIdleText }
+        if hasUnread { return .white }
+        return .lightGray
+    }
+
+    private func fallbackIndicator(state: ChannelState) -> CGColor {
+        switch state {
+        case .active:       return NSColor.systemGreen.cgColor
+        case .connecting:   return NSColor.systemYellow.cgColor
+        case .disconnected: return NSColor.systemRed.cgColor
+        }
     }
 
     private func setupViews() {
@@ -361,38 +402,57 @@ class SidebarTabEntry: NSButton {
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
 
-        switch state {
-        case .active:
-            statusIndicator.layer?.backgroundColor = Self.greenStatus
-            statusTextField.stringValue = elapsedTime ?? ""
-        case .connecting:
-            statusIndicator.layer?.backgroundColor = Self.yellowStatus
-            statusTextField.stringValue = "connecting..."
-        case .disconnected:
-            statusIndicator.layer?.backgroundColor = Self.redStatus
-            statusTextField.stringValue = "disconnected"
+        // Map the incoming view-level state into this row's snapshot
+        // so state-variant resolution picks the right fill + text.
+        //   notificationKind: 0 none, 1 idle_prompt, 2 permission_prompt
+        //   channelConnectionState: 0 active, 1 connecting, 2 disconnected
+        //   channelUnread: 0/1
+        //   channelIsActive: 0/1 (the currently-focused tab)
+        let notificationKind: Int32
+        switch notificationType {
+        case "idle_prompt":       notificationKind = 1
+        case "permission_prompt": notificationKind = 2
+        default:                  notificationKind = 0
         }
+        let connectionState: Int32
+        switch state {
+        case .active:       connectionState = 0
+        case .connecting:   connectionState = 1
+        case .disconnected: connectionState = 2
+        }
+        snapshot.setChannelState(
+            channelId: channelId.map { Int32(truncatingIfNeeded: $0.hashValue) } ?? 0,
+            isActive: isActive ? 1 : 0,
+            unread: hasUnread ? 1 : 0
+        )
+        snapshot.setChannelConnectionState(connectionState)
+        snapshot.setNotificationKind(notificationKind)
 
-        if isActive {
-            layer?.backgroundColor = cgRowFill(for: .sidebarRowSelected) ?? Self.defaultActiveBg
-            labelField.textColor = NSColor.white
-        } else if notificationType == "permission_prompt" {
-            layer?.backgroundColor = Self.permissionBg
-            labelField.textColor = Self.permissionText
+        // Status text is view-level content (not a color) — drive it here.
+        switch state {
+        case .active:       statusTextField.stringValue = elapsedTime ?? ""
+        case .connecting:   statusTextField.stringValue = "connecting..."
+        case .disconnected: statusTextField.stringValue = "disconnected"
+        }
+        if notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"
         } else if notificationType == "idle_prompt" {
-            layer?.backgroundColor = Self.idleBg
-            labelField.textColor = Self.idleText
             statusTextField.stringValue = "ready"
-        } else if hasUnread {
-            layer?.backgroundColor = Self.unreadBg
-            labelField.textColor = NSColor.white
-        } else {
-            // Normal row — skin-specified fill on `sidebar.row.normal` if
-            // present; otherwise transparent (matching pre-migration).
-            layer?.backgroundColor = cgRowFill(for: .sidebarRowNormal)
-            labelField.textColor = NSColor.lightGray
         }
+
+        // Row fill + text: when this tab is the focused one, paint
+        // `sidebar.row.selected` (which has no notification variants —
+        // selection wins over notification). Otherwise paint
+        // `sidebar.row.normal`, whose state variants express unread /
+        // permission / idle via this entry's private snapshot.
+        let rowKey: SurfaceKey = isActive ? .sidebarRowSelected : .sidebarRowNormal
+        layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
+        labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)
+
+        // Status indicator dot flows from `sidebarRowIndicator`'s
+        // connection-state variants.
+        statusIndicator.layer?.backgroundColor = cgRowFill(for: .sidebarRowIndicator)
+            ?? fallbackIndicator(state: state)
 
         // NSButton provides native accessibility — just set the metadata.
         // The title shows the dynamic display label (may change with directory).

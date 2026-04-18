@@ -32,6 +32,11 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     var channelId: Int32 { lock.withLock { _channelId } }
     var channelIsActive: Int32 { lock.withLock { _channelIsActive } }
     var channelUnread: Int32 { lock.withLock { _channelUnread } }
+    /// Connection state as an ordinal for state-variant matching:
+    /// 0 = active (connected, running), 1 = connecting, 2 = disconnected.
+    /// Lets sidebar status-indicator surfaces pick their fill through
+    /// `match: { channelConnectionState: 1 }` rather than Swift branches.
+    var channelConnectionState: Int32 { lock.withLock { _channelConnectionState } }
 
     // MARK: - Output / notification
     var outputEventCount: Int32 { lock.withLock { _outputEventCount } }
@@ -79,6 +84,21 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
         }
     }
 
+    /// Set connection-state ordinal (0=active, 1=connecting, 2=disconnected).
+    /// Separate from `channelIsActive` which is a boolean for "is this the
+    /// currently-focused tab." Connection state describes the underlying
+    /// channel's lifecycle.
+    func setChannelConnectionState(_ newValue: Int32) {
+        lock.withLock { _channelConnectionState = newValue }
+    }
+
+    /// Set notification kind without stamping the timestamp. Used by
+    /// per-entry snapshots that carry the `notificationKind` for state-
+    /// variant matching but don't drive the global `iTimeLastNotification`.
+    func setNotificationKind(_ newValue: Int32) {
+        lock.withLock { _notificationKind = newValue }
+    }
+
     /// Stamp a new output event. Callers increment `outputEventCount`; we
     /// record the timestamp.
     func recordOutputEvent() {
@@ -89,7 +109,14 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     }
 
     /// Post a notification state. `kind` follows the GLSL enum:
-    /// 0=none, 1=info, 2=warn, 3=error.
+    /// 0=none, 1=info, 2=warn, 3=error. Stamps `iTimeLastNotification`
+    /// so `timeSince(iTimeLastNotification)` variants can fire.
+    ///
+    /// Prefer this on the SHARED snapshot owned by MainWindowController.
+    /// Per-entry snapshots should use `setNotificationKind` instead —
+    /// stamping `iTimeLastNotification` on a per-entry snapshot would
+    /// make `timeSince(iTimeLastNotification)` variants fire per-row
+    /// at unrelated times, which is almost never what you want.
     func postNotification(kind: Int32) {
         lock.withLock {
             _notificationKind = kind
@@ -151,6 +178,7 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
             case "channelId": return _channelId
             case "channelIsActive": return _channelIsActive
             case "channelUnread": return _channelUnread
+            case "channelConnectionState": return _channelConnectionState
             case "notificationKind": return _notificationKind
             case "outputEventCount": return _outputEventCount
             default: return nil
@@ -185,6 +213,7 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     private var _channelId: Int32 = 0
     private var _channelIsActive: Int32 = 0
     private var _channelUnread: Int32 = 0
+    private var _channelConnectionState: Int32 = 0
 
     private var _outputEventCount: Int32 = 0
     private var _timeLastOutput: Double = 0
