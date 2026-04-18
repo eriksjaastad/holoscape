@@ -8,4 +8,9 @@ extension Notification.Name {
     /// mode. `userInfo["previous"]` and `userInfo["current"]` carry the
     /// `DensityModeManager.Mode.rawValue` strings for the transition.
     static let densityModeDidChange = Notification.Name("holoscape.densityModeDidChange")
+
+    /// Posted whenever the active SkinContext changes (skin load, skin
+    /// unload, hot reload). Chrome views observing this re-run their
+    /// `layout()` so they pick up the new surface descriptors.
+    static let skinDidChange = Notification.Name("holoscape.skinDidChange")
 }
