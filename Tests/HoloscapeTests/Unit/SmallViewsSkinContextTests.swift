@@ -3,9 +3,11 @@ import AppKit
 @testable import Holoscape
 
 /// Task 9.3, 9.4, 9.6 — migrations on InputBoxView, SessionLauncherView,
-/// and SplitPaneView. Task 9.5's target (`TerminalContainerView`) has
-/// no production call site today; its migration is deferred until TCV
-/// is re-adopted so the pattern doesn't ship as dead code.
+/// and SplitPaneView. Task 9.5's target (`TerminalContainerView`) was
+/// deleted in the same commit that migrated these views — the class
+/// had been replaced by `SplitPaneManager` two weeks earlier and was
+/// dead code. The `terminalContainerPadding` SurfaceKey remains in the
+/// spec for a future re-introduction of a terminal-wrapping view.
 ///
 /// Each view already has a skin context observer path tested end-to-end
 /// in TabBarViewSkinContextTests — these tests focus on the per-view
