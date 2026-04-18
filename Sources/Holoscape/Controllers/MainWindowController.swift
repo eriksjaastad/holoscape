@@ -57,6 +57,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// Exposed `internal` so AppDelegate can pass it to AppearanceSettings.
     let densityModeManager: DensityModeManager
 
+    /// Reactive snapshot shared across chrome views so state-variant
+    /// matches (hover, agentState, etc.) stay coherent during a layout
+    /// pass. Owned here so MainWindowController can update it in response
+    /// to AppKit events later (hover enter/exit, channel state changes).
+    let reactiveSnapshot = ReactiveUniformSnapshot()
+
+    /// Current skin context driving the chrome. Starts as the built-in
+    /// defaults (identical colors to the pre-skinning era). Task 11.3
+    /// will rebuild this from `SkinEngine.apply` on `.skinDidChange`;
+    /// today, swapping this property re-renders via the skinDidChange
+    /// notification fired by chrome views.
+    private(set) var skinContext: SkinContext
+
     // References to Density menu items so we can flip the checkmark
     // `.state` when `.densityModeDidChange` fires. Weak because AppKit
     // retains menu items through the menu graph.
@@ -116,8 +129,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         self.regionManager = ChromeRegionManager(configService: configService)
         self.densityModeManager = DensityModeManager(configService: configService)
+        self.skinContext = SkinContext.builtInDefaults(reactive: self.reactiveSnapshot)
 
         super.init()
+
+        // Hand the tab bar the current skin context so its colors come
+        // from `SkinContext.currentState(for:)` rather than hardcoded
+        // CGColor constants. Other chrome views will follow in Task 9.x.
+        tabBar.skinContext = skinContext
 
         self.regionManager.delegate = self
 
