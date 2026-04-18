@@ -1,4 +1,14 @@
 import Foundation
+import AppKit
+
+/// Errors raised while loading or validating a skin's asset references.
+enum SkinAssetError: Error, Equatable {
+    /// Asset path violated the sandbox rules — contained `..`, an
+    /// absolute path, an HTTP(S) URL, a `file://` URL, or resolved via
+    /// a symlink to somewhere outside the skin directory. The `path`
+    /// field is the offending manifest value.
+    case invalidPath(String)
+}
 
 @MainActor
 class SkinEngine {
@@ -91,5 +101,96 @@ class SkinEngine {
             result.ansiColors = colors
         }
         return result
+    }
+
+    // MARK: - Asset pipeline (Task 8.1, 8.3)
+
+    /// String-level validation of an asset path declared in a manifest.
+    /// Rejects, in order:
+    ///   - absolute paths (leading `/`)
+    ///   - URLs with `http://`, `https://`, or `file://` schemes
+    ///   - `..` path-traversal segments (anywhere in the path)
+    ///
+    /// This is the first half of the sandbox gate. `loadImages` also
+    /// runs `assertPathResolvesInside(_:root:)` to catch symlink
+    /// targets that escape the skin directory.
+    ///
+    /// Call before any file-system access. Color and gradient fills
+    /// never reach this — only image references hit the gate.
+    func validateAssetPath(_ path: String) throws {
+        if path.hasPrefix("/") {
+            throw SkinAssetError.invalidPath(path)
+        }
+        let lower = path.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("file://") {
+            throw SkinAssetError.invalidPath(path)
+        }
+        // Component check catches both leading `../foo` and mid-path
+        // `assets/../../etc/passwd` traversals. Single-dot (`.`) segments
+        // are permitted — they're a no-op that collapse during path
+        // resolution and don't escape the sandbox. Percent-encoded
+        // traversal (`%2e%2e`) is not decoded here; it passes the string
+        // gate but never resolves to a real file, so the decode step
+        // silently skips it (no escape possible).
+        for component in path.split(separator: "/") {
+            if component == ".." {
+                throw SkinAssetError.invalidPath(path)
+            }
+        }
+    }
+
+    /// Second-half sandbox gate: resolve any symlinks along the file's
+    /// path and confirm the real location stays inside `root`. Defends
+    /// against a skin package that passes string validation but smuggles
+    /// in a symlink like `assets/bg.png -> ../../.ssh/id_rsa`.
+    private func assertPathResolvesInside(_ fileURL: URL, root: URL, originalPath: String) throws {
+        let resolvedFile = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let boundary = resolvedRoot.hasSuffix("/") ? resolvedRoot : resolvedRoot + "/"
+        guard resolvedFile == resolvedRoot || resolvedFile.hasPrefix(boundary) else {
+            throw SkinAssetError.invalidPath(originalPath)
+        }
+    }
+
+    /// Walk every surface in the manifest (top-level fill plus every
+    /// state-variant fill), extract `.image` paths, validate each, and
+    /// load the PNG via `NSImage(contentsOfFile:)`. Returns a map keyed
+    /// by the manifest's relative path so callers can round-trip from a
+    /// descriptor back to the loaded image without re-resolving URLs.
+    ///
+    /// Files that parse-validate but fail to decode are logged and
+    /// skipped so one bad asset doesn't wipe out the whole skin. A path
+    /// that fails `validateAssetPath` is a hard error and propagates.
+    func loadImages(from skinDir: URL, manifest: SkinDefinition) throws -> [String: NSImage] {
+        guard let surfaces = manifest.surfaces else { return [:] }
+
+        var paths: Set<String> = []
+        for (_, surface) in surfaces {
+            if let fill = surface.fill, case .image(let path, _) = fill {
+                paths.insert(path)
+            }
+            if let states = surface.states {
+                for state in states {
+                    if let fill = state.fill, case .image(let path, _) = fill {
+                        paths.insert(path)
+                    }
+                }
+            }
+        }
+
+        var images: [String: NSImage] = [:]
+        for path in paths {
+            try validateAssetPath(path)
+            let fileURL = skinDir.appendingPathComponent(path)
+            try assertPathResolvesInside(fileURL, root: skinDir, originalPath: path)
+            guard let image = NSImage(contentsOfFile: fileURL.path) else {
+                // One bad asset must not sink the whole skin — log and
+                // skip so siblings still render (Requirement 1.5 spirit).
+                NSLog("SkinEngine: Could not decode image at '\(path)'")
+                continue
+            }
+            images[path] = image
+        }
+        return images
     }
 }
