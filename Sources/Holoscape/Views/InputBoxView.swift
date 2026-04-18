@@ -12,19 +12,39 @@ class InputBoxView: NSTextView {
     weak var inputDelegate: InputBoxViewDelegate?
     private var isNavigatingHistory = false
 
+    /// Skin context source. When nil, the view renders with the hardcoded
+    /// pre-skinning constants — the standalone fallback path for
+    /// XCUITest fixtures that don't build a full window controller.
+    var skinContext: SkinContext? {
+        didSet { refreshFromSkin() }
+    }
+
+    // Built-in defaults matching the pre-skinning colors. Used when
+    // `skinContext == nil`; the skinned path produces the same values
+    // because `SkinContext.builtInDefaults` seeds the same values.
+    private static let fieldBg = NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0)
+    private static let fieldText = NSColor.white
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         setup()
+        setupSkinObserver()
     }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
         setup()
+        setupSkinObserver()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+        setupSkinObserver()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -36,9 +56,9 @@ class InputBoxView: NSTextView {
 
     private func setup() {
         font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0)
-        textColor = NSColor.white
-        insertionPointColor = NSColor.white
+        backgroundColor = Self.fieldBg
+        textColor = Self.fieldText
+        insertionPointColor = Self.fieldText
         isRichText = false
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
@@ -48,6 +68,43 @@ class InputBoxView: NSTextView {
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityIdentifier("input-box")
+    }
+
+    private func setupSkinObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(skinDidChange(_:)),
+            name: .skinDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func skinDidChange(_ note: Notification) {
+        refreshFromSkin()
+    }
+
+    /// Re-resolve field background, text color, and insertion-point
+    /// color from the current skin context. When the surface fill
+    /// isn't a color (image/gradient), logs and falls back to the
+    /// built-in constant so we never silently degrade.
+    private func refreshFromSkin() {
+        guard let ctx = skinContext else {
+            backgroundColor = Self.fieldBg
+            textColor = Self.fieldText
+            insertionPointColor = Self.fieldText
+            return
+        }
+
+        let field = ctx.currentState(for: .inputBoxField)
+        switch field.fill {
+        case .color(let ns):
+            backgroundColor = ns
+        case .image, .gradient:
+            NSLog("InputBoxView: non-color fill for '\(SurfaceKey.inputBoxField.rawValue)' not yet supported; falling back")
+            backgroundColor = Self.fieldBg
+        }
+        textColor = field.text.color
+        insertionPointColor = field.text.color
     }
 
     override func keyDown(with event: NSEvent) {
