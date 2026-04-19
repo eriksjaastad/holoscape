@@ -16,6 +16,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let sessionLauncher = SessionLauncherView(frame: .zero)
     private let sidebarView = SidebarView(frame: .zero)
     private let tabBar = TabBarView(frame: .zero)
+    /// Height constraint on the title-bar tab strip. Toggled between 32pt
+    /// and 0pt so that when the sidebar is expanded (which renders the
+    /// tab list itself) the top tab strip collapses cleanly rather than
+    /// leaving a 32pt gap above the terminal. See `tabBarVisibility(forSidebarExpanded:)`.
+    private var tabBarHeightConstraint: NSLayoutConstraint?
     private let splitPaneManager = SplitPaneManager(frame: .zero)
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
@@ -324,11 +329,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         rightPane.addSubview(splitPaneManager)
         rightPane.addSubview(inputContainer)
 
+        let tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
+        self.tabBarHeightConstraint = tabBarHeight
+
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: contentView.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
             tabBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            tabBar.heightAnchor.constraint(equalToConstant: 32),
+            tabBarHeight,
 
             splitPaneManager.topAnchor.constraint(equalTo: rightPane.topAnchor),
             splitPaneManager.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
@@ -738,11 +746,34 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         return SkinContext.builtInDefaults(reactive: reactive)
     }
 
+    /// Top tab bar visibility follows the inverse of the sidebar.
+    ///
+    /// The expanded sidebar already renders the channel/tab list, so a
+    /// second tab strip across the titlebar would duplicate the same UI.
+    /// When the sidebar is collapsed, the top strip becomes the only
+    /// surface showing the tab list, so it appears.
+    ///
+    /// Pure mapping, extracted so `TopTabBarSidebarMutualExclusionTests`
+    /// can pin this invariant without spinning up a real NSWindow.
+    /// Card #6021.
+    static func tabBarVisibility(forSidebarExpanded sidebarExpanded: Bool)
+        -> (isHidden: Bool, height: CGFloat)
+    {
+        if sidebarExpanded {
+            return (isHidden: true, height: 0)
+        } else {
+            return (isHidden: false, height: 32)
+        }
+    }
+
     /// Apply the internal sidebar's expanded/collapsed state. This is the
-    /// in-panel left nav — NOT an external chrome band. The tab bar lives
-    /// permanently in the title bar (Warp-style) so it stays visible in
-    /// both states.
+    /// in-panel left nav — NOT an external chrome band. The top tab strip
+    /// (Warp-style) is mutually exclusive with the sidebar's own tab
+    /// list: expanded sidebar → hide top strip; collapsed sidebar →
+    /// show top strip. See `tabBarVisibility(forSidebarExpanded:)` for
+    /// the pinned invariant.
     private func applySidebarState(animated: Bool) {
+        let tabBarState = Self.tabBarVisibility(forSidebarExpanded: sidebarExpanded)
         let work = { [self] in
             if sidebarExpanded {
                 splitView.setPosition(sidebarWidth, ofDividerAt: 0)
@@ -751,6 +782,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 splitView.setPosition(0, ofDividerAt: 0)
                 sidebarContainer.isHidden = true
             }
+            tabBar.isHidden = tabBarState.isHidden
+            tabBarHeightConstraint?.constant = tabBarState.height
         }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
