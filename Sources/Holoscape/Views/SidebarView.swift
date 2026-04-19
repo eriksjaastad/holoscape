@@ -73,6 +73,11 @@ class SidebarView: NSView {
         let resolved = ctx.currentState(for: .sidebarContainer)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+        // Amplify Task 15 — border/corner/shadow on the sidebar
+        // container. Per-row border/corner/shadow land in the per-
+        // entry refresh path (below) since rows have their own
+        // SurfaceKey (.sidebarRowNormal / .sidebarRowSelected / …).
+        ctx.applyBorderAndCorner(to: layer, from: resolved)
     }
 
     override func layout() {
