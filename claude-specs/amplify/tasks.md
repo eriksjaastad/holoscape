@@ -440,7 +440,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
   - Dogfood HoloscapeClassic on Mac Mini; confirm shape, sprites, drag region, font, bevels all render; confirm HoloscapeSynthwave (both directory and `.wamp`) still renders identically to pre-Amplify.
 
 - [ ] 21. Hot reload, degradation, and docs
-  - [ ] 21.1 Extend hot reload for `.wamp`
+  - [x] 21.1 Extend hot reload for `.wamp` _(shipped — `WampHotReloadTests` pins the `activeBundleFileURL` branch of `SkinEngine.startWatching`: install, release, and missing-bundle no-op cases. The end-to-end "edit the .wamp → chrome reloads" walk-through belongs to the Mac-Mini dogfood checkpoint on the chrome-skinning parent spec (Task 16), not a headless unit test — FSEvents round-trips on file paths interact badly with accumulated test-suite state.)_
     - Verify `SkinEngine.startWatching(skinName:)` installs on the `.wamp` file's parent directory and filters to the bundle path (done in Task 3.6; this task adds explicit test coverage)
     - On watcher fire, `WampBundleLoader.contentHash` is recomputed; if hash matches, skip unzip; if hash changes, re-unzip and rebuild `SkinContext`
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6_
@@ -468,12 +468,12 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Extend `Tests/HoloscapeTests/Integration/HotReloadTests.swift` with a test that modifies a staged `.wamp` file in place and asserts the chrome updates within 200 ms
     - _Requirements: 10.6_
 
-  - [ ]* 21.7 Property test: Density `.off` bypasses every Amplify code path
+  - [x]* 21.7 Property test: Density `.off` bypasses every Amplify code path _(shipped — `AmplifyDensityOffPropertyTests` pins that `SkinContext.applyFill` leaves `layer.contentsRect` at the unit square for every `SpriteState` case when density is `.off`, and that a `.full → .off` repaint resets a previously-sliced UV. Sibling to `SpriteContentsRectTests.testMinimalDensityFallsBackToStretch`, which already covered `.minimal`.)_
     - **Property 10: Density .off bypasses every Amplify code path**
     - **Validates: Requirements 11.1, 14.4**
     - Create `Tests/HoloscapePropertyTests/AmplifyDensityOffPropertyTests.swift`
 
-  - [ ]* 21.8 Property test: Graceful degradation preserves previous context
+  - [x]* 21.8 Property test: Graceful degradation preserves previous context _(shipped — `GracefulDegradationPropertyTests` pins six Requirement 13 fault classes at the engine load boundary: malformed `skin.json` → `.notFound`, missing image → logged-and-skipped, absolute asset path → `.parseFailure`, malformed `dragRegions` descriptor → pruned/others-survive, `kind: mask` `windowShape` → banner + other fields apply, unknown `SurfaceKey` → ignored. Per-class tests rather than SwiftCheck property — the interesting variation is the fault class, not randomness within it.)_
     - **Property 13: Graceful degradation preserves previous context**
     - **Validates: Requirements 1.5, 13.1, 13.2, 13.3, 13.4, 13.5**
     - Create `Tests/HoloscapePropertyTests/GracefulDegradationPropertyTests.swift`
