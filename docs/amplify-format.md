@@ -170,7 +170,7 @@ The `stateMap` keys come from this enum; any other key is ignored with a warning
 | `focused`  | Element has keyboard focus.                          |
 | `selected` | Element is part of a current selection.              |
 
-Resolution priority on interactive chrome: `pressed > hover > active > normal`.
+Resolution priority on interactive chrome: `pressed > hover > active > normal`. Authored by the chrome view (see e.g. `TabBarView.spriteState(forTab:)` — a pressed tab renders as `pressed` even when it is also active and hovered). The separate `rawInt` mapping on `SpriteState` is the encoding used for `ReactiveUniformSnapshot.spriteState` (so match expressions can key off it); it is not a priority ranking.
 
 ## State variants
 
@@ -276,7 +276,7 @@ Declares a non-rectangular window. Activated only when the `HOLOSCAPE_AMPLIFY_SH
 }
 ```
 
-Coordinates are in content-view points, origin bottom-left (AppKit convention). Each polygon needs at least 3 vertices; polygons with fewer are dropped with a warning. `ShapedWindowController` reconstructs the window borderless and installs a `CAShapeLayer` mask built from the union of declared polygons.
+Coordinates are in content-view points — `ShapedWindowController` uses `.fullSizeContentView` so mask coordinates match content-view coordinates 1:1. Origin follows the content view's `isFlipped` setting (AppKit's default is bottom-left; a flipped view is top-left). Each polygon needs at least 3 vertices; polygons with fewer are dropped with a warning. `ShapedWindowController` reconstructs the window borderless and installs a `CAShapeLayer` mask built from the union of declared polygons.
 
 `kind: "mask"` is reserved for PNG-alpha-mask shapes and currently rejected at validate time with `"kind: mask is post-MVP; ignoring shape"`. Decodable so v3+ manifests round-trip; not yet rendered.
 
@@ -370,6 +370,6 @@ Both the directory and `.wamp` forms ship in the app bundle. The `.wamp` is prod
 tools/package_synthwave.sh
 ```
 
-Removes any previous `HoloscapeSynthwave.wamp`, then creates a reproducible ZIP of the `HoloscapeSynthwave/` directory next to it. `-X` strips extra file metadata so bundles hash identically across machines. Safe to re-run.
+Removes any previous `HoloscapeSynthwave.wamp`, then creates a reproducible ZIP of the `HoloscapeSynthwave/` directory next to it. `-X` strips extra file metadata so bundles hash identically across machines. Paths are resolved from the script's own location, so it runs cleanly from any working directory. Safe to re-run.
 
 Wire into a build step when the directory-layout form is the source of truth and the `.wamp` is a derived artifact.
