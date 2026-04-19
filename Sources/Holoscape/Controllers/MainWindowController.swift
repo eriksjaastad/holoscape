@@ -791,6 +791,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         currentDragRegionTracker = tracker
     }
 
+    /// Recursively force a layer-backed display pass on every descendant.
+    /// NSView.setNeedsDisplay marks the receiver only; layer-backed
+    /// children need their own tick so they redraw against the new
+    /// window's compositor after a reconstructWindow swap (card #6038).
+    private func forceRedisplay(_ view: NSView) {
+        view.setNeedsDisplay(view.bounds)
+        view.layer?.setNeedsDisplay()
+        for subview in view.subviews {
+            forceRedisplay(subview)
+        }
+    }
+
     /// Transition the window to / from the requested shape. No-op when
     /// the feature flag is off (Req 2.8) or when the shape state is
     /// unchanged. On a changed shape:
@@ -865,6 +877,22 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 window.makeKeyAndOrderFront(nil)
             } else {
                 window.orderFront(nil)
+            }
+
+            // Re-parenting a layer-backed subtree across windows
+            // leaves sublayers holding stale backing stores — they
+            // paint as their old contents (or black if the layer
+            // never drew at all). Force a layout + display pass so
+            // every descendant repaints against the new window's
+            // compositor. Card #6038.
+            if let contentView = window.contentView {
+                contentView.needsLayout = true
+                contentView.layoutSubtreeIfNeeded()
+                contentView.setNeedsDisplay(contentView.bounds)
+                // Recursively mark every subview as needing display;
+                // AppKit's setNeedsDisplay on a parent doesn't cascade
+                // to layer-backed children unless they opt in.
+                forceRedisplay(contentView)
             }
         }
 
