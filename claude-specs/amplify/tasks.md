@@ -364,22 +364,22 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 14. Checkpoint
   - Ensure tab / sidebar / input / launcher render in skin-defined fonts when a manifest declares them; verify fallback to system font when manifest omits font; verify `HoloscapeSynthwave` uses its pre-Amplify font behavior.
 
-- [ ] 15. Chrome border, corner, and shadow consumption
-  - [ ] 15.1 Add `applyShadow` helper to `SkinContext`
+- [x] 15. Chrome border, corner, and shadow consumption
+  - [x] 15.1 Add `applyShadow` helper to `SkinContext`
     - Modify `Sources/Holoscape/Services/SkinContext.swift` to add `applyShadow(to layer: CALayer, from resolved: ResolvedSurface)`
     - Apply `layer.shadowColor / shadowOpacity / shadowRadius / shadowOffset` from `resolved.shadow`
     - When `resolved.shadow` is nil, set `shadowOpacity = 0`
     - Extract existing shadow code from `applyBorderAndCorner` into this helper; keep `applyBorderAndCorner` calling `applyShadow` for backward compat
     - _Requirements: 7.1, 7.2, 7.3_
 
-  - [ ] 15.2 Apply border/corner/shadow in TabBarView, SidebarView, InputBoxView, SessionLauncherView
+  - [x] 15.2 Apply border/corner/shadow in TabBarView, SidebarView, InputBoxView, SessionLauncherView
     - Modify `Sources/Holoscape/Views/TabBarView.swift` `refreshFromSkin()` to call `applyBorderAndCorner` and `applyShadow` on tab button layers; apply pill-shape corner clamp (if `.uniform` radius > tab height / 2, clamp to tab height / 2)
     - Modify `Sources/Holoscape/Views/SidebarView.swift` `refreshFromSkin()` to apply border/corner/shadow on sidebar row layers
     - Modify `Sources/Holoscape/Views/InputBoxView.swift` `refreshFromSkin()` to apply border/corner/shadow on input box layer
     - Modify `Sources/Holoscape/Views/SessionLauncherView.swift` `refreshFromSkin()` to apply border/corner/shadow on launcher container and button layers
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6_
 
-  - [ ]* 15.3 Unit test for pill-shape corner clamp
+  - [x]* 15.3 Unit test for pill-shape corner clamp
     - Extend `Tests/HoloscapeTests/Unit/TabBarViewSkinContextTests.swift` to test that `.uniform(9999)` on a 30pt-tall tab clamps to 15pt
     - _Requirements: 7.5_
 
