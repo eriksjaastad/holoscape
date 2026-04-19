@@ -168,6 +168,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             backing: .buffered,
             defer: false
         )
+        // NSWindow defaults `isReleasedWhenClosed` to true for
+        // programmatically-constructed windows. Combined with Swift ARC,
+        // that causes a double-release when reconstructWindow swaps
+        // windows and `oldWindow.close()` runs — AppKit-scheduled
+        // _NSWindowTransformAnimation.dealloc then lands on a zombie.
+        // See ReaderModeController.swift and BugReportDialog.swift for
+        // the same clear elsewhere in the codebase.
+        self.window.isReleasedWhenClosed = false
         // Swap in ShapedContentView as the content view from the start.
         // With a nil sampler, `hitTest` delegates to `super.hitTest` and
         // behaves identically to a plain NSView — no behavior change
@@ -842,11 +850,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 window.backgroundColor = .systemGray
             }
 
-            // Close the old window AFTER the new one exists so AppKit
+            // Remove the old window AFTER the new one exists so AppKit
             // never has a window-less moment that would send the app
-            // to background. Order the new window front to mirror the
-            // old one's key state.
-            oldWindow.close()
+            // to background. Use `orderOut` rather than `close`: close
+            // is the user-visible close path (sends AppleEvent, fires
+            // windowShouldClose on the delegate), which isn't what a
+            // style-mask reconstruction is. Nilling the delegate first
+            // prevents stray windowWillClose/windowDidClose callbacks
+            // firing on `self` for what is effectively an internal swap.
+            // ARC reaps the old window when this scope exits.
+            oldWindow.delegate = nil
+            oldWindow.orderOut(nil)
             if result.wasKey {
                 window.makeKeyAndOrderFront(nil)
             } else {
