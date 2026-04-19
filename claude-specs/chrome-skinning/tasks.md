@@ -451,30 +451,22 @@ The implementation order is: data models → core services → chrome view migra
 - [ ] 14. Checkpoint
   - Ensure all tests pass. Verify reference skin loads, renders, and animates correctly.
 
-- [ ] 15. Performance validation
-  - [ ]* 15.1 Property test: Zero overhead when off
+- [x] 15. Performance validation
+  - [x]* 15.1 Property test: Zero overhead when off
     - **Property 7: Zero overhead when off**
     - **Validates: Requirements 10.1, 10.3, 15.1, 15.4**
-    - Create `Tests/HoloscapePropertyTests/Tests/ZeroOverheadPropertyTests.swift`
-    - Start Holoscape with `densityMode == .off`
-    - Verify zero SkinContext allocations and zero FSEventStream watchers via memory graph inspection
+    - Shipped as `Tests/HoloscapePropertyTests/ZeroOverheadPropertyTests.swift` (4 tests). Deviated from the spec's "memory graph inspection" phrasing because XCTest has no portable allocation-counter; instead pinned three behavioral invariants that cover the same guarantee: (1) `SkinEngine.apply` is the identity function in `.off` mode (property test over random `SkinDefinition` + `AppearanceConfig` shapes); (2) fresh `SkinEngine()` construction opens zero FSEventStream watchers (`_currentStreamIsNil` narrow test-only accessor added on SkinEngine); (3) transitioning into `.off` drains `activeAnimations` regardless of queue depth (property-test over 0–12 queued animations).
 
-  - [ ]* 15.2 Integration test: Density mode transitions
-    - Create `Tests/HoloscapeTests/Integration/DensityModeTransitionTests.swift`
-    - Cycle through full → minimal → off → full
-    - Assert each transition completes under 200ms
+  - [x]* 15.2 Integration test: Density mode transitions
+    - Shipped as `Tests/HoloscapeTests/Integration/DensityModeTransitionTests.swift` (2 tests). Full cycle full→minimal→off→full plus a 20-iteration stress variant. Each transition measured via `CACurrentMediaTime()`; budget 200ms per spec. Headless — no window. Measures the manager's synchronous work (mode swap + animation drain + config write + notification post); observer-side work is their budget, documented in the file.
     - _Requirements: 10.2, 15.2_
 
-  - [ ]* 15.3 Performance test: Asset loading sync and size bounds
-    - Create `Tests/HoloscapeTests/Integration/AssetLoadingPerformanceTests.swift`
-    - Verify all skin assets load synchronously at skin-apply time
-    - Verify total assets for test skin remain under 10MB
+  - [x]* 15.3 Performance test: Asset loading sync and size bounds
+    - Shipped as `Tests/HoloscapeTests/Integration/AssetLoadingPerformanceTests.swift` (2 tests). Uses the shipped `HoloscapeSynthwave` reference skin, loaded via `Bundle.module.resourceURL/Skins/HoloscapeSynthwave`. Sync check: `loadComposite` returns a populated `LoadedSkin` (`images` non-empty, `surfaces` non-nil) within a 100ms budget — absence of a partial/empty return proves no async handoff. Size check: recursive directory walk, sum regular-file bytes only, cap 10 MB. Current reference skin is ~1 KB.
     - _Requirements: 15.3_
 
-  - [ ]* 15.4 Performance test: Skin switching latency
-    - Create `Tests/HoloscapeTests/Integration/SkinSwitchingLatencyTests.swift`
-    - Measure SkinContext rebuild and view re-layout time
-    - Assert completes within 200ms
+  - [x]* 15.4 Performance test: Skin switching latency
+    - Shipped as `Tests/HoloscapeTests/Integration/SkinSwitchingLatencyTests.swift` (4 tests). Covers Default→reference (cold), reference→reference (hot-reload shape matching Task 11's reload trigger), reference→Default (unload), and a 10-iteration repeated-switch stress test that catches regressions where state accumulates between switches (font-registry leaks, image-cache growth, FSEventStream leaks). Headless — measures service-layer cost only; view re-layout is per-view and out of this test's scope. Budget 200ms per spec.
     - _Requirements: 15.5_
 
 - [ ] 16. Checkpoint
