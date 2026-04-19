@@ -623,8 +623,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         case .color(let ns):
             return ns
         case .gradient(_, let stops):
-            // First stop color visible in the traffic-lights gap.
-            if let firstStop = stops.first, let color = NSColor(hex: firstStop.color) {
+            // Lowest-offset stop is the color visible in the traffic-lights
+            // gap (top-of-gradient for a vertical direction). Sort by
+            // offset rather than array order so a skin that lists stops
+            // out of order still picks the correct end of the gradient.
+            // CAGradientLayer itself uses the `locations` array to
+            // position stops, so the gradient renders correctly in any
+            // order; only this derived-single-color mapping needs the sort.
+            if let topStop = stops.min(by: { $0.offset < $1.offset }),
+               let color = NSColor(hex: topStop.color) {
                 return color
             }
             return defaultBg
