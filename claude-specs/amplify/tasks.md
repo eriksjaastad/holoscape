@@ -235,8 +235,8 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 8. Checkpoint
   - Ensure click-through works on `shaped.wamp` fixture; verify points outside the polygon pass mouse events to the system; verify points inside route into sub-views.
 
-- [ ] 9. Skin-authored drag regions
-  - [ ] 9.1 Create `DragRegionTracker`
+- [x] 9. Skin-authored drag regions
+  - [x] 9.1 Create `DragRegionTracker`
     - Create `Sources/Holoscape/Controllers/DragRegionTracker.swift` with `@MainActor final class DragRegionTracker`
     - Store `weak var contentView: NSView?`, `regions: [ResolvedDragRegion]`, `trackingAreas: [NSTrackingArea]`
     - Implement `install()` — installs one `NSTrackingArea` per polygon's bounding rect
@@ -246,23 +246,23 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Define `ResolvedDragRegion` struct with `polygons: [Polygon]`, `modifier: Modifier` (`.none, .command`)
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.7_
 
-  - [ ] 9.2 Wire drag-region routing into `ShapedContentView`
+  - [x] 9.2 Wire drag-region routing into `ShapedContentView`
     - Modify `Sources/Holoscape/Views/ShapedContentView.swift` to override `mouseDown(with:)`; if `dragRegionTracker.handleMouseDown(event)` returns true, consume the event; otherwise call `super.mouseDown(with:)`
     - Override `cursorUpdate(with:)` to query `dragRegionTracker.cursorForPoint(...)` and push onto the cursor stack
     - Expose `dragRegionTracker: DragRegionTracker?` on the view
     - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-  - [ ] 9.3 Wire drag-region installation into `MainWindowController.applySkin`
+  - [x] 9.3 Wire drag-region installation into `MainWindowController.applySkin`
     - In `MainWindowController.applySkin`, after sampler injection, construct `ResolvedDragRegion` array from `manifest.dragRegions`, instantiate `DragRegionTracker`, call `install()`
     - Tear down previous tracker before installing new one
     - IF the window is borderless AND no `dragRegions` are declared, set `NSWindow.isMovableByWindowBackground = true` (Requirement 4.6 fallback)
     - _Requirements: 4.1, 4.6_
 
-  - [ ] 9.4 Emit HIG violation warnings at skin-load time
+  - [x] 9.4 Emit HIG violation warnings at skin-load time
     - In `SkinEngine.loadComposite`, after decoding `manifest.dragRegions`, walk each polygon's bounding box and `NSLog` a warning naming the polygon index when width or height is under 44 points
     - _Requirements: 4.5, 15.5_
 
-  - [ ]* 9.5 Unit tests for DragRegionTracker
+  - [x]* 9.5 Unit tests for DragRegionTracker
     - Create `Tests/HoloscapeTests/Unit/DragRegionTrackerTests.swift`
     - Test `handleMouseDown` returns true when point inside polygon, false when outside
     - Test cursor returns `openHand` on hover, `closedHand` on hover+mouseDown
@@ -270,7 +270,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test teardown removes all tracking areas
     - _Requirements: 4.2, 4.3, 4.4, 4.7_
 
-  - [ ]* 9.6 Property test: Drag region HIG warning
+  - [x]* 9.6 Property test: Drag region HIG warning
     - **Property 16: Drag region HIG warning fires on small bounds**
     - **Validates: Requirements 4.5, 15.5**
     - Create `Tests/HoloscapePropertyTests/DragRegionHIGWarningPropertyTests.swift`

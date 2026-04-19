@@ -41,6 +41,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// so `applySkin` can decide between "no-op," "install mask,"
     /// "reconstruct into borderless," and "reconstruct into titled."
     private var currentWindowShape: ResolvedWindowShape?
+
+    /// Amplify Task 9 — active drag-region tracker for the current
+    /// skin. Nil when: skin has no drag regions, OR the feature flag
+    /// is off, OR the window is rectangular and no regions are
+    /// declared (in which case `isMovableByWindowBackground` handles
+    /// drag per Req 4.6).
+    private var currentDragRegionTracker: DragRegionTracker?
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
@@ -691,22 +698,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// (future views added after this PR, or tests) can post
     /// `.skinDidChange` themselves after `applySkin` returns.
     func applySkin(_ surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?) {
-        applySkin(surfaces: surfaces, windowShape: nil)
+        applySkin(surfaces: surfaces, windowShape: nil, dragRegions: [])
     }
 
-    /// Amplify Task 5.3 — extended entry point for skins that may
-    /// carry a `windowShape`. Existing callers that don't know about
-    /// shapes keep using `applySkin(_:)` and get the pre-Amplify
-    /// rectangular behavior. `reloadSkin` (which reads
-    /// `LoadedSkin.windowShape` from the loader) calls this directly.
+    /// Amplify Task 5.3 + 9.3 — extended entry point for skins that
+    /// may carry `windowShape` and/or `dragRegions`. Existing callers
+    /// that don't know about either keep using `applySkin(_:)`.
+    /// `reloadSkin` calls this directly, passing `LoadedSkin.windowShape`
+    /// + `.dragRegions`.
     ///
-    /// Window reconstruction is only attempted when the ShapedWindowController's
-    /// feature flag is on. When off, `windowShape` is ignored and the
-    /// window stays titled/rectangular — satisfying the flag-off
-    /// zero-overhead invariant (Property 12).
+    /// Both shape and drag-region application is gated on the shaped-
+    /// windows feature flag. When off, `windowShape` is ignored and
+    /// `dragRegions` is ignored (moving a titled window uses the
+    /// system title bar — no custom drag handles needed).
     func applySkin(
         surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
-        windowShape: ResolvedWindowShape?
+        windowShape: ResolvedWindowShape?,
+        dragRegions: [ResolvedDragRegion]
     ) {
         skinContext = Self.buildSkinContext(overriding: surfaces, reactive: reactiveSnapshot)
         tabBar.skinContext = skinContext
@@ -716,6 +724,54 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.skinContext = skinContext
         applyWindowSurfaces()
         applyWindowShape(windowShape)
+        applyDragRegions(dragRegions, shapeActive: windowShape != nil)
+    }
+
+    /// Amplify Task 9.3 — install / replace the drag region tracker.
+    /// Always tears down the previous tracker first so skin switches
+    /// leave no stale tracking areas on the content view.
+    ///
+    /// Fallback per Requirement 4.6: when the window is borderless
+    /// (shape active) AND no drag regions are declared, enable
+    /// `isMovableByWindowBackground` so the whole content view acts
+    /// as a drag handle. For titled windows we keep the default
+    /// false — AppKit's title bar handles drag.
+    private func applyDragRegions(
+        _ regions: [ResolvedDragRegion],
+        shapeActive: Bool
+    ) {
+        // Always drain the previous tracker. The guard below either
+        // installs a new one or leaves the view tracker-less.
+        currentDragRegionTracker?.teardown()
+        currentDragRegionTracker = nil
+        (window.contentView as? ShapedContentView)?.dragRegionTracker = nil
+
+        guard shapedWindowController.featureFlagEnabled else {
+            // Flag off — ignore drag regions entirely, rely on the
+            // default titled window's title bar for dragging.
+            window.isMovableByWindowBackground = false
+            return
+        }
+
+        if regions.isEmpty {
+            // Borderless + no regions → whole-window drag fallback
+            // per Req 4.6. Rectangular windows default to false so
+            // the titled window's system drag zone (title bar) is
+            // the only drag target.
+            window.isMovableByWindowBackground = shapeActive
+            return
+        }
+
+        // Install a fresh tracker.
+        window.isMovableByWindowBackground = false
+        guard let shapedView = window.contentView as? ShapedContentView else {
+            NSLog("MainWindowController: drag regions declared but content view is not ShapedContentView — dropping")
+            return
+        }
+        let tracker = DragRegionTracker(contentView: shapedView, regions: regions)
+        tracker.install()
+        shapedView.dragRegionTracker = tracker
+        currentDragRegionTracker = tracker
     }
 
     /// Transition the window to / from the requested shape. No-op when
@@ -865,7 +921,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // happy path and leaves the old fonts alive on failure.
             skinEngine.unregisterFonts(currentFontBundle)
             currentFontBundle = loaded.fonts
-            applySkin(surfaces: loaded.surfaces, windowShape: loaded.windowShape)
+            applySkin(
+                surfaces: loaded.surfaces,
+                windowShape: loaded.windowShape,
+                dragRegions: loaded.dragRegions
+            )
             if let reason = loaded.validationBannerReason {
                 // Req 13.2 — surface the malformed-shape banner. For
                 // now this is just logged; a visible banner view is
