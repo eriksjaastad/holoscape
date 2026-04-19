@@ -62,12 +62,13 @@ final class ReaderModeController: NSObject, NSWindowDelegate {
     /// re-activating re-fetches scrollback and updates the text view,
     /// but does not build a second panel.
     ///
-    /// `animationEngine` is optional because the app's object graph
-    /// does not currently own a shared `AnimationEngine` instance
-    /// (backlog: wire one up alongside DensityModeManager). When nil,
-    /// the suppression step is skipped — chrome animations continue
-    /// running during Reader Mode. Visible impact: minor; the dim
-    /// already communicates "you're not in the active session."
+    /// `animationEngine` is optional for test-side instantiation but
+    /// is always provided from the production call site
+    /// (`MainWindowController.toggleReaderMode` — wired in card
+    /// #6027). When nil, the suppression step is skipped — chrome
+    /// animations continue running during Reader Mode. Visible
+    /// impact when skipped: minor; the dim already communicates
+    /// "you're not in the active session."
     func activate(
         for channel: any ChannelController,
         parentWindow: NSWindow,
