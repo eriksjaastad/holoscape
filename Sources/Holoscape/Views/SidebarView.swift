@@ -61,17 +61,26 @@ class SidebarView: NSView {
         refreshFromSkin()
     }
 
+    /// Apply the current skin's container fill (color / gradient / image)
+    /// through `SkinContext.applyFill`, which handles all three. Nil
+    /// skinContext falls back to the hardcoded pre-skinning color.
     private func refreshFromSkin() {
+        guard let layer else { return }
         guard let ctx = skinContext else {
-            layer?.backgroundColor = Self.containerBg
+            layer.backgroundColor = Self.containerBg
             return
         }
-        if case .color(let ns) = ctx.currentState(for: .sidebarContainer).fill {
-            layer?.backgroundColor = ns.cgColor
-        } else {
-            NSLog("SidebarView: non-color fill for 'sidebar.container' not yet supported; falling back")
-            layer?.backgroundColor = Self.containerBg
-        }
+        let resolved = ctx.currentState(for: .sidebarContainer)
+        let backingScale = window?.backingScaleFactor ?? 2.0
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+    }
+
+    override func layout() {
+        super.layout()
+        // Re-apply the container fill so gradient sublayers and ninepatch
+        // image fills resize with the sidebar. Solid-color reassignment
+        // is cheap; gradient + image rendering depends on current bounds.
+        refreshFromSkin()
     }
 
     private func setupViews() {

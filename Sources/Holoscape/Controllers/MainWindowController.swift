@@ -604,14 +604,41 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// on `NSWindow.backgroundColor`. Extracted as a static seam so a
     /// unit test can exercise the mapping without constructing a real
     /// `MainWindowController` (which needs a ChannelManager, a window,
-    /// a config service). Non-color fills log and return the default.
+    /// a config service).
+    ///
+    /// `NSWindow.backgroundColor` is a single NSColor slot — it can't
+    /// natively carry a gradient or image. The main visible impact of
+    /// this color is the 80pt traffic-lights gap at the top-left of the
+    /// titlebar band (the rest of the window is covered by chrome views
+    /// that paint their own fills). For gradient window skins we pick
+    /// the FIRST gradient stop as the NSWindow color — that's what
+    /// shows behind the traffic lights, which visually ties the
+    /// titlebar gap to the adjacent tab bar's gradient. Image fills
+    /// fall back to the built-in default (no good way to sample an
+    /// image in NSWindow.backgroundColor).
     static func resolveWindowBackground(from context: SkinContext) -> NSColor {
         let defaultBg = NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0)
-        if case .color(let ns) = context.currentState(for: .windowBackground).fill {
+        let fill = context.currentState(for: .windowBackground).fill
+        switch fill {
+        case .color(let ns):
             return ns
+        case .gradient(_, let stops):
+            // Lowest-offset stop is the color visible in the traffic-lights
+            // gap (top-of-gradient for a vertical direction). Sort by
+            // offset rather than array order so a skin that lists stops
+            // out of order still picks the correct end of the gradient.
+            // CAGradientLayer itself uses the `locations` array to
+            // position stops, so the gradient renders correctly in any
+            // order; only this derived-single-color mapping needs the sort.
+            if let topStop = stops.min(by: { $0.offset < $1.offset }),
+               let color = NSColor(hex: topStop.color) {
+                return color
+            }
+            return defaultBg
+        case .image:
+            NSLog("MainWindowController: image fill for 'window.background' not supported — NSWindow can't sample an image. Falling back.")
+            return defaultBg
         }
-        NSLog("MainWindowController: non-color fill for 'window.background' not yet supported; falling back")
-        return defaultBg
     }
 
     /// Swap the active skin. Rebuilds the `SkinContext`, re-injects into
