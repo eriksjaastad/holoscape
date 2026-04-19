@@ -17,6 +17,42 @@ import AppKit
 /// rectangular behavior. Nil is the legitimate state between
 /// reconstruction-to-shaped and the sampler injection that follows
 /// in `MainWindowController.applyWindowShape`.
+/// Invisible drag strip installed on top of every other subview in a
+/// shaped window. `isMovableByWindowBackground = true` is useless in
+/// Holoscape because the content view is fully populated with chrome
+/// subviews (tab bar, sidebar, terminal) — there is no bare "window
+/// background" pixel for AppKit to latch drag onto. This overlay
+/// hands a dedicated strip of pixels the sole job of moving the
+/// window, Winamp-title-bar-style.
+///
+/// No fill, no sampler, no interaction beyond performDrag. Installed
+/// and torn down by `MainWindowController.applyDragRegions` when a
+/// shape is active and the skin declares no explicit drag regions
+/// (Req 4.6 fallback — whole-window drag).
+final class WindowDragOverlay: NSView {
+    override func mouseDown(with event: NSEvent) {
+        // `performDrag` drives the native window-move gesture; no
+        // need to compute deltas or do anything per-frame. It blocks
+        // until the user releases the mouse.
+        window?.performDrag(with: event)
+    }
+
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    // Let clicks outside the overlay fall straight through to the
+    // subviews beneath. The overlay's job is ONLY to own mouseDown
+    // within its own frame — not to block anything outside it.
+    // `self` rather than `super.hitTest(point)` inside the bounds is
+    // intentional: the overlay has no descendants, so super would
+    // always return the overlay anyway, and short-circuiting avoids
+    // the traversal. If a descendant is ever added, switch to
+    // `super.hitTest(point)` so the click routes to it.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if bounds.contains(convert(point, from: superview)) { return self }
+        return nil
+    }
+}
+
 final class ShapedContentView: NSView {
     /// The hit-region oracle driving click-through decisions.
     /// MainWindowController sets this after reconstruction; swapping

@@ -354,6 +354,102 @@ final class ShapedWindowControllerTests: XCTestCase {
                        "Rectangular reconstruction must also clear isReleasedWhenClosed — same double-release risk")
     }
 
+    // MARK: - Polygon scaling (card #6037)
+
+    func testScalePolygonsFromSmallToLargeTarget() {
+        let poly = Polygon(points: [
+            Point(x: 0, y: 0),
+            Point(x: 100, y: 0),
+            Point(x: 100, y: 100),
+            Point(x: 0, y: 100),
+        ])
+        let scaled = ShapedWindowController.scale(
+            polygons: [poly],
+            from: CGSize(width: 100, height: 100),
+            to: CGSize(width: 200, height: 400)
+        )
+        let pts = scaled.first?.points ?? []
+        XCTAssertEqual(pts.count, 4)
+        XCTAssertEqual(pts[0].x, 0, accuracy: 0.0001)
+        XCTAssertEqual(pts[0].y, 0, accuracy: 0.0001)
+        XCTAssertEqual(pts[1].x, 200, accuracy: 0.0001)
+        XCTAssertEqual(pts[1].y, 0, accuracy: 0.0001)
+        XCTAssertEqual(pts[2].x, 200, accuracy: 0.0001)
+        XCTAssertEqual(pts[2].y, 400, accuracy: 0.0001)
+        XCTAssertEqual(pts[3].x, 0, accuracy: 0.0001)
+        XCTAssertEqual(pts[3].y, 400, accuracy: 0.0001)
+    }
+
+    func testScalePolygonsIdentityWhenTargetMatchesNominal() {
+        let poly = Polygon(points: [
+            Point(x: 40, y: 0),
+            Point(x: 960, y: 0),
+            Point(x: 1000, y: 40),
+        ])
+        let scaled = ShapedWindowController.scale(
+            polygons: [poly],
+            from: CGSize(width: 1000, height: 700),
+            to: CGSize(width: 1000, height: 700)
+        )
+        XCTAssertEqual(scaled, [poly],
+                       "When nominal == target, scale must return the polygons unchanged (including object identity isn't required, but the values must match exactly — no floating-point drift from a 1:1 scale)")
+    }
+
+    func testScalePolygonsSkipsAxisWithZeroNominal() {
+        // A manifest with a single zero-width polygon would produce
+        // nominal.width == 0. The helper must not divide by zero;
+        // the axis is preserved (scale 1) rather than collapsed.
+        let poly = Polygon(points: [
+            Point(x: 5, y: 0),
+            Point(x: 5, y: 100),
+        ])
+        let scaled = ShapedWindowController.scale(
+            polygons: [poly],
+            from: CGSize(width: 0, height: 100),
+            to: CGSize(width: 200, height: 200)
+        )
+        let pts = scaled.first?.points ?? []
+        XCTAssertEqual(pts[0].x, 5, accuracy: 0.0001, "Zero-width nominal must skip x-scaling")
+        XCTAssertEqual(pts[0].y, 0, accuracy: 0.0001)
+        XCTAssertEqual(pts[1].x, 5, accuracy: 0.0001)
+        XCTAssertEqual(pts[1].y, 200, accuracy: 0.0001, "Y-axis still scales 100 → 200")
+    }
+
+    func testNominalSizeIsUnionBoundingBoxOriginAtZero() {
+        let shape = ResolvedWindowShape(kind: .polygons([
+            Polygon(points: [
+                Point(x: 40, y: 0),
+                Point(x: 960, y: 0),
+                Point(x: 1000, y: 40),
+                Point(x: 1000, y: 660),
+                Point(x: 960, y: 700),
+            ]),
+        ]))
+        XCTAssertEqual(shape.nominalSize.width, 1000, accuracy: 0.0001)
+        XCTAssertEqual(shape.nominalSize.height, 700, accuracy: 0.0001)
+    }
+
+    func testNominalSizeIsZeroForEmptyPolygonArray() {
+        // A ResolvedWindowShape with zero polygons shouldn't happen
+        // in practice (validate rejects empty arrays and drops the
+        // shape), but the helper is called from enough places that
+        // its degenerate behavior matters for safety. Zero dimensions
+        // flow into `scale` where the zero-axis guard returns the
+        // polygons unchanged — never divide by zero.
+        let shape = ResolvedWindowShape(kind: .polygons([]))
+        XCTAssertEqual(shape.nominalSize, .zero)
+    }
+
+    func testNominalSizeUnionsAcrossMultiplePolygons() {
+        let shape = ResolvedWindowShape(kind: .polygons([
+            Polygon(points: [Point(x: 0, y: 0), Point(x: 50, y: 0), Point(x: 50, y: 50)]),
+            Polygon(points: [Point(x: 100, y: 100), Point(x: 200, y: 100), Point(x: 150, y: 300)]),
+        ]))
+        XCTAssertEqual(shape.nominalSize.width, 200, accuracy: 0.0001,
+                       "nominalSize must cover the furthest polygon extent across all polygons")
+        XCTAssertEqual(shape.nominalSize.height, 300, accuracy: 0.0001)
+    }
+
     func testBuildMaskLayerUnionsMultiplePolygons() {
         // The mask path must contain moves + lines for every polygon.
         // We assert the path bounding box covers the union of both
