@@ -11,6 +11,9 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.0.0"),
         .package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.7.0"),
+        // Amplify Task 3.1 — pure-Swift ZIP reader/writer for `.wamp`
+        // bundle loading (no native zlib bindings). MIT licensed.
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0"),
     ],
     targets: [
         // Vendored C++ libraries for shader pipeline (#5930).
@@ -153,7 +156,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Holoscape",
-            dependencies: ["SwiftTerm", "Cglslang", "Cspirv_cross"],
+            dependencies: ["SwiftTerm", "Cglslang", "Cspirv_cross", "ZIPFoundation"],
             path: "Sources/Holoscape",
             resources: [
                 // GLSL shader prefix prepended to every user shader before

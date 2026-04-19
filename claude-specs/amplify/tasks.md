@@ -71,13 +71,13 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 2. Checkpoint
   - Ensure `swift test` and `swift build` both succeed; ensure the existing `HoloscapeSynthwave` skin still loads and renders via `SkinEngineLoadCompositeTests`.
 
-- [ ] 3. `.wamp` bundle loader
-  - [ ] 3.1 Add `ZIPFoundation` dependency
+- [x] 3. `.wamp` bundle loader
+  - [x] 3.1 Add `ZIPFoundation` dependency
     - Modify `Package.swift` to add `https://github.com/weichsel/ZIPFoundation.git` at version 0.9 or later
     - Add `ZIPFoundation` to the `Holoscape` target dependencies
     - _Requirements: 1.2, 1.6_
 
-  - [ ] 3.2 Create `WampBundleLoader`
+  - [x] 3.2 Create `WampBundleLoader`
     - Create `Sources/Holoscape/Services/WampBundleLoader.swift` with `@MainActor final class WampBundleLoader`
     - Implement `unzipIfNeeded(bundleURL:) throws -> URL` that computes SHA-256 of bundle bytes, checks `Cache_Root/<hash>/`, unzips on miss
     - Implement `contentHash(_:) throws -> String` returning hex-encoded SHA-256
@@ -85,34 +85,34 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Define `WampBundleLoader.LoadError` enum: `ioFailure, notAZip, zipEntryEscapesSandbox, assetTooLarge, bundleTooLarge, missingManifest`
     - _Requirements: 1.2, 1.4, 1.5, 1.6, 1.8_
 
-  - [ ] 3.3 Apply zip sandbox during unzip
+  - [x] 3.3 Apply zip sandbox during unzip
     - In `WampBundleLoader.unzipIfNeeded`, before writing each entry, invoke `SkinEngine.validateAssetPath(_:)` on the entry path
     - After writing, invoke `SkinEngine.assertPathResolvesInside(_:root:)` on the extracted file URL with the cache subdirectory as root
     - Throw `zipEntryEscapesSandbox` with the offending path on violation
     - _Requirements: 1.3, 12.1, 12.3, 12.5_
 
-  - [ ] 3.4 Enforce size caps
+  - [x] 3.4 Enforce size caps
     - In `WampBundleLoader.unzipIfNeeded`, maintain a running total of uncompressed bytes written
     - Throw `assetTooLarge(path:bytes:)` if any single entry's uncompressed size exceeds 50 * 1024 * 1024
     - Throw `bundleTooLarge(bytes:)` if the running total would exceed 50 * 1024 * 1024
     - On throw, run `try? FileManager.default.removeItem(at: cacheSubdir)` to clean up the partial extraction
     - _Requirements: 1.4, 12.2_
 
-  - [ ] 3.5 Implement LRU cache purge
+  - [x] 3.5 Implement LRU cache purge
     - In `WampBundleLoader.purgeLRU(preserving:)`, enumerate `Cache_Root` subdirectories sorted by `contentModificationDate` ascending
     - Compute total size by walking each subdirectory
     - Remove oldest subdirectories (except `preserving`) until total size is at or below 50 MB
     - Call from `SkinEngine.init` (startup cache cleanup)
     - _Requirements: 1.8_
 
-  - [ ] 3.6 Extend `SkinEngine` with `.wamp` branch
+  - [x] 3.6 Extend `SkinEngine` with `.wamp` branch
     - Modify `Sources/Holoscape/Services/SkinEngine.swift` to add `let wampLoader: WampBundleLoader` field initialized in `init()` with the Holoscape-scoped cache URL
     - Extend `availableSkins()` to enumerate `.wamp` files alongside directory-layout skins; strip `.wamp` for display names; dedup with user dir winning
     - Extend `resolveSkinDir(named:)` to check `<name>.wamp` first and, when found, delegate to `wampLoader.unzipIfNeeded(bundleURL:)` before returning the unzipped directory URL
     - Extend `startWatching(skinName:)` to watch the `.wamp` file's parent directory and filter events to the bundle path when the active skin is a `.wamp`
     - _Requirements: 1.1, 1.6, 1.7, 10.1, 10.2, 10.3, 10.4_
 
-  - [ ]* 3.7 Unit tests for WampBundleLoader
+  - [x]* 3.7 Unit tests for WampBundleLoader
     - Create `Tests/HoloscapeTests/Unit/WampBundleLoaderTests.swift`
     - Test round-trip of fixture bundle into temp cache; verify hash-keyed path exists
     - Test second `unzipIfNeeded` on same bundle hits cache (no I/O)
@@ -121,23 +121,23 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test LRU purge preserves active skin subdirectory
     - _Requirements: 1.2, 1.3, 1.4, 1.8_
 
-  - [ ]* 3.8 Property test: Zip sandbox rejects every path-traversal attack
+  - [x]* 3.8 Property test: Zip sandbox rejects every path-traversal attack
     - **Property 2: Zip sandbox rejects every path-traversal attack**
     - **Validates: Requirements 1.3, 12.1, 12.3**
     - Create `Tests/HoloscapePropertyTests/ZipSandboxPropertyTests.swift`
     - Generate arbitrary ZIP entry paths (traversal, absolute, URL-prefixed); assert `unzipIfNeeded` throws before any write
 
-  - [ ]* 3.9 Property test: Bundle size cap
+  - [x]* 3.9 Property test: Bundle size cap
     - **Property 3: Bundle size cap is enforced**
     - **Validates: Requirements 1.4, 12.2**
     - Add test cases to `Tests/HoloscapePropertyTests/ZipSandboxPropertyTests.swift`
 
-  - [ ]* 3.10 Property test: SHA-256 cache key determinism
+  - [x]* 3.10 Property test: SHA-256 cache key determinism
     - **Property 9: SHA-256 cache key determinism**
     - **Validates: Requirements 1.2, 10.3, 10.4**
     - Create `Tests/HoloscapePropertyTests/WampCacheKeyPropertyTests.swift`
 
-  - [ ]* 3.11 Property test: LRU purge preserves active skin
+  - [x]* 3.11 Property test: LRU purge preserves active skin
     - **Property 14: LRU cache purge preserves active skin**
     - **Validates: Requirements 1.8**
     - Create `Tests/HoloscapePropertyTests/LRUPurgePropertyTests.swift`

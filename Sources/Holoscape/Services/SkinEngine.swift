@@ -148,12 +148,46 @@ class SkinEngine {
     /// state.
     private let watcherQueue = DispatchQueue(label: "holoscape.skin.watcher")
 
+    /// Loader for `.wamp` ZIP bundles (Amplify Task 3). Unzips to a
+    /// hash-keyed subdirectory under `cacheRoot` and returns the
+    /// directory URL, which downstream loaders (`loadImages`,
+    /// `loadNinepatchSidecar`, `registerFonts`) consume identically
+    /// to a directory-layout skin.
+    let wampLoader: WampBundleLoader
+
     init() {
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
             self.skinsDirectory = URL(fileURLWithPath: override).appendingPathComponent("skins")
         } else {
             self.skinsDirectory = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".holoscape/skins")
+        }
+
+        // `.wamp` cache lives under
+        // `~/Library/Caches/<bundleID>/Holoscape/Skins/`. Respects
+        // HOLOSCAPE_CONFIG_DIR so tests stage a disposable cache under
+        // their temp config dir and don't pollute the real user cache.
+        let cacheRoot: URL
+        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            cacheRoot = URL(fileURLWithPath: override)
+                .appendingPathComponent("caches/Skins")
+        } else {
+            cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Holoscape/Skins")
+        }
+        self.wampLoader = WampBundleLoader(cacheRoot: cacheRoot)
+
+        // WampBundleLoader needs the sandbox helpers from `self`.
+        // Assignment deferred until after `self` is fully initialized.
+        self.wampLoader.sandbox = self
+
+        // Startup LRU cleanup — evicts stale cache entries so first
+        // launch after a while doesn't sit with a bloated cache. Best
+        // effort; any failure is logged and swallowed.
+        do {
+            try self.wampLoader.purgeLRU(preserving: nil)
+        } catch {
+            NSLog("SkinEngine: LRU cache purge at init failed: \(error.localizedDescription)")
         }
     }
 
@@ -175,18 +209,20 @@ class SkinEngine {
         return skins
     }
 
-    /// Enumerate skin folder names under the user's `~/.holoscape/skins/`
-    /// (or the `HOLOSCAPE_CONFIG_DIR` test override).
+    /// Enumerate skin names under the user's `~/.holoscape/skins/`
+    /// (or the `HOLOSCAPE_CONFIG_DIR` test override). Both directory-
+    /// layout and `.wamp` bundle skins are included; `.wamp` extensions
+    /// are stripped for display.
     private func userSkinNames() -> [String] {
-        enumerateSkinFolders(at: skinsDirectory)
+        enumerateSkinFolders(at: skinsDirectory) + enumerateWampBundles(at: skinsDirectory)
     }
 
-    /// Enumerate skin folder names under the app bundle's `Resources/Skins/`.
+    /// Enumerate skin names under the app bundle's `Resources/Skins/`.
     /// Empty in unit tests (no Bundle.main.resourceURL) or when no bundled
-    /// skins are shipped.
+    /// skins are shipped. Both directory and `.wamp` forms are included.
     private func bundledSkinNames() -> [String] {
         guard let root = bundledSkinsDirectory() else { return [] }
-        return enumerateSkinFolders(at: root)
+        return enumerateSkinFolders(at: root) + enumerateWampBundles(at: root)
     }
 
     /// Absolute URL of the app bundle's bundled-skins directory, or nil
@@ -230,20 +266,95 @@ class SkinEngine {
         return names
     }
 
+    /// Amplify Task 3.6 — enumerate `.wamp` bundle skins under `root`,
+    /// returning their display names (filename minus `.wamp` extension).
+    /// Name collisions between `foo/` and `foo.wamp` in the same
+    /// directory dedupe by base name; `availableSkins` then dedupes
+    /// across user/bundle locations via its own `Set`.
+    private func enumerateWampBundles(at root: URL) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return []
+        }
+        var names: [String] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard entry.pathExtension.lowercased() == "wamp" else { continue }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir),
+                  !isDir.boolValue else { continue }
+            names.append(entry.deletingPathExtension().lastPathComponent)
+        }
+        return names
+    }
+
     /// Resolve a skin name to its on-disk directory. User-installed skins
     /// at `~/.holoscape/skins/` take precedence over bundled skins of the
     /// same name — matches the "user override wins" rule in `availableSkins`.
     /// Returns nil for "Default" (no directory) and for unknown names.
+    ///
+    /// For `.wamp` bundles (Amplify Task 3.6) the path is:
+    ///   1. Look for `<name>/` directory (v2 layout) — if present, win.
+    ///   2. Look for `<name>.wamp` file — if present, unzip via
+    ///      `wampLoader` and return the cache subdirectory URL.
+    /// Checked in user-dir first, then bundle-dir. A bundle unzip
+    /// failure returns nil (with a logged error) so an unreadable
+    /// `.wamp` degrades to "skin not found" rather than crashing.
     private func resolveSkinDir(named name: String) -> URL? {
         guard name != "Default" else { return nil }
-        let userDir = skinsDirectory.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: userDir.appendingPathComponent("skin.json").path) {
-            return userDir
+
+        // User directory: try dir-layout first, then `.wamp`.
+        if let url = resolveSkinLocation(named: name, under: skinsDirectory) {
+            return url
         }
-        if let bundleRoot = bundledSkinsDirectory() {
-            let bundleDir = bundleRoot.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: bundleDir.appendingPathComponent("skin.json").path) {
-                return bundleDir
+
+        // Bundle directory: same order.
+        if let bundleRoot = bundledSkinsDirectory(),
+           let url = resolveSkinLocation(named: name, under: bundleRoot) {
+            return url
+        }
+
+        return nil
+    }
+
+    /// Single-location resolver. Checked by `resolveSkinDir` once per
+    /// location (user, bundle).
+    private func resolveSkinLocation(named name: String, under root: URL) -> URL? {
+        let dir = root.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: dir.appendingPathComponent("skin.json").path) {
+            return dir
+        }
+        let wampURL = root.appendingPathComponent(name + ".wamp")
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: wampURL.path, isDirectory: &isDir), !isDir.boolValue {
+            do {
+                return try wampLoader.unzipIfNeeded(bundleURL: wampURL)
+            } catch {
+                NSLog("SkinEngine: could not unzip '\(wampURL.lastPathComponent)': \(error)")
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// URL of the `.wamp` bundle backing `name`, or nil if `name`
+    /// resolves to a directory-layout skin (or doesn't exist). Used by
+    /// `startWatching` so the FSEventStream watches the bundle file
+    /// rather than the unzipped cache subdirectory (the cache dir only
+    /// changes when the bundle's hash changes).
+    private func activeBundleFileURL(for name: String) -> URL? {
+        guard name != "Default" else { return nil }
+        // Same precedence as resolveSkinDir: user-dir wins over bundle,
+        // and within each location dir-layout wins over `.wamp`.
+        for root in [skinsDirectory, bundledSkinsDirectory()].compactMap({ $0 }) {
+            let dir = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("skin.json").path) {
+                return nil  // dir-layout wins — no bundle file backing it
+            }
+            let wampURL = root.appendingPathComponent(name + ".wamp")
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: wampURL.path, isDirectory: &isDir), !isDir.boolValue {
+                return wampURL
             }
         }
         return nil
@@ -343,7 +454,10 @@ class SkinEngine {
     /// path and confirm the real location stays inside `root`. Defends
     /// against a skin package that passes string validation but smuggles
     /// in a symlink like `assets/bg.png -> ../../.ssh/id_rsa`.
-    private func assertPathResolvesInside(_ fileURL: URL, root: URL, originalPath: String) throws {
+    /// Internal (not private) so `WampBundleLoader` can reuse the exact
+    /// same symlink-resolution rule. Amplify Task 3.3 specifies the
+    /// `.wamp` sandbox reuses this helper rather than duplicating it.
+    func assertPathResolvesInside(_ fileURL: URL, root: URL, originalPath: String) throws {
         let resolvedFile = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
         let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
         let boundary = resolvedRoot.hasSuffix("/") ? resolvedRoot : resolvedRoot + "/"
@@ -551,9 +665,26 @@ class SkinEngine {
     func startWatching(skinName: String) {
         stopWatching()
         guard skinName != "Default" else { return }
-        let skinDir = skinsDirectory.appendingPathComponent(skinName)
-        guard FileManager.default.fileExists(atPath: skinDir.path) else {
-            NSLog("SkinEngine: Cannot watch '\(skinName)' — directory does not exist")
+
+        // Decide what path to pin the watcher to:
+        // - `.wamp` bundle: watch the bundle FILE. FSEventStream accepts
+        //   file paths and reports writes. When a designer saves over
+        //   the `.wamp`, the hash changes, `unzipIfNeeded` re-extracts,
+        //   and downstream code picks up the new context.
+        // - directory-layout skin: watch the SKIN DIRECTORY (pre-Amplify
+        //   behavior). Unchanged.
+        let watchPath: URL
+        let watchKind: String
+        if let bundleURL = activeBundleFileURL(for: skinName) {
+            watchPath = bundleURL
+            watchKind = "bundle file"
+        } else {
+            let skinDir = skinsDirectory.appendingPathComponent(skinName)
+            watchPath = skinDir
+            watchKind = "directory"
+        }
+        guard FileManager.default.fileExists(atPath: watchPath.path) else {
+            NSLog("SkinEngine: Cannot watch '\(skinName)' — \(watchKind) does not exist")
             return
         }
 
@@ -569,7 +700,7 @@ class SkinEngine {
             release: nil,
             copyDescription: nil
         )
-        let paths = [skinDir.path] as CFArray
+        let paths = [watchPath.path] as CFArray
 
         let callback: FSEventStreamCallback = { (_, info, _, _, _, _) in
             // C-function-pointer callback: nonisolated, runs on
@@ -600,7 +731,11 @@ class SkinEngine {
         FSEventStreamSetDispatchQueue(stream, watcherQueue)
         FSEventStreamStart(stream)
         currentStream = stream
-        currentWatchedDir = skinDir
+        // `currentWatchedDir` historically named — holds the watched
+        // path (either skin directory or `.wamp` file URL). The
+        // delegate reads `lastPathComponent` off this to recover the
+        // skin name, which works for both shapes.
+        currentWatchedDir = watchPath
     }
 
     /// Stop watching the currently-watched skin directory. Three-call
