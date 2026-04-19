@@ -65,6 +65,12 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         let resolved = ctx.currentState(for: .sessionLauncherContainer)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+        // Amplify Task 13 — combo box font from the skin. Applies to
+        // both the visible field and the dropdown list. Nil = retain
+        // init's monospaced default.
+        if let font = ctx.resolvedFont(for: .sessionLauncherContainer) {
+            comboBox.font = font
+        }
     }
 
     override func layout() {

@@ -621,6 +621,50 @@ final class SkinContext {
         return NSFont(name: font.family, size: size) ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    // MARK: - Runtime font resolution (Amplify Task 13)
+
+    /// Resolve a surface's font at runtime, preferring skin-registered
+    /// fonts (from `SkinEngine.registerFonts` CTFontManager process
+    /// scope) before system lookup. Three-step fallback chain,
+    /// guaranteed to terminate (Property 8):
+    ///
+    ///   1. `fontRegistry[family]` — skin-shipped font registered via
+    ///      `CTFontManagerRegisterFontsForURL(_, .process, _)` at
+    ///      skin-load time. Keyed by PostScript name.
+    ///   2. `NSFont(name: family, size:)` — system-installed font
+    ///      lookup. Handles built-in families like `"SF Mono"` or
+    ///      `"Menlo"` that authors reference by name.
+    ///   3. `NSFont.monospacedSystemFont(ofSize:weight:)` — guaranteed
+    ///      fallback; never returns nil. Chrome views that call this
+    ///      method always get a renderable font.
+    ///
+    /// Returns `nil` only when the surface has no FontDescriptor —
+    /// chrome views interpret that as "keep the pre-Amplify hardcoded
+    /// font" (don't overwrite).
+    func resolvedFont(for key: SurfaceKey) -> NSFont? {
+        guard let resolved = surfaces[key], let font = resolved.font else {
+            // No surface defined, or surface defined without a font
+            // descriptor. Caller preserves the pre-Amplify font.
+            return nil
+        }
+        // `resolved.font` was populated at build time by `convertFont`,
+        // which DOESN'T know about the registry. Redirect through the
+        // registry lookup first. The FontDescriptor's family/size live
+        // on the raw descriptor — but we've lost that at resolve time.
+        // Use the font's postScriptName + size as the registry key and
+        // fall through to the already-resolved font when no match.
+        if let psName = font.fontDescriptor.postscriptName,
+           let cgFont = fontRegistry[psName] {
+            let size = font.pointSize
+            let resolved = CTFontCreateWithGraphicsFont(cgFont, size, nil, nil)
+            return resolved as NSFont
+        }
+        // Registry miss — keep the font convertFont already resolved
+        // (NSFont(name:) or monospacedSystem fallback). Guaranteed
+        // non-nil per convertFont's chain.
+        return font
+    }
+
     private static func convertText(_ text: TextDescriptor) -> ResolvedText? {
         guard let color = NSColor(hex: text.color) else { return nil }
         return ResolvedText(color: color, shadow: text.shadow.flatMap(convertShadow))
