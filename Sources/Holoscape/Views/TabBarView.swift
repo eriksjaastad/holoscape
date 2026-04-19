@@ -89,31 +89,55 @@ class TabBarView: NSView {
         refreshFromSkin()
     }
 
-    /// Re-resolve the container background and every existing tab
-    /// button so a SkinContext swap (or a skin hot-reload) takes
-    /// effect without needing a full `updateTabs(…)` pass.
+    /// Re-render container and every existing tab button from the
+    /// current SkinContext. Routes through `applyFill(_:to:fallback:)`
+    /// so gradient and image fills land correctly, not just color.
+    /// Also called from `layout()` so gradient sublayers resize when
+    /// the view grows — CAGradientLayer.autoresizingMask alone isn't
+    /// always enough for sublayers under an NSView-backed layer.
     private func refreshFromSkin() {
-        layer?.backgroundColor = cgFill(for: .tabBarContainer) ?? Self.barBg
+        if let layer {
+            applyFill(.tabBarContainer, to: layer, fallback: Self.barBg)
+        }
         for (id, button) in tabButtons {
-            // Re-apply per-button state using the current skin.
             applyTabStyle(button, channelId: id)
         }
     }
 
-    /// Resolve a surface to its background `CGColor` via SkinContext,
-    /// or nil if no skin is wired (caller falls back to the hardcoded
-    /// constant) or the fill isn't a color. Image/gradient handling for
-    /// tab surfaces lands in Task 9.x follow-ups — for now we log loudly
-    /// so a skin author who ships a gradient tab doesn't silently get
-    /// the pre-skinning color instead.
-    private func cgFill(for key: SurfaceKey) -> CGColor? {
-        guard let ctx = skinContext else { return nil }
-        let fill = ctx.currentState(for: key).fill
-        if case .color(let ns) = fill {
-            return ns.cgColor
+    override func layout() {
+        super.layout()
+        // Re-apply fills so any gradient sublayers pick up the new
+        // bounds. Cheap when the fill is a solid color (just reassigns
+        // backgroundColor); necessary for gradient and image fills
+        // whose visible rendering depends on the parent layer's size.
+        refreshFromSkin()
+    }
+
+    /// Apply a surface's full fill (color / gradient / image) to the
+    /// given layer. When no skin is wired OR the resolved fill produces
+    /// nothing visible, paint the hardcoded `fallback` color so the
+    /// pre-skinning look is preserved.
+    private func applyFill(_ key: SurfaceKey, to layer: CALayer, fallback: CGColor) {
+        guard let ctx = skinContext else {
+            layer.backgroundColor = fallback
+            return
         }
-        NSLog("TabBarView: non-color fill for '\(key.rawValue)' not yet supported; falling back to hardcoded default")
-        return nil
+        let resolved = ctx.currentState(for: key)
+        let backingScale = window?.backingScaleFactor ?? 2.0
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+    }
+
+    /// Apply a surface's fill to a layer, treating a transparent/no-fill
+    /// outcome as "leave the layer alone" (used for `tabBarTabNormal`
+    /// which has no hardcoded fallback — default is transparent).
+    private func applyTransparentFill(_ key: SurfaceKey, to layer: CALayer) {
+        guard let ctx = skinContext else {
+            layer.backgroundColor = nil
+            return
+        }
+        let resolved = ctx.currentState(for: key)
+        let backingScale = window?.backingScaleFactor ?? 2.0
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
     }
 
     func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
@@ -188,26 +212,25 @@ class TabBarView: NSView {
 
     /// Apply the correct background fill and text tint for a tab based
     /// on its current state (active / permission / idle / normal). Each
-    /// branch reads from the skin context when available and falls back
-    /// to the hardcoded constant otherwise.
+    /// branch routes through `applyFill` so gradient/image fills land;
+    /// only the `normal` case uses `applyTransparentFill` because a
+    /// normal tab has no hardcoded fallback (transparent is correct).
     private func applyTabStyle(_ button: NSButton, channelId: UUID) {
+        guard let buttonLayer = button.layer else { return }
         if channelId == activeChannelId {
             button.contentTintColor = NSColor.white
-            button.layer?.backgroundColor = cgFill(for: .tabBarTabActive) ?? Self.activeTabBg
+            applyFill(.tabBarTabActive, to: buttonLayer, fallback: Self.activeTabBg)
         } else if notifications[channelId] == "permission_prompt" {
             button.contentTintColor = NSColor.white
-            button.layer?.backgroundColor = cgFill(for: .tabBarTabPermission) ?? Self.permissionBg
+            applyFill(.tabBarTabPermission, to: buttonLayer, fallback: Self.permissionBg)
         } else if notifications[channelId] == "idle_prompt" {
             button.contentTintColor = NSColor.white
-            button.layer?.backgroundColor = cgFill(for: .tabBarTabIdle) ?? Self.idleBg
+            applyFill(.tabBarTabIdle, to: buttonLayer, fallback: Self.idleBg)
         } else {
             button.contentTintColor = NSColor.lightGray
-            // `.tabBarTabNormal` has no hardcoded fallback — built-in
-            // default is transparent (no background). A nil here means
-            // "no background", not "something went wrong". Do NOT add
-            // `?? Self.someConstant` — that would diverge from the
-            // built-in default.
-            button.layer?.backgroundColor = cgFill(for: .tabBarTabNormal)
+            // `.tabBarTabNormal` default is transparent — nil
+            // backgroundColor, no visible fill unless the skin overrides.
+            applyTransparentFill(.tabBarTabNormal, to: buttonLayer)
         }
     }
 
