@@ -68,7 +68,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Create `Tests/HoloscapePropertyTests/AmplifyV2CompatibilityPropertyTests.swift`
     - Generate arbitrary v2 manifests via SwiftCheck; decode through Amplify `Codable`; assert byte-identical to v2-era decode
 
-- [ ] 2. Checkpoint
+- [x] 2. Checkpoint _(verified headlessly — PR #119 landed data model, 588+ tests green, HoloscapeSynthwave still loads via SkinEngineLoadCompositeTests)_
   - Ensure `swift test` and `swift build` both succeed; ensure the existing `HoloscapeSynthwave` skin still loads and renders via `SkinEngineLoadCompositeTests`.
 
 - [x] 3. `.wamp` bundle loader
@@ -142,7 +142,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - **Validates: Requirements 1.8**
     - Create `Tests/HoloscapePropertyTests/LRUPurgePropertyTests.swift`
 
-- [ ] 4. Checkpoint
+- [x] 4. Checkpoint _(verified headlessly — PR #120 shipped .wamp loader with 614 tests green; BackwardCompatIntegrationTests in PR #128 proves directory-layout + .wamp produce structurally-equivalent LoadedSkin values)_
   - Ensure `swift test` passes with `.wamp` loader; stage `holoscape_synthwave.wamp` fixture and verify it loads via `SkinEngine.loadComposite`; verify backward-compat — `HoloscapeSynthwave` directory-layout still loads identically.
 
 - [x] 5. Shaped window rendering
@@ -290,18 +290,18 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - On invalid descriptor, log a dimension-mismatch warning and drop the sprite descriptor (fall back to stretch-mode fill) by rewriting the resolved surface's fill to `.image(path, .stretch, nil)` effectively
     - _Requirements: 5.4_
 
-  - [ ] 11.3 Publish sprite state transitions from TabBarView _(deferred to follow-up PR — chrome-view NSTrackingArea wiring is substantial per-view work separate from the core pipeline)_
+  - [x] 11.3 Publish sprite state transitions from TabBarView
     - Modify `Sources/Holoscape/Views/TabBarView.swift` to install an `NSTrackingArea` on each tab button; on `mouseEntered` set `spriteState = .hover`, on `mouseExited` reset; on `mouseDown` set `.pressed`, on `mouseUp` reset
     - Write `spriteState.rawValue` into the per-tab `ReactiveUniformSnapshot`; call `refreshFromSkin()` on transition
     - In `refreshFromSkin()`, read current sprite state and pass to `applyFill(..., spriteState:)`
     - _Requirements: 5.2, 5.5_
 
-  - [ ] 11.4 Publish sprite state transitions from SidebarView / SidebarTabEntry
+  - [ ] 11.4 Publish sprite state transitions from SidebarView / SidebarTabEntry _(deferred — sidebar row rendering uses `cgRowFill` with CSS-cascade state-variant matching, not `SkinContext.applyFill`. Publishing sprite state needs the render path migrated to `applyFill` first; that migration is a separate PR because it would reshape the state-variant semantics on rows)_
     - Modify `Sources/Holoscape/Views/SidebarView.swift` and the SidebarTabEntry type to install tracking areas; publish hover/pressed state into the per-entry `ReactiveUniformSnapshot`
     - Call `refreshFromSkin()` on transition; apply sprite-aware fill
     - _Requirements: 5.2, 5.5_
 
-  - [ ] 11.5 Publish sprite state transitions from SessionLauncherView
+  - [x] 11.5 Publish sprite state transitions from SessionLauncherView
     - Modify `Sources/Holoscape/Views/SessionLauncherView.swift` similarly; install tracking areas on launcher button; publish state on transition
     - _Requirements: 5.2, 5.5_
 
