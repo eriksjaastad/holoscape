@@ -6,7 +6,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
     SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate {
 
-    let window: NSWindow
+    /// Amplify Task 5.3 makes this reassignable so shaped-window
+    /// transitions can swap the underlying `NSWindow` instance without
+    /// breaking every caller that reads `.window`. Outside the shape-
+    /// transition path this is still effectively a let — no other
+    /// code reassigns it.
+    var window: NSWindow
     let channelManager: ChannelManager
     private let configService: ConfigService
     private var profileManager: SessionProfileManager?
@@ -22,6 +27,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// leaving a 32pt gap above the terminal. See `tabBarVisibility(forSidebarExpanded:)`.
     private var tabBarHeightConstraint: NSLayoutConstraint?
     private let splitPaneManager = SplitPaneManager(frame: .zero)
+
+    // MARK: - Amplify shape state (Task 5)
+
+    /// Owns feature-flag gating, descriptor validation, mask-layer
+    /// construction, and window reconstruction. Initialized once at
+    /// `init()` — the flag is cached, so a runtime env flip requires
+    /// relaunch.
+    private let shapedWindowController = ShapedWindowController()
+
+    /// The shape currently driving the window's style mask + content-
+    /// view mask, or nil when the window is rectangular. Tracked here
+    /// so `applySkin` can decide between "no-op," "install mask,"
+    /// "reconstruct into borderless," and "reconstruct into titled."
+    private var currentWindowShape: ResolvedWindowShape?
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
@@ -664,6 +683,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// (future views added after this PR, or tests) can post
     /// `.skinDidChange` themselves after `applySkin` returns.
     func applySkin(_ surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?) {
+        applySkin(surfaces: surfaces, windowShape: nil)
+    }
+
+    /// Amplify Task 5.3 — extended entry point for skins that may
+    /// carry a `windowShape`. Existing callers that don't know about
+    /// shapes keep using `applySkin(_:)` and get the pre-Amplify
+    /// rectangular behavior. `reloadSkin` (which reads
+    /// `LoadedSkin.windowShape` from the loader) calls this directly.
+    ///
+    /// Window reconstruction is only attempted when the ShapedWindowController's
+    /// feature flag is on. When off, `windowShape` is ignored and the
+    /// window stays titled/rectangular — satisfying the flag-off
+    /// zero-overhead invariant (Property 12).
+    func applySkin(
+        surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
+        windowShape: ResolvedWindowShape?
+    ) {
         skinContext = Self.buildSkinContext(overriding: surfaces, reactive: reactiveSnapshot)
         tabBar.skinContext = skinContext
         sidebarView.skinContext = skinContext
@@ -671,6 +707,111 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         sessionLauncher.skinContext = skinContext
         splitPaneManager.skinContext = skinContext
         applyWindowSurfaces()
+        applyWindowShape(windowShape)
+    }
+
+    /// Transition the window to / from the requested shape. No-op when
+    /// the feature flag is off (Req 2.8) or when the shape state is
+    /// unchanged. On a changed shape:
+    ///
+    /// - nil → non-nil: reconstruct borderless, install mask
+    /// - non-nil → non-nil: keep window, swap mask layer
+    /// - non-nil → nil: reconstruct titled, remove mask
+    ///
+    /// Reduce Motion (Req 2.7) skips the fade-in on mask install;
+    /// Reduce Transparency (Req 2.6) renders the mask complement as
+    /// opaque system-gray rather than transparent — preserves the
+    /// shape outline without the visual transparency effect.
+    private func applyWindowShape(_ targetShape: ResolvedWindowShape?) {
+        guard shapedWindowController.featureFlagEnabled else {
+            // Flag off: zero shape work. If a shape somehow survived in
+            // `currentWindowShape` (shouldn't happen — init reads the
+            // flag once), clearing it here is the belt-and-suspenders.
+            currentWindowShape = nil
+            return
+        }
+        // No transition needed.
+        if targetShape == currentWindowShape { return }
+
+        let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+
+        // Reconstruction is needed when crossing the rectangular ↔
+        // shaped boundary. Same-state shape changes (non-nil → non-nil
+        // with different polygons) just swap the mask on the existing
+        // window — no style-mask flip, no focus churn.
+        let isRectangularNow = currentWindowShape == nil
+        let shouldReconstruct = isRectangularNow != (targetShape == nil)
+        if shouldReconstruct {
+            guard let contentView = window.contentView else {
+                // A window without a content view is only reachable in
+                // teardown or future test harnesses. Bail before
+                // force-unwrapping would crash; leave currentWindowShape
+                // as-is so the next `applySkin` can retry.
+                NSLog("MainWindowController: applyWindowShape skipped — window has no contentView")
+                return
+            }
+            let oldWindow = window
+            let result = shapedWindowController.reconstructWindow(
+                currentWindow: oldWindow,
+                contentView: contentView,
+                targetShape: targetShape
+            )
+            window = result.newWindow
+            window.delegate = self
+
+            // Reduce-Transparency override: when RT is on, force the
+            // shaped window opaque with a systemGray fill so the mask
+            // complement renders gray instead of transparent. Outline
+            // stays visible; visual transparency does not (Req 2.6).
+            if targetShape != nil && reduceTransparency {
+                window.isOpaque = true
+                window.backgroundColor = .systemGray
+            }
+
+            // Close the old window AFTER the new one exists so AppKit
+            // never has a window-less moment that would send the app
+            // to background. Order the new window front to mirror the
+            // old one's key state.
+            oldWindow.close()
+            if result.wasKey {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.orderFront(nil)
+            }
+        }
+
+        // Install (or clear) the mask layer.
+        if let shape = targetShape {
+            guard let contentView = window.contentView else {
+                NSLog("MainWindowController: cannot install shape mask — window has no contentView")
+                currentWindowShape = targetShape
+                return
+            }
+            contentView.wantsLayer = true
+            let maskLayer = shapedWindowController.buildMaskLayer(
+                for: shape,
+                in: contentView.bounds
+            )
+            if reduceMotion {
+                contentView.layer?.mask = maskLayer
+            } else {
+                // Mild fade-in on the mask's opacity. The mask itself is
+                // a clip, so "opacity" here means the layer's alpha in
+                // the compositor — visually a fade between "rectangle"
+                // and "shape."
+                maskLayer?.opacity = 0
+                contentView.layer?.mask = maskLayer
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.2)
+                maskLayer?.opacity = 1
+                CATransaction.commit()
+            }
+        } else {
+            window.contentView?.layer?.mask = nil
+        }
+
+        currentWindowShape = targetShape
     }
 
     /// Atomic "load-and-apply a skin by name" path shared by the Appearance
@@ -700,7 +841,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // happy path and leaves the old fonts alive on failure.
             skinEngine.unregisterFonts(currentFontBundle)
             currentFontBundle = loaded.fonts
-            applySkin(loaded.surfaces)
+            applySkin(surfaces: loaded.surfaces, windowShape: loaded.windowShape)
+            if let reason = loaded.validationBannerReason {
+                // Req 13.2 — surface the malformed-shape banner. For
+                // now this is just logged; a visible banner view is
+                // a later task.
+                NSLog("MainWindowController: \(reason)")
+            }
         } catch {
             NSLog("MainWindowController: reloadSkin('\(name)') failed: \(error) — keeping previous SkinContext")
         }
