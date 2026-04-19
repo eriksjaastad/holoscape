@@ -1,5 +1,7 @@
 # Implementation Plan: Chrome Skinning System
 
+> **Follow-up spec: Amplify.** The chrome-skinning system delivered color/gradient/image fills, ninepatch, and state variants for existing chrome views. The distinctive-visual half — shaped windows, sprite sheets, drag regions, font consumption, `.wamp` bundles — ships under the follow-up Amplify spec at `claude-specs/amplify/`. Amplify is strictly additive to the v2 manifest; every v2 skin continues to render unchanged under the v3 engine.
+
 ## Overview
 
 This plan breaks the Chrome Skinning System into 10 task groups covering: data model extensions, core services (SkinContext, AnimationEngine, ReactiveUniformSnapshot, DensityModeManager, ChromeRegionManager, ReaderModeController), chrome view migrations (6 views), image/font asset pipeline, hot reload, and the built-in reference skin. Tasks follow the project's Swift/AppKit conventions with `Codable, Equatable, Sendable` models and `@MainActor final class` services. Property tests use SwiftCheck; unit and integration tests use XCTest.
