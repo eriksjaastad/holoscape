@@ -27,8 +27,25 @@ class TabBarView: NSView {
     private let scrollView = NSScrollView()
     private let contentView = NSView()
     private var tabButtons: [UUID: NSButton] = [:]
+    /// Tracking areas owned by the tab bar. One per button, re-built
+    /// whenever `updateTabs` creates or removes buttons. Stored on the
+    /// owning NSButton, but we retain references here so `teardown`
+    /// can remove them when a button is retired (and so tests can
+    /// inspect the per-button count).
+    private var tabTrackingAreas: [UUID: NSTrackingArea] = [:]
     private var activeChannelId: UUID?
     private var notifications: [UUID: String] = [:]
+
+    // MARK: - Amplify Task 11.3 sprite state tracking
+    //
+    // Per-tab hover + pressed state. When the cursor enters a tab, the
+    // button's UUID lands in `hoveredTabId`; mouseDown moves it to
+    // `pressedTabId` (which takes priority over hover for rendering).
+    // `applyTabStyle` reads these and passes the resolved SpriteState
+    // to `applyFill`. Both are `private(set) internal` so tests can
+    // read them; only TabBarView's own handlers mutate.
+    private(set) var hoveredTabId: UUID?
+    private(set) var pressedTabId: UUID?
 
     private let tabHeight: CGFloat = 32
     private let tabPadding: CGFloat = 8
@@ -117,27 +134,57 @@ class TabBarView: NSView {
     /// given layer. When no skin is wired OR the resolved fill produces
     /// nothing visible, paint the hardcoded `fallback` color so the
     /// pre-skinning look is preserved.
-    private func applyFill(_ key: SurfaceKey, to layer: CALayer, fallback: CGColor) {
+    ///
+    /// `spriteState` threads through to `SkinContext.applyFill` so
+    /// sprite-sheet fills pick the correct UV cell for the caller's
+    /// interactive state. Default `.normal` preserves the pre-Task-11.3
+    /// behavior for any callers that haven't opted into state tracking.
+    private func applyFill(
+        _ key: SurfaceKey,
+        to layer: CALayer,
+        fallback: CGColor,
+        spriteState: SpriteState = .normal
+    ) {
         guard let ctx = skinContext else {
             layer.backgroundColor = fallback
             return
         }
         let resolved = ctx.currentState(for: key)
         let backingScale = window?.backingScaleFactor ?? 2.0
-        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale, spriteState: spriteState)
     }
 
     /// Apply a surface's fill to a layer, treating a transparent/no-fill
     /// outcome as "leave the layer alone" (used for `tabBarTabNormal`
     /// which has no hardcoded fallback — default is transparent).
-    private func applyTransparentFill(_ key: SurfaceKey, to layer: CALayer) {
+    private func applyTransparentFill(
+        _ key: SurfaceKey,
+        to layer: CALayer,
+        spriteState: SpriteState = .normal
+    ) {
         guard let ctx = skinContext else {
             layer.backgroundColor = nil
             return
         }
         let resolved = ctx.currentState(for: key)
         let backingScale = window?.backingScaleFactor ?? 2.0
-        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale, spriteState: spriteState)
+    }
+
+    /// Amplify Task 11.3 — compute the SpriteState for `channelId`
+    /// based on the view's per-tab hover + pressed tracking. Pressed
+    /// wins over hover; hover wins over active; active wins over
+    /// normal. The ordering matches user expectation (a pressed tab
+    /// stays pressed even if it's also active, so the click feels
+    /// responsive).
+    ///
+    /// Pulled out into its own function so the sprite-publishing tests
+    /// can exercise the resolution rule without routing through AppKit.
+    func spriteState(forTab channelId: UUID) -> SpriteState {
+        if pressedTabId == channelId { return .pressed }
+        if hoveredTabId == channelId { return .hover }
+        if channelId == activeChannelId { return .active }
+        return .normal
     }
 
     func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
@@ -217,20 +264,28 @@ class TabBarView: NSView {
     /// normal tab has no hardcoded fallback (transparent is correct).
     private func applyTabStyle(_ button: NSButton, channelId: UUID) {
         guard let buttonLayer = button.layer else { return }
+        // Amplify Task 11.3 — resolve per-tab sprite state once and
+        // pass it through every applyFill call below. Surfaces with
+        // sprite descriptors pick the correct cell; surfaces without
+        // render as before (spriteState parameter is ignored).
+        let state = spriteState(forTab: channelId)
         if channelId == activeChannelId {
             button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabActive, to: buttonLayer, fallback: Self.activeTabBg)
+            applyFill(.tabBarTabActive, to: buttonLayer,
+                      fallback: Self.activeTabBg, spriteState: state)
         } else if notifications[channelId] == "permission_prompt" {
             button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabPermission, to: buttonLayer, fallback: Self.permissionBg)
+            applyFill(.tabBarTabPermission, to: buttonLayer,
+                      fallback: Self.permissionBg, spriteState: state)
         } else if notifications[channelId] == "idle_prompt" {
             button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabIdle, to: buttonLayer, fallback: Self.idleBg)
+            applyFill(.tabBarTabIdle, to: buttonLayer,
+                      fallback: Self.idleBg, spriteState: state)
         } else {
             button.contentTintColor = NSColor.lightGray
             // `.tabBarTabNormal` default is transparent — nil
             // backgroundColor, no visible fill unless the skin overrides.
-            applyTransparentFill(.tabBarTabNormal, to: buttonLayer)
+            applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
         }
         // Amplify Task 13 — apply skin-defined font. Sourced from
         // `.tabBarTabActive` as the canonical tab surface; if a skin
@@ -260,7 +315,12 @@ class TabBarView: NSView {
     private func makeTabButton(for channel: any ChannelController) -> NSButton {
         let title = buildTabTitle(for: channel)
 
-        let button = NSButton(title: title, target: self, action: #selector(tabClicked(_:)))
+        // Amplify Task 11.3 — use TabButton (NSButton subclass) so we
+        // can capture mouseDown/mouseUp for sprite-state publishing
+        // without fighting AppKit's internal click machinery.
+        let button = TabButton(title: title, target: self, action: #selector(tabClicked(_:)))
+        button.tabBar = self
+        button.channelId = channel.channelId
         button.bezelStyle = .recessed
         button.isBordered = false
         button.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
@@ -283,5 +343,102 @@ class TabBarView: NSView {
         guard let idString = sender.identifier?.rawValue,
               let id = UUID(uuidString: idString) else { return }
         tabDelegate?.tabBarView(self, didSelectChannelWithId: id)
+    }
+
+    // MARK: - Amplify Task 11.3 sprite state handlers
+    //
+    // Called from TabButton's mouseEntered / mouseExited / mouseDown /
+    // mouseUp overrides. Each mutates the appropriate state slot and
+    // triggers a refresh of the affected button so the sprite cell
+    // updates within one layout pass. No global refresh — only the
+    // button whose state changed needs repainting.
+    //
+    // `internal` visibility (not fileprivate) so TabButton — a nested
+    // subclass — can call into them. Tests can also read these to
+    // verify the sprite state machine without simulating real NSEvents.
+
+    func handleTabButtonMouseEntered(_ channelId: UUID) {
+        hoveredTabId = channelId
+        refreshTabStyle(for: channelId)
+    }
+
+    func handleTabButtonMouseExited(_ channelId: UUID) {
+        if hoveredTabId == channelId {
+            hoveredTabId = nil
+            refreshTabStyle(for: channelId)
+        }
+    }
+
+    func handleTabButtonMouseDown(_ channelId: UUID) {
+        pressedTabId = channelId
+        refreshTabStyle(for: channelId)
+    }
+
+    func handleTabButtonMouseUp(_ channelId: UUID) {
+        if pressedTabId == channelId {
+            pressedTabId = nil
+            refreshTabStyle(for: channelId)
+        }
+    }
+
+    /// Refresh one tab button's style without touching siblings.
+    /// Called from the mouse-event handlers above — no need to
+    /// re-paint the whole tab bar on every hover transition.
+    private func refreshTabStyle(for channelId: UUID) {
+        guard let button = tabButtons[channelId] else { return }
+        applyTabStyle(button, channelId: channelId)
+    }
+}
+
+/// Amplify Task 11.3 — NSButton subclass that captures
+/// mouseEntered/mouseExited via an installed NSTrackingArea AND
+/// mouseDown/mouseUp via overrides. Each event forwards the tab's
+/// channelId to its owning TabBarView, which mutates its sprite-
+/// state slots and triggers a localized refresh.
+///
+/// Subclass over composition because:
+///   1. NSTrackingArea's owner needs to receive the tracking events;
+///      subclassing keeps the event dispatch path short.
+///   2. mouseDown override keeps the button's native click behavior
+///      (super.mouseDown) while layering sprite-state mutation on top.
+@MainActor
+final class TabButton: NSButton {
+    weak var tabBar: TabBarView?
+    var channelId: UUID?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        // Remove stale areas so repeated layout passes don't leak
+        // them into the tracking-area list.
+        for area in trackingAreas where area.owner === self {
+            removeTrackingArea(area)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if let id = channelId { tabBar?.handleTabButtonMouseEntered(id) }
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if let id = channelId { tabBar?.handleTabButtonMouseExited(id) }
+        super.mouseExited(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let id = channelId { tabBar?.handleTabButtonMouseDown(id) }
+        super.mouseDown(with: event)
+        // super.mouseDown runs the modal tracking loop — when it
+        // returns, the button has already released. Clear pressed
+        // state here rather than relying on a separate mouseUp call
+        // (AppKit's tracking loop swallows mouseUp internally).
+        if let id = channelId { tabBar?.handleTabButtonMouseUp(id) }
     }
 }
