@@ -1,0 +1,110 @@
+{
+  "version": "3.0",
+  "name": "Amplify Demo",
+  "author": "Holoscape team",
+  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar. Solid-color fills, no real art. windowShape + dragRegions stripped pending a fix for the reconstruction crash (shipped in the engine spec but not yet safe to enable on live windows).",
+  "surfaces": {
+    "window.background": {
+      "fill": {
+        "kind": "gradient",
+        "direction": "vertical",
+        "stops": [
+          { "offset": 0.0, "color": "#1a0933" },
+          { "offset": 1.0, "color": "#3d1a5e" }
+        ]
+      }
+    },
+    "tabBar.container": {
+      "fill": { "kind": "color", "value": "#0d4d6b" },
+      "border": { "color": "#1aff8c", "width": 2.0 },
+      "corner": 8,
+      "shadow": {
+        "color":   "#000000",
+        "opacity": 0.6,
+        "blur":    8,
+        "offsetX": 0,
+        "offsetY": 2
+      }
+    },
+    "tabBar.tab.active": {
+      "fill": { "kind": "color", "value": "#ff4dd1" },
+      "corner": 4
+    },
+    "tabBar.tab.normal": {
+      "fill": { "kind": "color", "value": "#1a2142" },
+      "corner": 4
+    },
+    "sidebar.container": {
+      "fill": { "kind": "color", "value": "#0f0820" }
+    },
+    "sidebar.row.selected": {
+      "fill": { "kind": "color", "value": "#ff4dd1" }
+    },
+    "inputBox.container": {
+      "fill": { "kind": "color", "value": "#0f0820" }
+    },
+    "inputBox.field": {
+      "fill": { "kind": "color", "value": "#1a0f33" }
+    },
+    "sessionLauncher.container": {
+      "fill": { "kind": "color", "value": "#0d0820" }
+    },
+    "sessionLauncher.button.normal": {
+      "fill": {
+        "kind": "image",
+        "path": "assets/refresh-sprite.png",
+        "tile": "stretch",
+        "sprite": {
+          "cellWidth":  24,
+          "cellHeight": 24,
+          "rows": 1,
+          "cols": 3,
+          "stateMap": {
+            "normal":  { "row": 0, "col": 0 },
+            "hover":   { "row": 0, "col": 1 },
+            "pressed": { "row": 0, "col": 2 }
+          }
+        }
+      }
+    },
+    "sessionLauncher.button.hover": {
+      "fill": {
+        "kind": "image",
+        "path": "assets/refresh-sprite.png",
+        "tile": "stretch",
+        "sprite": {
+          "cellWidth":  24,
+          "cellHeight": 24,
+          "rows": 1,
+          "cols": 3,
+          "stateMap": {
+            "normal":  { "row": 0, "col": 0 },
+            "hover":   { "row": 0, "col": 1 },
+            "pressed": { "row": 0, "col": 2 }
+          }
+        }
+      }
+    },
+    "sessionLauncher.button.pressed": {
+      "fill": {
+        "kind": "image",
+        "path": "assets/refresh-sprite.png",
+        "tile": "stretch",
+        "sprite": {
+          "cellWidth":  24,
+          "cellHeight": 24,
+          "rows": 1,
+          "cols": 3,
+          "stateMap": {
+            "normal":  { "row": 0, "col": 0 },
+            "hover":   { "row": 0, "col": 1 },
+            "pressed": { "row": 0, "col": 2 }
+          }
+        }
+      }
+    },
+    "splitPane.divider": {
+      "fill": { "kind": "color", "value": "#1aff8c" }
+    }
+  }
+}
