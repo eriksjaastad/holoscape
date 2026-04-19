@@ -91,6 +91,11 @@ struct LoadedSkin {
     /// to surface a user-visible warning without digging through logs.
     /// Nil when validation succeeded or no shape was declared.
     let validationBannerReason: String?
+    /// Amplify Task 9.3 — validated drag regions from the manifest.
+    /// Empty when the manifest declares none. Each region's polygons
+    /// have been pruned to `≥ 3 vertices` per Req 13.5; a descriptor
+    /// whose polygons all fail validation is dropped silently.
+    let dragRegions: [ResolvedDragRegion]
 
     /// Sentinel returned when the requested skin is `"Default"` — lets
     /// callers treat Default as "no skin loaded" without a special case.
@@ -106,7 +111,8 @@ struct LoadedSkin {
         images: [:],
         skinDir: nil,
         windowShape: nil,
-        validationBannerReason: nil
+        validationBannerReason: nil,
+        dragRegions: []
     )
 }
 
@@ -886,6 +892,13 @@ class SkinEngine {
             skinName: name
         )
 
+        // Amplify Task 9 — resolve drag regions from the manifest.
+        // Empty when no declarations OR when every polygon fails
+        // validation. HIG warnings for small regions are logged here
+        // (Req 4.5 / 15.5) — visible bbox checks beat users finding
+        // out at drag time that 30×30 drag targets don't work.
+        let resolvedDragRegions = resolveDragRegions(from: manifest, skinName: name)
+
         return LoadedSkin(
             name: name,
             surfaces: effectiveSurfaces,
@@ -893,8 +906,44 @@ class SkinEngine {
             images: images,
             skinDir: skinDir,
             windowShape: validatedShape,
-            validationBannerReason: bannerReason
+            validationBannerReason: bannerReason,
+            dragRegions: resolvedDragRegions
         )
+    }
+
+    /// Amplify Task 9.4 — build `ResolvedDragRegion`s from the
+    /// manifest's `dragRegions` array. Polygons with fewer than 3
+    /// vertices are dropped per Req 13.5; descriptors where every
+    /// polygon fails are omitted. Any polygon whose bbox is under
+    /// 44×44 pts emits an HIG warning naming the offending region
+    /// index (Req 4.5 / 15.5).
+    private func resolveDragRegions(
+        from manifest: SkinDefinition,
+        skinName: String
+    ) -> [ResolvedDragRegion] {
+        guard let descriptors = manifest.dragRegions else { return [] }
+
+        var resolved: [ResolvedDragRegion] = []
+        for (index, descriptor) in descriptors.enumerated() {
+            let pruned = descriptor.prunedToValidPolygons()
+            guard !pruned.polygons.isEmpty else {
+                NSLog("SkinEngine: skin '\(skinName)' dragRegions[\(index)] has no valid polygons; dropping")
+                continue
+            }
+            let region = ResolvedDragRegion(
+                polygons: pruned.polygons,
+                modifier: pruned.modifier ?? .none
+            )
+            // HIG warning — 44×44 is the documented minimum touch
+            // target. Warning only; we still use the region (skin
+            // author's choice). PRD §10 / Amplify Req 4.5.
+            let bbox = region.boundingBox
+            if bbox.width < 44 || bbox.height < 44 {
+                NSLog("SkinEngine: skin '\(skinName)' dragRegions[\(index)] bounding box \(bbox) is under 44×44 pts — violates HIG touch-target minimum")
+            }
+            resolved.append(region)
+        }
+        return resolved
     }
 
     /// Private helper for Task 5.2 — one place to keep the "only
