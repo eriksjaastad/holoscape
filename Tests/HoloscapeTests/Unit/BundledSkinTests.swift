@@ -130,7 +130,7 @@ final class BundledSkinTests: XCTestCase {
         let engine = SkinEngine()
         let loaded = try engine.loadComposite(named: "NinepatchPin")
         guard let surfaces = loaded.surfaces,
-              case .image(_, let tile, let sidecar) = surfaces[.sidebarContainer]?.fill else {
+              case .image(_, let tile, let sidecar, _) = surfaces[.sidebarContainer]?.fill else {
             XCTFail("Expected image fill on sidebarContainer")
             return
         }

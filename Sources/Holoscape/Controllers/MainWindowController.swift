@@ -196,6 +196,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         self.regionManager = ChromeRegionManager(configService: configService)
         self.densityModeManager = DensityModeManager(configService: configService)
+        // Amplify Task 11.6 — wire the density manager into the
+        // ambient sprite-rendering gate so `SkinContext.applyFill`
+        // honors density `.minimal` without a per-call parameter.
+        SkinContext.ambientDensityManager = self.densityModeManager
         self.skinContext = SkinContext.builtInDefaults(reactive: self.reactiveSnapshot)
 
         super.init()
