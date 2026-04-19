@@ -414,8 +414,8 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 18. Checkpoint
   - Ensure Reader Mode renders in the skin's fonts and chrome when surfaces are defined; verify fallback to SF Mono 14pt when surfaces absent; verify Increase Contrast override.
 
-- [ ] 19. Reference skins
-  - [ ] 19.1 Repackage HoloscapeSynthwave as `.wamp`
+- [ ] 19. Reference skins _(19.1 + 19.3 shipped; 19.2 + 19.4 deferred — HoloscapeClassic authoring needs art assets Erik sources)_
+  - [x] 19.1 Repackage HoloscapeSynthwave as `.wamp`
     - Create `Tools/package_synthwave.sh` script that zips `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave/` into `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave.wamp`
     - Add `HoloscapeSynthwave.wamp` to `Package.swift` resources under `Resources/Skins`
     - Leave the directory-layout HoloscapeSynthwave in place (both should resolve; user dir wins per Requirement 1.7)
@@ -427,7 +427,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Bundle the resulting `HoloscapeClassic.wamp` into `Sources/Holoscape/Resources/Skins/`
     - _Requirements: 16.1, 16.2, 16.3, 16.4, 16.5, 16.6_
 
-  - [ ] 19.3 Integration test: backward-compat round-trip
+  - [x] 19.3 Integration test: backward-compat round-trip
     - Create `Tests/HoloscapeTests/Integration/BackwardCompatIntegrationTests.swift`
     - Test: load `HoloscapeSynthwave` directory-layout; capture resolved `Skin_Context`; load `HoloscapeSynthwave.wamp`; capture resolved `Skin_Context`; assert equal surfaces map, equal font PostScript names, equal image hashes
     - _Requirements: 9.1, 9.3, 9.4, 16.7_
