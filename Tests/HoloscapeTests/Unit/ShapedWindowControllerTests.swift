@@ -313,6 +313,47 @@ final class ShapedWindowControllerTests: XCTestCase {
                       "Content view's subview tree must survive the migration")
     }
 
+    /// Card #6036 regression pin — reconstructed windows must opt out
+    /// of AppKit's legacy `isReleasedWhenClosed` behaviour. The default
+    /// (true) combined with Swift ARC caused a double-release when
+    /// `applyWindowShape` called `close()` on the old window; a
+    /// scheduled `_NSWindowTransformAnimation.dealloc` then landed on a
+    /// zombie. The live-window crash itself requires a real compositor
+    /// commit (Mac-Mini UI test) — this headless assertion pins the
+    /// fix against accidental regression in the construction path.
+    func testReconstructedWindowOptsOutOfReleaseWhenClosed() throws {
+        let controller = ShapedWindowController(
+            environment: ["HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS": "1"]
+        )
+        let rect = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: try XCTUnwrap(rect.contentView).bounds)
+        rect.contentView = contentView
+
+        let shape = ResolvedWindowShape(kind: .polygons([
+            Polygon(points: [Point(x: 0, y: 0), Point(x: 10, y: 0), Point(x: 0, y: 10)]),
+        ]))
+        let shapedResult = controller.reconstructWindow(
+            currentWindow: rect,
+            contentView: contentView,
+            targetShape: shape
+        )
+        XCTAssertFalse(shapedResult.newWindow.isReleasedWhenClosed,
+                       "Shaped reconstruction must clear isReleasedWhenClosed — default true causes double-release with ARC (card #6036)")
+
+        let rectResult = controller.reconstructWindow(
+            currentWindow: shapedResult.newWindow,
+            contentView: contentView,
+            targetShape: nil
+        )
+        XCTAssertFalse(rectResult.newWindow.isReleasedWhenClosed,
+                       "Rectangular reconstruction must also clear isReleasedWhenClosed — same double-release risk")
+    }
+
     func testBuildMaskLayerUnionsMultiplePolygons() {
         // The mask path must contain moves + lines for every polygon.
         // We assert the path bounding box covers the union of both
