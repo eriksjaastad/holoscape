@@ -12,8 +12,13 @@ Sources/Holoscape/Resources/Skins/HoloscapeClassic/assets/*.png.
 
 from PIL import Image
 import os
+import pathlib
 
-OUT_DIR = "Sources/Holoscape/Resources/Skins/HoloscapeClassic/assets"
+# Resolve OUT_DIR via __file__ so the script is safe to run from any
+# CWD. This file lives at Tools/holoscape_classic/generate_sprites.py
+# — two parents up is the repo root.
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+OUT_DIR = str(REPO_ROOT / "Sources/Holoscape/Resources/Skins/HoloscapeClassic/assets")
 
 # Winamp-class palette: dark chrome with LCD green accent.
 CHROME_HIGHLIGHT = (0x7a, 0x7a, 0x7a)   # top + left edge highlight
