@@ -278,6 +278,23 @@ class SidebarTabEntry: NSButton {
     /// No-op before the first `configure(...)` lands.
     private func configureLast() {
         lastConfigure?()
+        applySkinFonts()
+    }
+
+    /// Amplify Task 13 — apply skin-defined font to the row's labels.
+    /// Nil context or nil resolved font = preserve the init-time
+    /// monospaced defaults so non-skin paths look unchanged.
+    private func applySkinFonts() {
+        guard let ctx = skinContext else { return }
+        if let font = ctx.resolvedFont(for: .sidebarRowNormal) {
+            labelField.font = font
+            // statusTextField stays smaller; derive by scaling if
+            // the skin didn't ship a per-surface font for it.
+            statusTextField.font = NSFontManager.shared.convert(
+                font,
+                toSize: font.pointSize * 0.85
+            )
+        }
     }
 
     /// Resolve a row fill via SkinContext against this entry's own

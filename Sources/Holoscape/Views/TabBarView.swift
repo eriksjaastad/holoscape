@@ -232,6 +232,16 @@ class TabBarView: NSView {
             // backgroundColor, no visible fill unless the skin overrides.
             applyTransparentFill(.tabBarTabNormal, to: buttonLayer)
         }
+        // Amplify Task 13 — apply skin-defined font. Sourced from
+        // `.tabBarTabActive` as the canonical tab surface; if a skin
+        // wants per-state fonts in the future, that's a forward-compat
+        // extension (ResolvedSurface.font varies by surface, which is
+        // already the model). When the manifest omits font, `resolvedFont`
+        // returns nil and we preserve the pre-Amplify monospaced font
+        // set in `makeTabButton`.
+        if let font = skinContext?.resolvedFont(for: .tabBarTabActive) {
+            button.font = font
+        }
     }
 
     private func makeTabButton(for channel: any ChannelController) -> NSButton {
