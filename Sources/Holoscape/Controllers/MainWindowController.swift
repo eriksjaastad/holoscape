@@ -48,6 +48,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// declared (in which case `isMovableByWindowBackground` handles
     /// drag per Req 4.6).
     private var currentDragRegionTracker: DragRegionTracker?
+
+    /// Card #6037 — drag regions from the manifest, stored in the
+    /// skin's nominal coordinate space. The resize observer reads
+    /// these, rescales them against the new content-view bounds,
+    /// and reinstalls a fresh tracker so dragging keeps working
+    /// after the user resizes a shaped window. The scaled copy lives
+    /// on `currentDragRegionTracker.regions` — this field is the
+    /// source of truth that survives teardown/install cycles.
+    private var currentDragRegionsNominal: [ResolvedDragRegion] = []
+
+    /// Invisible drag strip installed on top of all chrome when a
+    /// shape is active and the skin declares no explicit drag
+    /// regions. Winamp-title-bar-style fallback per Req 4.6 because
+    /// `isMovableByWindowBackground` alone can't find a bare pixel
+    /// to latch onto in Holoscape's fully-populated content view.
+    private weak var currentDragOverlay: WindowDragOverlay?
+
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
 
@@ -237,6 +254,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             self,
             selector: #selector(densityModeDidChange(_:)),
             name: .densityModeDidChange,
+            object: nil
+        )
+
+        // Card #6037 — rebuild the shape mask, hit sampler, and drag
+        // tracker whenever the window resizes so polygons authored in
+        // skin-nominal coordinates follow the live content-view bounds.
+        // `NSWindow.didResizeNotification` fires on every resize step;
+        // the handler short-circuits when no shape is active.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidResizeForShape(_:)),
+            name: NSWindow.didResizeNotification,
             object: nil
         )
 
@@ -741,7 +770,45 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitPaneManager.skinContext = skinContext
         applyWindowSurfaces()
         applyWindowShape(windowShape)
-        applyDragRegions(dragRegions, shapeActive: windowShape != nil)
+        // Card #6037 — drag regions share the window shape's nominal
+        // coordinate space. Scale them to the current content-view
+        // bounds so mask, sampler, and tracker all stay aligned.
+        // Hold onto the un-scaled regions so the resize observer can
+        // re-scale them as the window grows and shrinks.
+        currentDragRegionsNominal = dragRegions
+        let scaledDrags = Self.scaleDragRegionsToWindow(
+            dragRegions,
+            nominalShape: windowShape,
+            window: window
+        )
+        applyDragRegions(scaledDrags, shapeActive: windowShape != nil)
+    }
+
+    /// Scales drag regions to the window's current content bounds,
+    /// using the active shape's `nominalSize` as the source coordinate
+    /// space. Returns regions unchanged when there's no active shape
+    /// (rectangular window carries no skin-declared coordinate space)
+    /// or when the content view is missing.
+    private static func scaleDragRegionsToWindow(
+        _ regions: [ResolvedDragRegion],
+        nominalShape: ResolvedWindowShape?,
+        window: NSWindow
+    ) -> [ResolvedDragRegion] {
+        guard let shape = nominalShape else { return regions }
+        guard let contentView = window.contentView else {
+            // Unreachable from the two existing call sites (both guard
+            // contentView before invoking). Log if a future call site
+            // omits that guard — silently installing regions at nominal
+            // coords would look like "drag works in the corner of the
+            // screen for no reason" which is hard to diagnose.
+            NSLog("MainWindowController: scaleDragRegionsToWindow called with nil contentView — returning unscaled regions")
+            return regions
+        }
+        return scaledDragRegions(
+            regions,
+            from: shape.nominalSize,
+            to: contentView.bounds.size
+        )
     }
 
     /// Amplify Task 9.3 — install / replace the drag region tracker.
@@ -763,6 +830,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         currentDragRegionTracker = nil
         (window.contentView as? ShapedContentView)?.dragRegionTracker = nil
 
+        // Also tear down any previously-installed drag overlay. Fresh
+        // install below (if applicable) allocates a new one.
+        currentDragOverlay?.removeFromSuperview()
+        currentDragOverlay = nil
+
         guard shapedWindowController.featureFlagEnabled else {
             // Flag off — ignore drag regions entirely, rely on the
             // default titled window's title bar for dragging.
@@ -776,6 +848,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // the titled window's system drag zone (title bar) is
             // the only drag target.
             window.isMovableByWindowBackground = shapeActive
+            if shapeActive {
+                installDragOverlay()
+            }
             return
         }
 
@@ -789,6 +864,64 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         tracker.install()
         shapedView.dragRegionTracker = tracker
         currentDragRegionTracker = tracker
+    }
+
+    /// Installs a 20pt-tall `WindowDragOverlay` strip across the top
+    /// of the content view. Used as the Req 4.6 whole-window-drag
+    /// fallback when the skin declares no explicit drag regions but
+    /// is borderless. `isMovableByWindowBackground` alone is useless
+    /// in Holoscape because every pixel of the content view is owned
+    /// by a chrome subview (no bare background). The overlay is a
+    /// topmost subview, invisible, and owns mouseDown within its
+    /// own frame — everything outside it falls through via hitTest.
+    private func installDragOverlay() {
+        guard let contentView = window.contentView else {
+            NSLog("MainWindowController: installDragOverlay skipped — window has no contentView")
+            return
+        }
+        let stripHeight: CGFloat = 20
+        // AppKit default bottom-left origin. Strip at the TOP of the
+        // content view means y = bounds.maxY - stripHeight.
+        let overlay = WindowDragOverlay(frame: NSRect(
+            x: 0,
+            y: contentView.bounds.maxY - stripHeight,
+            width: contentView.bounds.width,
+            height: stripHeight
+        ))
+        overlay.autoresizingMask = [.width, .minYMargin]
+        contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        currentDragOverlay = overlay
+    }
+
+    /// Scale a `ResolvedWindowShape` from its nominal size to `target`
+    /// bounds. Returns the shape unchanged when nominal and target
+    /// match (common when skin and window agree on dimensions) or
+    /// when nominal has a zero axis (no polygons to scale). Used by
+    /// both the reconstruction path and the window-resize observer
+    /// (card #6037).
+    static func scaledShape(_ shape: ResolvedWindowShape, to target: CGSize) -> ResolvedWindowShape {
+        let nominal = shape.nominalSize
+        guard case .polygons(let polys) = shape.kind else { return shape }
+        let scaled = ShapedWindowController.scale(polygons: polys, from: nominal, to: target)
+        return ResolvedWindowShape(kind: .polygons(scaled))
+    }
+
+    /// Same scaling treatment for drag regions. Callers pass the
+    /// active window shape's `nominalSize` so every polygon in the
+    /// manifest — whether `windowShape` or `dragRegions` — is
+    /// interpreted in the same coordinate space.
+    static func scaledDragRegions(
+        _ regions: [ResolvedDragRegion],
+        from nominal: CGSize,
+        to target: CGSize
+    ) -> [ResolvedDragRegion] {
+        guard nominal.width > 0 && nominal.height > 0 else { return regions }
+        return regions.map { region in
+            ResolvedDragRegion(
+                polygons: ShapedWindowController.scale(polygons: region.polygons, from: nominal, to: target),
+                modifier: region.modifier
+            )
+        }
     }
 
     /// Recursively force a layer-backed display pass on every descendant.
@@ -873,6 +1006,34 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // ARC reaps the old window when this scope exits.
             oldWindow.delegate = nil
             oldWindow.orderOut(nil)
+
+            // Winamp-class fixed-size behavior: when transitioning INTO
+            // a shaped window, lock the content size to the skin's
+            // nominal dimensions and strip `.resizable` from the style
+            // mask. Classic Winamp skins declared their window size;
+            // users could not resize. That both matches the cultural
+            // model skin authors expect AND sidesteps polygon drift on
+            // resize — the mask stays 1:1 with the content view.
+            // When transitioning OUT of shape, clear the content-size
+            // constraints so the titled window is user-resizable again.
+            if let shape = targetShape {
+                let nominal = shape.nominalSize
+                if nominal.width > 0 && nominal.height > 0 {
+                    window.contentMinSize = nominal
+                    window.contentMaxSize = nominal
+                    window.setContentSize(nominal)
+                    window.styleMask.remove(.resizable)
+                }
+            } else {
+                // Restore a sane range for user-resizable titled windows.
+                window.contentMinSize = NSSize(width: 400, height: 300)
+                window.contentMaxSize = NSSize(
+                    width: CGFloat.greatestFiniteMagnitude,
+                    height: CGFloat.greatestFiniteMagnitude
+                )
+                window.styleMask.insert(.resizable)
+            }
+
             if result.wasKey {
                 window.makeKeyAndOrderFront(nil)
             } else {
@@ -908,17 +1069,26 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 return
             }
             contentView.wantsLayer = true
+
+            // Card #6037 — scale polygons from the skin's nominal size
+            // (inferred from the polygon bounding box) to the live
+            // content-view bounds. Skins author polygons at a fixed
+            // reference size (e.g. 1000×700); the actual content view
+            // can be taller (borderless removes the titlebar subtract)
+            // and must stay in sync on resize. Mask + sampler consume
+            // the same scaled polygons so hit testing and paint agree.
+            let scaledShape = Self.scaledShape(shape, to: contentView.bounds.size)
             let maskLayer = shapedWindowController.buildMaskLayer(
-                for: shape,
+                for: scaledShape,
                 in: contentView.bounds
             )
             // Inject the sampler. Only ShapedContentView carries the
             // property; a plain NSView will silently drop through without
             // click-through — that's a graceful degradation, not a bug
             // (init always uses ShapedContentView, but tests may swap).
-            if case .polygons(let polygons) = shape.kind,
+            if case .polygons(let scaledPolygons) = scaledShape.kind,
                let shapedView = contentView as? ShapedContentView {
-                shapedView.sampler = HitRegionSampler(polygons: polygons)
+                shapedView.sampler = HitRegionSampler(polygons: scaledPolygons)
             }
             if reduceMotion {
                 contentView.layer?.mask = maskLayer
@@ -1160,6 +1330,42 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     @objc func setDensityOff() {
         densityModeManager.setMode(.off)
+    }
+
+    /// Card #6037 — rebuild the mask + hit sampler + drag tracker
+    /// when the window's size changes. Only the MAIN window is of
+    /// interest; ignore resize events from any other window that
+    /// broadcasts on the same notification (e.g. the Reader panel).
+    @objc private func windowDidResizeForShape(_ notification: Notification) {
+        guard let resized = notification.object as? NSWindow, resized === window else { return }
+        guard shapedWindowController.featureFlagEnabled else { return }
+        guard let shape = currentWindowShape else { return }
+        guard let contentView = window.contentView else { return }
+
+        // Rebuild the mask against the new content bounds.
+        let scaledShape = Self.scaledShape(shape, to: contentView.bounds.size)
+        let maskLayer = shapedWindowController.buildMaskLayer(
+            for: scaledShape,
+            in: contentView.bounds
+        )
+        contentView.layer?.mask = maskLayer
+
+        // Re-inject the sampler with the rescaled polygons. Reduce
+        // motion is respected implicitly — the mask swap here bypasses
+        // the fade-in we use on skin switch; resize is not a "skin
+        // change" event, so the fade would be inappropriate.
+        if case .polygons(let scaledPolygons) = scaledShape.kind,
+           let shapedView = contentView as? ShapedContentView {
+            shapedView.sampler = HitRegionSampler(polygons: scaledPolygons)
+        }
+
+        // Re-install the drag tracker with rescaled regions.
+        let scaledDrags = Self.scaleDragRegionsToWindow(
+            currentDragRegionsNominal,
+            nominalShape: shape,
+            window: window
+        )
+        applyDragRegions(scaledDrags, shapeActive: true)
     }
 
     @objc private func densityModeDidChange(_ notification: Notification) {

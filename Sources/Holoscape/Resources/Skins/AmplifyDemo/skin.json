@@ -2,7 +2,7 @@
   "version": "3.0",
   "name": "Amplify Demo",
   "author": "Holoscape team",
-  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar + octagon windowShape with top-40pt drag region. Solid-color fills, no real art.",
+  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar + octagon windowShape. No dragRegions declared — the Req 4.6 fallback (isMovableByWindowBackground) makes the whole shaped-window content draggable, which is a better fit than a narrow top strip that overlaps the tab bar + sessionLauncher subviews. Solid-color fills, no real art.",
   "windowShape": {
     "kind": "polygons",
     "polygons": [
@@ -18,19 +18,6 @@
       ] }
     ]
   },
-  "dragRegions": [
-    {
-      "polygons": [
-        { "points": [
-          { "x": 0,    "y": 660 },
-          { "x": 1000, "y": 660 },
-          { "x": 1000, "y": 700 },
-          { "x": 0,    "y": 700 }
-        ] }
-      ],
-      "modifier": "none"
-    }
-  ],
   "surfaces": {
     "window.background": {
       "fill": {
