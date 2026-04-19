@@ -457,9 +457,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Audit existing log call sites; add missing ones
     - _Requirements: 13.3, 13.4, 13.5_
 
-  - [ ] 21.4 Write `docs/amplify-format.md`
-    - Create `docs/amplify-format.md` covering: `.wamp` bundle layout, every Amplify manifest field with JSON examples, `WindowShapeDescriptor` coordinate system, `SpriteDescriptor` state map, `DragRegionDescriptor` semantics, expanded `SurfaceKey` catalog (36 cases), every failure mode with user-visible behavior
-    - Include an illustrated example using `HoloscapeClassic` as the worked example
+  - [x] 21.4 Write `docs/amplify-format.md` _(shipped — reference doc covering bundle layout, manifest v1/v2/v3 fields, SurfaceDescriptor + sprite + ninepatch + state variants + match expressions, 36-surface catalog, Requirement 13 failure modes, `tools/package_synthwave.sh` packaging. Worked example uses `HoloscapeSynthwave` since that's what ships; Classic is deferred art direction.)_
     - _Requirements: 17.1, 17.2, 17.3_
 
   - [ ] 21.5 Update parent chrome-skinning spec
