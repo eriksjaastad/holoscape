@@ -445,7 +445,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - On watcher fire, `WampBundleLoader.contentHash` is recomputed; if hash matches, skip unzip; if hash changes, re-unzip and rebuild `SkinContext`
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6_
 
-  - [ ] 21.2 Malformed-skin banner notification
+  - [x] 21.2 Malformed-skin banner notification _(shipped — `SkinWarningBanner` NSView subclass pinned to the top of the window content, fades in over 0.25s, holds 5s, fades out. `MainWindowController.reloadSkin` instantiates it whenever `LoadedSkin.validationBannerReason` is non-nil. Reduce Motion (via `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion`) skips the fade and shows/dismisses instantly. `accessibilityLabel` carries the reason verbatim. Replacement semantics: a new `show(...)` tears down any prior banner so rapid skin switches don't stack warnings.)_
     - Create `Sources/Holoscape/Views/SkinWarningBanner.swift` subclass of `NSView`
     - In `MainWindowController.applySkin`, when `LoadedSkin.validationBannerReason` is non-nil, instantiate the banner atop the window for 5 seconds with the reason string
     - Respect Reduce Motion: skip the fade animation when true
