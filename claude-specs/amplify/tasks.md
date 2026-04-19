@@ -414,14 +414,14 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 18. Checkpoint
   - Ensure Reader Mode renders in the skin's fonts and chrome when surfaces are defined; verify fallback to SF Mono 14pt when surfaces absent; verify Increase Contrast override.
 
-- [ ] 19. Reference skins _(19.1 + 19.3 shipped; 19.2 + 19.4 deferred — HoloscapeClassic authoring needs art assets Erik sources)_
+- [x] 19. Reference skins _(all four subtasks shipped — 19.1 + 19.3 earlier in the Amplify arc, 19.2 + 19.4 today with HoloscapeClassic authored via programmatic sprite generation rather than hand-sourced art. Both HoloscapeSynthwave and HoloscapeClassic ship as directory-layout + `.wamp`.)_
   - [x] 19.1 Repackage HoloscapeSynthwave as `.wamp`
     - Create `Tools/package_synthwave.sh` script that zips `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave/` into `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave.wamp`
     - Add `HoloscapeSynthwave.wamp` to `Package.swift` resources under `Resources/Skins`
     - Leave the directory-layout HoloscapeSynthwave in place (both should resolve; user dir wins per Requirement 1.7)
     - _Requirements: 16.7_
 
-  - [ ] 19.2 Author `HoloscapeClassic.wamp` manifest
+  - [x] 19.2 Author `HoloscapeClassic.wamp` manifest _(shipped — Winamp 2.x-inspired chrome: dark grey palette with LCD-green accents, beveled sprite sheets (button 24×24×3 + tab 120×28×3) generated programmatically via `Tools/holoscape_classic/generate_sprites.py` using Pillow, subtle 6px cut-corner windowShape, bordered + shadowed tab-bar container with 2px corner, LCD-green selected sidebar row. No `dragRegions` declared — relies on the WindowDragOverlay fallback (Req 4.6) from PR #136 so the whole top drags. No fonts/ directory — uses the system mono fallback because programmatic generation of a pixel-style TTF is out of scope; FontDescriptor-driven font swaps are already pinned by HoloscapeSynthwave. Shipped both as directory-layout + `.wamp` (packaged by `Tools/package_holoscape_classic.sh`).)_
     - Create `Tools/holoscape_classic/` scaffolding: `skin.json` with `version: "3.0"`, a `windowShape` with polygons (rectangular-with-cut-corners), one sprite-sheet surface with `normal/hover/pressed` cells, one `dragRegion`, border/corner/shadow on the tab bar, a `fonts/` directory with one pixel-style TTF referenced by `tabBarTabActive.font`
     - Erik sources the art; Tools/holoscape_classic/ may ship with a procedural placeholder PNG until then (generated via a Bash script or check-in as a low-fi bitmap)
     - Bundle the resulting `HoloscapeClassic.wamp` into `Sources/Holoscape/Resources/Skins/`
@@ -432,7 +432,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test: load `HoloscapeSynthwave` directory-layout; capture resolved `Skin_Context`; load `HoloscapeSynthwave.wamp`; capture resolved `Skin_Context`; assert equal surfaces map, equal font PostScript names, equal image hashes
     - _Requirements: 9.1, 9.3, 9.4, 16.7_
 
-  - [ ] 19.4 Integration test: HoloscapeClassic exercises every Amplify feature
+  - [x] 19.4 Integration test: HoloscapeClassic exercises every Amplify feature _(shipped — new `Tests/HoloscapeTests/Integration/HoloscapeClassicIntegrationTests.swift` loads the skin via `SkinEngine.loadComposite` and asserts: windowShape resolved to non-nil `ResolvedWindowShape` with at least one polygon and non-zero nominal size; at least one surface carries a `SpriteDescriptor`; at least one surface has a border / shadow / non-zero corner; at least one image loaded into the composite image cache. Drag regions + font registration deliberately NOT asserted — HoloscapeClassic uses the WindowDragOverlay whole-window drag and the system mono font, both by design.)_
     - Extend `Tests/HoloscapeTests/Integration/WampLoadIntegrationTests.swift` with a test that loads `HoloscapeClassic.wamp` and verifies: shape applied, at least one sprite surface resolved, at least one drag region installed, at least one registered skin font, border/corner/shadow applied to at least one chrome view
     - _Requirements: 16.1-16.6_
 
