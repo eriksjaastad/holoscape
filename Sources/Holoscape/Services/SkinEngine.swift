@@ -134,6 +134,14 @@ class SkinEngine {
     nonisolated(unsafe) private var currentStream: FSEventStreamRef?
     private var currentWatchedDir: URL?
 
+    /// Test-only view of the watcher slot. `currentStream` is private
+    /// (and `FSEventStreamRef` is an opaque pointer that doesn't round-
+    /// trip cleanly through Swift's extension-access rules), so this
+    /// narrow boolean accessor exists so `ZeroOverheadPropertyTests` can
+    /// assert "construction opens no stream" without widening the real
+    /// API.
+    internal var _currentStreamIsNil: Bool { currentStream == nil }
+
     /// Dedicated serial queue FSEvents posts its callbacks on. Separate
     /// from main so the callback doesn't contend with UI work; the
     /// callback immediately hops back to main before touching any engine
