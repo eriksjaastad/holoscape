@@ -196,12 +196,16 @@ final class PreMigrationParityTests: XCTestCase {
 
     // MARK: - Enum integrity
 
-    func testAllTwentyThreeSurfaceKeysHaveAFill() {
+    func testAllSurfaceKeysHaveAFill() {
         // Cheap invariant: defaultSurface must return a .color fill for
         // every key. Catches a new SurfaceKey case added without a
         // corresponding default (the `switch` in defaultSurface is
         // exhaustive so this is belt-and-suspenders).
-        XCTAssertEqual(SurfaceKey.allCases.count, 23,
+        //
+        // 23 v2 (chrome-skinning) + 13 v3 (Amplify) = 36 total. The pre-
+        // migration parity below iterates the v2 subset explicitly so
+        // this test purely guards "every case has a default."
+        XCTAssertEqual(SurfaceKey.allCases.count, 36,
                        "Surface catalog size is load-bearing: every skin manifest key references this set")
         for key in SurfaceKey.allCases {
             let resolved = SkinContext.defaultSurface(for: key)

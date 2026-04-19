@@ -366,12 +366,12 @@ class SkinEngine {
 
         var paths: Set<String> = []
         for (_, surface) in surfaces {
-            if let fill = surface.fill, case .image(let path, _) = fill {
+            if let fill = surface.fill, case .image(let path, _, _) = fill {
                 paths.insert(path)
             }
             if let states = surface.states {
                 for state in states {
-                    if let fill = state.fill, case .image(let path, _) = fill {
+                    if let fill = state.fill, case .image(let path, _, _) = fill {
                         paths.insert(path)
                     }
                 }

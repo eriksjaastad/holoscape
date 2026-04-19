@@ -25,10 +25,15 @@ struct SurfaceDescriptor: Codable, Equatable, Sendable {
 ///
 ///   { "kind": "color", "value": "#1a1a2e" }
 ///   { "kind": "image", "path": "assets/tab.png", "tile": "stretch" }
+///   { "kind": "image", "path": "assets/sheet.png", "sprite": { ... } }
 ///   { "kind": "gradient", "direction": "vertical", "stops": [...] }
+///
+/// The `.image` case carries optional v3 sprite metadata. v2 manifests
+/// omitting `sprite` decode with `sprite: nil` (backward compat verified
+/// by `AmplifyV2CompatibilityPropertyTests`).
 enum FillDescriptor: Codable, Equatable, Sendable {
     case color(String)
-    case image(path: String, tile: TileMode)
+    case image(path: String, tile: TileMode, sprite: SpriteDescriptor?)
     case gradient(direction: GradientDirection, stops: [GradientStop])
 
     enum TileMode: String, Codable, Sendable {
@@ -43,7 +48,7 @@ enum FillDescriptor: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, value, path, tile, direction, stops
+        case kind, value, path, tile, sprite, direction, stops
     }
 
     private enum Kind: String, Codable {
@@ -59,7 +64,8 @@ enum FillDescriptor: Codable, Equatable, Sendable {
         case .image:
             let path = try c.decode(String.self, forKey: .path)
             let tile = try c.decodeIfPresent(TileMode.self, forKey: .tile) ?? .stretch
-            self = .image(path: path, tile: tile)
+            let sprite = try c.decodeIfPresent(SpriteDescriptor.self, forKey: .sprite)
+            self = .image(path: path, tile: tile, sprite: sprite)
         case .gradient:
             let direction = try c.decode(GradientDirection.self, forKey: .direction)
             let stops = try c.decode([GradientStop].self, forKey: .stops)
@@ -73,10 +79,11 @@ enum FillDescriptor: Codable, Equatable, Sendable {
         case .color(let value):
             try c.encode(Kind.color, forKey: .kind)
             try c.encode(value, forKey: .value)
-        case .image(let path, let tile):
+        case .image(let path, let tile, let sprite):
             try c.encode(Kind.image, forKey: .kind)
             try c.encode(path, forKey: .path)
             try c.encode(tile, forKey: .tile)
+            try c.encodeIfPresent(sprite, forKey: .sprite)
         case .gradient(let direction, let stops):
             try c.encode(Kind.gradient, forKey: .kind)
             try c.encode(direction, forKey: .direction)
