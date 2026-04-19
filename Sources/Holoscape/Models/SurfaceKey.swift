@@ -5,8 +5,16 @@ import Foundation
 /// caught by the compiler, not at runtime.
 ///
 /// Raw values match the hierarchical dot-separated keys in `skin.json`
-/// manifests (e.g., `"tabBar.tab.active"`). The 23 cases correspond to
-/// the surface catalog in `docs/skins/06-chrome-skinning.md` §6.
+/// manifests (e.g., `"tabBar.tab.active"`). Two generations of surfaces:
+///
+/// - **v2 (chrome-skinning)**: 23 cases covering container / row / state
+///   surfaces for every migrated chrome view, per the v2 surface catalog
+///   in `docs/skins/06-chrome-skinning.md` §6.
+/// - **v3 (Amplify)**: 13 additional cases for interactive sprite states
+///   (`tabBar.tab.hover/pressed`, `sidebar.row.pressed`, launcher button
+///   states) and Reader Mode + window-level surfaces. Unknown keys in a
+///   manifest are ignored at decode time so v3 manifests load cleanly on
+///   older builds.
 enum SurfaceKey: String, CaseIterable, Codable, Sendable {
     // Window
     case windowTitleBar           = "window.titleBar"
@@ -44,4 +52,29 @@ enum SurfaceKey: String, CaseIterable, Codable, Sendable {
     // Settings + dialogs
     case settingsPanel            = "settings.panel"
     case dialogContainer          = "dialog.container"
+
+    // MARK: - Amplify (v3) additions
+
+    // Tab bar interactive states (sprite sheets)
+    case tabBarTabHover                   = "tabBar.tab.hover"
+    case tabBarTabPressed                 = "tabBar.tab.pressed"
+
+    // Sidebar interactive state
+    case sidebarRowPressed                = "sidebar.row.pressed"
+
+    // Session launcher button states
+    case sessionLauncherButtonNormal      = "sessionLauncher.button.normal"
+    case sessionLauncherButtonHover       = "sessionLauncher.button.hover"
+    case sessionLauncherButtonPressed     = "sessionLauncher.button.pressed"
+
+    // Reader Mode panel surfaces
+    case readerPanelTitleBar              = "readerPanel.titleBar"
+    case readerPanelBackground            = "readerPanel.background"
+    case readerPanelCloseButtonNormal     = "readerPanel.closeButton.normal"
+    case readerPanelCloseButtonHover      = "readerPanel.closeButton.hover"
+    case readerPanelCloseButtonPressed    = "readerPanel.closeButton.pressed"
+
+    // Window-level Amplify surfaces
+    case windowShape                      = "window.shape"
+    case windowDragHandle                 = "window.dragHandle"
 }

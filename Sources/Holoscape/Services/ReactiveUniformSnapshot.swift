@@ -44,6 +44,19 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     var notificationKind: Int32 { lock.withLock { _notificationKind } }
     var timeLastNotification: Double { lock.withLock { _timeLastNotification } }
 
+    // MARK: - Sprite state (Amplify)
+
+    /// Interactive sprite state for the owning chrome view, mapped to
+    /// `SpriteState.rawInt`: 0=normal, 1=hover, 2=pressed, 3=active,
+    /// 4=disabled, 5=focused, 6=selected.
+    ///
+    /// Published from `NSTrackingArea` callbacks and selection / focus
+    /// changes on the view owning this snapshot; read at render time by
+    /// `SkinContext.applyFill` (Task 11.1) to pick the sprite cell.
+    /// Also consumable by state-variant match expressions via
+    /// `intValue(forMatchKey: "spriteState")`.
+    var spriteState: Int32 { lock.withLock { _spriteState } }
+
     // MARK: - Mutation
 
     /// Update agent state. Stamps `timeAgentStateChange` on every transition
@@ -97,6 +110,15 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     /// variant matching but don't drive the global `iTimeLastNotification`.
     func setNotificationKind(_ newValue: Int32) {
         lock.withLock { _notificationKind = newValue }
+    }
+
+    /// Set the sprite state ordinal. Callers pass `SpriteState.rawInt`
+    /// (0=normal … 6=selected). No timestamp stamping — sprite state is
+    /// continuous UI feedback, not an animation trigger; re-rendering
+    /// on transition is driven by the chrome view calling
+    /// `refreshFromSkin()` directly.
+    func setSpriteState(_ newValue: Int32) {
+        lock.withLock { _spriteState = newValue }
     }
 
     /// Stamp a new output event. Callers increment `outputEventCount`; we
@@ -181,6 +203,7 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
             case "channelConnectionState": return _channelConnectionState
             case "notificationKind": return _notificationKind
             case "outputEventCount": return _outputEventCount
+            case "spriteState": return _spriteState
             default: return nil
             }
         }
@@ -219,4 +242,6 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     private var _timeLastOutput: Double = 0
     private var _notificationKind: Int32 = 0
     private var _timeLastNotification: Double = 0
+
+    private var _spriteState: Int32 = 0
 }

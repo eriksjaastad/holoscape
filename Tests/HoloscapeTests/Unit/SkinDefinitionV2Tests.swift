@@ -95,9 +95,10 @@ final class SkinDefinitionV2Tests: XCTestCase {
         XCTAssertEqual(skin.version, "2.0")
 
         let sidebar = try XCTUnwrap(skin.surfaces?["sidebar.container"])
-        if case .image(let path, let tile) = sidebar.fill {
+        if case .image(let path, let tile, let sprite) = sidebar.fill {
             XCTAssertEqual(path, "assets/sidebar.png")
             XCTAssertEqual(tile, .ninepatch)
+            XCTAssertNil(sprite, "v2 manifest must decode image fills with sprite == nil")
         } else {
             XCTFail("Expected image fill")
         }
