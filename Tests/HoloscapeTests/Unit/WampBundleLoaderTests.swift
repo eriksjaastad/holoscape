@@ -127,6 +127,63 @@ final class WampBundleLoaderTests: XCTestCase {
         }
     }
 
+    /// Pre-populate the cache subdir with a symlink pointing outside
+    /// the cache root, then extract a bundle whose file-entry path
+    /// resolves through that symlink. The string-path gate passes
+    /// (no `..`, no absolute path), so the symlink-resolve gate at
+    /// step 6 of `extractArchive` is the only thing that can catch
+    /// the escape.
+    ///
+    /// Follow-up from card #6033. The string-gate half of the sandbox
+    /// is covered by `testTraversalEntryIsRejected` and
+    /// `testAbsolutePathEntryIsRejected`; this test pins the
+    /// symlink-resolve half.
+    ///
+    /// Defense-in-depth, not prevention: ZIPFoundation's `extract`
+    /// follows symlinks, so the escape file is written to the
+    /// out-of-sandbox target BEFORE the gate fires. The gate's job
+    /// is to surface the attack loudly so the bundle is rejected
+    /// and the partial-extract cleanup runs.
+    func testSymlinkEscapeIsRejected() throws {
+        let bundleURL = try makeBundle(entries: [
+            ("skin.json", Data(#"{"version":"3.0"}"#.utf8)),
+            ("assets/escape/payload.bin", Data("contents".utf8)),
+        ])
+
+        // Pre-compute the cache subdir so we can install the
+        // malicious symlink BEFORE unzipIfNeeded runs.
+        let hash = try loader.contentHash(bundleURL)
+        let subdir = cacheRoot.appendingPathComponent(hash)
+        let subdirAssets = subdir.appendingPathComponent("assets")
+        try FileManager.default.createDirectory(at: subdirAssets, withIntermediateDirectories: true)
+
+        // Out-of-sandbox target the symlink escapes to.
+        let outside = tempRoot.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        // subdir/assets/escape → outside/
+        try FileManager.default.createSymbolicLink(
+            at: subdirAssets.appendingPathComponent("escape"),
+            withDestinationURL: outside
+        )
+
+        // Cache-hit fast path requires skin.json at subdir root —
+        // absent here, so extraction proceeds.
+        XCTAssertThrowsError(try loader.unzipIfNeeded(bundleURL: bundleURL)) { error in
+            guard case .zipEntryEscapesSandbox(let path) = error as? WampBundleLoader.LoadError else {
+                XCTFail("Expected zipEntryEscapesSandbox, got \(error)")
+                return
+            }
+            XCTAssertEqual(path, "assets/escape/payload.bin",
+                           "Rejected path must be the manifest-side entry path so Console.app triage points at the offending archive member")
+        }
+
+        // Partial-extract cleanup must remove the cache subdir so no
+        // stale symlink remains in the cache.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: subdir.path),
+                       "Sandbox rejection must trigger cache-subdir cleanup")
+    }
+
     // MARK: - Size caps
 
     func testAssetOverCapIsRejected() throws {
