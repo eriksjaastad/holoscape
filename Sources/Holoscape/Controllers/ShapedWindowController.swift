@@ -243,6 +243,12 @@ final class ShapedWindowController {
             backing: .buffered,
             defer: false
         )
+        // Match the bootstrap window (MainWindowController.init): opt
+        // out of AppKit's legacy auto-release-on-close so ARC is the
+        // sole owner. Without this, `oldWindow.close()` in
+        // applyWindowShape double-releases and a scheduled
+        // _NSWindowTransformAnimation dealloc crashes on a zombie.
+        newWindow.isReleasedWhenClosed = false
         newWindow.titleVisibility = .hidden
         newWindow.titlebarAppearsTransparent = true
         newWindow.isOpaque = isOpaque

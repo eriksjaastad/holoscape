@@ -2,7 +2,35 @@
   "version": "3.0",
   "name": "Amplify Demo",
   "author": "Holoscape team",
-  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar. Solid-color fills, no real art. windowShape + dragRegions stripped pending a fix for the reconstruction crash (shipped in the engine spec but not yet safe to enable on live windows).",
+  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar + octagon windowShape with top-40pt drag region. Solid-color fills, no real art.",
+  "windowShape": {
+    "kind": "polygons",
+    "polygons": [
+      { "points": [
+        { "x": 40,   "y": 0   },
+        { "x": 960,  "y": 0   },
+        { "x": 1000, "y": 40  },
+        { "x": 1000, "y": 660 },
+        { "x": 960,  "y": 700 },
+        { "x": 40,   "y": 700 },
+        { "x": 0,    "y": 660 },
+        { "x": 0,    "y": 40  }
+      ] }
+    ]
+  },
+  "dragRegions": [
+    {
+      "polygons": [
+        { "points": [
+          { "x": 0,    "y": 660 },
+          { "x": 1000, "y": 660 },
+          { "x": 1000, "y": 700 },
+          { "x": 0,    "y": 700 }
+        ] }
+      ],
+      "modifier": "none"
+    }
+  ],
   "surfaces": {
     "window.background": {
       "fill": {
