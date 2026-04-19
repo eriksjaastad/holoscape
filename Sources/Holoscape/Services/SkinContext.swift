@@ -224,6 +224,9 @@ final class SkinContext {
         guard let cell else {
             // Neither state's cell nor `normal` is mapped — fall back
             // to full-sheet stretch. Documented behavior (Req 5.3).
+            // Log once per fallback so the skin author sees which
+            // state their stateMap is missing — Req 13.4 / Task 21.3.
+            NSLog("SkinContext: sprite stateMap has no cell for state '\(key)' and no 'normal' fallback; falling back to full-sheet stretch")
             layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
             layer.contentsGravity = .resize
             return
