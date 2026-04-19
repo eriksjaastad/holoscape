@@ -37,7 +37,16 @@ final class SkinContext {
 
     enum ResolvedFill {
         case color(NSColor)
-        case image(NSImage, FillDescriptor.TileMode, NinepatchSidecar?)
+        /// Image fill. The fourth associated value is Amplify Task 11's
+        /// sprite metadata — non-nil when the manifest declared a
+        /// `sprite: { ... }` alongside the image path AND descriptor
+        /// validation passed (`SpriteDescriptor.isValid(imageSize:)`).
+        /// When present, `applyFill` renders the cell matching the
+        /// caller's `spriteState` via `layer.contentsRect` UV offset
+        /// rather than cropping the NSImage per state. When nil, the
+        /// image renders in its declared tile mode (stretch / tile /
+        /// ninepatch).
+        case image(NSImage, FillDescriptor.TileMode, NinepatchSidecar?, SpriteDescriptor?)
         case gradient(FillDescriptor.GradientDirection, [GradientStop])
     }
 
@@ -148,7 +157,12 @@ final class SkinContext {
     /// the hosting window pass `view.window?.backingScaleFactor ?? 2.0`;
     /// the default of `2.0` is the correct assumption for modern Macs
     /// when the window isn't yet available.
-    func applyFill(to layer: CALayer, from resolved: ResolvedSurface, backingScale: CGFloat = 2.0) {
+    func applyFill(
+        to layer: CALayer,
+        from resolved: ResolvedSurface,
+        backingScale: CGFloat = 2.0,
+        spriteState: SpriteState = .normal
+    ) {
         // Clear any previously installed gradient sublayer before reapplying.
         removeGradientSublayer(from: layer)
 
@@ -159,16 +173,97 @@ final class SkinContext {
             layer.backgroundColor = color.cgColor
             layer.contents = nil
             layer.contentsCenter = CGRect(x: 0, y: 0, width: 1, height: 1)
-        case .image(let image, let tile, let ninepatch):
+            layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        case .image(let image, let tile, let ninepatch, let sprite):
             layer.backgroundColor = nil
             layer.contents = image
-            applyTileMode(tile, ninepatch: ninepatch, to: layer, imageSize: image.size)
+            if let sprite, Self.shouldRenderSprites(for: layer) {
+                // Amplify Task 11 — sprite sheet. Full sheet goes into
+                // layer.contents; layer.contentsRect picks the cell.
+                // State transitions later only mutate contentsRect —
+                // no per-state CGImage reallocation.
+                applySpriteCell(sprite: sprite, state: spriteState, to: layer,
+                                imageSize: image.size)
+            } else {
+                // Non-sprite image (or density == .minimal): fall back
+                // to existing tile-mode path. Reset contentsRect to the
+                // unit square so a prior sprite-cell UV doesn't leak.
+                layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+                applyTileMode(tile, ninepatch: ninepatch, to: layer, imageSize: image.size)
+            }
         case .gradient(let direction, let stops):
             layer.backgroundColor = nil
             layer.contents = nil
+            layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
             insertGradientSublayer(direction: direction, stops: stops, into: layer)
         }
     }
+
+    /// Compute + apply the UV rectangle for the current sprite state.
+    ///
+    /// Fallback chain (Requirement 5.3):
+    ///   1. `stateMap[state]` present → use its cell
+    ///   2. `stateMap["normal"]` present → use that
+    ///   3. Otherwise → full sheet in stretch mode (unit contentsRect)
+    ///
+    /// The UV rect is `(col * cellW / imageW, row * cellH / imageH,
+    /// cellW / imageW, cellH / imageH)`. `layer.contentsGravity` is
+    /// `.resize` so the selected cell fills the layer bounds regardless
+    /// of aspect ratio — consistent with how sprite-sheet buttons
+    /// render in Winamp-style skins.
+    private func applySpriteCell(
+        sprite: SpriteDescriptor,
+        state: SpriteState,
+        to layer: CALayer,
+        imageSize: CGSize
+    ) {
+        let key = state.rawValue
+        let cell = sprite.stateMap[key]
+            ?? sprite.stateMap[SpriteState.normal.rawValue]
+
+        guard let cell else {
+            // Neither state's cell nor `normal` is mapped — fall back
+            // to full-sheet stretch. Documented behavior (Req 5.3).
+            layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            layer.contentsGravity = .resize
+            return
+        }
+
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            NSLog("SkinContext: sprite sheet has zero dimension (\(imageSize)); falling back to unit contentsRect")
+            layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            layer.contentsGravity = .resize
+            return
+        }
+
+        let u = CGFloat(cell.col * sprite.cellWidth) / imageSize.width
+        let v = CGFloat(cell.row * sprite.cellHeight) / imageSize.height
+        let w = CGFloat(sprite.cellWidth) / imageSize.width
+        let h = CGFloat(sprite.cellHeight) / imageSize.height
+        layer.contentsRect = CGRect(x: u, y: v, width: w, height: h)
+        layer.contentsGravity = .resize
+    }
+
+    /// Amplify Task 11.6 — density-mode gate. Density `.minimal`
+    /// suppresses sprite slicing and falls back to full-sheet stretch
+    /// rendering (Req 5.6 / 11.2). `.full` or no manager attached =
+    /// render sprites. Read via a layer-associated `DensityModeManager`
+    /// reference; falls back to true (render) if no manager is wired.
+    ///
+    /// Method is static + layer-anchored so tests can flip the result
+    /// without spinning up a full context. Production call path reads
+    /// the manager from the SkinContext via an ambient property (set
+    /// at MainWindowController wiring time).
+    private static func shouldRenderSprites(for layer: CALayer) -> Bool {
+        return Self.ambientDensityManager?.shouldRenderSprites() ?? true
+    }
+
+    /// Ambient density manager for sprite rendering. Set once by
+    /// MainWindowController at init time (when the manager is constructed).
+    /// A property-level reference rather than an instance property keeps
+    /// applyFill's signature unchanged and lets per-surface sprite
+    /// decisions use the same density state as the rest of the chrome.
+    nonisolated(unsafe) static var ambientDensityManager: DensityModeManager?
 
     /// Apply border, corner radius, and shadow to the layer.
     func applyBorderAndCorner(to layer: CALayer, from resolved: ResolvedSurface) {
@@ -463,22 +558,31 @@ final class SkinContext {
         case .color(let hex):
             guard let color = NSColor(hex: hex) else { return nil }
             return .color(color)
-        case .image(let path, let tile, _):
-            // The `sprite` associated value is v3 (Amplify) metadata; it's
-            // consumed at render time by `applyFill` (Task 11.1), not at
-            // resolve time. Ignored here so resolve-time output stays
-            // byte-identical between v2 and v3 manifests for the same
-            // color / tile / path combo (Property 1 backward compat).
+        case .image(let path, let tile, let sprite):
+            // Amplify Task 11.2 — sprite descriptors validate at load
+            // time. An invalid sprite (dimension mismatch, out-of-bounds
+            // cell) is dropped here so the render path never has to
+            // guard against it. `applyFill` receives sprite = nil and
+            // falls back to the declared tile mode (stretch-mode fill).
             guard let image = imageCache[path] else {
                 NSLog("SkinContext: image '\(path)' not in cache, fill falls back")
                 return nil
+            }
+            let validatedSprite: SpriteDescriptor?
+            if let sprite, sprite.isValid(imageSize: image.size) {
+                validatedSprite = sprite
+            } else {
+                if sprite != nil {
+                    NSLog("SkinContext: sprite descriptor for '\(path)' failed isValid(imageSize:); falling back to stretch")
+                }
+                validatedSprite = nil
             }
             // Ninepatch sidecar lookup — callers (SkinEngine.loadComposite)
             // populate the ninepatches dict keyed by the manifest image path.
             // A nil sidecar here is the legitimate "no sidecar file exists"
             // case; applyTileMode treats ninepatch-without-sidecar as the
             // stretch fallback.
-            return .image(image, tile, ninepatches[path])
+            return .image(image, tile, ninepatches[path], validatedSprite)
         case .gradient(let direction, let stops):
             guard stops.count >= 2 else { return nil }
             return .gradient(direction, stops)
