@@ -161,6 +161,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             backing: .buffered,
             defer: false
         )
+        // Swap in ShapedContentView as the content view from the start.
+        // With a nil sampler, `hitTest` delegates to `super.hitTest` and
+        // behaves identically to a plain NSView — no behavior change
+        // for non-shaped skins. Establishing the type here means the
+        // view survives reconstructWindow's content-view migration
+        // (Amplify Task 7) without having to re-parent subviews
+        // against a different class.
+        self.window.contentView = ShapedContentView(frame: NSRect(origin: .zero, size: windowRect.size))
 
         // Create input box
         self.inputContainer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1000, height: 40))
@@ -781,7 +789,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
         }
 
-        // Install (or clear) the mask layer.
+        // Install (or clear) the mask layer AND the hit-region sampler.
+        // Both are required for shaped windows to feel right — mask
+        // makes the non-polygon regions visually invisible; sampler
+        // makes clicks pass through those regions to windows behind.
+        // Without the sampler, an invisible rectangle still eats clicks.
         if let shape = targetShape {
             guard let contentView = window.contentView else {
                 NSLog("MainWindowController: cannot install shape mask — window has no contentView")
@@ -793,6 +805,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 for: shape,
                 in: contentView.bounds
             )
+            // Inject the sampler. Only ShapedContentView carries the
+            // property; a plain NSView will silently drop through without
+            // click-through — that's a graceful degradation, not a bug
+            // (init always uses ShapedContentView, but tests may swap).
+            if case .polygons(let polygons) = shape.kind,
+               let shapedView = contentView as? ShapedContentView {
+                shapedView.sampler = HitRegionSampler(polygons: polygons)
+            }
             if reduceMotion {
                 contentView.layer?.mask = maskLayer
             } else {
@@ -809,6 +829,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
         } else {
             window.contentView?.layer?.mask = nil
+            // Clear sampler so any future skin cycle starts clean and
+            // hitTest returns to pure super.hitTest behavior. Matches
+            // the mask-clear invariant above.
+            (window.contentView as? ShapedContentView)?.sampler = nil
         }
 
         currentWindowShape = targetShape
