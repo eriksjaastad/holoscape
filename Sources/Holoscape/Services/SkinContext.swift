@@ -463,7 +463,12 @@ final class SkinContext {
         case .color(let hex):
             guard let color = NSColor(hex: hex) else { return nil }
             return .color(color)
-        case .image(let path, let tile):
+        case .image(let path, let tile, _):
+            // The `sprite` associated value is v3 (Amplify) metadata; it's
+            // consumed at render time by `applyFill` (Task 11.1), not at
+            // resolve time. Ignored here so resolve-time output stays
+            // byte-identical between v2 and v3 manifests for the same
+            // color / tile / path combo (Property 1 backward compat).
             guard let image = imageCache[path] else {
                 NSLog("SkinContext: image '\(path)' not in cache, fill falls back")
                 return nil
@@ -594,6 +599,47 @@ final class SkinContext {
             fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
         case .settingsPanel, .dialogContainer:
             fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+
+        // MARK: Amplify (v3) defaults
+        //
+        // The 13 v3 surfaces default to the nearest v2 pre-skinning color
+        // so a v3 manifest that omits these keys renders identically to
+        // the chrome-skinning build. Consumers that start reading these
+        // surfaces (sprite-sheet chrome views, Reader Mode, shaped-window
+        // drag handle) opt in per task group; until they do, these
+        // defaults guarantee no visual regression.
+        case .tabBarTabHover, .tabBarTabPressed:
+            // Match tabBarTabActive hue so sprite-less v3 skins still
+            // show a reasonable hover/pressed color. Sprite sheets
+            // override via FillDescriptor.image(sprite:).
+            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+        case .sidebarRowPressed:
+            // Darker sibling of sidebarRowSelected for press feedback.
+            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+        case .sessionLauncherButtonNormal:
+            fill = .color(NSColor.clear)
+        case .sessionLauncherButtonHover:
+            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+        case .sessionLauncherButtonPressed:
+            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+        case .readerPanelBackground, .readerPanelTitleBar:
+            // Match window chrome so Reader Mode doesn't pop on first
+            // present. ReaderModeController overrides when a v3 skin
+            // declares reader surfaces (Task 17).
+            fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+        case .readerPanelCloseButtonNormal:
+            fill = .color(NSColor.clear)
+        case .readerPanelCloseButtonHover:
+            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+        case .readerPanelCloseButtonPressed:
+            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+        case .windowShape, .windowDragHandle:
+            // Non-rendering surfaces — windowShape carries the mask path
+            // semantics, windowDragHandle carries drag-region cursor
+            // semantics. Both return clear fills so a consumer that
+            // accidentally paints them gets invisible output rather than
+            // a visible default color bleeding through.
+            fill = .color(NSColor.clear)
         }
 
         let text = defaultText(for: key)

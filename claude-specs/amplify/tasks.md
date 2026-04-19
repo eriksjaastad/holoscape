@@ -10,8 +10,8 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 
 ## Tasks
 
-- [ ] 1. Data model additions
-  - [ ] 1.1 Create Amplify descriptor types
+- [x] 1. Data model additions
+  - [x] 1.1 Create Amplify descriptor types
     - Create `Sources/Holoscape/Models/AmplifyDescriptors.swift` with `WindowShapeDescriptor`, `Polygon`, `Point`, `DragRegionDescriptor`, `SpriteDescriptor`, `SpriteCell`
     - All types `Codable, Equatable, Sendable`
     - `WindowShapeDescriptor.Kind` enum: `polygons`, `mask` (MVP rejects `.mask` at validate time per Requirement 2.9 — the enum case stays so v3 manifests decode, reserved for the Phase-2 mask-image path)
@@ -19,36 +19,36 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - `SpriteDescriptor.isValid(imageSize:)` guards cell dimensions against image bounds
     - _Requirements: 2.1, 2.2, 4.1, 5.1, 5.4_
 
-  - [ ] 1.2 Extend `SkinDefinition` with Amplify fields
+  - [x] 1.2 Extend `SkinDefinition` with Amplify fields
     - Modify `Sources/Holoscape/Models/SkinDefinition.swift` to add optional `windowShape: WindowShapeDescriptor?` and `dragRegions: [DragRegionDescriptor]?` fields
     - Keep all v1 and v2 fields unchanged; v3 is additive
     - Document in the struct comment that `version: "3.0"` signals Amplify
     - _Requirements: 9.1, 9.2, 9.6_
 
-  - [ ] 1.3 Extend `FillDescriptor.image` with optional sprite metadata
+  - [x] 1.3 Extend `FillDescriptor.image` with optional sprite metadata
     - Modify `Sources/Holoscape/Models/SurfaceDescriptor.swift` `FillDescriptor.image` case to carry `sprite: SpriteDescriptor?` as a third associated value
     - Update `FillDescriptor` Codable `init(from:)` to `decodeIfPresent` sprite on the image branch; encode with `encodeIfPresent`
     - v2 manifests omitting `sprite` decode with `sprite: nil` (backward compat)
     - _Requirements: 5.1, 9.1, 9.4_
 
-  - [ ] 1.4 Extend `SurfaceKey` enum with 13 new cases
+  - [x] 1.4 Extend `SurfaceKey` enum with 13 new cases
     - Modify `Sources/Holoscape/Models/SurfaceKey.swift` to add: `tabBarTabHover`, `tabBarTabPressed`, `sidebarRowPressed`, `sessionLauncherButtonNormal`, `sessionLauncherButtonHover`, `sessionLauncherButtonPressed`, `readerPanelTitleBar`, `readerPanelBackground`, `readerPanelCloseButtonNormal`, `readerPanelCloseButtonHover`, `readerPanelCloseButtonPressed`, `windowShape`, `windowDragHandle`
     - Preserve existing 23 cases and their raw values
     - _Requirements: 4.1, 5.5, 7.4, 8.1, 8.2, 8.5_
 
-  - [ ] 1.5 Extend `ReactiveUniformSnapshot` with spriteState
+  - [x] 1.5 Extend `ReactiveUniformSnapshot` with spriteState
     - Modify `Sources/Holoscape/Services/ReactiveUniformSnapshot.swift` to add `spriteState: Int32` field
     - Update `intValue(forMatchKey:)` to route `"spriteState"` to the new field
     - SpriteState rawValue mapping: `0=normal, 1=hover, 2=pressed, 3=active, 4=disabled, 5=focused, 6=selected`
     - _Requirements: 5.2, 5.5_
 
-  - [ ] 1.6 Define `SpriteState` enum
+  - [x] 1.6 Define `SpriteState` enum
     - Add `SpriteState` enum to `Sources/Holoscape/Models/AmplifyDescriptors.swift` with cases `normal, hover, pressed, active, disabled, focused, selected`
     - Conform to `String, Codable, Sendable`; raw values match PRD stateMap keys
     - Add static `fromInt32(_: Int32) -> SpriteState` for snapshot → enum conversion
     - _Requirements: 5.5, 5.6_
 
-  - [ ]* 1.7 Unit tests for descriptor Codable round-trips
+  - [x]* 1.7 Unit tests for descriptor Codable round-trips
     - Create `Tests/HoloscapeTests/Unit/AmplifyDescriptorTests.swift`
     - Test `WindowShapeDescriptor` round-trips both `polygons` and `mask` kinds
     - Test `DragRegionDescriptor` decodes with and without `modifier`
@@ -57,14 +57,12 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test v3 manifest decodes every Amplify field
     - _Requirements: 1.1, 9.1, 9.2_
 
-  - [ ]* 1.8 Unit tests for expanded SurfaceKey
-    - Create `Tests/HoloscapeTests/Unit/SurfaceKeyAmplifyTests.swift`
-    - Assert 13 new cases present; total case count = 36 (23 + 13)
-    - Assert every raw value is unique and non-empty
-    - Assert all new cases are in `allCases`
+  - [x]* 1.8 Unit tests for expanded SurfaceKey
+    - Folded into the existing `Tests/HoloscapeTests/Unit/SurfaceKeyTests.swift` rather than shipping a separate `SurfaceKeyAmplifyTests.swift` file — that original split (v2 vs v3 test files) wasn't load-bearing, and keeping the SurfaceKey tests in one place means a future 37th case gets caught by the same count assertion without needing to choose between files.
+    - Asserts: 13 new cases present, total case count = 36 (23 v2 + 13 v3), every raw value unique and non-empty, every v3 raw value round-trips through `SurfaceKey(rawValue:)` so typos are caught here rather than at skin-author time.
     - _Requirements: 1.4_
 
-  - [ ]* 1.9 Property test: V2 manifests decode unchanged
+  - [x]* 1.9 Property test: V2 manifests decode unchanged
     - **Property 1: V2 manifest is decoded identically with or without Amplify-only fields**
     - **Validates: Requirements 9.1, 9.4, 9.5**
     - Create `Tests/HoloscapePropertyTests/AmplifyV2CompatibilityPropertyTests.swift`

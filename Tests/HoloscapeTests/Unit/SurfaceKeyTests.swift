@@ -6,8 +6,11 @@ import XCTest
 final class SurfaceKeyTests: XCTestCase {
 
     func testAllCasesCount() {
-        // 23 surfaces per the catalog in docs/skins/06-chrome-skinning.md §6.
-        XCTAssertEqual(SurfaceKey.allCases.count, 23)
+        // 23 v2 surfaces (chrome-skinning) + 13 v3 surfaces (Amplify) = 36
+        // total. The v2 catalog lives in docs/skins/06-chrome-skinning.md §6;
+        // the Amplify additions are in claude-specs/amplify/design.md
+        // §SurfaceKey extensions.
+        XCTAssertEqual(SurfaceKey.allCases.count, 36)
     }
 
     func testAllRawValuesAreUnique() {
@@ -32,10 +35,27 @@ final class SurfaceKeyTests: XCTestCase {
     }
 
     func testKnownKeysResolve() {
+        // v2 surfaces
         XCTAssertEqual(SurfaceKey(rawValue: "tabBar.tab.active"), .tabBarTabActive)
         XCTAssertEqual(SurfaceKey(rawValue: "sidebar.row.indicator"), .sidebarRowIndicator)
         XCTAssertEqual(SurfaceKey(rawValue: "window.background"), .windowBackground)
         XCTAssertEqual(SurfaceKey(rawValue: "inputBox.field"), .inputBoxField)
+
+        // v3 (Amplify) surfaces — pin the raw values so a typo on the
+        // enum side is caught here and not at skin-author time.
+        XCTAssertEqual(SurfaceKey(rawValue: "tabBar.tab.hover"), .tabBarTabHover)
+        XCTAssertEqual(SurfaceKey(rawValue: "tabBar.tab.pressed"), .tabBarTabPressed)
+        XCTAssertEqual(SurfaceKey(rawValue: "sidebar.row.pressed"), .sidebarRowPressed)
+        XCTAssertEqual(SurfaceKey(rawValue: "sessionLauncher.button.normal"), .sessionLauncherButtonNormal)
+        XCTAssertEqual(SurfaceKey(rawValue: "sessionLauncher.button.hover"), .sessionLauncherButtonHover)
+        XCTAssertEqual(SurfaceKey(rawValue: "sessionLauncher.button.pressed"), .sessionLauncherButtonPressed)
+        XCTAssertEqual(SurfaceKey(rawValue: "readerPanel.titleBar"), .readerPanelTitleBar)
+        XCTAssertEqual(SurfaceKey(rawValue: "readerPanel.background"), .readerPanelBackground)
+        XCTAssertEqual(SurfaceKey(rawValue: "readerPanel.closeButton.normal"), .readerPanelCloseButtonNormal)
+        XCTAssertEqual(SurfaceKey(rawValue: "readerPanel.closeButton.hover"), .readerPanelCloseButtonHover)
+        XCTAssertEqual(SurfaceKey(rawValue: "readerPanel.closeButton.pressed"), .readerPanelCloseButtonPressed)
+        XCTAssertEqual(SurfaceKey(rawValue: "window.shape"), .windowShape)
+        XCTAssertEqual(SurfaceKey(rawValue: "window.dragHandle"), .windowDragHandle)
     }
 
     func testUnknownKeyReturnsNil() {
