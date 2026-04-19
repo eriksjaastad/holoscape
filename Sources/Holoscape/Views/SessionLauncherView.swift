@@ -71,6 +71,11 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         if let font = ctx.resolvedFont(for: .sessionLauncherContainer) {
             comboBox.font = font
         }
+        // Amplify Task 15 — border/corner/shadow on the launcher
+        // container layer. Shadow on the container gives the launcher
+        // visual separation from the sidebar; border gives a skin
+        // authoring-friendly outline option.
+        ctx.applyBorderAndCorner(to: layer, from: resolved)
     }
 
     override func layout() {

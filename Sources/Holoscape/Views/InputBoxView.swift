@@ -111,6 +111,12 @@ class InputBoxView: NSTextView {
         if let font = ctx.resolvedFont(for: .inputBoxField) {
             self.font = font
         }
+        // Amplify Task 15 — border/corner/shadow on the input field's
+        // backing layer. NSTextView's layer exists when wantsLayer is
+        // set by the scroll-view host; guarded for safety.
+        if let layer = self.layer {
+            ctx.applyBorderAndCorner(to: layer, from: field)
+        }
     }
 
     override func keyDown(with event: NSEvent) {

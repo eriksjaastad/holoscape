@@ -265,8 +265,17 @@ final class SkinContext {
     /// decisions use the same density state as the rest of the chrome.
     nonisolated(unsafe) static var ambientDensityManager: DensityModeManager?
 
-    /// Apply border, corner radius, and shadow to the layer.
-    func applyBorderAndCorner(to layer: CALayer, from resolved: ResolvedSurface) {
+    /// Apply border and corner radius to the layer. Shadow was
+    /// originally bundled here; Amplify Task 15 split it into its
+    /// own `applyShadow(to:from:)` helper so chrome views can opt
+    /// in to shadow independently (e.g., shadow on the container
+    /// but not on rows). `applyBorderAndCorner` now delegates so
+    /// legacy callers keep working.
+    func applyBorderAndCorner(
+        to layer: CALayer,
+        from resolved: ResolvedSurface,
+        clampCornerToHalfHeight: CGFloat? = nil
+    ) {
         if let border = resolved.border {
             layer.borderColor = border.color.cgColor
             layer.borderWidth = border.width
@@ -277,7 +286,18 @@ final class SkinContext {
 
         switch resolved.corner {
         case .uniform(let r):
-            layer.cornerRadius = r
+            // Amplify Requirement 7.5 — when a caller passes a clamp
+            // height (typically for pill-shape tab buttons), cap the
+            // uniform radius at `height / 2`. Unclamped, a skin that
+            // declares `corner: 9999` would otherwise collapse the
+            // button into a circle whose radius exceeds its bounds.
+            let applied: CGFloat
+            if let clampHeight = clampCornerToHalfHeight {
+                applied = min(r, clampHeight / 2)
+            } else {
+                applied = r
+            }
+            layer.cornerRadius = applied
             layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         case .asymmetric(let tl, let tr, let br, let bl):
             // CALayer supports one radius per layer. For asymmetric corners
@@ -294,6 +314,20 @@ final class SkinContext {
             layer.maskedCorners = mask
         }
 
+        applyShadow(to: layer, from: resolved)
+    }
+
+    /// Apply shadow properties to the layer. When the resolved
+    /// surface has no shadow descriptor, `shadowOpacity` is zeroed so
+    /// a previously-applied skin's shadow doesn't persist through a
+    /// skin switch that drops the shadow. Other shadow properties
+    /// are left alone — setting them to nil/zero would fight with
+    /// CALayer's implicit-animation machinery on the hot path.
+    ///
+    /// Split out from `applyBorderAndCorner` per Amplify Task 15.1.
+    /// Chrome views that want shadow-only application (e.g., outer
+    /// glow on a container without a border) call this directly.
+    func applyShadow(to layer: CALayer, from resolved: ResolvedSurface) {
         if let shadow = resolved.shadow {
             layer.shadowColor = shadow.color.cgColor
             layer.shadowOpacity = shadow.opacity
