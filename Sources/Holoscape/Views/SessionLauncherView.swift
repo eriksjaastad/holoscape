@@ -52,18 +52,25 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         refreshFromSkin()
     }
 
+    /// Apply the container fill (color / gradient / image) via
+    /// `SkinContext.applyFill` so gradient and ninepatch skins render
+    /// correctly. Nil skinContext falls back to the hardcoded
+    /// pre-skinning color.
     private func refreshFromSkin() {
+        guard let layer else { return }
         guard let ctx = skinContext else {
-            layer?.backgroundColor = Self.containerBg
+            layer.backgroundColor = Self.containerBg
             return
         }
-        let fill = ctx.currentState(for: .sessionLauncherContainer).fill
-        if case .color(let ns) = fill {
-            layer?.backgroundColor = ns.cgColor
-        } else {
-            NSLog("SessionLauncherView: non-color fill for '\(SurfaceKey.sessionLauncherContainer.rawValue)' not yet supported; falling back")
-            layer?.backgroundColor = Self.containerBg
-        }
+        let resolved = ctx.currentState(for: .sessionLauncherContainer)
+        let backingScale = window?.backingScaleFactor ?? 2.0
+        ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
+    }
+
+    override func layout() {
+        super.layout()
+        // Re-apply so gradient sublayers track the launcher's bounds.
+        refreshFromSkin()
     }
 
     private func setupViews() {

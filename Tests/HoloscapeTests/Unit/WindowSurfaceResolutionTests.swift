@@ -38,16 +38,16 @@ final class WindowSurfaceResolutionTests: XCTestCase {
         assertColor(resolved, equals: NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
     }
 
-    func testNonColorFillFallsBackToDefault() {
-        // Gradient fills aren't supported for window bg yet — verify
-        // the mapping returns the pre-skinning default rather than
-        // silently producing a random color. Check all four channels
-        // since blue (0.18) is what distinguishes the default.
+    func testGradientFillUsesFirstStopColor() {
+        // NSWindow.backgroundColor is a single NSColor slot — it can't
+        // carry a gradient. For gradient skins we pick the FIRST stop
+        // as the NSWindow color so the traffic-lights gap at the
+        // titlebar's left edge visually ties to the adjacent tab bar.
         let snap = ReactiveUniformSnapshot()
         var surfaces = SkinContext.builtInDefaults(reactive: snap).allResolvedSurfacesForTesting
         surfaces[.windowBackground] = SkinContext.ResolvedSurface(
             fill: .gradient(.vertical, [
-                GradientStop(offset: 0, color: "#000000"),
+                GradientStop(offset: 0, color: "#112233"),
                 GradientStop(offset: 1, color: "#ffffff"),
             ]),
             border: nil, corner: .uniform(0), padding: .init(),
@@ -57,7 +57,8 @@ final class WindowSurfaceResolutionTests: XCTestCase {
         )
         let ctx = SkinContext(surfaces: surfaces, reactive: snap)
         let resolved = MainWindowController.resolveWindowBackground(from: ctx)
-        assertColor(resolved, equals: NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+        assertColor(resolved,
+                    equals: NSColor(srgbRed: 0x11/255.0, green: 0x22/255.0, blue: 0x33/255.0, alpha: 1))
     }
 
     // MARK: - applySkin build-and-reset semantics
