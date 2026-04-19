@@ -386,25 +386,25 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 16. Checkpoint
   - Ensure skinned chrome views render with borders, corners, shadows from the manifest; verify `HoloscapeSynthwave` still renders (no skin-defined border/corner → no-op).
 
-- [ ] 17. Reader panel skinning
-  - [ ] 17.1 Accept skin context in ReaderModeController
+- [x] 17. Reader panel skinning
+  - [x] 17.1 Accept skin context in ReaderModeController
     - Modify `Sources/Holoscape/Controllers/ReaderModeController.swift` to add `weak var skinContext: SkinContext?` property
     - Wire injection from `MainWindowController` (pass the current context when opening Reader Mode)
     - _Requirements: 8.1_
 
-  - [ ] 17.2 Apply Reader panel surfaces
+  - [x] 17.2 Apply Reader panel surfaces
     - In `ReaderModeController.open()`, resolve `readerPanelBackground`, `readerPanelTitleBar`, `readerPanelCloseButtonNormal/hover/pressed` via `skinContext`
     - Apply fills, borders, corners, shadows via `applyFill`, `applyBorderAndCorner`, `applyShadow` on the corresponding layers
     - When no surface is defined, retain the pre-Amplify Reader Mode look (no-op)
     - _Requirements: 8.1, 8.2, 8.4, 8.5_
 
-  - [ ] 17.3 Apply Reader panel font
+  - [x] 17.3 Apply Reader panel font
     - In `ReaderModeController.open()`, resolve `readerPanelBackground.font` via `skinContext.resolvedFont(for: .readerPanelBackground)` and apply to the text view
     - When resolved font is nil, retain hardcoded `NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)`
     - Check `NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast`; when true, ignore skin font and use SF Mono 14pt regardless
     - _Requirements: 8.3, 8.6, 15.3_
 
-  - [ ]* 17.4 Unit tests for Reader panel skinning
+  - [x]* 17.4 Unit tests for Reader panel skinning
     - Create `Tests/HoloscapeTests/Unit/ReaderModeSkinningTests.swift`
     - Test font applied when `readerPanelBackground.font` is defined
     - Test fallback to SF Mono when surface absent

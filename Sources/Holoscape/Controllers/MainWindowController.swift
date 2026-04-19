@@ -620,6 +620,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             NSLog("MainWindowController: Reader Mode invoked with no active channel — ignoring")
             return
         }
+        // Amplify Task 17.1 — inject the current skin context so
+        // Reader Mode can theme its panel surfaces. Reassigned each
+        // activation so skin switches mid-session pick up the change
+        // on the next Reader Mode open (no need to toggle twice).
+        readerModeController.skinContext = skinContext
         readerModeController.activate(
             for: channel,
             parentWindow: window,
