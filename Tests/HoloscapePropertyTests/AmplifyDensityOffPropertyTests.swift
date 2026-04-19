@@ -169,7 +169,7 @@ final class AmplifyDensityOffPropertyTests: XCTestCase {
         )
         let layer = CALayer()
         let ctx = makeContext()
-        ctx.applyFill(to: layer, from: makeSpriteFill(sprite: sprite))
+        ctx.applyFill(to: layer, from: makeSpriteFill(sprite: sprite), spriteState: .normal)
         XCTAssertNotEqual(layer.contentsRect, CGRect(x: 0, y: 0, width: 1, height: 1),
                           "Precondition: .full must actually slice the cell")
 
@@ -178,7 +178,7 @@ final class AmplifyDensityOffPropertyTests: XCTestCase {
             initialMode: .off,
             configWriter: StubWriter()
         )
-        ctx.applyFill(to: layer, from: makeSpriteFill(sprite: sprite))
+        ctx.applyFill(to: layer, from: makeSpriteFill(sprite: sprite), spriteState: .normal)
 
         XCTAssertEqual(layer.contentsRect, CGRect(x: 0, y: 0, width: 1, height: 1),
                        "Density .full → .off repaint must reset contentsRect to unit")
