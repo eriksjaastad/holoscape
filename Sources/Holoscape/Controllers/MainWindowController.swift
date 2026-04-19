@@ -1148,10 +1148,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 dragRegions: loaded.dragRegions
             )
             if let reason = loaded.validationBannerReason {
-                // Req 13.2 — surface the malformed-shape banner. For
-                // now this is just logged; a visible banner view is
-                // a later task.
+                // Req 13.2 / Task 21.2 — surface the banner. Log
+                // persists for Console-side diagnosis; visible banner
+                // tells the skin author in-app. Reduce Motion (Req
+                // 15.4) skips the fade via NSWorkspace preference.
                 NSLog("MainWindowController: \(reason)")
+                if let host = window.contentView {
+                    let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                    SkinWarningBanner.show(
+                        in: host,
+                        reason: reason,
+                        reduceMotion: reduceMotion
+                    )
+                }
             }
         } catch {
             NSLog("MainWindowController: reloadSkin('\(name)') failed: \(error) — keeping previous SkinContext")
