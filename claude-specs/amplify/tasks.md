@@ -356,7 +356,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - **Validates: Requirements 6.4**
     - Create `Tests/HoloscapePropertyTests/FontFallbackPropertyTests.swift`
 
-  - [ ]* 13.4 Property test: Font registration symmetry extended _(deferred to follow-up — needs a `.wamp` bundle test fixture with real TTF assets and the existing FontRegistrationSymmetryPropertyTests harness covers the symmetry invariant for directory-layout skins already)_
+  - [x]* 13.4 Property test: Font registration symmetry extended _(shipped — `FontRegistrationSymmetryPropertyTests.testWampBundleFontSymmetry` ships a runtime-built `.wamp` with a Menlo copy, unzips via `WampBundleLoader`, and asserts the register/unregister/register URL set is identical across cycles. Kept as a single-case test rather than a SwiftCheck property since the shape-space variation isn't the invariant being pinned.)_
     - **Property 11: Font registration symmetry**
     - **Validates: Requirements 6.7, 6.8 (extended for `.wamp` path)**
     - Extend `Tests/HoloscapePropertyTests/FontRegistrationSymmetryPropertyTests.swift` to cover the `.wamp` unzip + register sequence. Assert that across any sequence of register/unregister calls against `.wamp` bundles, the process-scope `CTFontManager` registration set contains exactly the fonts of the currently-active skin (zero leaks), and that no scope other than `.process` is ever touched

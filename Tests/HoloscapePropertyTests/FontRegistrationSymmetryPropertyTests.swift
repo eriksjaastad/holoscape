@@ -1,6 +1,7 @@
 import XCTest
 import CoreText
 import SwiftCheck
+import ZIPFoundation
 @testable import Holoscape
 
 /// Property 9 — Font registration symmetry (Requirement 8.3).
@@ -114,6 +115,90 @@ final class FontRegistrationSymmetryPropertyTests: XCTestCase {
             let registered = Set(bundle.registeredURLs.map { $0.standardizedFileURL.path })
             return registered.isSubset(of: Set(fontsDirEntries))
         }
+    }
+
+    // MARK: - .wamp path (Amplify Task 13.4)
+
+    /// Symmetry invariant through the `.wamp` path: register, drain,
+    /// register again — second registration must produce the same
+    /// URL set as the first.
+    ///
+    /// The `.wamp` variant exercises two concerns the directory path
+    /// doesn't:
+    ///   - `WampBundleLoader.unzipIfNeeded` extracts the TTF to a
+    ///     hash-keyed cache subdirectory. `registerFonts` walks that
+    ///     extracted tree, so the URLs that end up in
+    ///     `SkinFontBundle.registeredURLs` are cache-subdir paths,
+    ///     not in-ZIP paths.
+    ///   - Cycle 2 hits the cache (same bundle bytes), so both cycles
+    ///     see an identical extracted URL on disk. Asymmetry would
+    ///     mean the first unregister missed a URL OR leaked a
+    ///     process-scope registration that blocks re-register.
+    ///
+    /// Not a property test — one case, one bundle. The shape-space
+    /// variation that makes property testing valuable for the
+    /// directory path (0-3 fonts × 0-2 corrupt × 0-2 nonFont) doesn't
+    /// apply here; we're pinning that the `.wamp` extraction pipeline
+    /// preserves the invariant, not re-exploring the filter shape.
+    func testWampBundleFontSymmetry() throws {
+        let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("holoscape-wamp-fontsym-\(UUID().uuidString)")
+        let cacheRoot = tempRoot.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let source = URL(fileURLWithPath: "/System/Library/Fonts/Menlo.ttc")
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw XCTSkip("System Menlo.ttc not found — broken macOS install")
+        }
+        let fontData = try Data(contentsOf: source)
+
+        // Ship the font inside the .wamp at assets/fonts/menlo.ttf
+        // (same extension-filter rule the directory test uses).
+        let bundleURL = tempRoot.appendingPathComponent("fontsym.wamp")
+        let archive = try Archive(url: bundleURL, accessMode: .create)
+        let manifestData = Data(#"{"version":"3.0","name":"fontsym"}"#.utf8)
+        try archive.addEntry(
+            with: "skin.json",
+            type: .file,
+            uncompressedSize: Int64(manifestData.count),
+            compressionMethod: .none
+        ) { position, size in
+            let start = Int(position)
+            let end = min(start + size, manifestData.count)
+            return manifestData.subdata(in: start..<end)
+        }
+        try archive.addEntry(
+            with: "assets/fonts/menlo.ttf",
+            type: .file,
+            uncompressedSize: Int64(fontData.count),
+            compressionMethod: .none
+        ) { position, size in
+            let start = Int(position)
+            let end = min(start + size, fontData.count)
+            return fontData.subdata(in: start..<end)
+        }
+
+        let loader = WampBundleLoader(cacheRoot: cacheRoot)
+        loader.sandbox = engine
+
+        // Cycle 1
+        let skinDir1 = try loader.unzipIfNeeded(bundleURL: bundleURL)
+        let bundle1 = engine.registerFonts(from: skinDir1)
+        engine.unregisterFonts(bundle1)
+
+        // Cycle 2 — cache-hit, same skinDir, fresh registration.
+        let skinDir2 = try loader.unzipIfNeeded(bundleURL: bundleURL)
+        let bundle2 = engine.registerFonts(from: skinDir2)
+        defer { engine.unregisterFonts(bundle2) }
+
+        let set1 = Set(bundle1.registeredURLs.map { $0.standardizedFileURL.path })
+        let set2 = Set(bundle2.registeredURLs.map { $0.standardizedFileURL.path })
+
+        XCTAssertEqual(set1, set2,
+                       "register → unregister → register through .wamp must yield identical URL sets")
+        XCTAssertFalse(set1.isEmpty,
+                       "At least one font must have registered — bundle has a valid Menlo copy")
     }
 
     // MARK: - Helpers
