@@ -242,6 +242,19 @@ class TabBarView: NSView {
         if let font = skinContext?.resolvedFont(for: .tabBarTabActive) {
             button.font = font
         }
+        // Amplify Task 15 — border/corner/shadow from the skin.
+        // Pill-shape clamp (Req 7.5): cornerRadius capped at
+        // buttonHeight / 2 so a skin declaring corner: 9999
+        // produces a pill, not a collapsed circle. `buttonLayer`
+        // may be nil on very early layout passes — guard.
+        if let ctx = skinContext {
+            let resolved = ctx.currentState(for: .tabBarTabActive)
+            ctx.applyBorderAndCorner(
+                to: buttonLayer,
+                from: resolved,
+                clampCornerToHalfHeight: button.bounds.height
+            )
+        }
     }
 
     private func makeTabButton(for channel: any ChannelController) -> NSButton {
