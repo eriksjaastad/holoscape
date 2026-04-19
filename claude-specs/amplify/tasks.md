@@ -452,7 +452,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Banner text is VoiceOver-readable (set `accessibilityLabel`)
     - _Requirements: 13.2, 13.6, 15.4_
 
-  - [ ] 21.3 Sprite / font / drag-region degradation logging
+  - [x] 21.3 Sprite / font / drag-region degradation logging _(shipped — audited SkinEngine + SkinContext for missing NSLog sites on fallback paths. Existing coverage is comprehensive: SkinEngine logs on image decode failure, ninepatch JSON/range errors, font register + unregister failures, duplicate PostScript names, unknown SurfaceKey, malformed dragRegions, HIG-undersized drag bboxes, and windowShape-without-flag. SkinContext logs on zero-dim sprite sheet, unknown match key, tile-mode not implemented, invalid gradient hex, stop-count mismatch, cached image miss, and invalid sprite descriptor. ONE gap filled: `SkinContext.applySpriteCell` fall-through when neither the requested state nor `normal` is in `stateMap` now logs the missing state's rawValue so skin authors see which state their stateMap forgot. Font registry misses intentionally unlogged at runtime — they're the downstream consequence of a load-time failure that already logs; additional per-call logging would be chatty for a condition already surfaced.)_
     - Verify every fallback path (missing sprite image, missing font, malformed drag region) logs exactly one warning line naming the offending path or index (Principle 5 of Error Handling)
     - Audit existing log call sites; add missing ones
     - _Requirements: 13.3, 13.4, 13.5_
@@ -460,7 +460,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
   - [x] 21.4 Write `docs/amplify-format.md` _(shipped — reference doc covering bundle layout, manifest v1/v2/v3 fields, SurfaceDescriptor + sprite + ninepatch + state variants + match expressions, 36-surface catalog, Requirement 13 failure modes, `tools/package_synthwave.sh` packaging. Worked example uses `HoloscapeSynthwave` since that's what ships; Classic is deferred art direction.)_
     - _Requirements: 17.1, 17.2, 17.3_
 
-  - [ ] 21.5 Update parent chrome-skinning spec
+  - [x] 21.5 Update parent chrome-skinning spec _(shipped — `claude-specs/chrome-skinning/tasks.md` now opens with a "Follow-up spec: Amplify" blockquote linking to `claude-specs/amplify/` and naming the scope split: chrome-skinning delivers color/gradient/image fills + ninepatch + state variants for existing views; Amplify delivers shape, sprites, drag regions, font consumption, and .wamp bundles. Every v2 skin renders unchanged under v3.)_
     - Modify `claude-specs/chrome-skinning/tasks.md` to mark Amplify as the follow-up spec; link `claude-specs/amplify/` from the parent
     - _Requirements: 17.4_
 
