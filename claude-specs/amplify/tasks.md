@@ -200,34 +200,34 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 6. Checkpoint
   - Ensure shaped-window reconstruction works behind the env flag; verify `HoloscapeSynthwave` (no `windowShape`) renders rectangular; verify `shaped.wamp` fixture produces a shaped window.
 
-- [ ] 7. Click-through hit testing
-  - [ ] 7.1 Create `HitRegionSampler`
+- [x] 7. Click-through hit testing
+  - [x] 7.1 Create `HitRegionSampler`
     - Create `Sources/Holoscape/Services/HitRegionSampler.swift` with `struct HitRegionSampler`
     - Store `polygons: [Polygon]`
     - Implement `contains(_ point: CGPoint) -> Bool` via ray-casting (Jordan curve theorem) — returns true if point inside any polygon
     - Handle edges and vertices deterministically using the half-open interval convention
     - _Requirements: 3.1, 3.2, 3.4_
 
-  - [ ] 7.2 Override `hitTest(_:)` on the shaped-window content view
+  - [x] 7.2 Override `hitTest(_:)` on the shaped-window content view
     - Create `Sources/Holoscape/Views/ShapedContentView.swift` subclass of `NSView` used only when a shape is active
     - Store `hitRegionSampler: HitRegionSampler?`
     - Override `hitTest(_:)` to: (1) return nil if point is outside the sampler's covered regions; (2) otherwise delegate to `super.hitTest(_:)` to route into sub-views
     - Install `ShapedContentView` as the content view in `ShapedWindowController.reconstructWindow` when a shape is applied
     - _Requirements: 3.1, 3.3_
 
-  - [ ] 7.3 Wire samplers from `MainWindowController`
+  - [x] 7.3 Wire samplers from `MainWindowController`
     - In `MainWindowController.applySkin`, after shape reconstruction, construct `HitRegionSampler` from the resolved polygons and inject into the `ShapedContentView`
     - Tear down sampler on rectangular return
     - Post-MVP hook: when mask-image shapes ship (Phase 2), this call site adds a parallel `AlphaHitSampler` construction path; the injection surface is factored to accept either sampler
     - _Requirements: 3.1_
 
-  - [ ]* 7.4 Unit tests for HitRegionSampler
+  - [x]* 7.4 Unit tests for HitRegionSampler
     - Create `Tests/HoloscapeTests/Unit/HitRegionSamplerTests.swift`
     - Test inside / outside / on-edge / on-vertex classifications for triangles, squares, concave polygons, nested polygons
     - Test determinism across 100 repeated calls
     - _Requirements: 3.1, 3.2_
 
-  - [ ]* 7.5 Property test: Hit region determinism
+  - [x]* 7.5 Property test: Hit region determinism
     - **Property 5: Hit region sampler is deterministic on vertices and edges**
     - **Validates: Requirements 3.2, 3.3**
     - Create `Tests/HoloscapePropertyTests/HitRegionDeterminismPropertyTests.swift`
