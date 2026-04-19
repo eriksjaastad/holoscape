@@ -197,7 +197,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - **Validates: Requirements 2.8**
     - Create `Tests/HoloscapePropertyTests/FeatureFlagPropertyTests.swift`
 
-- [ ] 6. Checkpoint
+- [x] 6. Checkpoint _(lifecycle verified live 2026-04-19 — PR #134 fixed the `isReleasedWhenClosed` double-release that blocked this gate for 4 days. `HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS=1` + `AmplifyDemo` now reconstructs without crash, renders the octagon mask (cut top-left visible), survives resize, and drag attempts. `HoloscapeSynthwave` (no `windowShape`) continues to render rectangular. Three visual follow-ups — mask-not-rescaling-on-resize (#6037), content view black after reconstruction (#6038), sessionLauncher sprite outside bounds (#6039) — do not block the lifecycle gate and are tracked separately.)_
   - Ensure shaped-window reconstruction works behind the env flag; verify `HoloscapeSynthwave` (no `windowShape`) renders rectangular; verify `shaped.wamp` fixture produces a shaped window.
 
 - [x] 7. Click-through hit testing
