@@ -145,8 +145,8 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 4. Checkpoint
   - Ensure `swift test` passes with `.wamp` loader; stage `holoscape_synthwave.wamp` fixture and verify it loads via `SkinEngine.loadComposite`; verify backward-compat — `HoloscapeSynthwave` directory-layout still loads identically.
 
-- [ ] 5. Shaped window rendering
-  - [ ] 5.1 Create `ShapedWindowController`
+- [x] 5. Shaped window rendering
+  - [x] 5.1 Create `ShapedWindowController`
     - Create `Sources/Holoscape/Controllers/ShapedWindowController.swift` with `@MainActor final class ShapedWindowController`
     - Store `featureFlagEnabled: Bool` computed from `ProcessInfo.processInfo.environment["HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS"] == "1"`
     - Implement `buildMaskLayer(for:in:) -> CALayer?` that constructs a `CAShapeLayer` from the polygon union (MVP ships polygons only; mask-image is post-MVP per Requirement 2.9)
@@ -155,25 +155,25 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Define `ResolvedWindowShape` struct with `kind: Kind` enum containing only `polygons([Polygon])` in MVP; leave the enum shape in place so Phase 2 can add `.mask(NSImage)` without source churn
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.8, 2.9_
 
-  - [ ] 5.2 Wire shape application into `SkinEngine.loadComposite`
+  - [x] 5.2 Wire shape application into `SkinEngine.loadComposite`
     - Modify `Sources/Holoscape/Services/SkinEngine.swift` `loadComposite(named:)` to validate `manifest.windowShape` via `ShapedWindowController.validate` when the feature flag is on
     - Attach `ResolvedWindowShape?` to the returned `LoadedSkin` struct (add a new field)
     - On validation failure, log and return `LoadedSkin` with `windowShape: nil` plus a `validationBannerReason: String?` field
     - _Requirements: 2.4, 2.9, 13.2_
 
-  - [ ] 5.3 Wire shape application into `MainWindowController.applySkin`
+  - [x] 5.3 Wire shape application into `MainWindowController.applySkin`
     - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to add `shapedWindowController: ShapedWindowController` property initialized in `init`
     - Extend `applySkin(_:)` to, after applying surfaces, ask `shapedWindowController` whether a reconstruction is needed (flag on + non-nil shape OR flag on + transitioning from shape to rectangular)
     - If reconstruction is needed, invoke `shapedWindowController.reconstructWindow(...)` and swap the window reference; on nil shape, install no mask; on non-nil shape, install `buildMaskLayer(...)` on `contentView.layer.mask`
     - Preserve window frame, key-window status, first-responder
     - _Requirements: 2.1, 2.2, 2.3, 11.4_
 
-  - [ ] 5.4 Apply Reduce Motion / Reduce Transparency overrides
+  - [x] 5.4 Apply Reduce Motion / Reduce Transparency overrides
     - In `MainWindowController.applySkin`, check `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion` before any fade `NSAnimationContext` block; omit the fade when true
     - In `ShapedWindowController.buildMaskLayer`, when `NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency` is true, render masked-out regions as opaque `NSColor.systemGray` instead of transparent
     - _Requirements: 2.6, 2.7, 15.1, 15.2_
 
-  - [ ]* 5.5 Unit tests for ShapedWindowController
+  - [x]* 5.5 Unit tests for ShapedWindowController
     - Create `Tests/HoloscapeTests/Unit/ShapedWindowControllerTests.swift`
     - Test polygon validation rejects out-of-bounds polygons
     - Test `CAShapeLayer` mask construction for `kind: polygons`
@@ -181,18 +181,18 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test feature flag gating: flag off → `validate` returns nil regardless of input
     - _Requirements: 2.4, 2.8, 2.9_
 
-  - [ ]* 5.6 Integration test for shape transition
+  - [x]* 5.6 Integration test for shape transition
     - Create `Tests/HoloscapeTests/Integration/ShapedWindowTransitionTests.swift`
     - Test rectangular → shaped → rectangular sequence; assert frame preserved and first responder preserved across swaps
     - Test no leaked `NSTrackingArea` after rectangular restoration
     - _Requirements: 2.3, 11.4_
 
-  - [ ]* 5.7 Property test: Shape validation rejects out-of-bounds polygons
+  - [x]* 5.7 Property test: Shape validation rejects out-of-bounds polygons
     - **Property 4: Shape validation rejects out-of-bounds polygons**
     - **Validates: Requirements 2.4, 12.7**
     - Create `Tests/HoloscapePropertyTests/ShapeValidationPropertyTests.swift`
 
-  - [ ]* 5.8 Property test: Feature flag off disables every shape code path
+  - [x]* 5.8 Property test: Feature flag off disables every shape code path
     - **Property 12: Feature-flag-off disables every shape code path**
     - **Validates: Requirements 2.8**
     - Create `Tests/HoloscapePropertyTests/FeatureFlagPropertyTests.swift`
