@@ -105,6 +105,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// Exposed `internal` so AppDelegate can pass it to AppearanceSettings.
     let densityModeManager: DensityModeManager
 
+    /// Shared animation engine for the chrome. Wired to
+    /// `densityModeManager` so density transitions can call
+    /// `suppressAll()` on in-flight animations, and passed to
+    /// `ReaderModeController.activate` so reader-mode entry can do
+    /// the same. Card #6027 closed the pre-existing wiring gap —
+    /// prior to this, the engine was never constructed and the
+    /// suppression paths never fired in production.
+    let animationEngine: AnimationEngine
+
     /// Reactive snapshot shared across chrome views so state-variant
     /// matches (hover, agentState, etc.) stay coherent during a layout
     /// pass. Owned here so MainWindowController can update it in response
@@ -220,7 +229,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.sidebarExpanded = config.sidebarExpanded ?? true
 
         self.regionManager = ChromeRegionManager(configService: configService)
-        self.densityModeManager = DensityModeManager(configService: configService)
+        // Card #6027 — construct the shared AnimationEngine BEFORE
+        // DensityModeManager so the manager can hold a weak ref to
+        // it at init time. The reverse reference (engine →
+        // manager) is wired right after super.init because it
+        // requires `self` to be fully initialized. The engine
+        // itself is harmless to use before that wiring — it just
+        // means `densityModeManager?.shouldAnimate()` reads nil
+        // and defaults to "allow animation," which is what the
+        // engine already does for no-density-manager contexts.
+        self.animationEngine = AnimationEngine(
+            hostView: self.window.contentView,
+            densityModeManager: nil
+        )
+        self.densityModeManager = DensityModeManager(
+            configService: configService,
+            animationEngine: self.animationEngine
+        )
         // Amplify Task 11.6 — wire the density manager into the
         // ambient sprite-rendering gate so `SkinContext.applyFill`
         // honors density `.minimal` without a per-call parameter.
@@ -228,6 +253,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.skinContext = SkinContext.builtInDefaults(reactive: self.reactiveSnapshot)
 
         super.init()
+
+        // Card #6027 — close the reverse wire (engine → manager).
+        // The engine consults `shouldAnimate()` on every animate call;
+        // without this the engine would animate regardless of density.
+        self.animationEngine.densityModeManager = self.densityModeManager
 
         // Hand each migrated chrome view the current skin context so
         // their colors come from `SkinContext.currentState(for:)` rather
@@ -642,11 +672,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// channel is active — the menu item stays available but a toggle
     /// with no channel just logs and returns.
     ///
-    /// `animationEngine: nil` is intentional: the app's object graph
-    /// does not currently own a shared AnimationEngine (backlog card to
-    /// wire one alongside DensityModeManager). When nil, Reader Mode
-    /// skips its chrome-animation suppression step; the dim already
-    /// conveys "not in interactive mode."
+    /// Passes the shared `animationEngine` so Reader Mode can
+    /// suppress in-flight chrome animations on entry (card #6027
+    /// closed the wiring gap — this used to be `nil`).
     @objc func toggleReaderMode() {
         if readerModeController.isActive {
             readerModeController.dismiss()
@@ -665,7 +693,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         readerModeController.activate(
             for: channel,
             parentWindow: window,
-            animationEngine: nil
+            animationEngine: animationEngine
         )
     }
 
