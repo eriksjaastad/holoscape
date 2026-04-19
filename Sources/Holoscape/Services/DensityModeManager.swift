@@ -121,6 +121,16 @@ final class DensityModeManager {
     func shouldAnimate() -> Bool {
         mode == .full
     }
+
+    /// Amplify Task 11.6 — sprite-sheet rendering is only active in
+    /// `.full`. `.minimal` falls back to full-sheet stretch rendering
+    /// (Requirement 5.6 / 11.2) so a skin with sprite descriptors
+    /// still renders something recognizable at reduced density.
+    /// `.off` bypasses sprites entirely — the Skin Engine bypass
+    /// gate upstream covers that case before we reach this call.
+    func shouldRenderSprites() -> Bool {
+        mode == .full
+    }
 }
 
 // MARK: - Persistence abstraction
