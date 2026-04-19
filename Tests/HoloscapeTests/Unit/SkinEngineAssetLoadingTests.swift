@@ -103,7 +103,7 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
 
         var skin = SkinDefinition()
         skin.surfaces = [
-            "tabBar": SurfaceDescriptor(fill: .image(path: pngPath, tile: .stretch))
+            "tabBar": SurfaceDescriptor(fill: .image(path: pngPath, tile: .stretch, sprite: nil))
         ]
 
         let images = try engine.loadImages(from: tempSkinDir, manifest: skin)
@@ -117,12 +117,12 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
         try writePNG(relPath: basePath)
         try writePNG(relPath: hoverPath)
 
-        var surface = SurfaceDescriptor(fill: .image(path: basePath, tile: .stretch))
+        var surface = SurfaceDescriptor(fill: .image(path: basePath, tile: .stretch, sprite: nil))
         surface.states = [
             StateVariant(
                 name: "hover",
                 match: MatchExpression(conditions: ["hover": .scalar(1)]),
-                fill: .image(path: hoverPath, tile: .stretch)
+                fill: .image(path: hoverPath, tile: .stretch, sprite: nil)
             )
         ]
         var skin = SkinDefinition()
@@ -141,8 +141,8 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
 
         var skin = SkinDefinition()
         skin.surfaces = [
-            "a": SurfaceDescriptor(fill: .image(path: shared, tile: .stretch)),
-            "b": SurfaceDescriptor(fill: .image(path: shared, tile: .tile)),
+            "a": SurfaceDescriptor(fill: .image(path: shared, tile: .stretch, sprite: nil)),
+            "b": SurfaceDescriptor(fill: .image(path: shared, tile: .tile, sprite: nil)),
         ]
 
         let images = try engine.loadImages(from: tempSkinDir, manifest: skin)
@@ -153,7 +153,7 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
     func testLoadImagesPropagatesInvalidPath() {
         var skin = SkinDefinition()
         skin.surfaces = [
-            "bad": SurfaceDescriptor(fill: .image(path: "/etc/passwd", tile: .stretch))
+            "bad": SurfaceDescriptor(fill: .image(path: "/etc/passwd", tile: .stretch, sprite: nil))
         ]
         XCTAssertThrowsError(try engine.loadImages(from: tempSkinDir, manifest: skin)) { err in
             XCTAssertEqual(err as? SkinAssetError, .invalidPath("/etc/passwd"))
@@ -182,7 +182,7 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
 
         var skin = SkinDefinition()
         skin.surfaces = [
-            "tab": SurfaceDescriptor(fill: .image(path: linkPath, tile: .stretch))
+            "tab": SurfaceDescriptor(fill: .image(path: linkPath, tile: .stretch, sprite: nil))
         ]
 
         XCTAssertThrowsError(try engine.loadImages(from: tempSkinDir, manifest: skin)) { err in
@@ -197,7 +197,7 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
         let basePath = "base.png"
         try writePNG(relPath: basePath)
 
-        var surface = SurfaceDescriptor(fill: .image(path: basePath, tile: .stretch))
+        var surface = SurfaceDescriptor(fill: .image(path: basePath, tile: .stretch, sprite: nil))
         surface.states = [
             StateVariant(
                 name: "pressed",
@@ -224,8 +224,8 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
 
         var skin = SkinDefinition()
         skin.surfaces = [
-            "a": SurfaceDescriptor(fill: .image(path: corruptPath, tile: .stretch)),
-            "b": SurfaceDescriptor(fill: .image(path: goodPath, tile: .stretch)),
+            "a": SurfaceDescriptor(fill: .image(path: corruptPath, tile: .stretch, sprite: nil)),
+            "b": SurfaceDescriptor(fill: .image(path: goodPath, tile: .stretch, sprite: nil)),
         ]
 
         let images = try engine.loadImages(from: tempSkinDir, manifest: skin)
