@@ -31,6 +31,18 @@ final class ShapedContentView: NSView {
     /// ownership pattern.
     var sampler: HitRegionSampler?
 
+    /// Amplify Task 9 — injected by `MainWindowController.applyWindowShape`
+    /// when the manifest declares drag regions. Nil means no drag
+    /// routing; mouseDown goes to super, cursorUpdate uses the system
+    /// default. Installing a new tracker on skin switch is the
+    /// controller's responsibility — this view just reads it.
+    var dragRegionTracker: DragRegionTracker?
+
+    /// True while the mouse button is held down inside the view. Used
+    /// by `cursorUpdate` to pick between `.openHand` (hover) and
+    /// `.closedHand` (hover + drag in flight).
+    private var isMouseDown: Bool = false
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Content-view coordinates on a borderless + fullSizeContentView
         // window match window-content coordinates 1:1, which is what
@@ -40,5 +52,39 @@ final class ShapedContentView: NSView {
             return nil
         }
         return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Set isMouseDown unconditionally — not just on the tracker-
+        // consumed branch. Otherwise a mouseDown that falls outside
+        // every drag region would leave `isMouseDown == false`, and
+        // if the cursor subsequently enters a region while the button
+        // is still held, `cursorUpdate` would show the openHand glyph
+        // instead of closedHand. State machine needs to reflect the
+        // ACTUAL button state, not the consumed-by-tracker state.
+        isMouseDown = true
+        if let tracker = dragRegionTracker, tracker.handleMouseDown(event) {
+            // Tracker consumed the event — it invoked performDrag.
+            // We must NOT forward to super (which would deliver a
+            // spurious click into whatever view is underneath).
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        isMouseDown = false
+        super.mouseUp(with: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if let tracker = dragRegionTracker {
+            let point = convert(event.locationInWindow, from: nil)
+            if let cursor = tracker.cursorForPoint(point, mouseDown: isMouseDown) {
+                cursor.set()
+                return
+            }
+        }
+        super.cursorUpdate(with: event)
     }
 }
