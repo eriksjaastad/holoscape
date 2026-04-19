@@ -135,7 +135,7 @@ private extension SkinContext.ResolvedSurface {
             return a.cgColor == b.cgColor
         case (.gradient(let dA, let sA), .gradient(let dB, let sB)):
             return dA == dB && sA == sB
-        case (.image(let iA, let tA, _), .image(let iB, let tB, _)):
+        case (.image(let iA, let tA, _, _), .image(let iB, let tB, _, _)):
             return iA === iB && tA == tB
         default:
             return false

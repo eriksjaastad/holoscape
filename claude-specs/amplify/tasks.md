@@ -279,18 +279,18 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
   - Ensure `shaped.wamp` with declared drag regions moves the window on mouseDown+drag; ensure no drag regions → entire content view draggable fallback; verify Mac Mini dogfood of drag UX.
 
 - [ ] 11. Sprite-sheet fills
-  - [ ] 11.1 Extend `SkinContext.applyFill` with sprite state parameter
+  - [x] 11.1 Extend `SkinContext.applyFill` with sprite state parameter
     - Modify `Sources/Holoscape/Services/SkinContext.swift` `applyFill(to:from:backingScale:)` to take an additional `spriteState: SpriteState = .normal` parameter
     - When `resolved.fill` is `.image` with a non-nil `SpriteDescriptor`: assign the FULL sprite sheet to `layer.contents` once (idempotent — skip reassignment when already correct), then compute the normalized UV rectangle `CGRect(x: col * cellWidth / imageWidth, y: row * cellHeight / imageHeight, width: cellWidth / imageWidth, height: cellHeight / imageHeight)` and set `layer.contentsRect`. This keeps state transitions on the GPU side — no CGImage re-crop, no bitmap allocation per state — and plays correctly with `layer.contentsScale = backingScale` for Retina
     - Fall back to the `normal` cell when `spriteState` not in stateMap; fall back to the full sheet at `contentsRect = unit` (0,0,1,1) with `contentsGravity = .resize` when `normal` is also absent
     - _Requirements: 5.1, 5.3, 5.7_
 
-  - [ ] 11.2 Validate sprite descriptor at load time
+  - [x] 11.2 Validate sprite descriptor at load time
     - In `SkinEngine.loadComposite`, after `loadImages` succeeds, iterate surfaces with sprite descriptors; for each, call `SpriteDescriptor.isValid(imageSize:)` against the loaded image size
     - On invalid descriptor, log a dimension-mismatch warning and drop the sprite descriptor (fall back to stretch-mode fill) by rewriting the resolved surface's fill to `.image(path, .stretch, nil)` effectively
     - _Requirements: 5.4_
 
-  - [ ] 11.3 Publish sprite state transitions from TabBarView
+  - [ ] 11.3 Publish sprite state transitions from TabBarView _(deferred to follow-up PR — chrome-view NSTrackingArea wiring is substantial per-view work separate from the core pipeline)_
     - Modify `Sources/Holoscape/Views/TabBarView.swift` to install an `NSTrackingArea` on each tab button; on `mouseEntered` set `spriteState = .hover`, on `mouseExited` reset; on `mouseDown` set `.pressed`, on `mouseUp` reset
     - Write `spriteState.rawValue` into the per-tab `ReactiveUniformSnapshot`; call `refreshFromSkin()` on transition
     - In `refreshFromSkin()`, read current sprite state and pass to `applyFill(..., spriteState:)`
@@ -305,12 +305,12 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Modify `Sources/Holoscape/Views/SessionLauncherView.swift` similarly; install tracking areas on launcher button; publish state on transition
     - _Requirements: 5.2, 5.5_
 
-  - [ ] 11.6 Honor density modes for sprite rendering
+  - [x] 11.6 Honor density modes for sprite rendering
     - In `SkinContext.applyFill`, check `densityModeManager?.shouldRenderSprites() ?? true`; when false (minimal mode), skip the `contentsRect` UV computation and apply stretch-mode full-image fill (`contentsRect = unit`)
     - Add `shouldRenderSprites()` method to `DensityModeManager` returning `true` only for `.full`
     - _Requirements: 5.6, 11.2_
 
-  - [ ]* 11.7 Unit tests for sprite cell selection
+  - [x]* 11.7 Unit tests for sprite cell selection
     - Create `Tests/HoloscapeTests/Unit/SpriteContentsRectTests.swift`
     - Test UV math at pixel boundaries (fixture: 2×2 grid of colored quadrants — `contentsRect` for each quadrant sampled on a colored fixture must return the matching color)
     - Test off-by-one at cell edges (UV values at the exact `row * cellHeight / imageHeight` seam)
@@ -319,7 +319,7 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - Test that `layer.contents` is assigned exactly once per skin load and `contentsRect` is mutated on state transitions
     - _Requirements: 5.1, 5.3, 5.4_
 
-  - [ ]* 11.8 Property test: Sprite cell selection covers exactly the declared cell
+  - [x]* 11.8 Property test: Sprite cell selection covers exactly the declared cell
     - **Property 6: Sprite cell selection covers exactly the declared cell**
     - **Validates: Requirements 5.1, 5.4, 5.7**
     - Create `Tests/HoloscapePropertyTests/SpriteContentsRectPropertyTests.swift`
