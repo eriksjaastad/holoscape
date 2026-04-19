@@ -79,6 +79,18 @@ struct LoadedSkin {
     /// Absolute URL of the skin's directory. Nil for `.defaults`. Used
     /// by Task 11 to scope its FSEventStream watcher.
     let skinDir: URL?
+    /// Amplify Task 5.2 — validated window shape when the manifest
+    /// declares `windowShape` AND the `HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS`
+    /// env flag is on AND validation passes. Nil in every other case
+    /// (flag off, no `windowShape` field, or validation rejected the
+    /// descriptor). `MainWindowController.applySkin` reads this to
+    /// decide whether to reconstruct the window.
+    let windowShape: ResolvedWindowShape?
+    /// Set when a non-nil `windowShape` field in the manifest failed
+    /// validation. Chrome-layer banners (Requirement 13.2) read this
+    /// to surface a user-visible warning without digging through logs.
+    /// Nil when validation succeeded or no shape was declared.
+    let validationBannerReason: String?
 
     /// Sentinel returned when the requested skin is `"Default"` — lets
     /// callers treat Default as "no skin loaded" without a special case.
@@ -92,7 +104,9 @@ struct LoadedSkin {
         surfaces: nil,
         fonts: SkinFontBundle(fonts: [:], registeredURLs: []),
         images: [:],
-        skinDir: nil
+        skinDir: nil,
+        windowShape: nil,
+        validationBannerReason: nil
     )
 }
 
@@ -862,12 +876,49 @@ class SkinEngine {
         let effectiveSurfaces: [SurfaceKey: SkinContext.ResolvedSurface]? =
             resolvedSurfaces.isEmpty ? nil : resolvedSurfaces
 
+        // Amplify Task 5.2 — validate `manifest.windowShape` when the
+        // feature flag is on. Gating here (rather than in the renderer)
+        // keeps the flag-off path completely free of shaped-window
+        // allocations (Property 12). Validation failures produce a
+        // banner reason the chrome layer can surface per Req 13.2.
+        let (validatedShape, bannerReason) = resolveWindowShape(
+            from: manifest,
+            skinName: name
+        )
+
         return LoadedSkin(
             name: name,
             surfaces: effectiveSurfaces,
             fonts: fonts,
             images: images,
-            skinDir: skinDir
+            skinDir: skinDir,
+            windowShape: validatedShape,
+            validationBannerReason: bannerReason
         )
+    }
+
+    /// Private helper for Task 5.2 — one place to keep the "only
+    /// when flag is on" gate and the validation call together. Nominal
+    /// content-view bounds default to the pre-Amplify `1000×700` launch
+    /// size so polygons authored against that canvas validate correctly;
+    /// runtime checks against the actual window bounds happen when the
+    /// renderer installs the mask (Task 5.3).
+    private func resolveWindowShape(
+        from manifest: SkinDefinition,
+        skinName: String
+    ) -> (ResolvedWindowShape?, String?) {
+        guard let shapeDescriptor = manifest.windowShape else { return (nil, nil) }
+
+        guard ShapedWindowController.isFeatureFlagEnabled() else {
+            NSLog("SkinEngine: skin '\(skinName)' declares windowShape but HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS is off — ignoring")
+            return (nil, nil)
+        }
+
+        let nominalBounds = CGRect(x: 0, y: 0, width: 1000, height: 700)
+        if let resolved = ShapedWindowController.validate(shapeDescriptor, against: nominalBounds) {
+            return (resolved, nil)
+        } else {
+            return (nil, "Skin \(skinName): invalid window shape, using rectangle")
+        }
     }
 }
