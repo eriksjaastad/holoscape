@@ -335,15 +335,15 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
 - [ ] 12. Checkpoint
   - Ensure tab buttons, sidebar rows, and launcher buttons swap sprite cells on hover/press by mutating `layer.contentsRect` (the full sheet is assigned to `layer.contents` exactly once per skin load); verify density `.minimal` short-circuits to stretch mode; verify `HoloscapeSynthwave` (no sprite descriptors) renders unchanged.
 
-- [ ] 13. Chrome font consumption
-  - [ ] 13.1 Add `resolvedFont` helper to `SkinContext`
+- [x] 13. Chrome font consumption
+  - [x] 13.1 Add `resolvedFont` helper to `SkinContext`
     - Modify `Sources/Holoscape/Services/SkinContext.swift` to add `resolvedFont(for:spriteState:) -> NSFont?`
     - Resolution order: (1) check `fontRegistry` for `family`; (2) try `NSFont(name: family, size: size)`; (3) fall back to `NSFont.monospacedSystemFont(ofSize:weight:)`
     - Parse `weight` string to `NSFont.Weight`; unknown weight → `.regular`
     - The `fontRegistry` populating this lookup is produced by `SkinEngine.registerFonts(from:)`, which MUST register via `CTFontManagerRegisterFontsForURL(_, .process, _)` (no `.persistent` scope — skin fonts must not appear in Font Book or outlive the process per Requirements 6.7, 6.8)
     - _Requirements: 6.1, 6.4, 6.6, 6.7, 6.8_
 
-  - [ ] 13.2 Consume fonts in TabBarView, SidebarView, InputBoxView, SessionLauncherView
+  - [x] 13.2 Consume fonts in TabBarView, SidebarView, InputBoxView, SessionLauncherView
     - Modify `Sources/Holoscape/Views/TabBarView.swift` `refreshFromSkin()` to resolve `skinContext.resolvedFont(for: .tabBarTabActive)` (and siblings) and apply to tab label `NSTextField` instances
     - Modify `Sources/Holoscape/Views/SidebarView.swift` `refreshFromSkin()` to apply resolved font to sidebar row labels
     - Modify `Sources/Holoscape/Views/InputBoxView.swift` `refreshFromSkin()` to apply resolved font to input field and placeholder
@@ -351,12 +351,12 @@ Checkpoints validate incremental progress against the existing `HoloscapeSynthwa
     - When no font in manifest, retain pre-Amplify system font (do not touch the font property)
     - _Requirements: 6.2, 6.3, 6.5_
 
-  - [ ]* 13.3 Property test: Font fallback terminates
+  - [x]* 13.3 Property test: Font fallback terminates
     - **Property 8: Font fallback terminates**
     - **Validates: Requirements 6.4**
     - Create `Tests/HoloscapePropertyTests/FontFallbackPropertyTests.swift`
 
-  - [ ]* 13.4 Property test: Font registration symmetry extended
+  - [ ]* 13.4 Property test: Font registration symmetry extended _(deferred to follow-up — needs a `.wamp` bundle test fixture with real TTF assets and the existing FontRegistrationSymmetryPropertyTests harness covers the symmetry invariant for directory-layout skins already)_
     - **Property 11: Font registration symmetry**
     - **Validates: Requirements 6.7, 6.8 (extended for `.wamp` path)**
     - Extend `Tests/HoloscapePropertyTests/FontRegistrationSymmetryPropertyTests.swift` to cover the `.wamp` unzip + register sequence. Assert that across any sequence of register/unregister calls against `.wamp` bundles, the process-scope `CTFontManager` registration set contains exactly the fonts of the currently-active skin (zero leaks), and that no scope other than `.process` is ever touched

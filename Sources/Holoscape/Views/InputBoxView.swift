@@ -105,6 +105,12 @@ class InputBoxView: NSTextView {
         }
         textColor = field.text.color
         insertionPointColor = field.text.color
+        // Amplify Task 13 — skin-defined font on the input field.
+        // Nil means the manifest doesn't declare a font; preserve
+        // whatever the init assigned.
+        if let font = ctx.resolvedFont(for: .inputBoxField) {
+            self.font = font
+        }
     }
 
     override func keyDown(with event: NSEvent) {
