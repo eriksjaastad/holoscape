@@ -5,11 +5,51 @@ import QuartzCore
 /// polygons only. The enum shape (rather than a plain `[Polygon]`
 /// array) is deliberate — Phase 2's mask-image path adds a
 /// `.mask(NSImage)` case without touching call sites.
+/// Borderless NSWindow subclass that can still accept keyboard focus.
+/// AppKit's default for a `.borderless` window is `canBecomeKey ==
+/// false` (only titled windows become key by default), which means
+/// key events never reach child responders — shaped windows would
+/// look right but refuse to let the user type. Overriding both
+/// `canBecomeKey` and `canBecomeMain` restores the expected behavior
+/// without sacrificing the borderless style required for shaped
+/// rendering.
+final class ShapedBorderlessWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 struct ResolvedWindowShape: Equatable {
     enum Kind: Equatable {
         case polygons([Polygon])
     }
     let kind: Kind
+
+    /// The axis-aligned bounding box of every polygon in the shape,
+    /// with the origin clamped to (0, 0). Treated as the "nominal"
+    /// content-view size the skin author targeted — consumers scale
+    /// polygons from this nominal size to the live content-view
+    /// bounds so the shape adapts to window reconstruction and
+    /// resize (card #6037).
+    ///
+    /// Derived from polygons rather than declared in the manifest
+    /// because skin authors overwhelmingly think in pixel terms
+    /// against an implicit window size; forcing an explicit
+    /// `nominalSize` field would surprise them and duplicate info
+    /// that's already present in the polygon coordinates.
+    var nominalSize: CGSize {
+        switch kind {
+        case .polygons(let polys):
+            var maxX: CGFloat = 0
+            var maxY: CGFloat = 0
+            for polygon in polys {
+                for point in polygon.points {
+                    if point.x > maxX { maxX = point.x }
+                    if point.y > maxY { maxY = point.y }
+                }
+            }
+            return CGSize(width: maxX, height: maxY)
+        }
+    }
 }
 
 /// Amplify Task 5 — owns the shape-mask lifecycle: env-flag gating,
@@ -129,6 +169,27 @@ final class ShapedWindowController {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    // MARK: - Polygon scaling
+
+    /// Scale every polygon's vertices from `nominal` space into `target`
+    /// space. Degenerate source dimensions (zero width or height) skip
+    /// the corresponding axis — otherwise we'd divide by zero and the
+    /// scale collapses the polygon. Preserves vertex count and order
+    /// so every downstream consumer (mask, sampler, drag tracker) sees
+    /// the same polygon in the same space (card #6037).
+    static func scale(
+        polygons: [Polygon],
+        from nominal: CGSize,
+        to target: CGSize
+    ) -> [Polygon] {
+        let sx: CGFloat = nominal.width  > 0 ? target.width  / nominal.width  : 1
+        let sy: CGFloat = nominal.height > 0 ? target.height / nominal.height : 1
+        if sx == 1 && sy == 1 { return polygons }
+        return polygons.map { polygon in
+            Polygon(points: polygon.points.map { Point(x: $0.x * sx, y: $0.y * sy) })
+        }
+    }
+
     // MARK: - Mask construction
 
     /// Build a `CAShapeLayer` whose path is the union of `shape`'s
@@ -237,12 +298,26 @@ final class ShapedWindowController {
             backgroundColor = .windowBackgroundColor
         }
 
-        let newWindow = NSWindow(
-            contentRect: frame,
-            styleMask: newStyleMask,
-            backing: .buffered,
-            defer: false
-        )
+        // `.borderless` windows cannot become key by default — see
+        // `ShapedBorderlessWindow`. Use the subclass only when the
+        // target is shaped so the rectangular path stays on the stock
+        // `NSWindow` class (no behavior change for non-Amplify users).
+        let newWindow: NSWindow
+        if targetShape != nil {
+            newWindow = ShapedBorderlessWindow(
+                contentRect: frame,
+                styleMask: newStyleMask,
+                backing: .buffered,
+                defer: false
+            )
+        } else {
+            newWindow = NSWindow(
+                contentRect: frame,
+                styleMask: newStyleMask,
+                backing: .buffered,
+                defer: false
+            )
+        }
         // Match the bootstrap window (MainWindowController.init): opt
         // out of AppKit's legacy auto-release-on-close so ARC is the
         // sole owner. Without this, `oldWindow.close()` in
