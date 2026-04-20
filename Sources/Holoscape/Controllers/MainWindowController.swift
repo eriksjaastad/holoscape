@@ -354,6 +354,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAllTabs() }
         }
+
+        // PNG-chrome architecture PR #1 — Risk #1 mitigation
+        // (docs/png-chrome-prd.md §15). Gated behind HOLOSCAPE_PNG_CHROME_PROTOTYPE=1
+        // so the existing app paths above run unchanged; when the flag is
+        // set, we reconfigure the window as borderless + transparent and
+        // swap the content view for a minimal ChromeHostView loaded with
+        // a known-good alpha fixture. If the laptop visual check confirms
+        // cut corners reveal the desktop, the architecture is viable and
+        // PR #3 can build the real ChromeHostView + InteriorView. Removed
+        // when the prototype resource gets retired post-PR-#9.
+        if ProcessInfo.processInfo.environment["HOLOSCAPE_PNG_CHROME_PROTOTYPE"] == "1" {
+            applyPngChromePrototype()
+        }
     }
 
     deinit {
@@ -2119,6 +2132,53 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         var model = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &model, &size, nil, 0)
         return String(decoding: model.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    /// PNG-chrome architecture PR #1 — install the known-good alpha fixture
+    /// on a borderless transparent window (claude-specs/chrome/tasks.md
+    /// Task 1.1). Gated behind HOLOSCAPE_PNG_CHROME_PROTOTYPE=1. Runs
+    /// AFTER the normal init path so the existing app state is already set
+    /// up; the swap here is intentionally last-wins so we can isolate the
+    /// test of "does AppKit honor per-pixel alpha on this window" from
+    /// every other skin / surface path.
+    private func applyPngChromePrototype() {
+        guard let url = Bundle.module.url(
+            forResource: "known_good_alpha",
+            withExtension: "png",
+            subdirectory: "Prototype"
+        ) else {
+            NSLog("[chrome-prototype] known_good_alpha.png missing from Bundle.module")
+            return
+        }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            NSLog("[chrome-prototype] failed to decode PNG at \(url.path)")
+            return
+        }
+
+        // Reconfigure the window per the transparency recipe. Order matters
+        // only in that styleMask needs to swap before setContentSize so the
+        // frame/content conversion uses the new (smaller) chrome insets.
+        window.styleMask = [.borderless]
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+
+        // Lock to the fixture's nominal 1000×700 so alpha-to-pixel mapping
+        // is 1:1 for the visual check. Resize is stripped by the borderless
+        // style mask swap above; these also guard against programmatic
+        // resizes elsewhere in the app.
+        let nominal = NSSize(width: 1000, height: 700)
+        window.setContentSize(nominal)
+        window.contentMinSize = nominal
+        window.contentMaxSize = nominal
+
+        let host = ChromeHostView(
+            frame: NSRect(origin: .zero, size: nominal),
+            baseImage: cgImage
+        )
+        window.contentView = host
+        NSLog("[chrome-prototype] installed ChromeHostView (\(Int(nominal.width))×\(Int(nominal.height))) with known_good_alpha.png")
     }
 }
 
