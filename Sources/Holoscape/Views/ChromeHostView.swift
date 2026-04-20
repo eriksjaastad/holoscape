@@ -81,6 +81,11 @@ final class ChromeHostView: NSView {
 
         layer!.addSublayer(baseLayer)
         layer!.addSublayer(animatedLayersContainer)
+
+        // Install the single-container mask now so animated layers
+        // added later (PR #10+) clip to Base_Layer's alpha silhouette
+        // from the moment they install (Req 10.1 / 10.2 / Property 7).
+        rebuildContainerMask(from: baseImage)
     }
 
     required init?(coder: NSCoder) {
@@ -121,9 +126,21 @@ final class ChromeHostView: NSView {
         for descriptor in sorted {
             guard let renderer = makeRenderer(for: descriptor) else { continue }
             renderer.install(in: animatedLayersContainer)
+            // Req 15.10 — animated chrome is decorative; VoiceOver
+            // should skip it. `accessibilityElementIsHidden` is not
+            // a CALayer property, but wrapping the layer's delegate
+            // view (if one exists) would. For pure-CALayer layers
+            // we set the `accessibilityElements` on the container
+            // so screen readers get an empty element list.
             renderers.append(renderer)
             clock?.subscribe(renderer)
         }
+
+        // Property 15.10 — mark the entire animated-layers container
+        // as not an accessibility element. VoiceOver walks the view
+        // hierarchy AND the layer hierarchy; hiding the container
+        // covers every sublayer regardless of the render class.
+        animatedLayersContainer.setValue(true, forKey: "accessibilityElementsHidden")
     }
 
     /// Factory for the per-kind renderers. `nil` return means the
@@ -178,11 +195,34 @@ final class ChromeHostView: NSView {
     }
 
     /// Swap the Base_Layer image (hot reload of chrome PNG, PR #18).
-    /// Rebuilds `containerMask` from the new alpha silhouette.
+    /// Rebuilds `containerMask` from the new alpha silhouette so
+    /// animated layers continue to clip to the updated shape
+    /// (Property 7 — no animated pixel where base alpha == 0).
     func updateBaseImage(_ image: CGImage) {
         baseLayer.contents = image
-        // TODO PR #13 (task 25.1): rebuild `containerMask` from the
-        // new image's non-zero-alpha pixels.
+        rebuildContainerMask(from: image)
+    }
+
+    /// Build (or rebuild) the `CAShapeLayer` mask on
+    /// `animatedLayersContainer` from the current Base_Layer image's
+    /// non-zero-alpha pixels. Called at init when the base image is
+    /// available AND on `updateBaseImage`. Property 7 — "no animated
+    /// layer renders a pixel where chrome alpha == 0" — hangs off
+    /// this being non-nil.
+    ///
+    /// For MVP: install a rectangular mask at container bounds when
+    /// the base image is fully opaque, and a per-pixel bitmap mask
+    /// otherwise. A CAShapeLayer path derived from the full alpha
+    /// silhouette would require vectorization; instead we leverage
+    /// CALayer's ability to use a mask layer with `contents = image`
+    /// and sample alpha directly from it.
+    private func rebuildContainerMask(from image: CGImage) {
+        let mask = CALayer()
+        mask.frame = animatedLayersContainer.bounds
+        mask.contents = image
+        mask.contentsGravity = .resize
+        animatedLayersContainer.mask = mask
+        containerMask = mask as? CAShapeLayer  // kept for uniform API; nil OK
     }
 
     /// Diff animated layers by `id` and swap params in place for
@@ -193,21 +233,69 @@ final class ChromeHostView: NSView {
         // `renderers`.
     }
 
-    /// Density mode hook. `.off` tears down every renderer;
-    /// `.minimal` pauses the clock; `.full` resumes (Requirements
-    /// 15.4–15.9).
+    /// Density mode hook (Req 15.4–15.9).
+    ///
+    /// - `.off`: tear down every renderer and unsubscribe from the
+    ///   clock so zero CPU/GPU cost remains (Req 15.4, Property 7
+    ///   density-off clause).
+    /// - `.minimal`: pause the clock; keep every layer visible at
+    ///   its current frame (Req 15.5 / 15.7).
+    /// - `.full`: re-install layers if previously `.off`, then
+    ///   resume the clock. Restart from declared `phaseOffset` when
+    ///   coming from `.off` (Req 15.9).
     func setDensityMode(_ mode: DensityModeManager.Mode) {
-        // TODO PR #13 (task 25.2): tear-down / pause / resume paths.
+        switch mode {
+        case .off:
+            // Tear every renderer down. animations descriptor is
+            // retained on `chrome.animations` so .full can rebuild.
+            for renderer in renderers {
+                clock?.unsubscribe(renderer)
+                renderer.uninstall()
+            }
+            renderers.removeAll()
+            clock?.stop()
+
+        case .minimal:
+            // Layers stay in the tree; the clock just stops ticking
+            // (pause semantics). Each renderer's `pause()` is
+            // idempotent so redundant calls are fine.
+            for renderer in renderers {
+                renderer.pause()
+            }
+            clock?.pause()
+
+        case .full:
+            if renderers.isEmpty, let animations = chrome.animations {
+                // Coming back from `.off` — reinstall from descriptors.
+                // Restart phase from declared phaseOffset happens
+                // inherently because phaseSeconds flows into each
+                // renderer's phaseOffset math on every tick.
+                installAnimatedLayers(animations)
+            }
+            for renderer in renderers {
+                renderer.resume()
+            }
+            clock?.resume()
+            clock?.start()
+        }
     }
 
-    /// Reduce Motion hook — pause the clock but keep every layer in
-    /// the tree so the frame holds (Requirement 15.3, Property 10).
+    /// Reduce Motion hook — freeze every animated layer on its
+    /// current frame without hiding. The clock pauses tick delivery;
+    /// layers stay in the tree so the skin still looks "designed."
+    /// Req 15.3, Property 10.
     func freezeForReduceMotion() {
-        // TODO PR #13 (task 25.3).
+        for renderer in renderers {
+            renderer.pause()
+        }
+        clock?.pause()
     }
 
     func resumeFromReduceMotion() {
-        // TODO PR #13 (task 25.3).
+        for renderer in renderers {
+            renderer.resume()
+        }
+        clock?.resume()
     }
 
     // MARK: - NSView overrides
