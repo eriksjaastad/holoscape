@@ -1,8 +1,56 @@
 {
-  "version": "2.0",
+  "version": "4.0",
   "name": "Holoscape Synthwave",
   "author": "Holoscape team",
-  "description": "Retro synthwave dark — purple window gradient, teal-to-cyan tab bar, neon pink accents, ninepatch sidebar.",
+  "description": "Retro synthwave dark — purple window gradient, teal-to-cyan tab bar, neon pink accents, ninepatch sidebar. v4 composed chrome with ambient particles + scanlines shader.",
+  "chrome": {
+    "mode": "composed",
+    "width": 1000,
+    "height": 700,
+    "interiorRect": { "x": 0, "y": 32, "width": 1000, "height": 668 },
+    "animations": [
+      {
+        "id": "ambient-sparks",
+        "kind": "particle",
+        "rect": { "x": 0, "y": 0, "width": 1000, "height": 700 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 1.0,
+        "dataSource": "none",
+        "params": {
+          "particle": {
+            "birthRate": 1.5,
+            "lifetime": 6.0,
+            "lifetimeRange": 1.5,
+            "velocity": 8.0,
+            "velocityRange": 4.0,
+            "emissionAngle": 4.71,
+            "emissionRange": 3.14,
+            "color": "#ff4dd188",
+            "scale": 0.3,
+            "scaleRange": 0.1,
+            "blendMode": "additive"
+          }
+        }
+      },
+      {
+        "id": "scanlines-overlay",
+        "kind": "shader",
+        "rect": { "x": 0, "y": 0, "width": 1000, "height": 700 },
+        "z": 2,
+        "phaseOffset": 0,
+        "speedMultiplier": 1.0,
+        "params": {
+          "shader": {
+            "preset": "scanlines",
+            "color": "#000000",
+            "intensity": 0.08,
+            "hz": 0.2
+          }
+        }
+      }
+    ]
+  },
   "surfaces": {
     "window.background": {
       "fill": {
