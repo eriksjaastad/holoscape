@@ -174,6 +174,72 @@ final class ChromeHostViewTests: XCTestCase {
 
     // MARK: - Layout
 
+    // MARK: - Density mode transitions (Task 25.2)
+
+    func testDensityOffTearsDownRenderers() {
+        var chrome = makeChrome()
+        chrome.animations = [makeParticleDescriptor(id: "p")]
+        let host = ChromeHostView(chrome: chrome, baseImage: makeFixtureImage(), clock: nil)
+        host.installAnimatedLayers(chrome.animations!)
+        XCTAssertEqual(host.renderers.count, 1)
+
+        host.setDensityMode(.off)
+        XCTAssertEqual(host.renderers.count, 0,
+            ".off must uninstall every renderer (Req 15.4)")
+    }
+
+    func testDensityFullReinstallsFromOff() {
+        var chrome = makeChrome()
+        chrome.animations = [makeParticleDescriptor(id: "p")]
+        let host = ChromeHostView(chrome: chrome, baseImage: makeFixtureImage(), clock: nil)
+        host.installAnimatedLayers(chrome.animations!)
+        host.setDensityMode(.off)
+        XCTAssertEqual(host.renderers.count, 0)
+
+        host.setDensityMode(.full)
+        XCTAssertEqual(host.renderers.count, 1,
+            ".full after .off must reinstall renderers from chrome.animations (Req 15.9)")
+    }
+
+    // MARK: - Mask
+
+    func testContainerMaskInstalledAtInit() {
+        let host = ChromeHostView(chrome: makeChrome(), baseImage: makeFixtureImage(), clock: nil)
+        XCTAssertNotNil(host._testAnimatedLayersContainer.mask,
+            "animatedLayersContainer.mask must be set from Base_Layer at init (Property 7)")
+    }
+
+    func testUpdateBaseImageRebuildsMask() {
+        let host = ChromeHostView(chrome: makeChrome(), baseImage: makeFixtureImage(), clock: nil)
+        let firstMask = host._testAnimatedLayersContainer.mask
+        let newImage = makeFixtureImage()  // different CGImage reference
+        host.updateBaseImage(newImage)
+        let secondMask = host._testAnimatedLayersContainer.mask
+        XCTAssertNotNil(secondMask)
+        // Mask should be rebuilt (reference identity changes) OR
+        // mask.contents changes. Either way, it's a fresh install.
+        XCTAssertFalse(firstMask === secondMask && (firstMask?.contents as AnyObject) === (secondMask?.contents as AnyObject),
+            "updateBaseImage must rebuild the container mask")
+    }
+
+    // MARK: - Test helpers
+
+    private func makeParticleDescriptor(id: String) -> ChromeAnimationLayer {
+        ChromeAnimationLayer(
+            id: id,
+            kind: .particle,
+            rect: SkinRect(x: 0, y: 0, width: 100, height: 100),
+            z: 1,
+            params: ChromeAnimationLayer.Params(
+                particle: ParticleParams(
+                    birthRate: 10, lifetime: 2,
+                    velocity: 20, emissionAngle: 0, emissionRange: 0,
+                    color: "#ffffff", scale: 0.5
+                )
+            )
+        )
+    }
+
     func testLayoutKeepsSublayerFramesInSync() {
         let host = ChromeHostView(chrome: makeChrome(width: 1000, height: 700), baseImage: makeFixtureImage(), clock: nil)
         // Resize the host — sublayer frames must follow.
