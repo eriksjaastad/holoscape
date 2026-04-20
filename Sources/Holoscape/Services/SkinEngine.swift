@@ -97,6 +97,24 @@ struct LoadedSkin {
     /// whose polygons all fail validation is dropped silently.
     let dragRegions: [ResolvedDragRegion]
 
+    /// Chrome v4 — the raw `ChromeDescriptor` from the manifest.
+    /// `nil` for v1/v2/v3 skins (Req 16.1 backward-compat invariant).
+    /// `MainWindowController.applyChromeSkin` (PR #5) keys the
+    /// Chrome_Mode_Branch off this being non-nil.
+    let chrome: ChromeDescriptor?
+
+    /// Chrome v4 — the Base_Layer image. Non-nil when `chrome != nil`
+    /// (either decoded from `chrome.image` for baked mode or composed
+    /// by `ChromeBakePipeline` for composed mode). The sha under
+    /// which this image is cached is `chromeSHA`.
+    let baseImage: CGImage?
+
+    /// SHA-256 key for the cached baked image at
+    /// `~/Library/Caches/holoscape-skins/<sha>.png`. Non-nil iff
+    /// `baseImage != nil`. Used for LRU purge (PR #4) and for hot
+    /// reload diff (PR #18 — unchanged SHA means no re-bake needed).
+    let chromeSHA: String?
+
     /// Sentinel returned when the requested skin is `"Default"` — lets
     /// callers treat Default as "no skin loaded" without a special case.
     ///
@@ -112,7 +130,10 @@ struct LoadedSkin {
         skinDir: nil,
         windowShape: nil,
         validationBannerReason: nil,
-        dragRegions: []
+        dragRegions: [],
+        chrome: nil,
+        baseImage: nil,
+        chromeSHA: nil
     )
 }
 
@@ -175,6 +196,13 @@ class SkinEngine {
     /// to a directory-layout skin.
     let wampLoader: WampBundleLoader
 
+    /// Chrome v4 load-time baker (Task 7.2). Fires only when a
+    /// manifest declares `chrome != nil`; produces the Base_Layer
+    /// CGImage from either a pre-rendered PNG (baked mode) or a
+    /// composed-from-v3-surfaces render (composed mode). Cache lives
+    /// at `~/Library/Caches/holoscape-skins/<sha>.png`.
+    let bakePipeline: ChromeBakePipeline
+
     init() {
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
             self.skinsDirectory = URL(fileURLWithPath: override).appendingPathComponent("skins")
@@ -196,6 +224,7 @@ class SkinEngine {
                 .appendingPathComponent("Holoscape/Skins")
         }
         self.wampLoader = WampBundleLoader(cacheRoot: cacheRoot)
+        self.bakePipeline = ChromeBakePipeline()
 
         // WampBundleLoader needs the sandbox helpers from `self`.
         // Assignment deferred until after `self` is fully initialized.
@@ -899,6 +928,29 @@ class SkinEngine {
         // out at drag time that 30×30 drag targets don't work.
         let resolvedDragRegions = resolveDragRegions(from: manifest, skinName: name)
 
+        // Chrome v4 Task 7.2 — bake the Base_Layer when the manifest
+        // declares a `chrome` field. Baked mode decodes the shipped
+        // PNG; composed mode walks v3 surfaces into a CGContext. A
+        // bake failure logs and degrades to `chrome = nil` so the
+        // pre-v4 rendering path still applies — aligned with
+        // `ChromeBakePipeline.BakeError` handling policy (design.md).
+        var loadedChrome: ChromeDescriptor? = manifest.chrome
+        var loadedBaseImage: CGImage? = nil
+        var loadedChromeSHA: String? = nil
+        if let chrome = manifest.chrome {
+            do {
+                let (image, sha) = try bakePipeline.bake(manifest: manifest, skinDir: skinDir)
+                loadedChrome = chrome
+                loadedBaseImage = image
+                loadedChromeSHA = sha
+            } catch {
+                NSLog("SkinEngine: chrome bake failed for '\(name)': \(error); falling back to pre-v4 path")
+                loadedChrome = nil
+                loadedBaseImage = nil
+                loadedChromeSHA = nil
+            }
+        }
+
         return LoadedSkin(
             name: name,
             surfaces: effectiveSurfaces,
@@ -907,7 +959,10 @@ class SkinEngine {
             skinDir: skinDir,
             windowShape: validatedShape,
             validationBannerReason: bannerReason,
-            dragRegions: resolvedDragRegions
+            dragRegions: resolvedDragRegions,
+            chrome: loadedChrome,
+            baseImage: loadedBaseImage,
+            chromeSHA: loadedChromeSHA
         )
     }
 
