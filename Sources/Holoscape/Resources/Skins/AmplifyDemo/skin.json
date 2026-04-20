@@ -1,8 +1,32 @@
 {
-  "version": "3.0",
+  "version": "4.0",
   "name": "Amplify Demo",
   "author": "Holoscape team",
-  "description": "v3 skin — sprite-sheet refresh button (magenta / cyan / yellow) + bordered/rounded/shadowed tab bar + octagon windowShape. No dragRegions declared — the Req 4.6 fallback (isMovableByWindowBackground) makes the whole shaped-window content draggable, which is a better fit than a narrow top strip that overlaps the tab bar + sessionLauncher subviews. Solid-color fills, no real art.",
+  "description": "v4 composed chrome — octagon windowShape preserved for polygon/alpha agreement; chrome baked from v3 surface fills + single glow shader layer. Minimal-animations reference for composed mode.",
+  "chrome": {
+    "mode": "composed",
+    "width": 1000,
+    "height": 700,
+    "interiorRect": { "x": 40, "y": 60, "width": 920, "height": 600 },
+    "animations": [
+      {
+        "id": "ambient-glow",
+        "kind": "shader",
+        "rect": { "x": 0, "y": 650, "width": 1000, "height": 50 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 1.0,
+        "params": {
+          "shader": {
+            "preset": "glow",
+            "color": "#4488ff",
+            "intensity": 0.3,
+            "hz": 0.5
+          }
+        }
+      }
+    ]
+  },
   "windowShape": {
     "kind": "polygons",
     "polygons": [
