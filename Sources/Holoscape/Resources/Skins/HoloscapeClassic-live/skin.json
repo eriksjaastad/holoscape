@@ -1,0 +1,110 @@
+{
+    "version": "4.0",
+    "name": "HoloscapeClassic-live",
+    "author": "Holoscape",
+    "description": "First v4 chrome reference — baked PNG with all four animated-layer kinds (particle / LED / sprite / shader).",
+    "chrome": {
+        "mode": "baked",
+        "image": "chrome@2x.png",
+        "imageOpaque": "chrome-opaque@2x.png",
+        "width": 1000,
+        "height": 700,
+        "interiorRect": { "x": 8, "y": 32, "width": 984, "height": 628 },
+        "animations": [
+            {
+                "id": "porthole-sparks",
+                "kind": "particle",
+                "rect": { "x": 60, "y": 64, "width": 200, "height": 120 },
+                "z": 1,
+                "phaseOffset": 0,
+                "speedMultiplier": 1.0,
+                "dataSource": "none",
+                "params": {
+                    "particle": {
+                        "birthRate": 4.0,
+                        "lifetime": 3.0,
+                        "lifetimeRange": 0.5,
+                        "velocity": 18.0,
+                        "velocityRange": 6.0,
+                        "emissionAngle": 1.57,
+                        "emissionRange": 6.28,
+                        "color": "#ffaa33cc",
+                        "scale": 0.4,
+                        "scaleRange": 0.15,
+                        "blendMode": "additive"
+                    }
+                }
+            },
+            {
+                "id": "status-leds",
+                "kind": "ledArray",
+                "rect": { "x": 800, "y": 4, "width": 150, "height": 18 },
+                "z": 2,
+                "phaseOffset": 0,
+                "speedMultiplier": 1.0,
+                "dataSource": "time",
+                "params": {
+                    "ledArray": {
+                        "cellSize": 6.0,
+                        "cells": [
+                            { "x": 0, "y": 6, "defaultState": 0 },
+                            { "x": 12, "y": 6, "defaultState": 0 },
+                            { "x": 24, "y": 6, "defaultState": 0 },
+                            { "x": 36, "y": 6, "defaultState": 0 },
+                            { "x": 48, "y": 6, "defaultState": 0 },
+                            { "x": 60, "y": 6, "defaultState": 0 },
+                            { "x": 72, "y": 6, "defaultState": 0 },
+                            { "x": 84, "y": 6, "defaultState": 0 },
+                            { "x": 96, "y": 6, "defaultState": 0 },
+                            { "x": 108, "y": 6, "defaultState": 0 },
+                            { "x": 120, "y": 6, "defaultState": 0 },
+                            { "x": 132, "y": 6, "defaultState": 0 }
+                        ],
+                        "palette": ["#1a1a1a", "#00ff88", "#ff0033"],
+                        "pattern": { "marquee": { "cellsPerSecond": 8.0, "windowSize": 3 } }
+                    }
+                }
+            },
+            {
+                "id": "lcd-marquee",
+                "kind": "spriteAnim",
+                "rect": { "x": 300, "y": 4, "width": 320, "height": 24 },
+                "z": 1,
+                "phaseOffset": 0,
+                "speedMultiplier": 1.0,
+                "params": {
+                    "spriteAnim": {
+                        "sheet": "assets/lcd-marquee.png",
+                        "gridRows": 4,
+                        "gridCols": 8,
+                        "frameCount": 30,
+                        "fps": 12.0,
+                        "loop": "loop"
+                    }
+                }
+            },
+            {
+                "id": "bottom-glow",
+                "kind": "shader",
+                "rect": { "x": 0, "y": 660, "width": 1000, "height": 40 },
+                "z": 1,
+                "phaseOffset": 0,
+                "speedMultiplier": 1.0,
+                "params": {
+                    "shader": {
+                        "preset": "glow",
+                        "color": "#ff44b4",
+                        "intensity": 0.35,
+                        "hz": 0.6
+                    }
+                }
+            }
+        ]
+    },
+    "surfaces": {
+        "tabBar.container": { "fill": { "kind": "color", "value": "#00b4dc" } },
+        "sidebar.container": { "fill": { "kind": "color", "value": "#141820" } },
+        "tabBar.tab.active": { "fill": { "kind": "color", "value": "#ff44b4" } },
+        "tabBar.tab.idle": { "fill": { "kind": "color", "value": "#0e0f14" } }
+    }
+}
