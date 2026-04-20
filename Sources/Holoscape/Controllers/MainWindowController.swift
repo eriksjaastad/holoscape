@@ -1040,6 +1040,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // shaped window opaque with a systemGray fill so the mask
             // complement renders gray instead of transparent. Outline
             // stays visible; visual transparency does not (Req 2.6).
+            // Intentional: this is the one callsite that sets backgroundColor
+            // on a ShapedBorderlessWindow — the accessibility override wins
+            // over the .clear guard in applyAppearance / applyWindowSurfaces.
             if targetShape != nil && reduceTransparency {
                 window.isOpaque = true
                 window.backgroundColor = .systemGray
