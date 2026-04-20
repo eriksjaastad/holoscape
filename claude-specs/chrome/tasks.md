@@ -22,8 +22,9 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
     - Run on laptop against a bright desktop backdrop; visually confirm cut corners reveal the desktop
     - _Requirements: 3.1, 3.2, 3.3, 3.5_
 
-  - [ ]* 1.2 Manual visual verification checklist
+  - [ ] 1.2 Manual visual verification checklist
     - Document the laptop visual check procedure in `docs/chrome-prototype-verification.md` — take before/after screenshots, note the desktop pattern visible through cut corners, confirm click-through works at corners
+    - Gate: subsequent PRs do not land until this verification completes. Not optional.
     - _Requirements: 3.1, 3.2_
 
 - [ ] 2. Checkpoint
@@ -559,12 +560,18 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
     - Delete the `/tmp/holoscape-shape-diag.log` file-writing code paths
     - _Requirements: 16.6_
 
-  - [ ] 39.5 Verify every in-tree shaped skin has migrated to v4
-    - Before merging PR #20, confirm: HoloscapeSynthwave (PR #15), HoloscapeClassic-live (PR #14), AmplifyDemo (PR #16) all ship v4 `chrome` descriptors and render via Chrome_Mode_Branch; `BackwardCompatIntegrationTests` green on all six lanes
+  - [ ] 39.5 Delete the pre-v4 HoloscapeClassic skin directory
+    - Delete `Sources/Holoscape/Resources/Skins/HoloscapeClassic/` in its entirety — the v3 skin is superseded by `HoloscapeClassic-live` (shipped in PR #14) and uses the old `CALayer.mask` path being removed in this PR
+    - Update any in-tree references (skin picker default list, test fixtures, docs) that still name `HoloscapeClassic` to name `HoloscapeClassic-live` instead
+    - Remove any `HoloscapeClassic`-named `.wamp` artifacts from `Sources/Holoscape/Resources/Skins/` and `Tools/`
+    - _Requirements: 16.6_
+
+  - [ ] 39.6 Verify every in-tree shaped skin has migrated to v4
+    - Before merging PR #20, confirm: HoloscapeSynthwave (PR #15), HoloscapeClassic-live (PR #14 — replacing the now-deleted pre-v4 HoloscapeClassic per 39.5), AmplifyDemo (PR #16) all ship v4 `chrome` descriptors and render via Chrome_Mode_Branch; `BackwardCompatIntegrationTests` green on all ten lanes
     - Document the confirmation in the PR description
     - _Requirements: 16.6_
 
-  - [ ]* 39.6 Regression test for chrome-mode-only rendering path
+  - [ ]* 39.7 Regression test for chrome-mode-only rendering path
     - Extend `Tests/HoloscapeTests/Unit/MainWindowControllerChromeBranchTests.swift` to assert that after PR #20, `MainWindowController` no longer has any call site for `buildMaskLayer`, `WindowDragOverlay`, polygon scaling, or `writeShapeDiagnostic`
     - _Requirements: 16.6_
 
@@ -578,9 +585,10 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
 
 ## Notes
 
-- Tasks marked with `*` are optional property-based and integration tests; they can be skipped for a faster MVP but every correctness property from design.md has a corresponding optional task for eventual coverage.
+- Tasks marked with `*` are optional property-based and integration tests; they can be skipped for a faster MVP but every correctness property from design.md has a corresponding optional task for eventual coverage. Task 1.2 is NOT optional — it is the gate on the entire plan.
 - Every task references specific requirements via `_Requirements: X.Y_` tags for traceability.
 - Checkpoints (Tasks 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40) ensure incremental validation and map 1-to-1 with the 20 PRs in PRD §12.
 - Phase transitions are explicit: Phase 1 ends at Task 18; Phase 2 ends at Task 26; Phase 3 ends at Task 34; Phase 4 ends at Task 40.
-- Old-path deletion is the final PR and requires every in-tree shaped skin to have migrated to v4 with animations verified live (Task 39.5 gating check).
+- Old-path deletion is the final PR and requires every in-tree shaped skin to have migrated to v4 with animations verified live, AND the pre-v4 HoloscapeClassic directory to have been deleted (Tasks 39.5 + 39.6 gating checks).
 - Fixtures for each animation kind live under `Tests/Fixtures/Chrome/` and are built by `Tools/build_chrome_fixtures.sh`.
+- **Property-test iteration counts.** SwiftCheck property tests default to 100 iterations per test. Tests that touch disk (bake pipeline, cache operations, `.wamp` extraction) drop to 25 iterations to keep wall-clock runtime bounded. UI / Mac Mini tests run once per invocation — they are scenario tests, not property tests. These conventions hold across every `- [ ]*` property-test task in this plan unless the task body states otherwise.

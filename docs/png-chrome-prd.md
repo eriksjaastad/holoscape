@@ -70,27 +70,27 @@ The one-alpha-aware-compositor pattern is the only architecture every shipping s
 ```
 NSWindow (.borderless, isOpaque=false, bg=.clear, hasShadow=false)
   └── ShapedContentView  (the existing class, now a thin host)
-        └── ChromeHostView  ← layer-backed NSView, fills content bounds
-              │   ┌─ layer (CALayer)
-              │   │    ├─ baseLayer (CALayer)
-              │   │    │     contents = static RGBA chrome image
-              │   │    │     alpha IS the window shape
-              │   │    ├─ animLayer 0  (CAEmitterLayer / CALayer sprite / CAMetalLayer)
-              │   │    ├─ animLayer 1
-              │   │    ├─ …
-              │   │    └─ animLayer N   (z-ordered per manifest)
-              │   │   (every animLayer is clipped to baseLayer's alpha)
-              │   │
-              │   no interactive subviews inside ChromeHostView
-              │
-              └── InteriorView  ← pinned to skin.chrome.interiorRect
-                    │   OWNS every piece of app content
-                    │   OPTIONAL: layer.mask for concave interiors only
-                    ├── TabBarView
-                    ├── NSSplitView
-                    │     ├── sidebarContainer (SessionLauncher + SidebarView)
-                    │     └── rightPane (SplitPaneManager → SplitPaneView → HoloscapeTerminalView)
-                    └── InputBoxView
+        │
+        ├── ChromeHostView  ← layer-backed NSView, fills content bounds
+        │        layer (CALayer)
+        │          ├─ baseLayer (CALayer)
+        │          │     contents = static RGBA chrome image
+        │          │     alpha IS the window shape
+        │          ├─ animLayer 0  (CAEmitterLayer / CALayer sprite / CAMetalLayer)
+        │          ├─ animLayer 1
+        │          ├─ …
+        │          └─ animLayer N   (z-ordered per manifest)
+        │         (every animLayer is clipped to baseLayer's alpha)
+        │        no interactive subviews inside ChromeHostView
+        │
+        └── InteriorView  ← sibling of ChromeHostView, pinned to skin.chrome.interiorRect
+                 OWNS every piece of app content
+                 OPTIONAL: layer.mask for concave interiors only
+              ├── TabBarView
+              ├── NSSplitView
+              │     ├── sidebarContainer (SessionLauncher + SidebarView)
+              │     └── rightPane (SplitPaneManager → SplitPaneView → HoloscapeTerminalView)
+              └── InputBoxView
 ```
 
 Key invariants:
