@@ -8,7 +8,7 @@ at all four corners, so the visual test is unmistakable.
 
 Run from the repo root:
 
-    uv run --with pillow Tools/chrome_prototype/generate_known_good_alpha.py
+    uv run --with pillow tools/chrome_prototype/generate_known_good_alpha.py
 
 Writes to Sources/Holoscape/Resources/Prototype/known_good_alpha.png so
 Bundle.module can load it at runtime. The env-flag branch in
@@ -20,7 +20,7 @@ from PIL import Image
 import pathlib
 
 # Anchor via __file__ so the script is safe to run from any CWD. This file
-# lives at Tools/chrome_prototype/generate_known_good_alpha.py; two parents
+# lives at tools/chrome_prototype/generate_known_good_alpha.py; two parents
 # up is the repo root.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 OUT_PATH = REPO_ROOT / "Sources/Holoscape/Resources/Prototype/known_good_alpha.png"
