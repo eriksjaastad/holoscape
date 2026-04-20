@@ -316,6 +316,117 @@ final class ChromeBakePipelineTests: XCTestCase {
             "Cache under cap must not evict anything")
     }
 
+    // MARK: - Reduce Transparency (Task 17.2)
+
+    func testReduceTransparencyUsesImageOpaqueWhenDeclared() throws {
+        // Skin ships both translucent + opaque variants; pipeline
+        // picks imageOpaque at bake time when RT is on.
+        let translucent = try stageBakedPNG(named: "chrome.png", width: 64, height: 64)
+        // Mark the opaque fixture with a different dimension so we can
+        // assert "pipeline decoded THIS file, not the other one."
+        _ = try stageBakedPNG(named: "chrome-opaque.png", width: 128, height: 128)
+        let manifest = SkinDefinition(
+            version: "4.0",
+            chrome: ChromeDescriptor(
+                mode: .baked,
+                image: translucent,
+                imageOpaque: "chrome-opaque.png",
+                width: 64,
+                height: 64,
+                interiorRect: SkinRect(x: 0, y: 0, width: 64, height: 64)
+            )
+        )
+        let pipeline = makePipeline()
+
+        let (image, _) = try pipeline.bake(manifest: manifest, skinDir: skinDir, reduceTransparency: true)
+        XCTAssertEqual(image.width, 128, "RT on + imageOpaque declared must decode the opaque fixture")
+        XCTAssertEqual(image.height, 128)
+    }
+
+    func testReduceTransparencyOpacifiesWhenImageOpaqueMissing() throws {
+        // Synthetic fixture with known translucent edge — opacify
+        // should push that alpha to 255.
+        let width = 8, height = 8
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        // Left column: fully transparent. Right column: semi-transparent
+        // (alpha 0x80). Middle: opaque magenta.
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = y * bytesPerRow + x * 4
+                if x == 0 {
+                    // Fully transparent — alpha already 0.
+                } else if x == width - 1 {
+                    // Premultiplied semitransparent magenta.
+                    pixels[i] = 0x80     // R = 0xFF * (0x80/0xFF) rounded
+                    pixels[i + 1] = 0x20 // G
+                    pixels[i + 2] = 0x68 // B
+                    pixels[i + 3] = 0x80 // A
+                } else {
+                    pixels[i] = 0xFF; pixels[i + 1] = 0x44; pixels[i + 2] = 0xCC; pixels[i + 3] = 0xFF
+                }
+            }
+        }
+        let data = Data(pixels)
+        let provider = CGDataProvider(data: data as CFData)!
+        let source = CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )!
+
+        let pipeline = makePipeline()
+        let opacified = pipeline.opacifyImage(source)!
+
+        // Sample pixel buffer of the opacified image.
+        let outContext = CGContext(
+            data: nil,
+            width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        outContext.draw(opacified, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let outPtr = outContext.data!.assumingMemoryBound(to: UInt8.self)
+
+        // Fully transparent pixels stay transparent.
+        XCTAssertEqual(outPtr[3], 0, "alpha-0 pixels must stay transparent (silhouette preserved)")
+
+        // Semi-transparent pixels (x = width-1, y = 0) become opaque.
+        let semiIdx = 0 * bytesPerRow + (width - 1) * 4
+        XCTAssertEqual(outPtr[semiIdx + 3], 0xFF, "semi-transparent pixels must become fully opaque")
+
+        // Already-opaque pixels stay opaque.
+        let opaqueIdx = 0 * bytesPerRow + 1 * 4
+        XCTAssertEqual(outPtr[opaqueIdx + 3], 0xFF)
+    }
+
+    func testReduceTransparencyCachesSeparatelyFromTranslucent() throws {
+        let translucent = try stageBakedPNG(named: "chrome.png", width: 32, height: 32)
+        let manifest = bakedManifest(imagePath: translucent, width: 32, height: 32)
+        let pipeline = makePipeline()
+
+        // Cold bake translucent.
+        let (_, sha) = try pipeline.bake(manifest: manifest, skinDir: skinDir, reduceTransparency: false)
+        let translucentURL = cacheRoot.appendingPathComponent("\(sha).png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: translucentURL.path),
+            "Translucent cache entry at <sha>.png")
+
+        // Cold bake opaque — distinct key, both now present.
+        _ = try pipeline.bake(manifest: manifest, skinDir: skinDir, reduceTransparency: true)
+        let opaqueURL = cacheRoot.appendingPathComponent("\(sha).opaque.png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: opaqueURL.path),
+            "Opaque cache entry at <sha>.opaque.png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: translucentURL.path),
+            "Opaque bake must not delete the translucent variant")
+
+        // Warm hit on opaque — read the cache.
+        XCTAssertNotNil(pipeline.cachedOpaqueImage(for: sha))
+    }
+
     // MARK: - Performance
 
     func testColdBakeMeetsBudget() throws {

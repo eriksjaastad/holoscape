@@ -948,8 +948,18 @@ class SkinEngine {
         var loadedChromeValidation: ChromeValidationResult? = nil
         var chromeBannerReason: String? = nil
         if let chrome = manifest.chrome {
+            // Chrome v4 Task 17.2 — honor the Reduce Transparency
+            // accessibility preference at load time. The bake
+            // pipeline caches both variants under distinct keys
+            // (`<sha>.png` + `<sha>.opaque.png`) so toggling the
+            // preference doesn't force a re-bake.
+            let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
             do {
-                let (image, sha) = try bakePipeline.bake(manifest: manifest, skinDir: skinDir)
+                let (image, sha) = try bakePipeline.bake(
+                    manifest: manifest,
+                    skinDir: skinDir,
+                    reduceTransparency: reduceTransparency
+                )
                 // Chrome v4 Task 9.2 — run the validator on the baked
                 // Base_Layer. Fatal failures (Req 12.8) degrade to
                 // `chrome = nil` + banner so the rectangular fallback
