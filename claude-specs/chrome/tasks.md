@@ -185,9 +185,11 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
   - Ensure validator catches every documented failure mode; ensure a malformed fixture surfaces `SkinWarningBanner` with the expected reason string.
 
 - [ ] 11. PR #6 — MainWindowController chrome-mode branch
-  - [ ] 11.1 Add Chrome_Mode_Branch to applySkin
+  - [ ] 11.1 Add Chrome_Mode_Branch to applySkin with window reconstruction
     - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to add `applyChromeSkin(_:)` (extension method per design's Component 9)
-    - When `loaded.chrome != nil`, tear down any pre-existing CA-mask state, install `ChromeHostView` as the sole child of `ShapedContentView`, install `InteriorView` as a sibling pinned to `chrome.interiorRect`, and reparent every existing app-content subview (TabBarView, NSSplitView, SidebarView, SplitPaneManager, HoloscapeTerminalView, InputBoxView, SessionLauncherView) from `ShapedContentView` to `InteriorView`
+    - When `loaded.chrome != nil`, call `reconstructAsBorderlessTransparent(size:)` — the existing titled window CANNOT be retrofitted to transparent via property flips (PR #1 isolation test proved this, see `docs/research/chrome-risk1-transparency-findings.md`). Must construct a new `ShapedBorderlessWindow`, migrate delegate + child windows (Reader Mode panel, BugReportDialog) + first responder, `orderOut` the old window, `makeKeyAndOrderFront` the new one.
+    - On the inverse transition (v4 chrome → pre-v4 skin at runtime), call `reconstructAsTitled(size:)` — symmetric reason (Requirement 3.1a).
+    - Tear down any pre-existing CA-mask state on the new window before installing `ChromeHostView` as the sole child of `ShapedContentView`, install `InteriorView` as a sibling pinned to `chrome.interiorRect`, and reparent every existing app-content subview (TabBarView, NSSplitView, SidebarView, SplitPaneManager, HoloscapeTerminalView, InputBoxView, SessionLauncherView) from `ShapedContentView` to `InteriorView`
     - When `loaded.chrome == nil`, route through the existing pre-v4 path (including old `applyWindowShape` CA-mask path — this is the backward-compat branch)
     - Skip `buildMaskLayer` and `WindowDragOverlay` entirely in the chrome-mode branch
     - Continue to call `HitRegionSampler.contains(point)` in `ShapedContentView.hitTest(_:)` for every incoming hit test; return nil outside the polygon, delegate to `super.hitTest` inside
@@ -215,10 +217,11 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
   - Ensure chrome-mode branch installs cleanly; ensure pre-v4 skins still route through the old path (HoloscapeSynthwave, HoloscapeClassic, AmplifyDemo all still render as before).
 
 - [ ] 13. PR #7 — Borderless window + `.clear` + `hasShadow = false`
-  - [ ] 13.1 Configure window for alpha transparency
-    - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to, in the chrome-mode branch, configure the `NSWindow` as `.borderless`, `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = false`
-    - Reuse `ShapedBorderlessWindow` subclass (carries forward verbatim from Amplify v1 — `canBecomeKey` / `canBecomeMain` overrides)
-    - Ensure `contentMinSize == contentMaxSize == (chrome.width, chrome.height)` and `.resizable` stripped from `styleMask`
+  - [ ] 13.1 Configure newly-constructed window for alpha transparency
+    - The `NSWindow` itself MUST be constructed as `.borderless`, `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = false` from birth (PR #5 `reconstructAsBorderlessTransparent` already does this). This task covers the remaining config on the newly-constructed window.
+    - Use `ShapedBorderlessWindow` subclass as the window class (carries forward verbatim from Amplify v1 — `canBecomeKey` / `canBecomeMain` overrides)
+    - Ensure `contentMinSize == contentMaxSize == (chrome.width, chrome.height)` and `.resizable` NOT present in `styleMask`
+    - Do NOT attempt to retrofit an existing titled window — PR #1 investigation showed AppKit locks in opaque backing at construction time (`docs/research/chrome-risk1-transparency-findings.md`).
     - _Requirements: 3.1, 3.6_
 
   - [ ]* 13.2 Integration test for alpha equality
