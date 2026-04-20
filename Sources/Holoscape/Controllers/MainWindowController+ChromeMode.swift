@@ -337,6 +337,61 @@ extension MainWindowController {
     /// state back. The caller installs whatever content the new
     /// non-chrome path wants inside `window.contentView`.
     @discardableResult
+    /// Reverse `applyChromeSkin`: pull the app content back out of
+    /// `InteriorView`, reconstruct the window as a regular titled
+    /// window, and re-add the app subviews directly to the new
+    /// content view.
+    ///
+    /// This is the exit path from chrome mode. It must be called
+    /// whenever `reloadSkin` routes to a non-chrome skin while the
+    /// current window is a `ShapedBorderlessWindow`; without it the
+    /// window stays borderless permanently (no traffic lights, no
+    /// resize chrome).
+    ///
+    /// Layout after teardown: app subviews had their original
+    /// Auto Layout constraints removed when `applyChromeSkin` moved
+    /// them into `InteriorView`. After reinsertion their frames are
+    /// at their last-computed positions, which are already in (0,0)-
+    /// relative bounds space — `InteriorView.bounds.origin` is always
+    /// (0,0) regardless of its frame origin, so InteriorView-relative
+    /// frames are identical to content-view-relative frames. The
+    /// `applySkin` call that follows teardown triggers a layout pass
+    /// that resolves any remaining positional drift.
+    func teardownChromeSkin() {
+        guard window is ShapedBorderlessWindow else { return }
+
+        let previousResponder = window.firstResponder
+
+        // Extract app subviews from InteriorView (or content view
+        // directly on a first-entry-but-no-InteriorView state).
+        let appSubviews = Self.extractAppSubviews(fromContentView: window.contentView)
+        for view in appSubviews { view.removeFromSuperview() }
+
+        // Re-enable resize (chrome mode locks min/max to nominal).
+        window.styleMask.insert(.resizable)
+        window.contentMinSize = .zero
+        window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                       height: CGFloat.greatestFiniteMagnitude)
+
+        // Reconstruct as titled. Creates a fresh ShapedContentView,
+        // migrates child windows and delegate, orders new window front.
+        let newWindow = reconstructAsTitled(size: window.frame.size)
+        guard let contentView = newWindow.contentView else { return }
+
+        // Re-add app subviews directly to the new content view.
+        for view in appSubviews { contentView.addSubview(view) }
+
+        // Disable background-drag (chrome mode sets this; it's wrong
+        // for the regular titled window which has a real title bar).
+        newWindow.isMovableByWindowBackground = false
+
+        // Restore first responder if the view survived into the new window.
+        if let responder = previousResponder as? NSView,
+           responder.window === newWindow {
+            newWindow.makeFirstResponder(responder)
+        }
+    }
+
     func reconstructAsTitled(size: NSSize) -> NSWindow {
         let oldWindow = window
         let wasKey = oldWindow.isKeyWindow
