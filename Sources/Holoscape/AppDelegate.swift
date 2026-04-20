@@ -280,8 +280,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     private func applyAppearance(_ appearance: AppearanceConfig) {
         guard let window = windowController?.window else { return }
-        if let color = NSColor(hexString: appearance.backgroundColor) {
-            window.backgroundColor = color
+        // ShapedBorderlessWindow is the chrome-mode window type.
+        // Its backgroundColor must stay .clear so NSNextStepFrame's
+        // backing layer stays transparent — see applyWindowSurfaces
+        // in MainWindowController for the full explanation.
+        if !(window is ShapedBorderlessWindow) {
+            if let color = NSColor(hexString: appearance.backgroundColor) {
+                window.backgroundColor = color
+            }
         }
         window.alphaValue = CGFloat(appearance.transparency)
     }
