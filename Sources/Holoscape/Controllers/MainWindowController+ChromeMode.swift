@@ -114,6 +114,27 @@ extension MainWindowController {
             in: shapedContent
         )
 
+        // Install a CAShapeLayer mask on the content view. Without
+        // this, the NSWindow backing store paints opaque everywhere
+        // regardless of the chrome PNG's alpha — AppKit does not
+        // honor layer.contents alpha as a window shape. The mask is
+        // the load-bearing piece every reference implementation uses
+        // (hfyeomans/winamp-macos-migration, CocoaDev BorderlessWindow,
+        // Matt Gallagher). See
+        // `docs/research/chrome-transparency-root-cause.md`.
+        //
+        // Silhouette: rounded-rect matching the chrome's nominal
+        // width × height with a 16pt corner radius. The live reference
+        // skins (`HoloscapeClassic-live`, `HoloscapeSynthwave`,
+        // `AmplifyDemo`) all author their cut corners at 16pt. When a
+        // future skin declares a different radius, promote this to a
+        // ChromeDescriptor field.
+        installChromeSilhouetteMask(
+            on: shapedContent,
+            size: nominal,
+            cornerRadius: 16
+        )
+
         reparentAppContent(
             from: appSubviewsToReparent,
             into: interior,
@@ -157,39 +178,34 @@ extension MainWindowController {
            responder.window === newWindow {
             newWindow.makeFirstResponder(responder)
         }
-
-        // Diagnostic dump — find out why cut corners still render
-        // opaque even with Cocoa Transparency Recipe applied at
-        // construction. Writes to stderr; inspect via Console.app
-        // with subsystem filter "holoscape" or via `log stream
-        // --predicate 'process == "Holoscape"'`.
-        Self.diagnoseChromeTransparency(
-            window: newWindow,
-            content: shapedContent,
-            host: hostView,
-            interior: interior
-        )
     }
 
-    /// Dump every pixel-ownership-layer property in the chrome view
-    /// stack. If cut corners are rendering opaque, this output names
-    /// the culprit.
-    private static func diagnoseChromeTransparency(
-        window: NSWindow,
-        content: NSView,
-        host: ChromeHostView,
-        interior: InteriorView
+    /// Install a `CAShapeLayer` mask on the content view's layer so
+    /// AppKit actually clips the window backing to the chrome
+    /// silhouette. PNG alpha on `ChromeHostView` is the visual
+    /// content; this mask defines the window region. Without it, the
+    /// cut-corner regions render opaque charcoal regardless of PNG
+    /// alpha. Canonical recipe — see
+    /// `docs/research/chrome-transparency-root-cause.md`.
+    func installChromeSilhouetteMask(
+        on contentView: NSView,
+        size: NSSize,
+        cornerRadius: CGFloat
     ) {
-        NSLog("[chrome-diag] window.isOpaque=\(window.isOpaque) bg=\(String(describing: window.backgroundColor)) hasShadow=\(window.hasShadow) styleMask=\(window.styleMask.rawValue)")
-        NSLog("[chrome-diag] content.class=\(type(of: content)) isOpaque=\(content.isOpaque) wantsLayer=\(content.wantsLayer)")
-        NSLog("[chrome-diag] content.layer.bg=\(String(describing: content.layer?.backgroundColor)) isOpaque=\(content.layer?.isOpaque ?? false)")
-        if let frameView = content.superview {
-            NSLog("[chrome-diag] frameView.class=\(type(of: frameView)) isOpaque=\(frameView.isOpaque)")
-            NSLog("[chrome-diag] frameView.layer.bg=\(String(describing: frameView.layer?.backgroundColor)) isOpaque=\(frameView.layer?.isOpaque ?? false)")
-        }
-        NSLog("[chrome-diag] host.layer.bg=\(String(describing: host.layer?.backgroundColor)) isOpaque=\(host.layer?.isOpaque ?? false)")
-        NSLog("[chrome-diag] interior.layer.bg=\(String(describing: interior.layer?.backgroundColor)) isOpaque=\(interior.layer?.isOpaque ?? false)")
-        NSLog("[chrome-diag] interior.subviews.count=\(interior.subviews.count) — app subviews nested here")
+        contentView.wantsLayer = true
+        let rect = CGRect(origin: .zero, size: size)
+        let path = CGPath(
+            roundedRect: rect,
+            cornerWidth: cornerRadius,
+            cornerHeight: cornerRadius,
+            transform: nil
+        )
+        let mask = CAShapeLayer()
+        mask.frame = rect
+        mask.path = path
+        mask.fillColor = NSColor.white.cgColor
+        mask.fillRule = .nonZero
+        contentView.layer?.mask = mask
     }
 
     // MARK: - Reconstruction
@@ -227,7 +243,11 @@ extension MainWindowController {
         newWindow.isReleasedWhenClosed = false
         newWindow.isOpaque = false
         newWindow.backgroundColor = .clear
-        newWindow.hasShadow = false
+        // hasShadow = true is canonical — every reference shaped-window
+        // implementation uses it. AppKit computes the shadow from the
+        // composited content-view alpha, so the shadow respects the
+        // CAShapeLayer mask installed in `applyChromeSkin`.
+        newWindow.hasShadow = true
         newWindow.titleVisibility = .hidden
         newWindow.titlebarAppearsTransparent = true
         newWindow.contentMinSize = size
