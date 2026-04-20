@@ -35,8 +35,9 @@ final class ChromeHostView: NSView {
     /// Active mask on `animatedLayersContainer`. Wired up in PR #13.
     private var containerMask: CAShapeLayer?
 
-    /// Live renderers. Array is empty in PR #3; first conforming type
-    /// ships in PR #10 (`ParticleLayerRenderer`).
+    /// Live renderers. Populated by `installAnimatedLayers` (PR #10+).
+    /// Retained here so the host can drive lifecycle (pause / resume /
+    /// uninstall) on density + Reduce Motion transitions.
     private(set) var renderers: [AnimatedLayerRenderer] = []
 
     /// Phase clock every renderer subscribes to. Optional through
@@ -96,15 +97,55 @@ final class ChromeHostView: NSView {
 
     // MARK: - Public interface (Component 1)
 
-    /// Installs a set of animated sublayers. PR #3 no-op; PR #10+ fills
-    /// this in (particle / LED / sprite / shader renderers). Exposed
-    /// now so later PRs change method internals without touching the
-    /// view's public surface.
+    /// Installs a set of animated sublayers (PR #10, Task 19.3).
+    /// Instantiates one renderer per descriptor, installs its layer
+    /// into `animatedLayersContainer` at the declared `z`-ordering,
+    /// and subscribes each renderer to the shared clock if present.
+    /// Disabled-by-validator ids (`chromeValidation.disabledAnimationIDs`)
+    /// must be filtered out BEFORE this call — the host trusts the
+    /// descriptor list.
+    ///
+    /// PR #11 adds `.ledArray` + `.spriteAnim` branches;
+    /// PR #12 adds `.shader`. Unknown kinds — if a future additive
+    /// case ships ahead of a renderer — log + skip.
     func installAnimatedLayers(_ descriptors: [ChromeAnimationLayer]) {
-        // TODO PRs #10–#12 (task groups 19, 21, 23): instantiate one
-        // conforming renderer per descriptor, install renderer.layer
-        // into `animatedLayersContainer`, subscribe to `clock`,
-        // honor `z` ordering.
+        // Sort by z so sublayer insertion order yields correct
+        // compositing order (Req 10.4 — earlier in the array wins
+        // when z is tied, per tasks.md §25.1).
+        let sorted = descriptors.sorted { lhs, rhs in
+            if lhs.z != rhs.z { return lhs.z < rhs.z }
+            return descriptors.firstIndex { $0.id == lhs.id }!
+                < descriptors.firstIndex { $0.id == rhs.id }!
+        }
+
+        for descriptor in sorted {
+            guard let renderer = makeRenderer(for: descriptor) else { continue }
+            renderer.install(in: animatedLayersContainer)
+            renderers.append(renderer)
+            clock?.subscribe(renderer)
+        }
+    }
+
+    /// Factory for the per-kind renderers. `nil` return means the
+    /// descriptor's kind has no renderer in this PR yet (covered by
+    /// PR #11/#12); the caller filters nils silently.
+    private func makeRenderer(for descriptor: ChromeAnimationLayer) -> AnimatedLayerRenderer? {
+        switch descriptor.kind {
+        case .particle:
+            guard let params = descriptor.params.particle else { return nil }
+            return ParticleLayerRenderer(
+                id: descriptor.id,
+                z: descriptor.z,
+                rect: descriptor.rect,
+                params: params
+            )
+        case .ledArray, .spriteAnim, .shader:
+            // Renderers land in PR #11 (.ledArray / .spriteAnim) and
+            // PR #12 (.shader). Until then these descriptors silently
+            // install nothing — the skin still loads; just fewer
+            // live layers than it ships with.
+            return nil
+        }
     }
 
     /// Swap the Base_Layer image (hot reload of chrome PNG, PR #18).
