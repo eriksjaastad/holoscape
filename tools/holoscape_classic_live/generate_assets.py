@@ -39,87 +39,91 @@ BOT_BAND_COLOR = (255, 68, 180, 255) # #ff44b4 magenta accent
 
 
 def generate_chrome_png() -> None:
-    """Full chrome PNG with 16pt cut corners and decorative bands."""
+    """Full chrome PNG with 16pt cut corners and decorative bands.
+
+    The bands paint on a separate RGBA layer that is THEN clipped to
+    the rounded silhouette's alpha — this way the bands inherit the
+    cut corners instead of painting opaque pixels on top of the
+    transparent corner regions.
+    """
     pixel_w = LOGICAL_WIDTH * SCALE
     pixel_h = LOGICAL_HEIGHT * SCALE
-    img = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Rounded-corner base fill.
     radius_px = CORNER_RADIUS * SCALE
-    draw.rounded_rectangle(
+
+    # 1) Base silhouette — rounded rectangle, charcoal fill.
+    base = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
+    ImageDraw.Draw(base).rounded_rectangle(
         [(0, 0), (pixel_w, pixel_h)],
         radius=radius_px,
         fill=BASE_COLOR,
     )
 
-    # Top band (tab bar region) — 32pt tall.
+    # 2) Bands painted on a fresh RGBA layer with NO alpha outside
+    #    the painted rectangles.
+    bands = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
+    bands_draw = ImageDraw.Draw(bands)
     top_band_h = 32 * SCALE
-    draw.rectangle(
-        [(0, 0), (pixel_w, top_band_h)],
-        fill=TAB_BAND_COLOR,
-    )
-    # Cut the corners on the top band the same way the base is cut.
-    # Easier approach: mask the top band by re-drawing the corners
-    # as transparent.
-    for cx, cy in [(0, 0), (pixel_w, 0)]:
-        dx = 1 if cx == 0 else -1
-        dy = 1
-        draw.pieslice(
-            [(cx - radius_px, cy - radius_px), (cx + radius_px, cy + radius_px)],
-            start=180 if cx == 0 else 270,
-            end=270 if cx == 0 else 360,
-            fill=(0, 0, 0, 0),
-        )
-
-    # Bottom band — 40pt tall, at y = height - 40.
+    bands_draw.rectangle([(0, 0), (pixel_w, top_band_h)], fill=TAB_BAND_COLOR)
     bot_band_h = 40 * SCALE
-    draw.rectangle(
+    bands_draw.rectangle(
         [(0, pixel_h - bot_band_h), (pixel_w, pixel_h)],
         fill=BOT_BAND_COLOR,
     )
 
-    # Cut corners must stay transparent — masking with a pieslice.
-    # PIL's rounded_rectangle already cut the outer corners; we only
-    # need to re-clip the band rectangles so they match.
+    # 3) Composite bands onto base then re-apply the silhouette alpha.
+    #    Band pixels outside the silhouette are erased by putalpha so
+    #    cut-corner regions stay transparent.
+    silhouette_alpha = base.split()[3]
+    out_img = base.copy()
+    out_img.alpha_composite(bands)
+    out_img.putalpha(silhouette_alpha)
 
     out = SKIN_DIR / "chrome@2x.png"
-    img.save(out, "PNG")
+    out_img.save(out, "PNG")
 
     # Assert alpha invariants (fail-early contract for test fixtures).
-    corner = img.getpixel((0, 0))
-    center = img.getpixel((pixel_w // 2, pixel_h // 2))
+    corner = out_img.getpixel((0, 0))
+    center = out_img.getpixel((pixel_w // 2, pixel_h // 2))
+    # Top-left cut-corner center (5,5) should be transparent.
+    cut_sample = out_img.getpixel((5, 5))
     assert corner[3] == 0, f"top-left corner must be transparent; got alpha={corner[3]}"
+    assert cut_sample[3] == 0, f"pixel (5,5) inside cut corner must be transparent; got alpha={cut_sample[3]}"
     assert center[3] == 255, f"center must be opaque; got alpha={center[3]}"
+    # Band pixels at the top middle should be opaque cyan.
+    top_band_middle = out_img.getpixel((pixel_w // 2, top_band_h // 2))
+    assert top_band_middle[3] == 255, "top band middle must be opaque"
+    assert top_band_middle[:3] == TAB_BAND_COLOR[:3], "top band middle must be cyan"
     print(f"wrote {out} ({pixel_w}×{pixel_h})")
 
 
 def generate_opaque_chrome_png() -> None:
-    """Reduce Transparency variant — same silhouette, cut corners
-    stay transparent, but semi-transparent edges (there are none in
-    the base chrome) stay at full alpha."""
+    """Reduce Transparency variant — same silhouette shape; cut
+    corners stay transparent (silhouette invariant), everything else
+    opaque. Same masking pattern as generate_chrome_png."""
     pixel_w = LOGICAL_WIDTH * SCALE
     pixel_h = LOGICAL_HEIGHT * SCALE
-    img = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
     radius_px = CORNER_RADIUS * SCALE
-    draw.rounded_rectangle(
+
+    base = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
+    ImageDraw.Draw(base).rounded_rectangle(
         [(0, 0), (pixel_w, pixel_h)],
         radius=radius_px,
         fill=BASE_COLOR,
     )
+    bands = Image.new("RGBA", (pixel_w, pixel_h), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(bands)
     top_band_h = 32 * SCALE
-    draw.rectangle(
-        [(0, 0), (pixel_w, top_band_h)],
-        fill=TAB_BAND_COLOR,
-    )
+    bd.rectangle([(0, 0), (pixel_w, top_band_h)], fill=TAB_BAND_COLOR)
     bot_band_h = 40 * SCALE
-    draw.rectangle(
-        [(0, pixel_h - bot_band_h), (pixel_w, pixel_h)],
-        fill=BOT_BAND_COLOR,
-    )
+    bd.rectangle([(0, pixel_h - bot_band_h), (pixel_w, pixel_h)], fill=BOT_BAND_COLOR)
+
+    silhouette_alpha = base.split()[3]
+    out_img = base.copy()
+    out_img.alpha_composite(bands)
+    out_img.putalpha(silhouette_alpha)
+
     out = SKIN_DIR / "chrome-opaque@2x.png"
-    img.save(out, "PNG")
+    out_img.save(out, "PNG")
     print(f"wrote {out} ({pixel_w}×{pixel_h})")
 
 
