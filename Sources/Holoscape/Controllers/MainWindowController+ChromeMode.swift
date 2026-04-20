@@ -367,16 +367,22 @@ extension MainWindowController {
         let appSubviews = Self.extractAppSubviews(fromContentView: window.contentView)
         for view in appSubviews { view.removeFromSuperview() }
 
-        // Re-enable resize (chrome mode locks min/max to nominal).
-        window.styleMask.insert(.resizable)
-        window.contentMinSize = .zero
-        window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                       height: CGFloat.greatestFiniteMagnitude)
-
         // Reconstruct as titled. Creates a fresh ShapedContentView,
         // migrates child windows and delegate, orders new window front.
+        // Pass the current frame size — chrome mode locks the window to
+        // nominal dimensions, so window.frame.size == nominal here.
+        // reconstructAsTitled takes this as the content rect, so the
+        // content area matches the chrome's nominal size. The titled
+        // window's frame will be slightly larger (title bar height).
         let newWindow = reconstructAsTitled(size: window.frame.size)
-        guard let contentView = newWindow.contentView else { return }
+        guard let contentView = newWindow.contentView else {
+            // reconstructAsTitled always sets contentView; if this fires
+            // it means a future refactor broke that contract. The views
+            // are already detached — log loudly so the data loss is visible.
+            NSLog("MainWindowController: teardownChromeSkin — contentView nil after reconstruction; app subviews orphaned")
+            assertionFailure("reconstructAsTitled must produce a non-nil contentView")
+            return
+        }
 
         // Re-add app subviews directly to the new content view.
         for view in appSubviews { contentView.addSubview(view) }
@@ -525,11 +531,13 @@ extension MainWindowController {
         }
         // No previous chrome mode — root.subviews ARE the app
         // content (pre-v4 layout where app views were added
-        // directly to ShapedContentView). Log so that a future
-        // layout change inserting an intermediate container view
-        // (e.g. focus-ring wrapper) is visible instead of silently
-        // reparenting the wrong view level.
-        NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
+        // directly to ShapedContentView). Only log when subviews
+        // are actually present; an empty root is the expected state
+        // immediately after reconstructAsTitled (teardownChromeSkin
+        // path), and logging there would be a false alarm.
+        if !root.subviews.isEmpty {
+            NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
+        }
         return root.subviews
     }
 
