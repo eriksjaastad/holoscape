@@ -193,6 +193,22 @@ extension MainWindowController {
         cornerRadius: CGFloat
     ) {
         contentView.wantsLayer = true
+        // AppKit creates the backing layer lazily on the first draw.
+        // We're still on the same call stack as makeKeyAndOrderFront —
+        // the run loop hasn't done a display pass yet — so layer can be
+        // nil here and `layer?.mask = mask` would silently no-op.
+        // Explicitly assign a backing layer to force immediate creation.
+        if contentView.layer == nil {
+            let backingLayer = CALayer()
+            backingLayer.frame = CGRect(origin: .zero, size: size)
+            backingLayer.backgroundColor = NSColor.clear.cgColor
+            backingLayer.isOpaque = false
+            contentView.layer = backingLayer
+        }
+        guard let layer = contentView.layer else { return }
+        layer.backgroundColor = NSColor.clear.cgColor
+        layer.isOpaque = false
+
         let rect = CGRect(origin: .zero, size: size)
         let path = CGPath(
             roundedRect: rect,
@@ -205,7 +221,7 @@ extension MainWindowController {
         mask.path = path
         mask.fillColor = NSColor.white.cgColor
         mask.fillRule = .nonZero
-        contentView.layer?.mask = mask
+        layer.mask = mask
     }
 
     // MARK: - Reconstruction
@@ -257,33 +273,24 @@ extension MainWindowController {
         // + drag region hooks (`HitRegionSampler`, `DragRegionTracker`)
         // continue to find the expected view class.
         let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: size))
+        // Use a layer-hosting pattern: assign the backing layer before
+        // wantsLayer=true so the layer is never nil. Using `layer?`
+        // optional chaining here would silently no-op because the view
+        // isn't in a window yet and AppKit creates backing layers lazily.
+        //
+        // IMPORTANT: CALayer() defaults to CGRect.zero frame. For a
+        // layer-hosting view, AppKit does NOT auto-sync the layer frame
+        // to the view's bounds — that is the caller's responsibility.
+        // Omitting this caused the mask to be applied to a zero-size
+        // layer that had no clipping effect.
+        let freshLayer = CALayer()
+        freshLayer.frame = CGRect(origin: .zero, size: size)
+        freshLayer.backgroundColor = NSColor.clear.cgColor
+        freshLayer.isOpaque = false
+        freshContent.layer = freshLayer
         freshContent.wantsLayer = true
-        // Force the layer explicitly clear AND non-opaque. Setting
-        // `backgroundColor = nil` alone isn't enough if AppKit has
-        // already materialized the layer with a non-nil default;
-        // `.clear` is the known-zero-paint color. `isOpaque = false`
-        // is a Core Animation hint — with it on, CA knows the layer
-        // has variable alpha and composites accordingly.
-        freshContent.layer?.backgroundColor = NSColor.clear.cgColor
-        freshContent.layer?.isOpaque = false
         newWindow.contentView = freshContent
 
-        // Risk #1 diagnostic from the prior session: NSWindow's
-        // private frame view (_NSNextStepFrame) carries an opaque
-        // layer backgroundColor by default even on a borderless+clear
-        // window. That paints over the chrome PNG's cut-corner alpha.
-        if let frameView = freshContent.superview {
-            frameView.wantsLayer = true
-            frameView.layer?.backgroundColor = NSColor.clear.cgColor
-            frameView.layer?.isOpaque = false
-        }
-
-        // The window itself needs one more thing that styleMask +
-        // isOpaque=false don't imply: the backing-store alpha must
-        // be preserved. On macOS 14+, `isOpaque = false` already
-        // implies this, but belt-and-suspenders never hurts.
-        newWindow.isOpaque = false
-        newWindow.backgroundColor = .clear
 
         // Migrate child windows (Reader Mode panel, BugReportDialog)
         // from old → new. `addChildWindow` on the new parent handles

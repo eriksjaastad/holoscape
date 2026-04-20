@@ -1,13 +1,14 @@
-# Holoscape — Session Progress (2026-04-20, end of day)
+# Holoscape — Session Progress (2026-04-20, transparency fixed)
 
 ## TL;DR FOR NEXT SESSION
 
-1. Chrome v4 corners still render opaque. Fix is scoped and research-backed.
-2. Read `docs/research/chrome-transparency-root-cause.md` first — everything else is context.
-3. The one-line answer: add a `CAShapeLayer` mask to `shapedContent.layer` in `applyChromeSkin` using `ShapedWindowController.buildMaskLayer` with a rounded-rect path matching `chrome.width × chrome.height` + 16pt corner radius. Also set `hasShadow = true` and use styleMask `[.borderless, .resizable]` (NOT `.fullSizeContentView`).
-4. Expected scope: 30–60 min if nothing surprises.
-5. Current branch: `fix/chrome-reparent-subviews` — has uncommitted-but-now-committed work-in-progress fixes (reparent bug fix, chrome PNG corner-painting fix, explicit `.clear` layer backgrounds per canonical recipe, diagnostic logging, spec amendments, root-cause doc).
-6. After the fix works, clean up: revert the diagnostic `diagnoseChromeTransparency` logging; then reconsider PR #20 cleanup with `buildMaskLayer` KEPT.
+**Chrome v4 transparency is FIXED and confirmed working.** Cut corners now reveal the desktop on `HoloscapeClassic-live`.
+
+Root cause: `AppDelegate.applyAppearance` was setting `window.backgroundColor` to charcoal AFTER `reconstructAsBorderlessTransparent` set it to `.clear`. AppKit propagates `window.backgroundColor` to `NSNextStepFrame`'s backing layer, which paints behind the CAShapeLayer mask — so the mask clipped the content view but the frame-view layer bled through.
+
+Fix PRd and on its way to merge. See `docs/research/chrome-transparency-root-cause.md` → "ACTUAL ROOT CAUSE" section for full writeup.
+
+**Next session**: PR #20 cleanup — now unblocked. Delete `WindowDragOverlay`, polygon scaling helpers, and `windowDidResizeForShape`. Keep `buildMaskLayer` (it's the load-bearing piece that makes the mask work).
 
 **Skill pipeline also hardened today** (`/strategy`, `/spec`, `/trace`, `/propose`) so this failure mode can't happen on other projects. See each skill's SKILL.md for the Platform-Level Risk Validation gates. Independent of Holoscape; done and shipped.
 
