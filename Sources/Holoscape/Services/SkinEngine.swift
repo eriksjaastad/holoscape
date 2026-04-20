@@ -115,6 +115,13 @@ struct LoadedSkin {
     /// reload diff (PR #18 — unchanged SHA means no re-bake needed).
     let chromeSHA: String?
 
+    /// Chrome v4 validator output — non-nil when `chrome != nil`
+    /// and the validator ran (Req 12). Empty `disabledAnimationIDs`
+    /// + nil `warningReason` means every check passed. PR #5
+    /// MainWindowController.applyChromeSkin reads
+    /// `disabledAnimationIDs` to skip install of rejected layers.
+    let chromeValidation: ChromeValidationResult?
+
     /// Sentinel returned when the requested skin is `"Default"` — lets
     /// callers treat Default as "no skin loaded" without a special case.
     ///
@@ -133,7 +140,8 @@ struct LoadedSkin {
         dragRegions: [],
         chrome: nil,
         baseImage: nil,
-        chromeSHA: nil
+        chromeSHA: nil,
+        chromeValidation: nil
     )
 }
 
@@ -937,19 +945,49 @@ class SkinEngine {
         var loadedChrome: ChromeDescriptor? = manifest.chrome
         var loadedBaseImage: CGImage? = nil
         var loadedChromeSHA: String? = nil
+        var loadedChromeValidation: ChromeValidationResult? = nil
+        var chromeBannerReason: String? = nil
         if let chrome = manifest.chrome {
             do {
                 let (image, sha) = try bakePipeline.bake(manifest: manifest, skinDir: skinDir)
-                loadedChrome = chrome
-                loadedBaseImage = image
-                loadedChromeSHA = sha
+                // Chrome v4 Task 9.2 — run the validator on the baked
+                // Base_Layer. Fatal failures (Req 12.8) degrade to
+                // `chrome = nil` + banner so the rectangular fallback
+                // still paints via v3 surfaces (PR #9 ships the real
+                // fallback wiring; PR #5 just gates install here).
+                let validation = ChromeManifestValidator.validate(
+                    manifest: manifest,
+                    baseImage: image,
+                    windowShape: manifest.windowShape,
+                    skinDir: skinDir
+                )
+                if !validation.valid {
+                    NSLog("SkinEngine: chrome validation failed for '\(name)': \(validation.warningReason ?? "unknown"); falling back to rectangular")
+                    loadedChrome = nil
+                    loadedBaseImage = nil
+                    loadedChromeSHA = nil
+                    loadedChromeValidation = validation
+                    chromeBannerReason = validation.warningReason
+                } else {
+                    loadedChrome = chrome
+                    loadedBaseImage = image
+                    loadedChromeSHA = sha
+                    loadedChromeValidation = validation
+                    chromeBannerReason = validation.warningReason
+                }
             } catch {
                 NSLog("SkinEngine: chrome bake failed for '\(name)': \(error); falling back to pre-v4 path")
                 loadedChrome = nil
                 loadedBaseImage = nil
                 loadedChromeSHA = nil
+                loadedChromeValidation = nil
             }
         }
+
+        // Chrome-layer banner wins over v3 shape-validation banner
+        // (the chrome path is the one the user is actively loading;
+        // a shape-validation warning from v3 is stale context).
+        let effectiveBannerReason = chromeBannerReason ?? bannerReason
 
         return LoadedSkin(
             name: name,
@@ -958,11 +996,12 @@ class SkinEngine {
             images: images,
             skinDir: skinDir,
             windowShape: validatedShape,
-            validationBannerReason: bannerReason,
+            validationBannerReason: effectiveBannerReason,
             dragRegions: resolvedDragRegions,
             chrome: loadedChrome,
             baseImage: loadedBaseImage,
-            chromeSHA: loadedChromeSHA
+            chromeSHA: loadedChromeSHA,
+            chromeValidation: loadedChromeValidation
         )
     }
 
