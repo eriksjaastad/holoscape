@@ -16,6 +16,31 @@ import QuartzCore
 final class ShapedBorderlessWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// Force the correct styleMask regardless of caller. Every
+    /// reference implementation of a shaped NSWindow (hfyeomans
+    /// CustomSkinWindow / WinampWindow / ModernSkinWindow; CocoaDev
+    /// BorderlessWindow; Matt Gallagher cocoawithlove) hardcodes
+    /// styleMask in the subclass init so downstream callers can't
+    /// silently misconfigure it. `.fullSizeContentView` in
+    /// particular is a trap — it requires `.titled` to be respected
+    /// and, without `.titled`, silently collapses to `.borderless`
+    /// (which is rawValue 0). We want the caller intent to be
+    /// explicit: this subclass is for borderless + resizable shaped
+    /// windows. See `docs/research/chrome-transparency-root-cause.md`.
+    override init(
+        contentRect: NSRect,
+        styleMask _: NSWindow.StyleMask,
+        backing backingStoreType: NSWindow.BackingStoreType,
+        defer flag: Bool
+    ) {
+        super.init(
+            contentRect: contentRect,
+            styleMask: [.borderless, .resizable],
+            backing: backingStoreType,
+            defer: flag
+        )
+    }
 }
 
 struct ResolvedWindowShape: Equatable {
