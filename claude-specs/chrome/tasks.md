@@ -186,12 +186,17 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
 
 - [ ] 11. PR #6 — MainWindowController chrome-mode branch
   - [ ] 11.1 Add Chrome_Mode_Branch to applySkin with window reconstruction
+    - **AMENDED 2026-04-20** (see `docs/research/chrome-transparency-root-cause.md`): The Risk #1 doc's conclusion that "borderless-from-birth + PNG alpha produces transparent corners" was based on a confounded isolation test. **PNG `layer.contents` alpha ALONE does not clip an NSWindow's backing.** Every documented working shaped-window implementation on macOS (hfyeomans/winamp-macos-migration, CocoaDev, Matt Gallagher cocoawithlove) uses a `CAShapeLayer` mask on `contentView.layer` to clip the window to the silhouette. Reconstruct-from-birth is still required (per the original finding), but it is not SUFFICIENT on its own. The mask is the load-bearing piece.
     - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to add `applyChromeSkin(_:)` (extension method per design's Component 9)
-    - When `loaded.chrome != nil`, call `reconstructAsBorderlessTransparent(size:)` — the existing titled window CANNOT be retrofitted to transparent via property flips (PR #1 isolation test proved this, see `docs/research/chrome-risk1-transparency-findings.md`). Must construct a new `ShapedBorderlessWindow`, migrate delegate + child windows (Reader Mode panel, BugReportDialog) + first responder, `orderOut` the old window, `makeKeyAndOrderFront` the new one.
+    - When `loaded.chrome != nil`, call `reconstructAsBorderlessTransparent(size:)`. Construct a new `ShapedBorderlessWindow`, migrate delegate + child windows (Reader Mode panel, BugReportDialog) + first responder, `orderOut` the old window, `makeKeyAndOrderFront` the new one.
+    - **Install a `CAShapeLayer` mask on `shapedContent.layer` derived from the chrome silhouette.** Default path is a rounded-rect `CGPath` matching `chrome.width × chrome.height` with a 16pt corner radius (matches our reference chrome assets); skins with `chrome.interiorPath` or concave silhouettes trace a custom path. This mask is what actually clips the window so AppKit's backing store respects transparency. Reuse / refactor the existing `ShapedWindowController.buildMaskLayer` rather than reimplementing — same primitive, different source of the path.
+    - **styleMask: `[.borderless, .resizable]` or `[.borderless, .miniaturizable, .resizable]`.** **Do NOT include `.fullSizeContentView`** — it requires `.titled` to be respected and silently falls through on borderless windows, violating the canonical recipe. Force the styleMask in `ShapedBorderlessWindow`'s `init` override so callers can't pass the wrong value.
+    - **`hasShadow = true`**, not false. Every documented reference uses true; the system computes the drop shadow from the mask/alpha automatically.
+    - `contentView.layer.backgroundColor = NSColor.clear.cgColor` (explicit `.clear`, not `nil`) — `nil` can leave AppKit's default in place.
     - On the inverse transition (v4 chrome → pre-v4 skin at runtime), call `reconstructAsTitled(size:)` — symmetric reason (Requirement 3.1a).
-    - Tear down any pre-existing CA-mask state on the new window before installing `ChromeHostView` as the sole child of `ShapedContentView`, install `InteriorView` as a sibling pinned to `chrome.interiorRect`, and reparent every existing app-content subview (TabBarView, NSSplitView, SidebarView, SplitPaneManager, HoloscapeTerminalView, InputBoxView, SessionLauncherView) from `ShapedContentView` to `InteriorView`
-    - When `loaded.chrome == nil`, route through the existing pre-v4 path (including old `applyWindowShape` CA-mask path — this is the backward-compat branch)
-    - Skip `buildMaskLayer` and `WindowDragOverlay` entirely in the chrome-mode branch
+    - Install `ChromeHostView` as the sole child of `ShapedContentView` for decorative visuals. Install `InteriorView` as a sibling pinned to `chrome.interiorRect`. Reparent every existing app-content subview (TabBarView, NSSplitView, SidebarView, SplitPaneManager, HoloscapeTerminalView, InputBoxView, SessionLauncherView) from `ShapedContentView` to `InteriorView`. **Snapshot the subviews BEFORE calling `reconstructAsBorderlessTransparent`** — the reconstruction installs a fresh content view, and subviews only held by the old content view get released with the old window. MainWindowController retains subviews via properties, so they survive, but they must be `removeFromSuperview`'d before the old window goes away.
+    - On re-entry (v4 → v4 skin switch), extract real app subviews from the existing `InteriorView` — not from `window.contentView.subviews` directly — to avoid wrapping the previous chrome-in-chrome.
+    - When `loaded.chrome == nil`, route through the existing pre-v4 path.
     - Continue to call `HitRegionSampler.contains(point)` in `ShapedContentView.hitTest(_:)` for every incoming hit test; return nil outside the polygon, delegate to `super.hitTest` inside
     - Continue to honor `dragRegions` via the existing `DragRegionTracker` installed from `manifest.dragRegions`
     - Preserve `HitRegionSampler`, `DragRegionTracker`, `ShapedBorderlessWindow`, `isReleasedWhenClosed = false`, `SkinWarningBanner`, `.wamp` loader, sprite engine, font pipeline, bundle cache, skin picker, hot reload debouncer verbatim across this PR
@@ -202,10 +207,13 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
     - _Requirements: 12.7_
 
   - [ ]* 11.3 Unit test for chrome-mode branch
+    - **AMENDED 2026-04-20**: the original "does not call `buildMaskLayer`" assertion was based on the wrong root-cause model. `buildMaskLayer` IS called in chrome mode now (with a silhouette path derived from `chrome`, not from `manifest.windowShape`). Replace that assertion with a positive one: `shapedContent.layer.mask` is non-nil and is a `CAShapeLayer` after applyChromeSkin returns.
     - Create `Tests/HoloscapeTests/Unit/MainWindowControllerChromeBranchTests.swift`
-    - Test `applySkin` with `chrome != nil` installs `ChromeHostView` and `InteriorView`, does not call `buildMaskLayer`, does not install `WindowDragOverlay`
+    - Test `applySkin` with `chrome != nil` installs `ChromeHostView`, `InteriorView`, AND a `CAShapeLayer` mask on the content view
+    - Test `applySkin` with `chrome != nil` does not install `WindowDragOverlay` (drag handled by `isMovableByWindowBackground = true`)
     - Test `applySkin` with `chrome == nil` preserves the pre-v4 path
     - Test subview reparenting: every expected child moves from `ShapedContentView` to `InteriorView`
+    - Test re-entry (v4 → v4 skin switch) does NOT wrap the previous chrome — app subviews extracted from the existing `InteriorView`, not from `window.contentView.subviews`
     - _Requirements: 2.1, 2.3, 2.4, 16.3_
 
   - [ ]* 11.4 Property test: Chrome mode branch skips old CA-mask path
@@ -543,10 +551,13 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
   - Ensure Mac Mini UI tests pass; ensure debug overlay renders correctly; ensure `os_signpost` traces show ≤ 8ms per frame for HoloscapeClassic-live.
 
 - [ ] 39. PR #20 — Delete old mask path
-  - [ ] 39.1 Delete ShapedWindowController.buildMaskLayer and related CA-mask code
-    - Modify `Sources/Holoscape/Controllers/ShapedWindowController.swift` to remove `buildMaskLayer(for:in:)` entirely
-    - Move concave-interior masking to `InteriorView.layer.mask` (already in place from task 5.2); no re-install needed at the `ShapedContentView` level
-    - _Requirements: 16.6_
+
+  **AMENDED 2026-04-20** (see `docs/research/chrome-transparency-root-cause.md`): the original task group assumed v4 chrome replaces `ShapedWindowController.buildMaskLayer` with PNG-alpha-only rendering. That assumption was WRONG. On macOS, PNG `layer.contents` alpha does NOT clip the window's backing store — a `CAShapeLayer` mask on `contentView.layer` is the canonical mechanism. Chrome mode in PR #6 installs such a mask via the same `buildMaskLayer` primitive (with a silhouette path derived from `chrome`, not from `windowShape`). Tasks below are scoped down to what's actually dead code.
+
+  - [ ] 39.1 ~~Delete ShapedWindowController.buildMaskLayer~~ **KEEP** — load-bearing for chrome mode
+    - `buildMaskLayer(for:in:)` stays. Chrome mode calls it (via `applyChromeSkin` in PR #6) with a silhouette path built from `chrome.width × chrome.height` + corner radius. Only the CALLERS change across PRs, not the primitive itself.
+    - Action: add a docstring to `buildMaskLayer` noting it's used by BOTH the pre-v4 `applyWindowShape` path AND the v4 `applyChromeSkin` path. Optionally rename to `buildSilhouetteMaskLayer` for clarity — not required for correctness.
+    - _Requirements: 16.6 (amended — no deletion)_
 
   - [ ] 39.2 Delete WindowDragOverlay
     - Delete `WindowDragOverlay` class from `Sources/Holoscape/Views/ShapedContentView.swift` (class + all references)
@@ -554,8 +565,7 @@ Checkpoints appear between each PR as "ensure tests pass and the relevant backwa
     - _Requirements: 4.6, 16.6_
 
   - [ ] 39.3 Delete polygon scaling + windowDidResizeForShape
-    - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to delete the polygon scaling helpers and the `windowDidResizeForShape` observer
-    - v4 chrome is fixed-size by construction (Requirement 3.6); no resize handling needed
+    - Modify `Sources/Holoscape/Controllers/MainWindowController.swift` to delete the polygon scaling helpers and the `windowDidResizeForShape` observer — **ONLY** if chrome mode doesn't need to re-scale masks on resize. v4 chrome is fixed-size by construction (Requirement 3.6), so this is probably safe, but verify that the mask install in `applyChromeSkin` doesn't require runtime polygon scaling first.
     - _Requirements: 3.6, 16.6_
 
   - [ ] 39.4 Delete writeShapeDiagnostic infrastructure
