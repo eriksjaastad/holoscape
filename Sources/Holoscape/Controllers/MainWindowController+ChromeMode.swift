@@ -105,6 +105,26 @@ extension MainWindowController {
         newWindow.setContentSize(nominal)
         newWindow.styleMask.remove(.resizable)
 
+        // Task 15.1 — drag via background. The chrome PNG covers the
+        // entire content view, so every opaque chrome pixel becomes a
+        // drag handle when `isMovableByWindowBackground = true`. This
+        // replaces the pre-v4 path's `WindowDragOverlay` (a 20pt-tall
+        // invisible strip at the top of the content view), which
+        // chrome mode never installs (see `reloadSkin`'s
+        // `chrome != nil` branch — it skips `applyWindowShape` +
+        // `applyDragRegions` entirely).
+        //
+        // Per Req 4.6 + 4.5: when the manifest declares
+        // `dragRegions` polygons, those are honored AS WELL via
+        // the existing `DragRegionTracker` installed by
+        // `applyDragRegions`. Chrome mode doesn't call that path
+        // today (the feature-flag check in `applyDragRegions` is
+        // keyed off `ShapedWindowController.featureFlagEnabled`,
+        // not chrome-mode), so for the PR #7 scope the whole-chrome-
+        // drag is the only drag surface. PR #8+ may wire explicit
+        // drag regions back in if needed.
+        newWindow.isMovableByWindowBackground = true
+
         // Restore first responder AFTER reparenting — the captured
         // responder's `window` now resolves to `newWindow` if it's
         // an `NSView` descendant of the reparented subtree. A
