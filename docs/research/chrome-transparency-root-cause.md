@@ -195,6 +195,56 @@ For our chrome PNG case, the silhouette path is either:
 
 4. **Keep PNG alpha as the visual content** for ChromeHostView — that still works for the decorative bands, rounded-corner soft edges, etc. The mask just ensures AppKit actually clips the window to the shape.
 
+---
+
+## ACTUAL ROOT CAUSE — discovered 2026-04-20 (post-research session)
+
+The research above correctly identified the CAShapeLayer mask as required (Finding 2). The mask was implemented in PR #166. **But corners were still opaque.** Diagnostics revealed a second, independent root cause:
+
+### The NSNextStepFrame layer-background problem
+
+When `AppDelegate.applyAppearance` runs AFTER `reconstructAsBorderlessTransparent`, it sets `window.backgroundColor` to the appearance config's charcoal hex color (`#1a1a2e` or similar). AppKit propagates `window.backgroundColor` to `NSNextStepFrame`'s backing layer (`_NSNextStepFrame.layer.backgroundColor`) on the first display pass. `NSNextStepFrame` is AppKit's private frame view — the immediate parent of `window.contentView`. Its layer paints BEHIND the content view, outside the CAShapeLayer mask. Result: the mask clips the content view correctly, but the opaque charcoal frame-view layer shows through where the mask makes the content view transparent.
+
+**Symptom**: transparent CAShapeLayer mask is installed and verified (non-nil, correct frame, correct path), `window.isOpaque = false`, `window.backgroundColor = .clear` at mask-install time — but corners still render opaque charcoal.
+
+**Diagnosis method**: Added `override var backgroundColor: NSColor!` to `ShapedBorderlessWindow` with `Thread.callStackSymbols` logging. Two setter calls observed:
+1. `reconstructAsBorderlessTransparent` → `.clear` (correct)  
+2. `AppDelegate.applyAppearance` → charcoal (the culprit)
+
+Call 2 originates from `applicationDidFinishLaunching` → `applyAppearance` which runs AFTER `reloadSkin` → `applyChromeSkin` → `reconstructAsBorderlessTransparent`.
+
+### The fix
+
+Two guards prevent `backgroundColor` from being re-set on chrome-mode windows after reconstruction:
+
+**`AppDelegate.applyAppearance`** (`Sources/Holoscape/AppDelegate.swift`):
+```swift
+// ShapedBorderlessWindow must keep backgroundColor = .clear.
+// Setting it to the appearance config's hex color propagates to
+// NSNextStepFrame's backing layer, painting opaque charcoal behind
+// the CAShapeLayer mask.
+if !(window is ShapedBorderlessWindow) {
+    if let color = NSColor(hexString: appearance.backgroundColor) {
+        window.backgroundColor = color
+    }
+}
+```
+
+**`MainWindowController.applyWindowSurfaces`** (`Sources/Holoscape/Controllers/MainWindowController.swift`):
+```swift
+// Chrome-mode windows (ShapedBorderlessWindow) must keep
+// backgroundColor = .clear so NSNextStepFrame's backing layer
+// stays transparent.
+guard !(window is ShapedBorderlessWindow) else { return }
+window.backgroundColor = Self.resolveWindowBackground(from: skinContext)
+```
+
+**Additional fix**: `reconstructAsBorderlessTransparent` now explicitly sets `freshLayer.frame` on the layer-hosting content view's `CALayer()` before assigning it. `CALayer()` defaults to `frame = CGRect.zero`; for layer-hosting views AppKit does not auto-sync layer frame.
+
+### Rule for future sessions
+
+**Never set `window.backgroundColor` on a `ShapedBorderlessWindow` after construction.** The window is constructed with `backgroundColor = .clear`. Any subsequent setter call propagates to `NSNextStepFrame.layer.backgroundColor` and undoes transparency. The `ShapedBorderlessWindow` type-check in both `applyAppearance` and `applyWindowSurfaces` is the guard. Do not remove it.
+
 ## Sources
 
 - [CocoaDev — BorderlessWindow](https://cocoadev.github.io/BorderlessWindow/)
