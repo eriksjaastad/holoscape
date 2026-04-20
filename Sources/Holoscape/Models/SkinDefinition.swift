@@ -15,6 +15,12 @@ import Foundation
 ///   metadata carried on `FillDescriptor.image`. `version: "3.0"` signals an
 ///   Amplify manifest, but every v3 field is optional — a manifest that omits
 ///   all v3 fields decodes and renders identically to its v2 form.
+/// - **v4 (PNG-alpha chrome)**: adds optional `chrome: ChromeDescriptor?`.
+///   Present routes through Chrome_Mode_Branch in MainWindowController
+///   (ChromeHostView as root view, InteriorView pinned to `chrome.interiorRect`
+///   hosting app subviews). Absent preserves the pre-v4 rendering path so
+///   v1/v2/v3 manifests continue to decode and render identically
+///   (backward-compatibility invariant, Requirement 16.1).
 ///
 /// V1 and v2 skins continue to load and render correctly. When a manifest has
 /// both v1 fields and a v2 `surfaces` dictionary, v2 takes precedence for any
@@ -64,4 +70,15 @@ struct SkinDefinition: Codable, Equatable, Sendable {
     /// install an `NSTrackingArea`; a `mouseDown` inside any polygon
     /// triggers `window.performDrag(with:)`.
     var dragRegions: [DragRegionDescriptor]?
+
+    // MARK: - v4 fields (PNG-alpha chrome, optional, additive)
+
+    /// Chrome v4 descriptor. When present, the window reconstructs as
+    /// borderless + transparent and routes through Chrome_Mode_Branch;
+    /// `ChromeHostView` hosts the static Base_Layer + animated layers,
+    /// and `InteriorView` (pinned to `chrome.interiorRect`) hosts every
+    /// app subview. When absent, the pre-v4 rendering path runs
+    /// unchanged — v1/v2/v3 manifests keep their exact rendering
+    /// behavior (Requirement 16.1).
+    var chrome: ChromeDescriptor?
 }
