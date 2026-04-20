@@ -84,7 +84,8 @@ Target: macOS 15+ on Apple Silicon. Animated rendering runs on main-thread vsync
 
 #### Acceptance Criteria
 
-1. THE Holoscape SHALL configure the `NSWindow` as `.borderless`, `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = false` whenever Skin_Definition_V4 chrome is active.
+1. THE Holoscape SHALL construct a NEW `NSWindow` as `.borderless`, `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = false` whenever Skin_Definition_V4 chrome becomes active. Reconfiguring an existing titled window does NOT produce transparency — AppKit locks in opaque backing at construction time (see `docs/research/chrome-risk1-transparency-findings.md`); the Chrome_Mode_Branch must build a fresh window, migrate the delegate and child windows, and dismiss the prior window cleanly.
+1a. THE Holoscape SHALL, on the inverse transition (v4 chrome → pre-v4 skin), construct a new titled window and migrate state back, for the same reason — a born-borderless window cannot be retrofitted back to a standard titled window at runtime with reliable appearance.
 2. WHEN a Base_Layer pixel has alpha == 0, THE Holoscape SHALL render the corresponding window pixel as fully transparent.
 3. WHEN a Base_Layer pixel has 0 < alpha < 1, THE Holoscape SHALL render the corresponding window pixel with the matching partial alpha.
 4. THE Holoscape SHALL ensure that Base_Layer alpha IS the sole source of truth for window silhouette shape — no descendant layer's `backgroundColor` contributes to window opacity outside Chrome_Silhouette.
