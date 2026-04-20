@@ -173,6 +173,13 @@ let package = Package(
                 // SkinEngine enumerates + resolves via
                 // `Bundle.main.resourceURL/Skins/`.
                 .copy("Resources/Skins"),
+                // PNG-chrome architecture PR #1 — known-good alpha fixture
+                // for the transparency prototype (claude-specs/chrome/
+                // tasks.md Task 1.1). `.copy` keeps the `Prototype/` dir
+                // in place so `Bundle.module.url(forResource: _, ...,
+                // subdirectory: "Prototype")` resolves. Removed when the
+                // prototype env flag goes away (PRD §12 post-PR-#9).
+                .copy("Resources/Prototype"),
                 // AppIcon.icns is consumed by the .app bundling step, not
                 // SwiftPM's resource pipeline. Declaring it as .copy stops
                 // the "unhandled file" warning without processing it.
