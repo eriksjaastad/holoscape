@@ -726,6 +726,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// now the tab bar's own `tabBar.container` surface covers the
     /// visible titlebar band, so this method only wires the window bg.
     private func applyWindowSurfaces() {
+        // Chrome-mode windows (ShapedBorderlessWindow) must keep
+        // backgroundColor = .clear so NSNextStepFrame's backing layer
+        // stays transparent. Setting it to the skin's declared background
+        // color here would cause the frame-view layer to paint opaque
+        // charcoal behind the content view's CAShapeLayer mask, making
+        // cut corners render opaque instead of revealing the desktop.
+        // The transparent recipe set in reconstructAsBorderlessTransparent
+        // must win.
+        guard !(window is ShapedBorderlessWindow) else { return }
         window.backgroundColor = Self.resolveWindowBackground(from: skinContext)
     }
 
@@ -1031,6 +1040,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // shaped window opaque with a systemGray fill so the mask
             // complement renders gray instead of transparent. Outline
             // stays visible; visual transparency does not (Req 2.6).
+            // Intentional: this is the one callsite that sets backgroundColor
+            // on a ShapedBorderlessWindow — the accessibility override wins
+            // over the .clear guard in applyAppearance / applyWindowSurfaces.
             if targetShape != nil && reduceTransparency {
                 window.isOpaque = true
                 window.backgroundColor = .systemGray
