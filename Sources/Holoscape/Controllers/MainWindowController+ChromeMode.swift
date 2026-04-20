@@ -337,6 +337,67 @@ extension MainWindowController {
     /// state back. The caller installs whatever content the new
     /// non-chrome path wants inside `window.contentView`.
     @discardableResult
+    /// Reverse `applyChromeSkin`: pull the app content back out of
+    /// `InteriorView`, reconstruct the window as a regular titled
+    /// window, and re-add the app subviews directly to the new
+    /// content view.
+    ///
+    /// This is the exit path from chrome mode. It must be called
+    /// whenever `reloadSkin` routes to a non-chrome skin while the
+    /// current window is a `ShapedBorderlessWindow`; without it the
+    /// window stays borderless permanently (no traffic lights, no
+    /// resize chrome).
+    ///
+    /// Layout after teardown: app subviews had their original
+    /// Auto Layout constraints removed when `applyChromeSkin` moved
+    /// them into `InteriorView`. After reinsertion their frames are
+    /// at their last-computed positions, which are already in (0,0)-
+    /// relative bounds space — `InteriorView.bounds.origin` is always
+    /// (0,0) regardless of its frame origin, so InteriorView-relative
+    /// frames are identical to content-view-relative frames. The
+    /// `applySkin` call that follows teardown triggers a layout pass
+    /// that resolves any remaining positional drift.
+    func teardownChromeSkin() {
+        guard window is ShapedBorderlessWindow else { return }
+
+        let previousResponder = window.firstResponder
+
+        // Extract app subviews from InteriorView (or content view
+        // directly on a first-entry-but-no-InteriorView state).
+        let appSubviews = Self.extractAppSubviews(fromContentView: window.contentView)
+        for view in appSubviews { view.removeFromSuperview() }
+
+        // Reconstruct as titled. Creates a fresh ShapedContentView,
+        // migrates child windows and delegate, orders new window front.
+        // Pass the current frame size — chrome mode locks the window to
+        // nominal dimensions, so window.frame.size == nominal here.
+        // reconstructAsTitled takes this as the content rect, so the
+        // content area matches the chrome's nominal size. The titled
+        // window's frame will be slightly larger (title bar height).
+        let newWindow = reconstructAsTitled(size: window.frame.size)
+        guard let contentView = newWindow.contentView else {
+            // reconstructAsTitled always sets contentView; if this fires
+            // it means a future refactor broke that contract. The views
+            // are already detached — log loudly so the data loss is visible.
+            NSLog("MainWindowController: teardownChromeSkin — contentView nil after reconstruction; app subviews orphaned")
+            assertionFailure("reconstructAsTitled must produce a non-nil contentView")
+            return
+        }
+
+        // Re-add app subviews directly to the new content view.
+        for view in appSubviews { contentView.addSubview(view) }
+
+        // Disable background-drag (chrome mode sets this; it's wrong
+        // for the regular titled window which has a real title bar).
+        newWindow.isMovableByWindowBackground = false
+
+        // Restore first responder if the view survived into the new window.
+        if let responder = previousResponder as? NSView,
+           responder.window === newWindow {
+            newWindow.makeFirstResponder(responder)
+        }
+    }
+
     func reconstructAsTitled(size: NSSize) -> NSWindow {
         let oldWindow = window
         let wasKey = oldWindow.isKeyWindow
@@ -470,11 +531,13 @@ extension MainWindowController {
         }
         // No previous chrome mode — root.subviews ARE the app
         // content (pre-v4 layout where app views were added
-        // directly to ShapedContentView). Log so that a future
-        // layout change inserting an intermediate container view
-        // (e.g. focus-ring wrapper) is visible instead of silently
-        // reparenting the wrong view level.
-        NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
+        // directly to ShapedContentView). Only log when subviews
+        // are actually present; an empty root is the expected state
+        // immediately after reconstructAsTitled (teardownChromeSkin
+        // path), and logging there would be a false alarm.
+        if !root.subviews.isEmpty {
+            NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
+        }
         return root.subviews
     }
 
