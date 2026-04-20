@@ -165,8 +165,15 @@ final class ChromeHostView: NSView {
                             // the sheet wiring lands.
             )
         case .shader:
-            // Shader preset renderer lands in PR #12.
-            return nil
+            guard let params = descriptor.params.shader else { return nil }
+            return ShaderPresetLayerRenderer(
+                id: descriptor.id,
+                z: descriptor.z,
+                rect: descriptor.rect,
+                params: params,
+                phaseOffset: descriptor.phaseOffset ?? 0,
+                speedMultiplier: descriptor.speedMultiplier ?? 1
+            )
         }
     }
 
