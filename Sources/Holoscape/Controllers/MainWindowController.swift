@@ -2173,9 +2173,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.contentMinSize = nominal
         window.contentMaxSize = nominal
 
+        // PR #3 promoted ChromeHostView to its production Component 1
+        // interface; the prototype env-flag path now builds a minimal
+        // `ChromeDescriptor` on the fly (the prototype ships a full-size
+        // interior with no animations) instead of the PR #1 frame-only
+        // signature. The prototype path is still gated by
+        // `HOLOSCAPE_PNG_CHROME_PROTOTYPE=1` and still retired in PR #20.
+        let prototypeChrome = ChromeDescriptor(
+            mode: .baked,
+            image: "known_good_alpha.png",
+            width: Int(nominal.width),
+            height: Int(nominal.height),
+            interiorRect: SkinRect(x: 0, y: 0, width: Double(nominal.width), height: Double(nominal.height))
+        )
         let host = ChromeHostView(
-            frame: NSRect(origin: .zero, size: nominal),
-            baseImage: cgImage
+            chrome: prototypeChrome,
+            baseImage: cgImage,
+            clock: nil
         )
         window.contentView = host
         NSLog("[chrome-prototype] installed ChromeHostView (\(Int(nominal.width))×\(Int(nominal.height))) with known_good_alpha.png")
