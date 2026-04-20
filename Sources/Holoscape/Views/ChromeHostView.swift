@@ -139,11 +139,33 @@ final class ChromeHostView: NSView {
                 rect: descriptor.rect,
                 params: params
             )
-        case .ledArray, .spriteAnim, .shader:
-            // Renderers land in PR #11 (.ledArray / .spriteAnim) and
-            // PR #12 (.shader). Until then these descriptors silently
-            // install nothing — the skin still loads; just fewer
-            // live layers than it ships with.
+        case .ledArray:
+            guard let params = descriptor.params.ledArray else { return nil }
+            return LEDArrayLayerRenderer(
+                id: descriptor.id,
+                z: descriptor.z,
+                rect: descriptor.rect,
+                params: params,
+                phaseOffset: descriptor.phaseOffset ?? 0,
+                speedMultiplier: descriptor.speedMultiplier ?? 1
+            )
+        case .spriteAnim:
+            guard let params = descriptor.params.spriteAnim else { return nil }
+            return SpriteAnimLayerRenderer(
+                id: descriptor.id,
+                z: descriptor.z,
+                rect: descriptor.rect,
+                params: params,
+                phaseOffset: descriptor.phaseOffset ?? 0,
+                speedMultiplier: descriptor.speedMultiplier ?? 1,
+                sheet: nil  // PR #18 threads skin-dir through so this
+                            // can resolve the declared sheet path. For
+                            // now the layer installs with a nil
+                            // contents — visual will be empty until
+                            // the sheet wiring lands.
+            )
+        case .shader:
+            // Shader preset renderer lands in PR #12.
             return nil
         }
     }
