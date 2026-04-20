@@ -351,6 +351,7 @@ struct ChromeAnimationLayer: Codable, Equatable, Sendable {
     let z: Int                         // z-order; base layer has implicit z = 0; must be > 0
     let phaseOffset: Double?           // seconds, default 0
     let speedMultiplier: Double?       // default 1.0
+    let dataSource: DataSource?        // default .none; MVP wires only .none and .time
     let params: Params
 
     struct Params: Codable, Equatable, Sendable {
@@ -358,6 +359,13 @@ struct ChromeAnimationLayer: Codable, Equatable, Sendable {
         let ledArray: LedArrayParams?
         let spriteAnim: SpriteAnimParams?
         let shader: ShaderParams?
+    }
+
+    /// Forward-compatible binding surface. MVP recognizes only `.none` and `.time`;
+    /// validator rejects any other case with a banner naming the offending `id`.
+    /// Post-MVP adds `.cpuLoad`, `.keystrokeRate`, `.paneActivity`, etc. additively.
+    enum DataSource: String, Codable, Sendable {
+        case none, time
     }
 }
 ```
@@ -442,6 +450,135 @@ let baseImageOpaque: CGImage?    // non-nil when Reduce Transparency active + im
 let chromeValidation: ChromeValidationResult?
 ```
 
+### Worked Manifest Example (v4, backward compatible)
+
+A complete `skin.json` for a hypothetical HoloscapeClassic-live skin exercising all four animated-layer kinds. All new fields are optional — v1/v2/v3 manifests decode identically to before.
+
+```json
+{
+  "version": "4.0",
+  "name": "HoloscapeClassic-live",
+  "author": "Erik",
+  "chrome": {
+    "mode": "baked",
+    "image": "chrome@2x.png",
+    "imageOpaque": "chrome-opaque@2x.png",
+    "width": 1000,
+    "height": 700,
+    "interiorRect": { "x": 40, "y": 60, "width": 920, "height": 600 },
+    "animations": [
+      {
+        "id": "porthole-particles",
+        "kind": "particle",
+        "rect": { "x": 50, "y": 70, "width": 200, "height": 200 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 1.0,
+        "dataSource": "none",
+        "params": {
+          "particle": {
+            "birthRate": 5.0,
+            "lifetime": 3.0,
+            "velocity": 20.0,
+            "emissionAngle": 1.57,
+            "emissionRange": 6.28,
+            "color": "#ffaa3388",
+            "scale": 0.5,
+            "blendMode": "additive"
+          }
+        }
+      },
+      {
+        "id": "status-leds",
+        "kind": "ledArray",
+        "rect": { "x": 800, "y": 10, "width": 150, "height": 20 },
+        "z": 2,
+        "dataSource": "time",
+        "params": {
+          "ledArray": {
+            "cellSize": 6.0,
+            "cells": [
+              { "x": 0, "y": 0, "defaultState": 0 },
+              { "x": 8, "y": 0, "defaultState": 1 },
+              { "x": 16, "y": 0, "defaultState": 0 }
+            ],
+            "palette": ["#333333", "#00ff00", "#ff0000"],
+            "pattern": { "phased": { "hz": 2.0 } }
+          }
+        }
+      },
+      {
+        "id": "lcd-marquee",
+        "kind": "spriteAnim",
+        "rect": { "x": 300, "y": 10, "width": 400, "height": 24 },
+        "z": 1,
+        "params": {
+          "spriteAnim": {
+            "sheet": "assets/lcd-frames.png",
+            "gridRows": 4,
+            "gridCols": 8,
+            "frameCount": 30,
+            "fps": 12.0,
+            "loop": "loop"
+          }
+        }
+      },
+      {
+        "id": "ambient-glow",
+        "kind": "shader",
+        "rect": { "x": 0, "y": 650, "width": 1000, "height": 50 },
+        "z": 1,
+        "params": {
+          "shader": {
+            "preset": "glow",
+            "color": "#4488ff",
+            "intensity": 0.3,
+            "hz": 0.5
+          }
+        }
+      }
+    ]
+  },
+  "windowShape": {
+    "kind": "polygons",
+    "polygons": [
+      { "points": [{"x": 0, "y": 0}, {"x": 1000, "y": 0}, {"x": 1000, "y": 700}, {"x": 0, "y": 700}] }
+    ]
+  },
+  "surfaces": {
+    "tabBar.background": { "fill": { "kind": "color", "hex": "#1a1a2e" } }
+  }
+}
+```
+
+### Cache Directory Structure
+
+```
+~/Library/Caches/holoscape-skins/
+├── <sha256-of-composed-inputs>/        (baked composed chrome image)
+│   └── chrome-baked.png
+├── <sha256-of-wamp-1>/                 (extracted .wamp bundle)
+│   ├── skin.json
+│   ├── chrome@2x.png
+│   └── assets/
+└── <sha256-of-wamp-2>/
+    └── ...
+```
+
+The 50 MB cap is shared with the existing `.wamp` unzip cache; `ChromeBakePipeline.purgeLRU()` and the `.wamp` cache's purge policy both honor the same cap and evict least-recently-used directories together.
+
+### Shader Preset Specifications
+
+Shader presets are shipped as Metal shader source (`.metal` files in the app bundle) compiled at app build time. Each preset is a fragment function that reads `iTime`, `iResolution`, and the declarative parameters from a small uniform buffer.
+
+| Preset      | Parameters           | Default Values           | Visual Effect                                         |
+|-------------|----------------------|--------------------------|-------------------------------------------------------|
+| `glow`      | color, intensity, hz | `#ffffff`, 0.5, 1.0      | Soft pulsing luminance at the layer rect              |
+| `scanlines` | color, intensity, hz | `#000000`, 0.3, 0.0      | CRT horizontal line overlay (static when `hz == 0`)   |
+| `noise`     | color, intensity, hz | `#ffffff`, 0.1, 30.0     | Animated film-grain overlay                           |
+
+Unknown presets fall through FR-13 graceful degradation: the affected layer is skipped with a `Skin_Warning_Banner` naming the preset, and the rest of the skin continues to load.
+
 ## Correctness Properties
 
 ### Property 1: Subview Addition Cannot Break Window Shape
@@ -474,7 +611,7 @@ let chromeValidation: ChromeValidationResult?
 
 **Validates: Requirements 5.2, 5.3, 5.4, 5.5**
 
-### Property 6: Backward Compatibility Matrix Holds Across Six Lanes
+### Property 6: Backward Compatibility Matrix Holds Across Ten Lanes
 
 *For any* of {v2 directory, v2 .wamp, v3 directory, v3 .wamp, v4 composed directory (no anim), v4 composed .wamp (no anim), v4 baked directory (no anim), v4 baked .wamp (no anim), v4 composed with every MVP animation kind, v4 baked with every MVP animation kind}, `SkinEngine.loadComposite` produces a `LoadedSkin` that renders without throwing and passes every `BackwardCompatIntegrationTests` assertion appropriate to the lane.
 
@@ -484,7 +621,7 @@ let chromeValidation: ChromeValidationResult?
 
 *For any* Animated_Chrome_Layer at any phase time and any density mode != `.off`, no pixel is rendered in the window's composited output where `baseLayer.alpha(x, y) == 0`.
 
-**Validates: Requirements 10.1, 10.2, 15.4**
+**Validates: Requirements 10.1, 10.2**
 
 ### Property 8: Animation Frame Budget Held
 
@@ -693,6 +830,6 @@ The PRD identifies 13 Open Items (§17). Decisions resolved inline here; deferra
 10. **Minimum chrome image size (§17.10)** — resolved: warn below 200×100. Requirement 12.9.
 11. **Shader preset surface area (§17.11)** — resolved: three presets in MVP (`glow`, `scanlines`, `noise`). A fourth preset requires PRD amendment + spec amendment. Requirement 9.2.
 12. **Animation hot-reload granularity (§17.12)** — resolved for MVP: restart layer on any param change (simpler). Smart-diff deferred to post-MVP. Noted at `ChromeHostView.diffAnimatedLayers` comment.
-13. **Data-source bindings (§17.13)** — deferred: MVP does NOT ship a stubbed data-source descriptor. The animated-layer vocabulary is bounded; adding a `dataSource` field requires PRD amendment. If post-MVP adds bindings, the descriptor is additive and a `dataSource: .none | .time` default can be introduced then without breaking v4 manifests.
+13. **Data-source bindings (§17.13)** — resolved per PRD §17.13: MVP ships a stubbed `DataSource` descriptor on `ChromeAnimationLayer` with only `.none` and `.time` values wired. Post-MVP adds `.cpuLoad`, `.keystrokeRate`, `.paneActivity`, etc. additively. Rationale: the manifest-forward-compat argument in the PRD outweighs the "bounded vocabulary" governance argument — the stub costs ~10 lines of model code and one enum case in the validator, and keeps every v4 `.wamp` forward-compatible with bindings when they land.
 
-**Deferred explicitly to post-MVP (not in this spec)**: `.wsz` import, data-source bindings, VU meter kind, per-skin custom shaders, vector chrome, multiple chrome states, video chrome, per-skin shadows, skin gallery, dynamic mask-image skins, per-monitor DPI variants, runtime polygon morphing, audio-reactive animations.
+**Deferred explicitly to post-MVP (not in this spec)**: `.wsz` import, data-source bindings beyond `.none`/`.time`, VU meter kind, per-skin custom shaders, vector chrome, multiple chrome states, video chrome, per-skin shadows, skin gallery, dynamic mask-image skins, per-monitor DPI variants, runtime polygon morphing, audio-reactive animations.
