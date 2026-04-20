@@ -1,15 +1,34 @@
-# Holoscape — Session Progress (2026-04-20)
+# Holoscape — Session Progress (2026-04-20, end of day)
 
-## START HERE
+## TL;DR FOR NEXT SESSION
 
-**Status**: 19 of 20 chrome PRs merged. Phase 1 (static transparency foundation) + Phase 2 (animated layers) + Phase 3 (reference skins + docs) all shipped. Phase 4 cleanup is partial — pre-v4 `HoloscapeClassic` deleted; removal of the CA-mask / `WindowDragOverlay` fallback deferred pending Mac Mini validation of the chrome-mode branch against a live v4 skin.
+1. Chrome v4 corners still render opaque. Fix is scoped and research-backed.
+2. Read `docs/research/chrome-transparency-root-cause.md` first — everything else is context.
+3. The one-line answer: add a `CAShapeLayer` mask to `shapedContent.layer` in `applyChromeSkin` using `ShapedWindowController.buildMaskLayer` with a rounded-rect path matching `chrome.width × chrome.height` + 16pt corner radius. Also set `hasShadow = true` and use styleMask `[.borderless, .resizable]` (NOT `.fullSizeContentView`).
+4. Expected scope: 30–60 min if nothing surprises.
+5. Current branch: `fix/chrome-reparent-subviews` — has uncommitted-but-now-committed work-in-progress fixes (reparent bug fix, chrome PNG corner-painting fix, explicit `.clear` layer backgrounds per canonical recipe, diagnostic logging, spec amendments, root-cause doc).
+6. After the fix works, clean up: revert the diagnostic `diagnoseChromeTransparency` logging; then reconsider PR #20 cleanup with `buildMaskLayer` KEPT.
 
-**Tests**: 896 green on laptop. No regressions through any of the 19 PRs.
+**Skill pipeline also hardened today** (`/strategy`, `/spec`, `/trace`, `/propose`) so this failure mode can't happen on other projects. See each skill's SKILL.md for the Platform-Level Risk Validation gates. Independent of Holoscape; done and shipped.
+
+## START HERE — READ THE CORRECTION BELOW FIRST
+
+**Session 1 status (morning → afternoon)**: 19 of 20 chrome PRs merged. Infrastructure (data model, views, bake pipeline, validator, mode branch, drag, RT, animations, reference skins, docs, BC tests, debug overlay) all shipped and tested. **896 unit tests green.**
+
+**Session 2 status (afternoon live test)**: Launched `HoloscapeClassic-live`. Cut corners render **opaque charcoal, not transparent**. 5+ hours of Swift-side fixes (explicit clear layer backgrounds, frame-view fix, explicit `isOpaque=false` on every layer, etc.) changed nothing. Erik correctly called this out as flailing and asked for actual research.
+
+**Root cause identified 2026-04-20 evening**: the core assumption of the entire 20-PR plan was wrong. Full writeup: **`docs/research/chrome-transparency-root-cause.md`**.
+
+- The Risk #1 finding ("borderless-from-birth + PNG alpha = transparent corners") was based on a confounded isolation test that had inherited state from a previous CA-mask install. The test was not clean.
+- **PNG `layer.contents` alpha does NOT clip an `NSWindow`'s backing store.** The canonical mechanism — used by every documented shaped-window implementation on macOS (hfyeomans/winamp-macos-migration, CocoaDev, Matt Gallagher cocoawithlove) — is a **`CAShapeLayer` mask on `contentView.layer`**. PNG alpha provides visuals inside the clipped region; the mask defines the region.
+- Our chrome-mode branch (`applyChromeSkin` in PR #6/#153) installs no mask. That's why corners render opaque.
+- `ShapedWindowController.buildMaskLayer` — which the spec scheduled for deletion in PR #20 — is actually the load-bearing piece.
 
 **Next session**:
-1. Run `HoloscapeClassic-live` on the Mac Mini. Confirm window reconstructs borderless + transparent, all four animations render, cut corners reveal desktop.
-2. If clean → open PR #20 Phase 2 (delete `buildMaskLayer`, `WindowDragOverlay`, polygon scaling helpers, `windowDidResizeForShape` observer). Task 39.1–39.3.
-3. If broken on the Mini → the reconstruct path has bugs that unit tests didn't catch. Fix before deleting the fallback.
+1. Read `docs/research/chrome-transparency-root-cause.md` first.
+2. Implement the fix: `applyChromeSkin` installs a `CAShapeLayer` mask on `shapedContent.layer` using `buildMaskLayer` with a silhouette path derived from `chrome.width × chrome.height` + 16pt corner radius. Also: styleMask `[.borderless, .resizable]` (NOT `.fullSizeContentView`), `hasShadow = true`. Expected scope: ~30 min of code, not another 8 hours.
+3. Relaunch, verify transparent corners.
+4. THEN reconsider PR #20 cleanup — `buildMaskLayer` stays (amended), `WindowDragOverlay` + polygon scaling probably still safe to remove.
 
 Read in this order:
 1. `docs/png-chrome-prd.md` — the PRD.

@@ -52,6 +52,34 @@ extension MainWindowController {
         // the first responder would be unconditionally dropped.
         let previousResponder = window.firstResponder
 
+        // **CRITICAL**: Snapshot the REAL app subviews before
+        // reconstruction. Two cases:
+        //
+        // 1. First entry from pre-v4 path: content view's direct
+        //    subviews are the app content (tabBar, sidebarView,
+        //    splitPaneManager, inputBox, sessionLauncher).
+        // 2. Re-entry from a previous v4 skin: content view holds
+        //    the OLD ChromeHostView + OLD InteriorView; the real
+        //    app subviews are nested inside the old InteriorView.
+        //    Snapshotting the content view's direct subviews here
+        //    would capture the previous chrome's host+interior,
+        //    reparent them INTO the new interior, and stack
+        //    chrome-inside-chrome on every switch.
+        //
+        // Resolve to the real-app layer by preferring an existing
+        // InteriorView's subviews when present.
+        let appSubviewsToReparent: [NSView] = Self.extractAppSubviews(
+            fromContentView: window.contentView
+        )
+
+        // Remove them from their current superview NOW so they
+        // survive as unparented views (retained by
+        // MainWindowController properties) rather than getting
+        // released alongside the old window or old interior.
+        for view in appSubviewsToReparent {
+            view.removeFromSuperview()
+        }
+
         // Reconstruct the window as borderless transparent unless
         // we're already in chrome mode (subsequent chrome-to-chrome
         // swaps just replace the ChromeHostView image in place —
@@ -68,18 +96,12 @@ extension MainWindowController {
         tearDownOldCAMaskPath(on: newWindow)
 
         // Install ChromeHostView + InteriorView as siblings under
-        // the new ShapedContentView. App content subviews (which
-        // were moved onto the content view by the reconstruction
-        // helper) migrate into InteriorView.
+        // the new ShapedContentView. The captured app subviews
+        // (snapshotted above) migrate into InteriorView.
         guard let shapedContent = newWindow.contentView as? ShapedContentView else {
             NSLog("MainWindowController: chrome mode reconstruction produced a non-ShapedContentView root — aborting chrome install")
             return
         }
-
-        // Snapshot the existing app-content subviews BEFORE installing
-        // chrome + interior, so reparenting finds a clean list that
-        // excludes the new host/interior views.
-        let appSubviews = shapedContent.subviews
 
         let hostView = installChromeHostView(
             chrome: chrome,
@@ -93,7 +115,7 @@ extension MainWindowController {
         )
 
         reparentAppContent(
-            from: appSubviews,
+            from: appSubviewsToReparent,
             into: interior,
             excluding: [hostView, interior]
         )
@@ -135,6 +157,39 @@ extension MainWindowController {
            responder.window === newWindow {
             newWindow.makeFirstResponder(responder)
         }
+
+        // Diagnostic dump — find out why cut corners still render
+        // opaque even with Cocoa Transparency Recipe applied at
+        // construction. Writes to stderr; inspect via Console.app
+        // with subsystem filter "holoscape" or via `log stream
+        // --predicate 'process == "Holoscape"'`.
+        Self.diagnoseChromeTransparency(
+            window: newWindow,
+            content: shapedContent,
+            host: hostView,
+            interior: interior
+        )
+    }
+
+    /// Dump every pixel-ownership-layer property in the chrome view
+    /// stack. If cut corners are rendering opaque, this output names
+    /// the culprit.
+    private static func diagnoseChromeTransparency(
+        window: NSWindow,
+        content: NSView,
+        host: ChromeHostView,
+        interior: InteriorView
+    ) {
+        NSLog("[chrome-diag] window.isOpaque=\(window.isOpaque) bg=\(String(describing: window.backgroundColor)) hasShadow=\(window.hasShadow) styleMask=\(window.styleMask.rawValue)")
+        NSLog("[chrome-diag] content.class=\(type(of: content)) isOpaque=\(content.isOpaque) wantsLayer=\(content.wantsLayer)")
+        NSLog("[chrome-diag] content.layer.bg=\(String(describing: content.layer?.backgroundColor)) isOpaque=\(content.layer?.isOpaque ?? false)")
+        if let frameView = content.superview {
+            NSLog("[chrome-diag] frameView.class=\(type(of: frameView)) isOpaque=\(frameView.isOpaque)")
+            NSLog("[chrome-diag] frameView.layer.bg=\(String(describing: frameView.layer?.backgroundColor)) isOpaque=\(frameView.layer?.isOpaque ?? false)")
+        }
+        NSLog("[chrome-diag] host.layer.bg=\(String(describing: host.layer?.backgroundColor)) isOpaque=\(host.layer?.isOpaque ?? false)")
+        NSLog("[chrome-diag] interior.layer.bg=\(String(describing: interior.layer?.backgroundColor)) isOpaque=\(interior.layer?.isOpaque ?? false)")
+        NSLog("[chrome-diag] interior.subviews.count=\(interior.subviews.count) — app subviews nested here")
     }
 
     // MARK: - Reconstruction
@@ -183,7 +238,32 @@ extension MainWindowController {
         // continue to find the expected view class.
         let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: size))
         freshContent.wantsLayer = true
+        // Force the layer explicitly clear AND non-opaque. Setting
+        // `backgroundColor = nil` alone isn't enough if AppKit has
+        // already materialized the layer with a non-nil default;
+        // `.clear` is the known-zero-paint color. `isOpaque = false`
+        // is a Core Animation hint — with it on, CA knows the layer
+        // has variable alpha and composites accordingly.
+        freshContent.layer?.backgroundColor = NSColor.clear.cgColor
+        freshContent.layer?.isOpaque = false
         newWindow.contentView = freshContent
+
+        // Risk #1 diagnostic from the prior session: NSWindow's
+        // private frame view (_NSNextStepFrame) carries an opaque
+        // layer backgroundColor by default even on a borderless+clear
+        // window. That paints over the chrome PNG's cut-corner alpha.
+        if let frameView = freshContent.superview {
+            frameView.wantsLayer = true
+            frameView.layer?.backgroundColor = NSColor.clear.cgColor
+            frameView.layer?.isOpaque = false
+        }
+
+        // The window itself needs one more thing that styleMask +
+        // isOpaque=false don't imply: the backing-store alpha must
+        // be preserved. On macOS 14+, `isOpaque = false` already
+        // implies this, but belt-and-suspenders never hurts.
+        newWindow.isOpaque = false
+        newWindow.backgroundColor = .clear
 
         // Migrate child windows (Reader Mode panel, BugReportDialog)
         // from old → new. `addChildWindow` on the new parent handles
@@ -339,6 +419,29 @@ extension MainWindowController {
         guard let contentView = targetWindow.contentView else { return }
         contentView.layer?.mask = nil
         (contentView as? ShapedContentView)?.sampler = nil
+    }
+
+    /// Find the real app-content subviews given an arbitrary content
+    /// view. Handles both pre-v4 layouts (app subviews directly
+    /// under the content view) and v4-in-v4 skin switches (app
+    /// subviews nested inside a previous `InteriorView`). Without
+    /// this unwrap, skin switches wrap the previous ChromeHostView +
+    /// InteriorView INSIDE the new InteriorView on every invocation,
+    /// stacking chrome-in-chrome visibly.
+    static func extractAppSubviews(fromContentView contentView: NSView?) -> [NSView] {
+        guard let root = contentView else { return [] }
+        // Preferred path: if the current tree holds a previous
+        // InteriorView, the real app content is inside it. Dig
+        // one level in.
+        for candidate in root.subviews {
+            if let interior = candidate as? InteriorView {
+                return interior.subviews
+            }
+        }
+        // No previous chrome mode — root.subviews ARE the app
+        // content (pre-v4 layout where app views were added
+        // directly to ShapedContentView).
+        return root.subviews
     }
 
     // MARK: - Accessibility hooks (stubs — filled in PR #13)

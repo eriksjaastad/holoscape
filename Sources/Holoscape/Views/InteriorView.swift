@@ -43,7 +43,8 @@ final class InteriorView: NSView {
         self.interiorPath = interiorPath
         super.init(frame: NSRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height))
         wantsLayer = true
-        layer!.backgroundColor = nil
+        layer!.backgroundColor = NSColor.clear.cgColor
+        layer!.isOpaque = false
         // Top-left coords so app subviews laid out inside use the same
         // coordinate convention as the chrome-image geometry the view
         // is pinned to.
