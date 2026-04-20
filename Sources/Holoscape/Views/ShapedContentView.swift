@@ -113,6 +113,17 @@ final class ShapedContentView: NSView {
         super.mouseUp(with: event)
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        // Register the arrow cursor for the entire content view as the
+        // baseline. Without this, moving off a subview that set the
+        // I-beam (e.g., the terminal) leaves the cursor as I-beam
+        // indefinitely — AppKit only restores it if there's a cursor
+        // rect to restore to. Subviews override this for their own
+        // regions via their own resetCursorRects.
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func cursorUpdate(with event: NSEvent) {
         if let tracker = dragRegionTracker {
             let point = convert(event.locationInWindow, from: nil)
