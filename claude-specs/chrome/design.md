@@ -173,7 +173,16 @@ final class ChromeBakePipeline {
     let cacheRoot: URL           // ~/Library/Caches/holoscape-skins/
 
     init(cacheRoot: URL = FileManager.default.cachesDirectory.appendingPathComponent("holoscape-skins"))
-    func bake(manifest: SkinDefinition, skinDir: URL) async throws -> (image: CGImage, sha: String)
+    // PR #4 amendment: `bake` is `throws` (not `async throws`) to match
+    // the synchronous `SkinEngine.loadComposite` call graph. Converting
+    // the full skin-load path to async is a separate future refactor
+    // (~20 call sites across real code + tests); making only the bake
+    // async would force synchronous-wait-on-Task at the loadComposite
+    // boundary, which is an anti-pattern. Disk I/O inside bake runs
+    // well under the 500 ms cold-bake budget on main (PR #4 test:
+    // ~25 ms for 1000×700 composed), so main-thread blocking is not a
+    // practical concern at MVP scale.
+    func bake(manifest: SkinDefinition, skinDir: URL) throws -> (image: CGImage, sha: String)
     func cachedImage(for sha: String) -> CGImage?
     func purgeLRU(preservingSHAs: Set<String>) throws   // honors 50 MB cap with .wamp cache
 
@@ -181,6 +190,11 @@ final class ChromeBakePipeline {
         case compositingFailed(String)
         case cacheWriteFailed(URL)
         case cacheReadFailed(URL, Error)
+        // PR #4 additions (not currently thrown — the runtime policy
+        // per design.md Error Handling below is log-and-degrade; these
+        // cases exist for enum exhaustiveness at catch sites).
+        case imageDecodeFailed(String)
+        case missingChromeDescriptor
     }
 }
 ```
