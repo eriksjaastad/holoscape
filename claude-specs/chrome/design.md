@@ -282,6 +282,28 @@ final class SkinEngine {
 extension MainWindowController {
     fileprivate func applyChromeSkin(_ loaded: LoadedSkin)
     fileprivate func tearDownOldCAMaskPath()       // removed in PR #20
+
+    /// Construct a NEW borderless transparent window and migrate state into it.
+    /// Required per Requirement 3.1 — retrofit of an existing titled window
+    /// does NOT produce transparency (AppKit locks in opaque backing at
+    /// window birth time). See docs/research/chrome-risk1-transparency-findings.md.
+    /// Steps: instantiate ShapedBorderlessWindow with (.borderless, isOpaque=false,
+    /// backgroundColor=.clear, hasShadow=false, isReleasedWhenClosed=false),
+    /// transplant self.window.delegate → newWindow.delegate, migrate
+    /// addChildWindow relationships (Reader Mode panel, BugReportDialog),
+    /// preserve first responder, then orderOut the old window and
+    /// makeKeyAndOrderFront the new one.
+    fileprivate func reconstructAsBorderlessTransparent(
+        size: NSSize
+    ) -> ShapedBorderlessWindow
+
+    /// Inverse of reconstructAsBorderlessTransparent — construct a standard
+    /// titled window and migrate state back when a v4 chrome skin is replaced
+    /// by a pre-v4 skin at runtime. Required per Requirement 3.1a.
+    fileprivate func reconstructAsTitled(
+        size: NSSize
+    ) -> NSWindow
+
     fileprivate func installChromeHostView(chrome: ChromeDescriptor, baseImage: CGImage) -> ChromeHostView
     fileprivate func installInteriorView(interiorRect: SkinRect, interiorPath: [Polygon]?) -> InteriorView
     fileprivate func reparentAppContent(into: InteriorView)
