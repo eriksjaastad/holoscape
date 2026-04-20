@@ -205,7 +205,10 @@ extension MainWindowController {
             backingLayer.isOpaque = false
             contentView.layer = backingLayer
         }
-        guard let layer = contentView.layer else { return }
+        guard let layer = contentView.layer else {
+            NSLog("[chrome] installChromeSilhouetteMask: layer nil after explicit assignment — mask not installed")
+            return
+        }
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
 
