@@ -1214,6 +1214,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 // painting (tabs, sidebar rows, etc.).
                 applySkin(loaded.surfaces)
             } else {
+                // If the current window is a ShapedBorderlessWindow (from
+                // a previous chrome skin), tear it down first. Without this
+                // the window stays borderless indefinitely — traffic lights
+                // gone, resize chrome gone, cursor management broken.
+                if window is ShapedBorderlessWindow {
+                    teardownChromeSkin()
+                }
                 applySkin(
                     surfaces: loaded.surfaces,
                     windowShape: loaded.windowShape,
