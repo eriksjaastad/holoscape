@@ -70,27 +70,13 @@ def generate_chrome_png() -> None:
         fill=BOT_BAND_COLOR,
     )
 
-    # 3) Mask the bands using the silhouette's alpha channel. Only
-    #    bands pixels that overlap opaque silhouette pixels survive.
+    # 3) Composite bands onto base then re-apply the silhouette alpha.
+    #    Band pixels outside the silhouette are erased by putalpha so
+    #    cut-corner regions stay transparent.
     silhouette_alpha = base.split()[3]
-    bands_rgb = bands.convert("RGB")
-    bands_alpha = bands.split()[3]
-    # The effective band alpha is the minimum of (band declared
-    # alpha, silhouette alpha) — a pointwise AND.
-    clipped_alpha = Image.eval(
-        Image.eval(bands_alpha, lambda v: v),
-        lambda v: v,
-    )
-    # Easier correct path: paste bands onto base, then re-apply
-    # base's silhouette alpha as a final mask.
     out_img = base.copy()
     out_img.alpha_composite(bands)
-    # Force the alpha channel back to the silhouette's alpha so
-    # band pixels outside the silhouette get erased.
     out_img.putalpha(silhouette_alpha)
-    # suppress unused-var lint
-    _ = bands_rgb
-    _ = clipped_alpha
 
     out = SKIN_DIR / "chrome@2x.png"
     out_img.save(out, "PNG")
