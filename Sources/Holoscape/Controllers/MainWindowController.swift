@@ -1183,11 +1183,31 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             // happy path and leaves the old fonts alive on failure.
             skinEngine.unregisterFonts(currentFontBundle)
             currentFontBundle = loaded.fonts
-            applySkin(
-                surfaces: loaded.surfaces,
-                windowShape: loaded.windowShape,
-                dragRegions: loaded.dragRegions
-            )
+
+            // Chrome v4 branch (Task 11.1). Routes only when the
+            // skin declares `chrome` AND the validator accepted
+            // the bake (loaded.chrome is nilled by the validator on
+            // fatal failure — Req 12.8 rectangular fallback).
+            // v1/v2/v3 skins, Default, and validator-rejected v4
+            // skins all fall through to the pre-v4 applySkin path
+            // (Req 16.1 backward-compat invariant).
+            if loaded.chrome != nil {
+                applyChromeSkin(loaded)
+                // Chrome-mode skips the pre-v4 applyWindowShape /
+                // drag-region / CA-mask path entirely — the
+                // Base_Layer alpha IS the window shape, and drag is
+                // wired via `isMovableByWindowBackground` in PR #8.
+                // Surfaces still apply to app subviews inside
+                // InteriorView so v3 surface descriptors keep
+                // painting (tabs, sidebar rows, etc.).
+                applySkin(loaded.surfaces)
+            } else {
+                applySkin(
+                    surfaces: loaded.surfaces,
+                    windowShape: loaded.windowShape,
+                    dragRegions: loaded.dragRegions
+                )
+            }
             if let reason = loaded.validationBannerReason {
                 // Req 13.2 / Task 21.2 — surface the banner. Log
                 // persists for Console-side diagnosis; visible banner
