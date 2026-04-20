@@ -460,7 +460,11 @@ extension MainWindowController {
         }
         // No previous chrome mode — root.subviews ARE the app
         // content (pre-v4 layout where app views were added
-        // directly to ShapedContentView).
+        // directly to ShapedContentView). Log so that a future
+        // layout change inserting an intermediate container view
+        // (e.g. focus-ring wrapper) is visible instead of silently
+        // reparenting the wrong view level.
+        NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
         return root.subviews
     }
 
