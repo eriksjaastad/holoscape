@@ -63,21 +63,26 @@ final class ChromeHostView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: chrome.width, height: chrome.height))
 
         wantsLayer = true
-        // A host-level background would fill the cut-corner alpha and
-        // defeat Property 2 (window alpha equals Base_Layer alpha).
-        layer!.backgroundColor = nil
+        // A host-level background would fill the cut-corner alpha
+        // and defeat Property 2 (window alpha equals Base_Layer
+        // alpha). `.clear` is the explicit zero-paint color —
+        // `nil` alone can leave AppKit's default in place.
+        layer!.backgroundColor = NSColor.clear.cgColor
+        layer!.isOpaque = false
 
         baseLayer.contents = baseImage
         baseLayer.contentsGravity = .resize
         baseLayer.frame = bounds
-        baseLayer.backgroundColor = nil
+        baseLayer.backgroundColor = NSColor.clear.cgColor
+        baseLayer.isOpaque = false
 
         // animatedLayersContainer sits above baseLayer so every animated
         // sublayer composites on top (Requirement 10.4). The container
         // is empty in PR #3 but installed now so PR #10 can drop layers
         // into it without touching the view's layer structure.
         animatedLayersContainer.frame = bounds
-        animatedLayersContainer.backgroundColor = nil
+        animatedLayersContainer.backgroundColor = NSColor.clear.cgColor
+        animatedLayersContainer.isOpaque = false
 
         layer!.addSublayer(baseLayer)
         layer!.addSublayer(animatedLayersContainer)

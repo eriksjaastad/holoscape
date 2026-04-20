@@ -291,19 +291,24 @@ final class SkinEngine {
 
 ### 9. MainWindowController (Modified — Chrome_Mode_Branch)
 
+**AMENDED 2026-04-20** (see `docs/research/chrome-transparency-root-cause.md`). The original design assumed PNG `layer.contents` alpha alone would produce transparent window corners on a borderless-from-birth window. Empirically false — the Cocoa Transparency Recipe is necessary but not sufficient. The canonical approach (hfyeomans/winamp-macos-migration, CocoaDev, Matt Gallagher cocoawithlove) installs a `CAShapeLayer` mask on `contentView.layer` to clip the window to the silhouette; the PNG then provides the visuals inside the clip. Amendment below updates Component 9 accordingly.
+
 ```swift
 // Existing class extended. New/changed methods:
 extension MainWindowController {
     fileprivate func applyChromeSkin(_ loaded: LoadedSkin)
-    fileprivate func tearDownOldCAMaskPath()       // removed in PR #20
+    fileprivate func tearDownOldCAMaskPath()       // NO LONGER removed in PR #20 — amended
 
     /// Construct a NEW borderless transparent window and migrate state into it.
     /// Required per Requirement 3.1 — retrofit of an existing titled window
-    /// does NOT produce transparency (AppKit locks in opaque backing at
-    /// window birth time). See docs/research/chrome-risk1-transparency-findings.md.
-    /// Steps: instantiate ShapedBorderlessWindow with (.borderless, isOpaque=false,
-    /// backgroundColor=.clear, hasShadow=false, isReleasedWhenClosed=false),
-    /// transplant self.window.delegate → newWindow.delegate, migrate
+    /// does NOT produce transparency. AppKit behavior on window backing is
+    /// tied to construction-time styleMask.
+    /// Steps: instantiate ShapedBorderlessWindow with styleMask
+    /// `[.borderless, .resizable]` (NOT `.fullSizeContentView` — silently
+    /// ignored without `.titled`), `isOpaque=false`, `backgroundColor=.clear`,
+    /// `hasShadow=true` (system renders shadow from mask/alpha), 
+    /// `isReleasedWhenClosed=false`, `isMovableByWindowBackground=true`.
+    /// Transplant self.window.delegate → newWindow.delegate, migrate
     /// addChildWindow relationships (Reader Mode panel, BugReportDialog),
     /// preserve first responder, then orderOut the old window and
     /// makeKeyAndOrderFront the new one.
@@ -318,9 +323,37 @@ extension MainWindowController {
         size: NSSize
     ) -> NSWindow
 
+    /// **ADDED 2026-04-20**. Installs a `CAShapeLayer` mask on the
+    /// content view's layer so AppKit clips the window's backing to the
+    /// chrome silhouette. Without this mask, PNG alpha paints correctly
+    /// at the layer level but the window backing remains rectangular and
+    /// opaque — cut-corner regions render as the backing's default color.
+    /// Reuses `ShapedWindowController.buildMaskLayer` with a
+    /// `ResolvedWindowShape` derived from `chrome.width × chrome.height`
+    /// + a rounded-rect corner radius (default 16pt; concave shapes trace
+    /// from `chrome.interiorPath`). The mask is the load-bearing piece
+    /// for window-level transparency, NOT the PNG alpha.
+    fileprivate func installChromeSilhouetteMask(
+        chrome: ChromeDescriptor,
+        on contentView: ShapedContentView
+    )
+
     fileprivate func installChromeHostView(chrome: ChromeDescriptor, baseImage: CGImage) -> ChromeHostView
     fileprivate func installInteriorView(interiorRect: SkinRect, interiorPath: [Polygon]?) -> InteriorView
+
+    /// Reparent app-content subviews into the new InteriorView. Handles
+    /// two cases:
+    /// (1) First entry from pre-v4 — content view's direct subviews are
+    ///     the app content.
+    /// (2) v4 → v4 skin switch — content view's direct subviews include
+    ///     the OLD ChromeHostView + OLD InteriorView; the real app content
+    ///     is nested inside the old InteriorView. Extract from there,
+    ///     not from contentView.subviews, to avoid wrapping chrome-in-chrome.
+    /// Subviews must be removed from the old content view BEFORE the old
+    /// window is released — MainWindowController retains them via
+    /// properties, so they survive as unparented views until reattached.
     fileprivate func reparentAppContent(into: InteriorView)
+
     fileprivate func updateDensityModeOnChrome(_ mode: DensityMode)
     fileprivate func handleReduceMotionChange()
 }

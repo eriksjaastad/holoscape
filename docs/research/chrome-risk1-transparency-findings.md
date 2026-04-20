@@ -67,3 +67,28 @@ Small. PR #5 (MainWindowController chrome-mode branch, currently Task 11 in `tas
 ## Verdict
 
 Risk #1 is cleared. Proceed with the 20-PR plan. The amendment below folds the reconstruct-not-retrofit finding into the spec so PR #5 implementers know to build this correctly the first time.
+
+---
+
+## CORRECTION 2026-04-20 — the isolation test was confounded
+
+Eight hours of implementation following the conclusions above did NOT produce transparent corners on `HoloscapeClassic-live`. Full research writeup: `docs/research/chrome-transparency-root-cause.md`. Summary of where this doc was wrong:
+
+**What this doc claimed**: A borderless-from-birth `NSWindow` with `isOpaque=false`, `backgroundColor=.clear`, `hasShadow=false`, and `layer.contents = alpha-PNG` renders transparent corners. Inferred from the "floating isolation test window" observation.
+
+**What's actually true**: PNG `layer.contents` alpha does NOT clip an `NSWindow`'s backing store. The layer renders with correct alpha, but the window backing remains rectangular and opaque in the cut-corner regions. **The canonical mechanism is a `CAShapeLayer` mask on `contentView.layer`** — without that mask, no amount of correct Cocoa Transparency Recipe produces transparent corners.
+
+**Why the isolation test appeared to work**: The isolation test ran in a session where the main window's pre-v4 `applyWindowShape` path had already installed a `CAShapeLayer` mask on its content view. What was interpreted as "PNG alpha makes the isolation window transparent" was likely "the CA-mask that was still installed is what's clipping the result." The test was not a clean isolation — it inherited state from the retrofit path that preceded it.
+
+**Corrected recipe**:
+- Construct borderless-from-birth NSWindow — still necessary
+- `isOpaque=false`, `backgroundColor=.clear` — still necessary
+- **`hasShadow=true`** (not false — every documented reference uses true)
+- **Install `CAShapeLayer` mask on `contentView.layer`** with a `CGPath` tracing the silhouette — this is the load-bearing step
+- PNG alpha provides the visuals inside the clipped region; the mask defines the region
+
+Sources and three real-world reference implementations cited in `docs/research/chrome-transparency-root-cause.md`.
+
+**Operational impact**: `ShapedWindowController.buildMaskLayer` is NOT dead code — it remains the canonical mask-install primitive. PR #20's Task 39.1 was wrong to schedule its deletion; amended in `claude-specs/chrome/tasks.md` Task 39.
+
+**Methodology lesson**: The isolation test that produced this doc's conclusion was done inside a running process whose state was contaminated by the retrofit attempt that preceded it. A proper isolation test would have been a freshly-launched minimal app with ONLY the borderless-from-birth window and nothing else. Future architectural investigations must ensure no confounding state.
