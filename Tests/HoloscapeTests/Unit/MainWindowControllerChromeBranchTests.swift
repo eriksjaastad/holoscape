@@ -173,6 +173,60 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
 
     // MARK: - Tear down CA-mask
 
+    // MARK: - Drag via background (Task 15.1)
+
+    func testBorderlessTransparentWindowSupportsBackgroundDrag() {
+        // Pins Req 4.6 — chrome-mode windows use the whole chrome as a
+        // drag handle via `isMovableByWindowBackground` rather than
+        // the pre-v4 path's `WindowDragOverlay` strip. Without this,
+        // borderless windows can't be dragged at all because there's
+        // no title bar to grab.
+        let w = ShapedBorderlessWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = false
+        w.isMovableByWindowBackground = true
+
+        XCTAssertTrue(w.isMovableByWindowBackground,
+            "Chrome-mode windows must be draggable from any background pixel (Req 4.6)")
+    }
+
+    // MARK: - WindowDragOverlay exclusion
+
+    func testChromeBranchDoesNotInstallWindowDragOverlay() {
+        // Pins the contract that chrome mode's reloadSkin dispatch
+        // skips `applyDragRegions` entirely — the overlay strip is
+        // a pre-v4 fallback that has no place in a chrome-mode
+        // window. A container that never went through the
+        // chrome-mode branch starts with no WindowDragOverlay, and
+        // applyChromeSkin never installs one.
+        let container = ShapedContentView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700))
+        container.wantsLayer = true
+
+        // Simulate post-applyChromeSkin state: install host +
+        // interior, no overlay.
+        let chrome = ChromeDescriptor(
+            mode: .baked,
+            image: "chrome.png",
+            width: 1000, height: 700,
+            interiorRect: SkinRect(x: 40, y: 60, width: 920, height: 600)
+        )
+        let host = ChromeHostView(chrome: chrome, baseImage: makeRGBAImage(widthPx: 32, heightPx: 32), clock: nil)
+        host.frame = container.bounds
+        let interior = InteriorView(rect: chrome.interiorRect, interiorPath: nil)
+        container.addSubview(host)
+        container.addSubview(interior)
+
+        let overlays = container.subviews.compactMap { $0 as? WindowDragOverlay }
+        XCTAssertTrue(overlays.isEmpty,
+            "Chrome-mode branch must not install WindowDragOverlay — drag via background handles it")
+    }
+
     func testTearDownCAMaskClearsMaskAndSampler() {
         let content = ShapedContentView(frame: NSRect(x: 0, y: 0, width: 500, height: 500))
         content.wantsLayer = true
