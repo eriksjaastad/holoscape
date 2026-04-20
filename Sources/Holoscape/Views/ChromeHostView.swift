@@ -28,4 +28,17 @@ final class ChromeHostView: NSView {
     required init?(coder: NSCoder) {
         fatalError("ChromeHostView does not support NSCoder initialization")
     }
+
+    /// ChromeHostView is non-interactive by design (see design.md Component 1).
+    /// Returning nil here means PR #3 can install ChromeHostView as a subview of
+    /// ShapedContentView and get click-through routing for free — clicks inside
+    /// ChromeHostView's frame fall through to ShapedContentView, whose polygon
+    /// sampler decides whether the click is inside the silhouette or should
+    /// escape the window entirely. In the PR #1 prototype, ChromeHostView is
+    /// installed directly as contentView (no ShapedContentView above it), so
+    /// this override does not produce desktop click-through at cut corners;
+    /// true click-through lands in PR #3 when the full view graph is wired up.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
 }

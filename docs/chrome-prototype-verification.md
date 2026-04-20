@@ -32,26 +32,22 @@ Do this on the laptop against a bright, high-contrast desktop backdrop — a des
    - [ ] No window chrome (title bar, traffic lights, border) is visible.
    - [ ] No window shadow is visible around the magenta region.
 
-7. **Click-through check.**
-   - [ ] Click inside the magenta region — nothing specific should happen (the prototype has no interactive views), but the click should be consumed by Holoscape (the app stays frontmost).
-   - [ ] Click in a cut-corner region — the click should pass through to whatever window is behind Holoscape (Finder desktop, another window). Holoscape should NOT come forward.
+7. **Quit.** ⌘Q. Remove the env flag for subsequent runs.
 
-8. **Quit.** ⌘Q. Remove the env flag for subsequent runs.
+**Deferred to PR #3 (NOT a PR #1 pass criterion):** cut-corner click-through to the desktop. That behavior requires `ShapedContentView` + `HitRegionSampler` above `ChromeHostView`, which doesn't land until the full view graph ships in PR #3. The prototype installs `ChromeHostView` directly as the contentView, so clicks on transparent corners hit the window rather than passing through. Visual transparency (step 6) is the only PR #1 gate.
 
 ## Pass criteria
 
-All checkboxes in steps 6 and 7 check. The cut corners visibly reveal the desktop. No opaque bleed in the corners, no transparency in the interior.
+All checkboxes in step 6 check. The cut corners visibly reveal the desktop. No opaque bleed in the corners, no transparency in the interior.
 
 ## Fail modes to watch for
 
 - **Cut corners render dark / opaque** — AppKit is not honoring per-pixel alpha on the chrome host's `layer.contents`. This is the Risk #1 failure that kills the architecture; stop and investigate (is the window style actually `.borderless`? is `isOpaque = false`? is there a parent view painting an opaque background?).
 - **Everything is transparent including the interior** — alpha is being inverted or the fixture PNG is wrong. Re-run the Python generator and check the asserted alpha values in its output.
 - **Window won't render at all** — `ChromeHostView` frame or `layer.contents` didn't attach; check the NSLog output for the `[chrome-prototype]` messages.
-- **Click passes through interior** — hit testing is broken (probably a missing `hitTest` override on `ChromeHostView`); note and defer to PR #3 since the prototype doesn't explicitly handle hit testing.
-
 ## On pass
 
-Attach `after-prototype.png` to PR #146 (or its successor) as visual proof. Erik confirms in the PR comment: "Laptop visual check passed — cut corners transparent, interior opaque, click-through correct." PR #3 (ChromeHostView + InteriorView) is cleared to start.
+Attach `after-prototype.png` to the PR as visual proof. Erik confirms in the PR comment: "Laptop visual check passed — cut corners transparent, interior opaque." PR #3 (ChromeHostView + InteriorView, including the polygon-sampler hit-test wiring) is cleared to start.
 
 ## On fail
 
