@@ -28,8 +28,8 @@ extension MainWindowController {
     /// `loaded.chrome != nil` and a baked Base_Layer + validator
     /// result are available. Reconstructs the window as borderless
     /// transparent (if not already), installs `ChromeHostView` and
-    /// `InteriorView` under the content view, and reparents every
-    /// existing app-content subview into `InteriorView`.
+    /// `InteriorView` under the content view, and reattaches the
+    /// controller-owned app host into `InteriorView`.
     ///
     /// A validation-fatal skin (Req 12.8) arrives here with
     /// `loaded.chrome == nil` + `validationBannerReason != nil` —
@@ -42,49 +42,7 @@ extension MainWindowController {
             return
         }
 
-        // Capture the OLD window's first responder before any
-        // reconstruction / reparenting happens. Attempt restoration
-        // AFTER reparenting below, at which point the responder's
-        // superview ancestor is in the new window. Doing the restore
-        // inside `reconstructAsBorderlessTransparent` fires too early
-        // — the view hasn't migrated into the new window yet, so
-        // `responder.window === newWindow` can never be true and
-        // the first responder would be unconditionally dropped.
         let previousResponder = window.firstResponder
-
-        // **CRITICAL**: Snapshot the REAL app subviews before
-        // reconstruction. Two cases:
-        //
-        // 1. First entry from pre-v4 path: content view's direct
-        //    subviews are the app content (tabBar, sidebarView,
-        //    splitPaneManager, inputBox, sessionLauncher).
-        // 2. Re-entry from a previous v4 skin: content view holds
-        //    the OLD ChromeHostView + OLD InteriorView; the real
-        //    app subviews are nested inside the old InteriorView.
-        //    Snapshotting the content view's direct subviews here
-        //    would capture the previous chrome's host+interior,
-        //    reparent them INTO the new interior, and stack
-        //    chrome-inside-chrome on every switch.
-        //
-        // Resolve to the real-app layer by preferring an existing
-        // InteriorView's subviews when present.
-        let appSubviewsToReparent: [NSView] = Self.extractAppSubviews(
-            fromContentView: window.contentView
-        )
-
-        // Remove them from their current superview NOW so they
-        // survive as unparented views (retained by
-        // MainWindowController properties) rather than getting
-        // released alongside the old window or old interior.
-        for view in appSubviewsToReparent {
-            view.removeFromSuperview()
-        }
-
-        // Reconstruct the window as borderless transparent unless
-        // we're already in chrome mode (subsequent chrome-to-chrome
-        // swaps just replace the ChromeHostView image in place —
-        // that's PR #18 hot reload; for now every entry
-        // reconstructs).
         let nominal = NSSize(width: chrome.width, height: chrome.height)
         let newWindow = reconstructAsBorderlessTransparent(size: nominal)
 
@@ -95,9 +53,6 @@ extension MainWindowController {
         // leave stale mask + sampler behind without this call.
         tearDownOldCAMaskPath(on: newWindow)
 
-        // Install ChromeHostView + InteriorView as siblings under
-        // the new ShapedContentView. The captured app subviews
-        // (snapshotted above) migrate into InteriorView.
         guard let shapedContent = newWindow.contentView as? ShapedContentView else {
             NSLog("MainWindowController: chrome mode reconstruction produced a non-ShapedContentView root — aborting chrome install")
             return
@@ -135,11 +90,9 @@ extension MainWindowController {
             cornerRadius: 16
         )
 
-        reparentAppContent(
-            from: appSubviewsToReparent,
-            into: interior,
-            excluding: [hostView, interior]
-        )
+        currentChromeHostView = hostView
+        currentChromeInteriorView = interior
+        attachAppContentHost(to: interior)
 
         // Lock nominal size so chrome coords map 1:1 to the content
         // view. v4 chrome is fixed-size by construction (Req 3.6).
@@ -168,6 +121,22 @@ extension MainWindowController {
         // drag regions back in if needed.
         newWindow.isMovableByWindowBackground = true
 
+        // Add detached traffic-light buttons so the user can close,
+        // minimise, and fullscreen a chrome-mode window. Borderless
+        // windows have no system titlebar buttons; we create them
+        // via the class-method factory, position them at the
+        // standard macOS location, and wire them through the
+        // explicit handlers on the controller so these detached
+        // buttons do not depend on titlebar-specific responder-chain
+        // wiring that only exists for AppKit-managed title bars.
+        //
+        // Hover-coordination (hovering one button highlights all
+        // three) is intentionally absent — that behaviour requires
+        // AppKit's private titlebar machinery and is not available
+        // for detached buttons. Close / miniaturize / fullscreen
+        // operations are fully functional.
+        installWindowControlButtons(in: shapedContent, chromeSize: nominal)
+
         // Restore first responder AFTER reparenting — the captured
         // responder's `window` now resolves to `newWindow` if it's
         // an `NSView` descendant of the reparented subtree. A
@@ -178,6 +147,74 @@ extension MainWindowController {
            responder.window === newWindow {
             newWindow.makeFirstResponder(responder)
         }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.updateTabBarLeading()
+        }
+    }
+
+    /// Add close / miniaturise / fullscreen buttons to a borderless
+    /// chrome window's content view.
+    ///
+    /// `NSWindow.standardWindowButton(_:for:)` (the class method) creates
+    /// a standalone button styled identically to the system traffic lights
+    /// but unconnected to any titlebar view.
+    ///
+    /// Positions mirror standard macOS traffic light placement:
+    ///   • Close:      x = 7,  12 × 12 pt button, 6 pt from visual top
+    ///   • Miniaturize: x = 27
+    ///   • Zoom:       x = 47
+    ///
+    /// These are inside the 16 pt rounded-rect silhouette used by all
+    /// current in-tree chrome skins (verified: button centre at ~(13,12)
+    /// from the top-left corner; arc centre at (16,16); distance ≈ 5 pt,
+    /// well inside the 16 pt arc).
+    func installWindowControlButtons(in contentView: NSView, chromeSize: NSSize) {
+        chromeWindowControlButtons.removeAll()
+
+        let buttonSize = CGSize(width: 12, height: 12)
+        let yFromTop: CGFloat = 6
+        let buttonY = chromeSize.height - yFromTop - buttonSize.height
+
+        let specs: [(NSWindow.ButtonType, CGFloat, Selector, String)] = [
+            (.closeButton,       7,  #selector(handleChromeCloseButton(_:)), "chrome-close-button"),
+            (.miniaturizeButton, 27, #selector(handleChromeMinimizeButton(_:)), "chrome-minimize-button"),
+            (.zoomButton,        47, #selector(handleChromeZoomButton(_:)), "chrome-zoom-button"),
+        ]
+
+        for (buttonType, x, action, identifier) in specs {
+            guard let btn = NSWindow.standardWindowButton(
+                buttonType,
+                for: [.titled, .closable, .miniaturizable, .resizable]
+            ) else { continue }
+            btn.frame = CGRect(x: x, y: buttonY, width: buttonSize.width, height: buttonSize.height)
+            btn.identifier = NSUserInterfaceItemIdentifier(identifier)
+            btn.setAccessibilityIdentifier(identifier)
+            btn.isEnabled = true
+            btn.target = self
+            btn.action = action
+            contentView.addSubview(btn)
+            chromeWindowControlButtons[buttonType] = btn
+        }
+    }
+
+    @objc private func handleChromeCloseButton(_ sender: Any?) {
+        guard window.styleMask.contains(.closable) else { return }
+        window.close()
+    }
+
+    @objc private func handleChromeMinimizeButton(_ sender: Any?) {
+        guard window.styleMask.contains(.miniaturizable) else { return }
+        window.miniaturize(sender)
+    }
+
+    @objc private func handleChromeZoomButton(_ sender: Any?) {
+        let optionPressed = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
+        if optionPressed {
+            window.zoom(sender)
+            return
+        }
+        window.toggleFullScreen(sender)
     }
 
     /// Install a `CAShapeLayer` mask on the content view's layer so
@@ -267,8 +304,10 @@ extension MainWindowController {
         // composited content-view alpha, so the shadow respects the
         // CAShapeLayer mask installed in `applyChromeSkin`.
         newWindow.hasShadow = true
+        newWindow.title = oldWindow.title
         newWindow.titleVisibility = .hidden
         newWindow.titlebarAppearsTransparent = true
+        newWindow.collectionBehavior = oldWindow.collectionBehavior.union([.fullScreenPrimary])
         newWindow.contentMinSize = size
         newWindow.contentMaxSize = size
 
@@ -293,7 +332,7 @@ extension MainWindowController {
         freshContent.layer = freshLayer
         freshContent.wantsLayer = true
         newWindow.contentView = freshContent
-
+        animationEngine.hostView = freshContent
 
         // Migrate child windows (Reader Mode panel, BugReportDialog)
         // from old → new. `addChildWindow` on the new parent handles
@@ -336,56 +375,31 @@ extension MainWindowController {
     /// 3.1a). Constructs a standard titled window and migrates
     /// state back. The caller installs whatever content the new
     /// non-chrome path wants inside `window.contentView`.
-    @discardableResult
-    /// Reverse `applyChromeSkin`: pull the app content back out of
-    /// `InteriorView`, reconstruct the window as a regular titled
-    /// window, and re-add the app subviews directly to the new
-    /// content view.
+    /// Reverse `applyChromeSkin`: reconstruct the window as a regular
+    /// titled window and reattach the stable app host directly under
+    /// the titled content root.
     ///
     /// This is the exit path from chrome mode. It must be called
     /// whenever `reloadSkin` routes to a non-chrome skin while the
     /// current window is a `ShapedBorderlessWindow`; without it the
     /// window stays borderless permanently (no traffic lights, no
     /// resize chrome).
-    ///
-    /// Layout after teardown: app subviews had their original
-    /// Auto Layout constraints removed when `applyChromeSkin` moved
-    /// them into `InteriorView`. After reinsertion their frames are
-    /// at their last-computed positions, which are already in (0,0)-
-    /// relative bounds space — `InteriorView.bounds.origin` is always
-    /// (0,0) regardless of its frame origin, so InteriorView-relative
-    /// frames are identical to content-view-relative frames. The
-    /// `applySkin` call that follows teardown triggers a layout pass
-    /// that resolves any remaining positional drift.
     func teardownChromeSkin() {
         guard window is ShapedBorderlessWindow else { return }
 
         let previousResponder = window.firstResponder
+        chromeWindowControlButtons.removeAll()
+        currentChromeHostView = nil
+        currentChromeInteriorView = nil
 
-        // Extract app subviews from InteriorView (or content view
-        // directly on a first-entry-but-no-InteriorView state).
-        let appSubviews = Self.extractAppSubviews(fromContentView: window.contentView)
-        for view in appSubviews { view.removeFromSuperview() }
-
-        // Reconstruct as titled. Creates a fresh ShapedContentView,
-        // migrates child windows and delegate, orders new window front.
-        // Pass the current frame size — chrome mode locks the window to
-        // nominal dimensions, so window.frame.size == nominal here.
-        // reconstructAsTitled takes this as the content rect, so the
-        // content area matches the chrome's nominal size. The titled
-        // window's frame will be slightly larger (title bar height).
         let newWindow = reconstructAsTitled(size: window.frame.size)
         guard let contentView = newWindow.contentView else {
-            // reconstructAsTitled always sets contentView; if this fires
-            // it means a future refactor broke that contract. The views
-            // are already detached — log loudly so the data loss is visible.
             NSLog("MainWindowController: teardownChromeSkin — contentView nil after reconstruction; app subviews orphaned")
             assertionFailure("reconstructAsTitled must produce a non-nil contentView")
             return
         }
 
-        // Re-add app subviews directly to the new content view.
-        for view in appSubviews { contentView.addSubview(view) }
+        attachAppContentHost(to: contentView)
 
         // Disable background-drag (chrome mode sets this; it's wrong
         // for the regular titled window which has a real title bar).
@@ -395,6 +409,10 @@ extension MainWindowController {
         if let responder = previousResponder as? NSView,
            responder.window === newWindow {
             newWindow.makeFirstResponder(responder)
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.updateTabBarLeading()
         }
     }
 
@@ -411,12 +429,15 @@ extension MainWindowController {
         newWindow.isReleasedWhenClosed = false
         newWindow.isOpaque = true
         newWindow.backgroundColor = .windowBackgroundColor
+        newWindow.title = oldWindow.title
         newWindow.titleVisibility = .hidden
         newWindow.titlebarAppearsTransparent = true
+        newWindow.collectionBehavior = oldWindow.collectionBehavior.union([.fullScreenPrimary])
 
         let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: size))
         freshContent.wantsLayer = true
         newWindow.contentView = freshContent
+        animationEngine.hostView = freshContent
 
         for child in oldWindow.childWindows ?? [] {
             oldWindow.removeChildWindow(child)
@@ -456,6 +477,7 @@ extension MainWindowController {
         host.frame = container.bounds
         host.autoresizingMask = [.width, .height]
         container.addSubview(host, positioned: .below, relativeTo: nil)
+        currentChromeHostView = host
         return host
     }
 
@@ -477,29 +499,8 @@ extension MainWindowController {
         // Top-left origin — match ChromeHostView's coord convention.
         container.addSubview(interior, positioned: .above, relativeTo: nil)
         interior.needsLayout = true
+        currentChromeInteriorView = interior
         return interior
-    }
-
-    /// Move every existing app-content subview of the content view
-    /// into `InteriorView`. Views named in `excluding` (typically
-    /// the newly-installed ChromeHostView + InteriorView) stay put.
-    ///
-    /// `subviews` is a snapshot of the content view's children taken
-    /// BEFORE chrome/interior were installed, so the exclusion list
-    /// is a safety net rather than the primary filter.
-    func reparentAppContent(
-        from subviews: [NSView],
-        into interior: InteriorView,
-        excluding: [NSView]
-    ) {
-        for view in subviews where !excluding.contains(view) {
-            // `removeFromSuperview` unparents; `addSubview` reparents
-            // under the new interior. Frames carry over; autoresizing
-            // masks carry over. Constraint-based layouts re-anchor
-            // against their new superview on the next layout pass.
-            view.removeFromSuperview()
-            interior.addSubview(view)
-        }
     }
 
     /// Remove any CA-mask state left on the content view. A newly-
@@ -510,35 +511,6 @@ extension MainWindowController {
         guard let contentView = targetWindow.contentView else { return }
         contentView.layer?.mask = nil
         (contentView as? ShapedContentView)?.sampler = nil
-    }
-
-    /// Find the real app-content subviews given an arbitrary content
-    /// view. Handles both pre-v4 layouts (app subviews directly
-    /// under the content view) and v4-in-v4 skin switches (app
-    /// subviews nested inside a previous `InteriorView`). Without
-    /// this unwrap, skin switches wrap the previous ChromeHostView +
-    /// InteriorView INSIDE the new InteriorView on every invocation,
-    /// stacking chrome-in-chrome visibly.
-    static func extractAppSubviews(fromContentView contentView: NSView?) -> [NSView] {
-        guard let root = contentView else { return [] }
-        // Preferred path: if the current tree holds a previous
-        // InteriorView, the real app content is inside it. Dig
-        // one level in.
-        for candidate in root.subviews {
-            if let interior = candidate as? InteriorView {
-                return interior.subviews
-            }
-        }
-        // No previous chrome mode — root.subviews ARE the app
-        // content (pre-v4 layout where app views were added
-        // directly to ShapedContentView). Only log when subviews
-        // are actually present; an empty root is the expected state
-        // immediately after reconstructAsTitled (teardownChromeSkin
-        // path), and logging there would be a false alarm.
-        if !root.subviews.isEmpty {
-            NSLog("MainWindowController: extractAppSubviews — no InteriorView found in content tree; falling back to direct subviews (count: \(root.subviews.count))")
-        }
-        return root.subviews
     }
 
     // MARK: - Accessibility hooks (stubs — filled in PR #13)

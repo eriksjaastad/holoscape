@@ -264,6 +264,10 @@ final class ShapedWindowControllerTests: XCTestCase {
                        "Shaped window must inherit the rectangular window's outer frame")
         XCTAssertTrue(shapedResult.newWindow.styleMask.contains(.borderless),
                       "Shaped window must use borderless style mask")
+        XCTAssertTrue(shapedResult.newWindow.styleMask.contains(.closable),
+                      "Borderless reconstruction must preserve close semantics for detached chrome controls")
+        XCTAssertTrue(shapedResult.newWindow.styleMask.contains(.miniaturizable),
+                      "Borderless reconstruction must preserve minimize semantics for detached chrome controls")
         XCTAssertFalse(shapedResult.newWindow.isOpaque)
 
         // Shaped → rectangular

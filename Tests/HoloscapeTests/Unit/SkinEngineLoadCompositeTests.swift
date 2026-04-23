@@ -186,4 +186,41 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
                      "v1-only manifest (no surfaces dict) resolves to nil so chrome uses defaults")
         XCTAssertTrue(loaded.images.isEmpty)
     }
+
+    func testManifestLayoutIsCarriedThroughLoadedSkin() throws {
+        let skinDir = skinsDir.appendingPathComponent("Vesselized")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "Vesselized",
+          "layout": {
+            "channelVessel": {
+              "dock": "left",
+              "size": 248,
+              "capStart": 96,
+              "capEnd": 56,
+              "variant": "mercuryControlSpine"
+            },
+            "screenVessel": {
+              "viewportInsets": { "top": 12, "right": 14, "bottom": 14, "left": 12 },
+              "variant": "mercuryScreenBody"
+            },
+            "seam": { "thickness": 20, "style": "mechanical" }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        let engine = SkinEngine()
+        let loaded = try engine.loadComposite(named: "Vesselized")
+
+        XCTAssertEqual(loaded.layout?.channelVessel?.dock, .left)
+        XCTAssertEqual(loaded.layout?.channelVessel?.size, 248)
+        XCTAssertEqual(loaded.layout?.channelVessel?.variant, .mercuryControlSpine)
+        XCTAssertEqual(loaded.layout?.screenVessel?.viewportInsets.top, 12)
+        XCTAssertEqual(loaded.layout?.screenVessel?.variant, .mercuryScreenBody)
+        XCTAssertEqual(loaded.layout?.seam?.thickness, 20)
+        XCTAssertEqual(loaded.layout?.seam?.style, .mechanical)
+    }
 }

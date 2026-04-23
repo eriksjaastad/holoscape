@@ -19,6 +19,80 @@ import CoreGraphics
 @MainActor
 final class MainWindowControllerChromeBranchTests: XCTestCase {
 
+    // MARK: - Controller transitions
+
+    func testPersistedV4SkinLaunchAttachesStableHostInsideInteriorView() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(controller.window is ShapedBorderlessWindow)
+        let interior = try XCTUnwrap(controller.currentChromeInteriorView)
+        XCTAssertTrue(controller.appContentHost.superview === interior,
+                      "Persisted v4 launch must mount app content inside InteriorView on first render")
+        XCTAssertEqual(hostAttachmentConstraints(for: controller.appContentHost, in: interior).count, 4,
+                       "Stable host must be edge-pinned inside InteriorView")
+        XCTAssertTrue(controller.appContentBodyTopConstraint?.secondItem === interior.safeAreaLayoutGuide,
+                      "Chrome mode body guide should track the InteriorView safe area")
+        XCTAssertTrue(controller.appContentHost.subviews.contains(where: { $0 is TabBarView }))
+        XCTAssertTrue(controller.appContentHost.subviews.contains(where: { $0 is NSSplitView }))
+        XCTAssertTrue(controller.window.styleMask.contains(.closable),
+                      "Chrome reconstruction must preserve close semantics for detached traffic lights")
+        XCTAssertTrue(controller.window.styleMask.contains(.miniaturizable),
+                      "Chrome reconstruction must preserve minimize semantics for detached traffic lights")
+    }
+
+    func testChromeToDefaultTransitionPreservesStableHostConstraints() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        controller.reloadSkin(named: "Default")
+        drainMainQueue()
+
+        XCTAssertFalse(controller.window is ShapedBorderlessWindow)
+        XCTAssertTrue(controller.window.styleMask.contains(.titled))
+        XCTAssertTrue(controller.window.styleMask.contains(.resizable),
+                      "Exiting chrome must restore standard titled-window resize behavior")
+        let root = try XCTUnwrap(controller.window.contentView)
+        XCTAssertTrue(controller.appContentHost.superview === root)
+        XCTAssertEqual(hostAttachmentConstraints(for: controller.appContentHost, in: root).count, 4,
+                       "Stable host must stay edge-pinned after chrome teardown")
+        XCTAssertNotNil(controller.window.standardWindowButton(.zoomButton),
+                        "Titled reconstruction must restore standard traffic lights")
+        XCTAssertNil(controller.chromeWindowControlButton(.zoomButton),
+                     "Detached chrome controls must be removed after chrome teardown")
+    }
+
+    func testCoreLayoutTreeSurvivesChromeReconstruction() throws {
+        let controller = try makeController()
+        drainMainQueue()
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+
+        let initialRoot = try XCTUnwrap(controller.window.contentView)
+        XCTAssertTrue(controller.appContentHost.superview === initialRoot)
+        XCTAssertEqual(controller.appContentHost.subviews.count, 6,
+                       "Stable host should own the full app layout tree in titled mode")
+        XCTAssertTrue(controller.appContentBodyTopConstraint?.secondItem === initialRoot.safeAreaLayoutGuide,
+                      "Titled mode body guide should track the content view safe area below the titlebar")
+
+        controller.reloadSkin(named: "HoloscapeClassic-live")
+        drainMainQueue()
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+
+        let interior = try XCTUnwrap(controller.currentChromeInteriorView)
+        XCTAssertTrue(controller.appContentHost.superview === interior)
+        XCTAssertEqual(controller.appContentHost.subviews.count, 6,
+                       "Chrome reconstruction must move the stable host without rebuilding its children")
+
+        controller.reloadSkin(named: "Default")
+        drainMainQueue()
+
+        let restoredRoot = try XCTUnwrap(controller.window.contentView)
+        XCTAssertTrue(controller.appContentHost.superview === restoredRoot)
+        XCTAssertEqual(controller.appContentHost.subviews.count, 6,
+                       "Leaving chrome must keep the same app layout tree attached to the titled host")
+    }
+
     // MARK: - Install helpers
 
     func testInstallChromeHostViewAddsSubviewAndPinsFrame() {
@@ -142,9 +216,27 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertFalse(w.isOpaque, "Borderless chrome window must not be opaque (Req 3.1)")
         XCTAssertFalse(w.hasShadow, "Chrome PNG provides its own drop shadow via alpha — system shadow would double it")
         XCTAssertTrue(w.styleMask.contains(.borderless))
+        XCTAssertTrue(w.styleMask.contains(.closable))
+        XCTAssertTrue(w.styleMask.contains(.miniaturizable))
         XCTAssertFalse(w.styleMask.contains(.titled), "Chrome window must not be titled (AppKit locks opaque backing on titled)")
         XCTAssertEqual(w.backgroundColor, .clear)
         XCTAssertFalse(w.isReleasedWhenClosed)
+    }
+
+    func testDetachedChromeButtonsUseExplicitControllerHandlers() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        let close = try XCTUnwrap(controller.chromeWindowControlButton(.closeButton))
+        let minimize = try XCTUnwrap(controller.chromeWindowControlButton(.miniaturizeButton))
+        let zoom = try XCTUnwrap(controller.chromeWindowControlButton(.zoomButton))
+
+        XCTAssertTrue(close.target === controller)
+        XCTAssertEqual(close.action, NSSelectorFromString("handleChromeCloseButton:"))
+        XCTAssertTrue(minimize.target === controller)
+        XCTAssertEqual(minimize.action, NSSelectorFromString("handleChromeMinimizeButton:"))
+        XCTAssertTrue(zoom.target === controller)
+        XCTAssertEqual(zoom.action, NSSelectorFromString("handleChromeZoomButton:"))
     }
 
     func testTitledWindowRecipe() {
@@ -268,5 +360,34 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
             provider: provider,
             decode: nil, shouldInterpolate: false, intent: .defaultIntent
         )!
+    }
+
+    private func makeController(persistedSkin: String? = nil) throws -> MainWindowController {
+        _ = NSApplication.shared
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MainWindowControllerChromeBranchTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+
+        let configService = ConfigService(configDir: tempRoot)
+        var config = HoloscapeConfig.default
+        config.appearance.skinName = persistedSkin
+        configService.save(config)
+
+        let channelManager = ChannelManager(configService: configService)
+        return MainWindowController(channelManager: channelManager, configService: configService)
+    }
+
+    private func hostAttachmentConstraints(for host: NSView, in container: NSView) -> [NSLayoutConstraint] {
+        container.constraints.filter { constraint in
+            (constraint.firstItem as AnyObject?) === host || (constraint.secondItem as AnyObject?) === host
+        }
+    }
+
+    private func drainMainQueue() {
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
     }
 }

@@ -102,6 +102,93 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         assertActiveChannelResponsive(message: "Channel should be responsive after minimize/restore")
     }
 
+    func testPersistedBundledV4SkinLaunchKeepsWindowUsable() throws {
+        let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
+        defer { try? FileManager.default.removeItem(at: configDir) }
+
+        let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        XCTAssertTrue(window.buttons["chrome-close-button"].waitForExistence(timeout: 3))
+        XCTAssertTrue(window.buttons["chrome-minimize-button"].waitForExistence(timeout: 3))
+        XCTAssertTrue(window.buttons["chrome-zoom-button"].waitForExistence(timeout: 3))
+        assertActiveChannelResponsive(timeout: 5, message: "Persisted v4 launch should remain responsive")
+    }
+
+    func testSwitchingFromPersistedV4SkinToDefaultRestoresTitledWindowBehavior() throws {
+        let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
+        defer { try? FileManager.default.removeItem(at: configDir) }
+
+        openSettings()
+        let settingsWindow = app.windows["Appearance Settings"]
+        let skinPopup = settingsWindow.popUpButtons["skin-popup"]
+        skinPopup.click()
+        let defaultItem = app.menuItems["Default"]
+        XCTAssertTrue(defaultItem.waitForExistence(timeout: 2))
+        defaultItem.click()
+        closeSettings()
+        Thread.sleep(forTimeInterval: 1.0)
+
+        let window = app.windows["Holoscape"]
+        let zoomButton = window.buttons[XCUIIdentifierZoomWindow]
+        XCTAssertTrue(zoomButton.waitForExistence(timeout: 5),
+                      "Switching away from v4 chrome should restore the standard titled green button")
+
+        let initialFrame = window.frame
+        zoomButton.click()
+        assertActiveChannelResponsive(timeout: 5, message: "Window should remain responsive after leaving v4 chrome")
+        XCTAssertNotEqual(initialFrame, window.frame,
+                          "Restored titled window should still support standard resize/zoom behavior")
+    }
+
+    func testChromeModeDetachedMinimizeRestoreWorks() throws {
+        let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
+        defer { try? FileManager.default.removeItem(at: configDir) }
+
+        let window = app.windows["Holoscape"]
+        let minimize = window.buttons["chrome-minimize-button"]
+        XCTAssertTrue(minimize.waitForExistence(timeout: 3))
+        minimize.click()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        restoreMainWindowFromWindowMenu()
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "Chrome-mode window should restore after minimize")
+        assertActiveChannelResponsive(timeout: 5, message: "Chrome-mode minimize/restore should keep the window usable")
+    }
+
+    func testChromeModeDetachedGreenButtonKeepsWindowResponsive() throws {
+        let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
+        defer { try? FileManager.default.removeItem(at: configDir) }
+
+        let window = app.windows["Holoscape"]
+        let green = window.buttons["chrome-zoom-button"]
+        XCTAssertTrue(green.waitForExistence(timeout: 3))
+        let initialFrame = window.frame
+
+        green.click()
+        assertActiveChannelResponsive(timeout: 6, message: "Detached green button should leave chrome-mode window usable")
+        let newFrame = window.frame
+        XCTAssertNotEqual(initialFrame, newFrame,
+                          "Detached green button should change the window presentation like a standard macOS green button")
+
+        // Return to windowed mode so the rest of the test process stays stable.
+        app.typeKey("f", modifierFlags: [.control, .command])
+        assertActiveChannelResponsive(timeout: 6, message: "Window should remain responsive after leaving fullscreen")
+    }
+
+    func testChromeModeDetachedCloseButtonClosesWindow() throws {
+        let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
+        defer { try? FileManager.default.removeItem(at: configDir) }
+
+        let window = app.windows["Holoscape"]
+        let closeButton = window.buttons["chrome-close-button"]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 3))
+        closeButton.click()
+
+        let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
+        expectation(for: notRunning, evaluatedWith: app, handler: nil)
+        waitForExpectations(timeout: 5)
+    }
+
     // MARK: - Application Menu
 
     func testAboutDialogOpens() throws {
@@ -254,6 +341,58 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(timestampItem.isEnabled, "Show Timestamps should be enabled")
 
         app.typeKey(.escape, modifierFlags: [])
+    }
+
+    private func relaunchWithPersistedSkin(_ skinName: String) throws -> URL {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-window-management-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        let configJSON = """
+        {
+          "appearance": {
+            "backgroundColor": "#1a1a2e",
+            "transparency": 1,
+            "fontFamily": "SF Mono",
+            "fontSize": 13,
+            "skinName": "\(skinName)"
+          },
+          "channels": []
+        }
+        """
+        try configJSON.write(
+            to: configDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        app.terminate()
+        let notRunning = NSPredicate(format: "state == %d", XCUIApplication.State.notRunning.rawValue)
+        expectation(for: notRunning, evaluatedWith: app, handler: nil)
+        waitForExpectations(timeout: 5)
+
+        app.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] = configDir.path
+        app.launch()
+
+        let window = app.windows["Holoscape"]
+        XCTAssertTrue(window.waitForExistence(timeout: 10), "App window should appear after relaunch with persisted skin")
+        return configDir
+    }
+
+    private func restoreMainWindowFromWindowMenu() {
+        app.activate()
+        let windowMenu = app.menuBars.firstMatch.menuBarItems["Window"]
+        windowMenu.click()
+        let windowItem = windowMenu.menus.firstMatch.menuItems.matching(
+            NSPredicate(format: "title CONTAINS 'Holoscape'")
+        ).firstMatch
+        if windowItem.waitForExistence(timeout: 2) {
+            windowItem.click()
+        } else {
+            app.typeKey(.escape, modifierFlags: [])
+            app.activate()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
     }
 
     // MARK: - Window State Persistence

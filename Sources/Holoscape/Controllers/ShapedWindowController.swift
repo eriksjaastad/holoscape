@@ -26,8 +26,13 @@ final class ShapedBorderlessWindow: NSWindow {
     /// particular is a trap — it requires `.titled` to be respected
     /// and, without `.titled`, silently collapses to `.borderless`
     /// (which is rawValue 0). We want the caller intent to be
-    /// explicit: this subclass is for borderless + resizable shaped
-    /// windows. See `docs/research/chrome-transparency-root-cause.md`.
+    /// explicit: this subclass is for borderless shaped windows that
+    /// still participate in standard window management. Detached
+    /// chrome-mode traffic lights call through close / miniaturize /
+    /// fullscreen semantics, so the window must advertise the same
+    /// capabilities as a titled main window even though AppKit is not
+    /// drawing a title bar for it. See
+    /// `docs/research/chrome-transparency-root-cause.md`.
     override init(
         contentRect: NSRect,
         styleMask _: NSWindow.StyleMask,
@@ -36,7 +41,7 @@ final class ShapedBorderlessWindow: NSWindow {
     ) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.borderless, .resizable],
+            styleMask: [.borderless, .closable, .miniaturizable, .resizable],
             backing: backingStoreType,
             defer: flag
         )

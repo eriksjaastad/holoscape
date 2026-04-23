@@ -122,6 +122,11 @@ struct LoadedSkin {
     /// `disabledAnimationIDs` to skip install of rejected layers.
     let chromeValidation: ChromeValidationResult?
 
+    /// Optional app-content vessel layout carried through from the
+    /// manifest. The controller decides whether the loaded descriptor
+    /// is supported by the current runtime milestone.
+    let layout: SkinLayoutDescriptor?
+
     /// Sentinel returned when the requested skin is `"Default"` — lets
     /// callers treat Default as "no skin loaded" without a special case.
     ///
@@ -141,7 +146,8 @@ struct LoadedSkin {
         chrome: nil,
         baseImage: nil,
         chromeSHA: nil,
-        chromeValidation: nil
+        chromeValidation: nil,
+        layout: nil
     )
 }
 
@@ -190,6 +196,7 @@ class SkinEngine {
     /// assert "construction opens no stream" without widening the real
     /// API.
     internal var _currentStreamIsNil: Bool { currentStream == nil }
+    internal var _currentWatchedPath: URL? { currentWatchedDir }
 
     /// Dedicated serial queue FSEvents posts its callbacks on. Separate
     /// from main so the callback doesn't contend with UI work; the
@@ -413,6 +420,20 @@ class SkinEngine {
             if FileManager.default.fileExists(atPath: wampURL.path, isDirectory: &isDir), !isDir.boolValue {
                 return wampURL
             }
+        }
+        return nil
+    }
+
+    /// Resolve the concrete filesystem target FSEvents should watch for
+    /// a skin name, using the same user-over-bundle precedence as the
+    /// load path.
+    private func watchTarget(for name: String) -> (url: URL, kind: String)? {
+        guard name != "Default" else { return nil }
+        if let bundleURL = activeBundleFileURL(for: name) {
+            return (bundleURL, "bundle file")
+        }
+        if let skinDir = resolveSkinDir(named: name) {
+            return (skinDir, "directory")
         }
         return nil
     }
@@ -704,11 +725,12 @@ class SkinEngine {
 
     // MARK: - File-system watcher (Task 11)
 
-    /// Start watching `~/.holoscape/skins/<skinName>/` for any file change.
-    /// On fire, hops back to the main thread and notifies
-    /// `fileWatcherDelegate`. Replaces any previously-active stream —
-    /// safe to call repeatedly; callers do `startWatching(skinName:)`
-    /// on every skin switch without first calling `stopWatching()`.
+    /// Start watching the resolved on-disk asset behind `skinName` for
+    /// any file change. On fire, hops back to the main thread and
+    /// notifies `fileWatcherDelegate`. Replaces any previously-active
+    /// stream — safe to call repeatedly; callers do
+    /// `startWatching(skinName:)` on every skin switch without first
+    /// calling `stopWatching()`.
     ///
     /// No-op for `"Default"` (no directory to watch) or when the
     /// skin directory doesn't exist yet. The latter matters for the
@@ -723,25 +745,17 @@ class SkinEngine {
         stopWatching()
         guard skinName != "Default" else { return }
 
-        // Decide what path to pin the watcher to:
-        // - `.wamp` bundle: watch the bundle FILE. FSEventStream accepts
-        //   file paths and reports writes. When a designer saves over
-        //   the `.wamp`, the hash changes, `unzipIfNeeded` re-extracts,
-        //   and downstream code picks up the new context.
-        // - directory-layout skin: watch the SKIN DIRECTORY (pre-Amplify
-        //   behavior). Unchanged.
-        let watchPath: URL
-        let watchKind: String
-        if let bundleURL = activeBundleFileURL(for: skinName) {
-            watchPath = bundleURL
-            watchKind = "bundle file"
-        } else {
-            let skinDir = skinsDirectory.appendingPathComponent(skinName)
-            watchPath = skinDir
-            watchKind = "directory"
+        // Resolve through the same precedence chain the loader uses so
+        // bundled directory skins don't fall back to a nonexistent user
+        // path under `~/.holoscape/skins/<name>`.
+        guard let watchTarget = watchTarget(for: skinName) else {
+            NSLog("SkinEngine: Cannot watch '\(skinName)' — skin could not be resolved")
+            return
         }
+        let watchPath = watchTarget.url
+        let watchKind = watchTarget.kind
         guard FileManager.default.fileExists(atPath: watchPath.path) else {
-            NSLog("SkinEngine: Cannot watch '\(skinName)' — \(watchKind) does not exist")
+            NSLog("SkinEngine: Cannot watch '\(skinName)' — resolved \(watchKind) does not exist")
             return
         }
 
@@ -1011,7 +1025,8 @@ class SkinEngine {
             chrome: loadedChrome,
             baseImage: loadedBaseImage,
             chromeSHA: loadedChromeSHA,
-            chromeValidation: loadedChromeValidation
+            chromeValidation: loadedChromeValidation,
+            layout: manifest.layout
         )
     }
 

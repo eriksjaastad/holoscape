@@ -96,6 +96,34 @@ final class BundledSkinTests: XCTestCase {
                        "User-dir skin must override bundled skin of the same name")
     }
 
+    func testStartWatchingResolvesBundledDirectorySkinPath() throws {
+        let bundledDir = bundledSkins.appendingPathComponent("BundledWatch")
+        try writeSkin(at: bundledDir, windowColor: "#112233")
+
+        let engine = SkinEngine()
+        engine.startWatching(skinName: "BundledWatch")
+
+        XCTAssertFalse(engine._currentStreamIsNil,
+                       "Bundled directory skins should install a watcher instead of falling back to a missing user path")
+        XCTAssertEqual(engine._currentWatchedPath?.path, bundledDir.path)
+        engine.stopWatching()
+    }
+
+    func testStartWatchingPrefersUserDirectoryOverBundledDirectory() throws {
+        let bundledDir = bundledSkins.appendingPathComponent("SharedWatch")
+        let userDir = userSkins.appendingPathComponent("SharedWatch")
+        try writeSkin(at: bundledDir, windowColor: "#111111")
+        try writeSkin(at: userDir, windowColor: "#999999")
+
+        let engine = SkinEngine()
+        engine.startWatching(skinName: "SharedWatch")
+
+        XCTAssertFalse(engine._currentStreamIsNil)
+        XCTAssertEqual(engine._currentWatchedPath?.path, userDir.path,
+                       "User-installed directory skins should remain the active watch target when names collide")
+        engine.stopWatching()
+    }
+
     // MARK: - Ninepatch wiring (Part 1.A pin)
 
     func testNinepatchSidecarFlowsThroughConvert() throws {

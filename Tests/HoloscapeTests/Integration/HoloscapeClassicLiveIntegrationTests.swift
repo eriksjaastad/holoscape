@@ -79,4 +79,59 @@ final class HoloscapeClassicLiveIntegrationTests: XCTestCase {
         XCTAssertEqual(Set(types).count, 4,
             "One renderer class per kind — no duplicates")
     }
+
+    func testPersistedClassicLiveLaunchBuildsFullControllerHierarchy() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        XCTAssertTrue(controller.window is ShapedBorderlessWindow)
+        let root = try XCTUnwrap(controller.window.contentView)
+        let interior = try XCTUnwrap(controller.currentChromeInteriorView)
+        XCTAssertTrue(root.subviews.contains { $0 === interior })
+        XCTAssertTrue(controller.appContentHost.superview === interior,
+                      "Bundled v4 launch must wire the controller-owned app host into InteriorView")
+        XCTAssertNotNil(controller.chromeWindowControlButton(.closeButton))
+        XCTAssertNotNil(controller.chromeWindowControlButton(.miniaturizeButton))
+        XCTAssertNotNil(controller.chromeWindowControlButton(.zoomButton))
+    }
+
+    func testSwitchingFromClassicLiveToDefaultLeavesWindowHierarchySane() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        controller.reloadSkin(named: "Default")
+        drainMainQueue()
+
+        XCTAssertFalse(controller.window is ShapedBorderlessWindow)
+        XCTAssertTrue(controller.window.styleMask.contains(.titled))
+        XCTAssertTrue(controller.window.styleMask.contains(.resizable))
+        let root = try XCTUnwrap(controller.window.contentView)
+        XCTAssertTrue(controller.appContentHost.superview === root)
+        XCTAssertEqual(root.subviews.filter { $0 === controller.appContentHost }.count, 1,
+                       "App host should be attached exactly once after leaving chrome mode")
+        XCTAssertNotNil(controller.window.standardWindowButton(.zoomButton))
+    }
+
+    private func makeController(persistedSkin: String) throws -> MainWindowController {
+        _ = NSApplication.shared
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HoloscapeClassicLiveIntegrationTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+
+        let configService = ConfigService(configDir: tempRoot)
+        var config = HoloscapeConfig.default
+        config.appearance.skinName = persistedSkin
+        configService.save(config)
+
+        let channelManager = ChannelManager(configService: configService)
+        return MainWindowController(channelManager: channelManager, configService: configService)
+    }
+
+    private func drainMainQueue() {
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
 }
