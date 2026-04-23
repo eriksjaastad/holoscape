@@ -156,7 +156,7 @@ final class ChromeBackwardCompatIntegrationTests: XCTestCase {
         // For every in-tree v4 skin, descriptor count must equal
         // installed renderer count on a ChromeHostView (the renderer
         // factory matches 1-to-1 — no descriptor silently dropped).
-        for name in ["HoloscapeClassic-live", "HoloscapeSynthwave", "AmplifyDemo"] {
+        for name in ["HoloscapeClassic-live", "HoloscapeSynthwave", "AmplifyDemo", "MercuryDeck"] {
             let engine = SkinEngine()
             let loaded = try engine.loadComposite(named: name)
             guard let chrome = loaded.chrome, let image = loaded.baseImage else {

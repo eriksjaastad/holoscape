@@ -21,6 +21,10 @@ import Foundation
 ///   hosting app subviews). Absent preserves the pre-v4 rendering path so
 ///   v1/v2/v3 manifests continue to decode and render identically
 ///   (backward-compatibility invariant, Requirement 16.1).
+/// - **v4.1 (vessels)**: adds optional `layout: SkinLayoutDescriptor?`.
+///   Present wraps the existing left channel list and right terminal
+///   surfaces in stable vessel views. Absent preserves the pre-vessel
+///   app layout.
 ///
 /// V1 and v2 skins continue to load and render correctly. When a manifest has
 /// both v1 fields and a v2 `surfaces` dictionary, v2 takes precedence for any
@@ -81,4 +85,10 @@ struct SkinDefinition: Codable, Equatable, Sendable {
     /// unchanged — v1/v2/v3 manifests keep their exact rendering
     /// behavior (Requirement 16.1).
     var chrome: ChromeDescriptor?
+
+    /// Optional app-content vessel layout. When present and supported,
+    /// `MainWindowController` wraps the existing channel/sidebar tree and
+    /// the existing terminal/input tree in vessel host views without
+    /// changing their semantics.
+    var layout: SkinLayoutDescriptor?
 }

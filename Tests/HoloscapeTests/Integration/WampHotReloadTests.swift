@@ -70,6 +70,8 @@ final class WampHotReloadTests: XCTestCase {
 
         XCTAssertFalse(engine._currentStreamIsNil,
                        "startWatching on a .wamp-backed skin must install a watcher against the bundle file")
+        XCTAssertEqual(engine._currentWatchedPath?.path, bundleURL.path,
+                       "The watcher target should remain the source .wamp file, not the unzipped cache directory")
         engine.stopWatching()
     }
 

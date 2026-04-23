@@ -18,6 +18,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private let splitView = NSSplitView()
     private let sidebarContainer = NSView()
+    private let rightPane = NSView()
+    private let rightPaneContentHost = NSView()
+    private let channelVesselView = ChannelVesselView(frame: .zero)
+    private let rightPaneVesselContainer = NSView()
+    private let screenVesselView = ScreenVesselView(frame: .zero)
+    private let vesselSeamView = VesselSeamView(frame: .zero)
+    let appContentHost = NSView()
     private let sessionLauncher = SessionLauncherView(frame: .zero)
     private let sidebarView = SidebarView(frame: .zero)
     private let tabBar = TabBarView(frame: .zero)
@@ -26,6 +33,24 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// tab list itself) the top tab strip collapses cleanly rather than
     /// leaving a 32pt gap above the terminal. See `tabBarVisibility(forSidebarExpanded:)`.
     private var tabBarHeightConstraint: NSLayoutConstraint?
+    /// Leading-offset constraint for the tab bar. Updated at runtime from
+    /// the zoom button's actual right edge so it stays clear of traffic
+    /// lights regardless of macOS version or accessibility text-size.
+    private var tabBarLeadingConstraint: NSLayoutConstraint?
+    private var appContentHostConstraints: [NSLayoutConstraint] = []
+    private weak var appContentHostContainer: NSView?
+    let appContentBodyGuide = NSLayoutGuide()
+    private var appContentBodyGuideConstraints: [NSLayoutConstraint] = []
+    var appContentBodyTopConstraint: NSLayoutConstraint?
+    private var sidebarLegacyConstraints: [NSLayoutConstraint] = []
+    private var sidebarVesselConstraints: [NSLayoutConstraint] = []
+    private var rightPaneLegacyConstraints: [NSLayoutConstraint] = []
+    private var rightPaneVesselConstraints: [NSLayoutConstraint] = []
+    private var rightPaneVesselInnerConstraints: [NSLayoutConstraint] = []
+    private var activeSkinLayout: SkinLayoutDescriptor?
+    weak var currentChromeHostView: ChromeHostView?
+    weak var currentChromeInteriorView: InteriorView?
+    var chromeWindowControlButtons: [NSWindow.ButtonType: NSButton] = [:]
     private let splitPaneManager = SplitPaneManager(frame: .zero)
 
     // MARK: - Amplify shape state (Task 5)
@@ -182,6 +207,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
 
+    internal var activeSkinLayoutForTesting: SkinLayoutDescriptor? { activeSkinLayout }
+    internal var channelVesselViewForTesting: ChannelVesselView { channelVesselView }
+    internal var screenVesselViewForTesting: ScreenVesselView { screenVesselView }
+    internal var vesselSeamViewForTesting: VesselSeamView { vesselSeamView }
+    internal var sidebarContainerForTesting: NSView { sidebarContainer }
+    internal var rightPaneForTesting: NSView { rightPane }
+    internal var rightPaneContentHostForTesting: NSView { rightPaneContentHost }
+    internal var sessionLauncherForTesting: SessionLauncherView { sessionLauncher }
+    internal var sidebarViewForTesting: SidebarView { sidebarView }
+    internal var tabBarForTesting: TabBarView { tabBar }
+
     init(channelManager: ChannelManager, configService: ConfigService) {
         self.channelManager = channelManager
         self.configService = configService
@@ -314,6 +350,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isOpaque = false
+        window.collectionBehavior.insert(.fullScreenPrimary)
+
+        setupLayout()
+        setupKeyboardShortcuts()
 
         // If the user had a non-Default skin selected at last quit, load
         // it now so the chrome reflects the persisted choice. reloadSkin
@@ -336,9 +376,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.inputDelegate = self
         splitPaneManager.splitDelegate = self
 
-        setupLayout()
-        setupKeyboardShortcuts()
-
         window.makeFirstResponder(inputBox)
 
         // Defer layout-dependent state application until after setupLayout.
@@ -348,6 +385,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         DispatchQueue.main.async { [self] in
             self.applySidebarState(animated: false)
             self.regionManager.restoreState()
+            self.updateTabBarLeading()
         }
 
         // Refresh elapsed time on tabs every 60 seconds
@@ -389,7 +427,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     private func setupLayout() {
+        buildAppContentLayoutIfNeeded()
         guard let contentView = window.contentView else { return }
+        attachAppContentHost(to: contentView)
+    }
+
+    private func buildAppContentLayoutIfNeeded() {
+        guard appContentHost.superview == nil,
+              appContentHost.subviews.isEmpty else { return }
+
+        appContentHost.identifier = NSUserInterfaceItemIdentifier("app-content-host")
+        appContentHost.translatesAutoresizingMaskIntoConstraints = false
+        appContentHost.wantsLayer = true
+        appContentHost.layer?.backgroundColor = NSColor.clear.cgColor
+        appContentHost.addLayoutGuide(appContentBodyGuide)
 
         // External chrome bands — four edge strips that surround the main
         // content. Added first so they live behind/beside the split view.
@@ -398,7 +449,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         for band in [topChromeBand, rightChromeBand, bottomChromeBand, leftChromeBand] {
             band.translatesAutoresizingMaskIntoConstraints = false
             band.wantsLayer = true
-            contentView.addSubview(band)
+            appContentHost.addSubview(band)
         }
 
         // Configure split view (holds the three internal sections)
@@ -406,7 +457,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         splitView.dividerStyle = .thin
         splitView.delegate = self
         splitView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(splitView)
+        appContentHost.addSubview(splitView)
 
         // Sidebar container: launcher at top, tab list below
         sidebarContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -415,26 +466,17 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         sessionLauncher.translatesAutoresizingMaskIntoConstraints = false
         sidebarView.translatesAutoresizingMaskIntoConstraints = false
-        sidebarContainer.addSubview(sessionLauncher)
-        sidebarContainer.addSubview(sidebarView)
-
-        NSLayoutConstraint.activate([
-            sessionLauncher.topAnchor.constraint(equalTo: sidebarContainer.topAnchor),
-            sessionLauncher.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
-            sessionLauncher.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
-            sessionLauncher.heightAnchor.constraint(equalToConstant: launcherHeight),
-
-            sidebarView.topAnchor.constraint(equalTo: sessionLauncher.bottomAnchor),
-            sidebarView.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
-            sidebarView.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
-            sidebarView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor),
-        ])
 
         // Right pane: tab bar (hidden when sidebar expanded) + terminal + input
-        let rightPane = NSView()
         rightPane.translatesAutoresizingMaskIntoConstraints = false
         rightPane.setAccessibilityElement(false)
         rightPane.setAccessibilityRole(.group)
+        rightPaneContentHost.translatesAutoresizingMaskIntoConstraints = false
+        rightPaneContentHost.setAccessibilityElement(false)
+        rightPaneContentHost.setAccessibilityRole(.group)
+        rightPaneVesselContainer.translatesAutoresizingMaskIntoConstraints = false
+        rightPaneVesselContainer.setAccessibilityElement(false)
+        rightPaneVesselContainer.setAccessibilityRole(.group)
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
@@ -443,27 +485,29 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Tab bar lives in the title-bar strip (Warp-style). It sits directly
         // on contentView, spanning from just past the traffic-light buttons
         // to the right edge. Traffic-light zone is ~78pt; leaving 80 here.
-        contentView.addSubview(tabBar)
-        rightPane.addSubview(splitPaneManager)
-        rightPane.addSubview(inputContainer)
+        appContentHost.addSubview(tabBar)
+        rightPaneContentHost.addSubview(splitPaneManager)
+        rightPaneContentHost.addSubview(inputContainer)
 
         let tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
         self.tabBarHeightConstraint = tabBarHeight
+        let tabBarLeading = tabBar.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor, constant: 80)
+        self.tabBarLeadingConstraint = tabBarLeading
 
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: contentView.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 80),
-            tabBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            tabBar.topAnchor.constraint(equalTo: appContentHost.topAnchor),
+            tabBarLeading,
+            tabBar.trailingAnchor.constraint(equalTo: appContentHost.trailingAnchor),
             tabBarHeight,
 
-            splitPaneManager.topAnchor.constraint(equalTo: rightPane.topAnchor),
-            splitPaneManager.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            splitPaneManager.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            splitPaneManager.topAnchor.constraint(equalTo: rightPaneContentHost.topAnchor),
+            splitPaneManager.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
+            splitPaneManager.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
             splitPaneManager.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
 
-            inputContainer.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            inputContainer.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            inputContainer.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+            inputContainer.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
+            inputContainer.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
+            inputContainer.bottomAnchor.constraint(equalTo: rightPaneContentHost.bottomAnchor),
         ])
 
         // Input box auto-grow: start at min height, grow up to max
@@ -481,6 +525,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Add panes to split view
         splitView.addArrangedSubview(sidebarContainer)
         splitView.addArrangedSubview(rightPane)
+        applyAppContentLayout(nil)
 
         // External band sizing. Width/height constants default to zero so
         // the bands don't affect layout until a skin inflates them.
@@ -495,27 +540,27 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         NSLayoutConstraint.activate([
             // Top band pinned just below the tab bar
-            topChromeBand.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            topChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            topChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            topChromeBand.topAnchor.constraint(equalTo: appContentBodyGuide.topAnchor),
+            topChromeBand.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor),
+            topChromeBand.trailingAnchor.constraint(equalTo: appContentHost.trailingAnchor),
             topH,
 
             // Bottom band pinned across the window bottom
-            bottomChromeBand.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            bottomChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            bottomChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            bottomChromeBand.bottomAnchor.constraint(equalTo: appContentHost.bottomAnchor),
+            bottomChromeBand.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor),
+            bottomChromeBand.trailingAnchor.constraint(equalTo: appContentHost.trailingAnchor),
             bottomH,
 
             // Left band between the top and bottom bands, on the leading edge
             leftChromeBand.topAnchor.constraint(equalTo: topChromeBand.bottomAnchor),
             leftChromeBand.bottomAnchor.constraint(equalTo: bottomChromeBand.topAnchor),
-            leftChromeBand.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            leftChromeBand.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor),
             leftW,
 
             // Right band between the top and bottom bands, on the trailing edge
             rightChromeBand.topAnchor.constraint(equalTo: topChromeBand.bottomAnchor),
             rightChromeBand.bottomAnchor.constraint(equalTo: bottomChromeBand.topAnchor),
-            rightChromeBand.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            rightChromeBand.trailingAnchor.constraint(equalTo: appContentHost.trailingAnchor),
             rightW,
 
             // Split view fills the interior between all four bands
@@ -528,6 +573,45 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // Set holding priorities
         splitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)      // sidebar can shrink
         splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)     // terminal keeps space
+    }
+
+    func attachAppContentHost(to container: NSView) {
+        if appContentHostContainer === container, appContentHost.superview === container {
+            return
+        }
+
+        NSLayoutConstraint.deactivate(appContentHostConstraints)
+        appContentHostConstraints.removeAll()
+        NSLayoutConstraint.deactivate(appContentBodyGuideConstraints)
+        appContentBodyGuideConstraints.removeAll()
+        appContentHost.removeFromSuperview()
+
+        container.addSubview(appContentHost)
+        let constraints = [
+            appContentHost.topAnchor.constraint(equalTo: container.topAnchor),
+            appContentHost.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            appContentHost.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            appContentHost.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ]
+        NSLayoutConstraint.activate(constraints)
+        appContentHostConstraints = constraints
+        appContentHostContainer = container
+
+        let bodyGuideConstraints = [
+            appContentBodyGuide.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor),
+            appContentBodyGuide.trailingAnchor.constraint(equalTo: appContentHost.trailingAnchor),
+            appContentBodyGuide.bottomAnchor.constraint(equalTo: appContentHost.bottomAnchor),
+            appContentBodyGuide.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
+        ]
+        NSLayoutConstraint.activate(bodyGuideConstraints)
+        appContentBodyGuideConstraints = bodyGuideConstraints
+        appContentBodyTopConstraint = bodyGuideConstraints.last
+
+        if container is InteriorView {
+            tabBarLeadingConstraint?.constant = 0
+        } else {
+            tabBarLeadingConstraint?.constant = 80
+        }
     }
 
     private func setupKeyboardShortcuts() {
@@ -794,7 +878,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// (future views added after this PR, or tests) can post
     /// `.skinDidChange` themselves after `applySkin` returns.
     func applySkin(_ surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?) {
-        applySkin(surfaces: surfaces, windowShape: nil, dragRegions: [])
+        applySkin(surfaces: surfaces, layout: nil, windowShape: nil, dragRegions: [])
     }
 
     /// Amplify Task 5.3 + 9.3 — extended entry point for skins that
@@ -809,6 +893,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// system title bar — no custom drag handles needed).
     func applySkin(
         surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
+        layout: SkinLayoutDescriptor? = nil,
         windowShape: ResolvedWindowShape?,
         dragRegions: [ResolvedDragRegion]
     ) {
@@ -818,6 +903,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.skinContext = skinContext
         sessionLauncher.skinContext = skinContext
         splitPaneManager.skinContext = skinContext
+        applyAppContentLayout(layout)
         applyWindowSurfaces()
         applyWindowShape(windowShape)
         // Card #6037 — drag regions share the window shape's nominal
@@ -1212,7 +1298,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 // Surfaces still apply to app subviews inside
                 // InteriorView so v3 surface descriptors keep
                 // painting (tabs, sidebar rows, etc.).
-                applySkin(loaded.surfaces)
+                applySkin(
+                    surfaces: loaded.surfaces,
+                    layout: loaded.layout,
+                    windowShape: nil,
+                    dragRegions: []
+                )
             } else {
                 // If the current window is a ShapedBorderlessWindow (from
                 // a previous chrome skin), tear it down first. Without this
@@ -1223,6 +1314,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 }
                 applySkin(
                     surfaces: loaded.surfaces,
+                    layout: loaded.layout,
                     windowShape: loaded.windowShape,
                     dragRegions: loaded.dragRegions
                 )
@@ -1307,6 +1399,35 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
+    /// Adjust `tabBarLeadingConstraint` so the tab bar never overlaps the
+    /// traffic-light buttons. Reads the zoom button's actual right edge
+    /// rather than using a hardcoded constant, so the offset is correct
+    /// across macOS versions and accessibility text-size settings.
+    ///
+    /// Called once after the window is on screen (deferred `main.async`
+    /// in init). No-ops silently when the window has no standard buttons
+    /// (e.g., after chrome-mode reconstruction — chrome mode doesn't use
+    /// this constraint).
+    func updateTabBarLeading() {
+        guard let button = tabBarInsetReferenceButton() else {
+            tabBarLeadingConstraint?.constant = (appContentHostContainer is InteriorView) ? 0 : 80
+            return
+        }
+        let inset = button.convert(button.bounds, to: appContentHost).maxX + 8
+        tabBarLeadingConstraint?.constant = max(0, inset)
+    }
+
+    private func tabBarInsetReferenceButton() -> NSButton? {
+        if let zoom = window.standardWindowButton(.zoomButton) {
+            return zoom
+        }
+        return chromeWindowControlButton(.zoomButton)
+    }
+
+    func chromeWindowControlButton(_ type: NSWindow.ButtonType) -> NSButton? {
+        chromeWindowControlButtons[type]
+    }
+
     /// Apply the internal sidebar's expanded/collapsed state. This is the
     /// in-panel left nav — NOT an external chrome band. The top tab strip
     /// (Warp-style) is mutually exclusive with the sidebar's own tab
@@ -1317,7 +1438,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let tabBarState = Self.tabBarVisibility(forSidebarExpanded: sidebarExpanded)
         let work = { [self] in
             if sidebarExpanded {
-                splitView.setPosition(sidebarWidth, ofDividerAt: 0)
+                splitView.setPosition(currentSidebarWidth, ofDividerAt: 0)
                 sidebarContainer.isHidden = false
             } else {
                 splitView.setPosition(0, ofDividerAt: 0)
@@ -1336,6 +1457,181 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             work()
         }
         refreshAllTabsNow()
+    }
+
+    private var currentSidebarWidth: CGFloat {
+        activeSkinLayout?.channelVessel?.size ?? sidebarWidth
+    }
+
+    private func applyAppContentLayout(_ proposedLayout: SkinLayoutDescriptor?) {
+        guard !splitView.subviews.isEmpty else { return }
+
+        let layout = normalizedSkinLayout(proposedLayout)
+        activeSkinLayout = layout
+
+        if let layout {
+            installVesselSidebar(layout.channelVessel!)
+            installVesselRightPane(screen: layout.screenVessel!, seam: layout.seam!)
+        } else {
+            installLegacySidebar()
+            installLegacyRightPane()
+        }
+
+        splitView.layoutSubtreeIfNeeded()
+        applySidebarState(animated: false)
+        updateTabBarLeading()
+    }
+
+    private func normalizedSkinLayout(_ proposedLayout: SkinLayoutDescriptor?) -> SkinLayoutDescriptor? {
+        guard let proposedLayout else { return nil }
+        guard let channel = proposedLayout.channelVessel,
+              let screen = proposedLayout.screenVessel,
+              let seam = proposedLayout.seam else {
+            NSLog("MainWindowController: skin layout missing channelVessel/screenVessel/seam; falling back to legacy layout")
+            return nil
+        }
+        switch channel.dock {
+        case .left:
+            break
+        case .unsupported(let raw):
+            NSLog("MainWindowController: unsupported channel vessel dock '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        switch channel.variant ?? .plain {
+        case .plain, .mercuryControlSpine:
+            break
+        case .unsupported(let raw):
+            NSLog("MainWindowController: unsupported channel vessel variant '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        switch screen.variant ?? .plain {
+        case .plain, .mercuryScreenBody:
+            break
+        case .unsupported(let raw):
+            NSLog("MainWindowController: unsupported screen vessel variant '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        switch seam.style {
+        case .flat, .mechanical:
+            break
+        case .unsupported(let raw):
+            NSLog("MainWindowController: unsupported seam style '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        return SkinLayoutDescriptor(
+            channelVessel: channel,
+            screenVessel: screen,
+            seam: seam
+        )
+    }
+
+    private func installLegacySidebar() {
+        NSLayoutConstraint.deactivate(sidebarVesselConstraints)
+        sidebarVesselConstraints.removeAll()
+        channelVesselView.removeFromSuperview()
+        sessionLauncher.removeFromSuperview()
+        sidebarView.removeFromSuperview()
+
+        sidebarContainer.addSubview(sessionLauncher)
+        sidebarContainer.addSubview(sidebarView)
+        let constraints = [
+            sessionLauncher.topAnchor.constraint(equalTo: sidebarContainer.topAnchor),
+            sessionLauncher.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
+            sessionLauncher.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
+            sessionLauncher.heightAnchor.constraint(equalToConstant: launcherHeight),
+            sidebarView.topAnchor.constraint(equalTo: sessionLauncher.bottomAnchor),
+            sidebarView.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
+            sidebarView.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
+            sidebarView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor),
+        ]
+        NSLayoutConstraint.deactivate(sidebarLegacyConstraints)
+        NSLayoutConstraint.activate(constraints)
+        sidebarLegacyConstraints = constraints
+    }
+
+    private func installVesselSidebar(_ layout: ChannelVesselLayoutDescriptor) {
+        NSLayoutConstraint.deactivate(sidebarLegacyConstraints)
+        sidebarLegacyConstraints.removeAll()
+        sessionLauncher.removeFromSuperview()
+        sidebarView.removeFromSuperview()
+        channelVesselView.removeFromSuperview()
+
+        channelVesselView.apply(layout: layout)
+        sidebarContainer.addSubview(channelVesselView)
+        let constraints = [
+            channelVesselView.topAnchor.constraint(equalTo: sidebarContainer.topAnchor),
+            channelVesselView.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
+            channelVesselView.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
+            channelVesselView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor),
+        ]
+        NSLayoutConstraint.deactivate(sidebarVesselConstraints)
+        NSLayoutConstraint.activate(constraints)
+        sidebarVesselConstraints = constraints
+        channelVesselView.mountLauncher(sessionLauncher)
+        channelVesselView.mountSidebar(sidebarView)
+    }
+
+    private func installLegacyRightPane() {
+        NSLayoutConstraint.deactivate(rightPaneVesselInnerConstraints)
+        rightPaneVesselInnerConstraints.removeAll()
+        NSLayoutConstraint.deactivate(rightPaneVesselConstraints)
+        rightPaneVesselConstraints.removeAll()
+        rightPaneVesselContainer.removeFromSuperview()
+        rightPaneContentHost.removeFromSuperview()
+
+        rightPane.addSubview(rightPaneContentHost)
+        let constraints = [
+            rightPaneContentHost.topAnchor.constraint(equalTo: rightPane.topAnchor),
+            rightPaneContentHost.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            rightPaneContentHost.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            rightPaneContentHost.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+        ]
+        NSLayoutConstraint.deactivate(rightPaneLegacyConstraints)
+        NSLayoutConstraint.activate(constraints)
+        rightPaneLegacyConstraints = constraints
+    }
+
+    private func installVesselRightPane(
+        screen: ScreenVesselLayoutDescriptor,
+        seam: SeamLayoutDescriptor
+    ) {
+        NSLayoutConstraint.deactivate(rightPaneLegacyConstraints)
+        rightPaneLegacyConstraints.removeAll()
+        rightPaneContentHost.removeFromSuperview()
+        rightPaneVesselContainer.removeFromSuperview()
+
+        screenVesselView.apply(layout: screen)
+        vesselSeamView.apply(style: seam.style)
+
+        rightPane.addSubview(rightPaneVesselContainer)
+        let containerConstraints = [
+            rightPaneVesselContainer.topAnchor.constraint(equalTo: rightPane.topAnchor),
+            rightPaneVesselContainer.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            rightPaneVesselContainer.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            rightPaneVesselContainer.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+        ]
+        NSLayoutConstraint.deactivate(rightPaneVesselConstraints)
+        NSLayoutConstraint.activate(containerConstraints)
+        rightPaneVesselConstraints = containerConstraints
+
+        vesselSeamView.removeFromSuperview()
+        screenVesselView.removeFromSuperview()
+        rightPaneVesselContainer.addSubview(vesselSeamView)
+        rightPaneVesselContainer.addSubview(screenVesselView)
+        let innerConstraints = [
+            vesselSeamView.topAnchor.constraint(equalTo: rightPaneVesselContainer.topAnchor),
+            vesselSeamView.leadingAnchor.constraint(equalTo: rightPaneVesselContainer.leadingAnchor),
+            vesselSeamView.bottomAnchor.constraint(equalTo: rightPaneVesselContainer.bottomAnchor),
+            vesselSeamView.widthAnchor.constraint(equalToConstant: seam.thickness),
+            screenVesselView.topAnchor.constraint(equalTo: rightPaneVesselContainer.topAnchor),
+            screenVesselView.leadingAnchor.constraint(equalTo: vesselSeamView.trailingAnchor),
+            screenVesselView.trailingAnchor.constraint(equalTo: rightPaneVesselContainer.trailingAnchor),
+            screenVesselView.bottomAnchor.constraint(equalTo: rightPaneVesselContainer.bottomAnchor),
+        ]
+        NSLayoutConstraint.deactivate(rightPaneVesselInnerConstraints)
+        NSLayoutConstraint.activate(innerConstraints)
+        rightPaneVesselInnerConstraints = innerConstraints
+        screenVesselView.mountContent(rightPaneContentHost)
     }
 
     @objc func toggleSidebar() {

@@ -1,0 +1,161 @@
+{
+  "version": "4.0",
+  "name": "Mercury Deck",
+  "author": "Holoscape",
+  "description": "Brushed-metal hi-fi deck scaffold — baked chrome hero shell with restrained cyan and amber instrumentation plus ambient status motion.",
+  "layout": {
+    "channelVessel": {
+      "dock": "left",
+      "size": 248,
+      "capStart": 96,
+      "capEnd": 56,
+      "variant": "mercuryControlSpine"
+    },
+    "screenVessel": {
+      "viewportInsets": { "top": 12, "right": 14, "bottom": 14, "left": 12 },
+      "variant": "mercuryScreenBody"
+    },
+    "seam": { "thickness": 20, "style": "mechanical" }
+  },
+  "chrome": {
+    "mode": "baked",
+    "image": "assets/chrome@2x.png",
+    "imageOpaque": "assets/chrome-opaque@2x.png",
+    "width": 1000,
+    "height": 700,
+    "interiorRect": { "x": 16, "y": 40, "width": 968, "height": 644 },
+    "animations": [
+      {
+        "id": "status-ladder",
+        "kind": "ledArray",
+        "rect": { "x": 828, "y": 10, "width": 126, "height": 18 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 1.0,
+        "dataSource": "time",
+        "params": {
+          "ledArray": {
+            "cellSize": 6.0,
+            "cells": [
+              { "x": 0, "y": 6, "defaultState": 0 },
+              { "x": 10, "y": 6, "defaultState": 0 },
+              { "x": 20, "y": 6, "defaultState": 0 },
+              { "x": 30, "y": 6, "defaultState": 0 },
+              { "x": 40, "y": 6, "defaultState": 0 },
+              { "x": 50, "y": 6, "defaultState": 0 },
+              { "x": 60, "y": 6, "defaultState": 0 },
+              { "x": 70, "y": 6, "defaultState": 0 },
+              { "x": 80, "y": 6, "defaultState": 0 },
+              { "x": 90, "y": 6, "defaultState": 0 },
+              { "x": 100, "y": 6, "defaultState": 0 },
+              { "x": 110, "y": 6, "defaultState": 0 }
+            ],
+            "palette": ["#141414", "#67d9ff", "#ffb347"],
+            "pattern": { "marquee": { "cellsPerSecond": 4.0, "windowSize": 3 } }
+          }
+        }
+      },
+      {
+        "id": "display-pocket-scan",
+        "kind": "shader",
+        "rect": { "x": 684, "y": 6, "width": 126, "height": 26 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 0.4,
+        "params": {
+          "shader": {
+            "preset": "scanlines",
+            "color": "#90c7db",
+            "intensity": 0.04,
+            "hz": 0.18
+          }
+        }
+      },
+      {
+        "id": "console-undershine",
+        "kind": "shader",
+        "rect": { "x": 0, "y": 656, "width": 1000, "height": 44 },
+        "z": 1,
+        "phaseOffset": 0,
+        "speedMultiplier": 0.7,
+        "params": {
+          "shader": {
+            "preset": "glow",
+            "color": "#6fa6c5",
+            "intensity": 0.14,
+            "hz": 0.33
+          }
+        }
+      }
+    ]
+  },
+  "surfaces": {
+    "window.background": {
+      "fill": {
+        "kind": "gradient",
+        "direction": "vertical",
+        "stops": [
+          { "offset": 0.0, "color": "#121619" },
+          { "offset": 1.0, "color": "#1e262c" }
+        ]
+      }
+    },
+    "tabBar.container": {
+      "fill": { "kind": "color", "value": "#32414a" },
+      "border": { "color": "#5c6f79", "width": 1.0 },
+      "corner": 6,
+      "shadow": {
+        "color": "#000000",
+        "opacity": 0.35,
+        "blur": 6,
+        "offsetX": 0,
+        "offsetY": 1
+      }
+    },
+    "tabBar.tab.active": {
+      "fill": { "kind": "color", "value": "#ffb347" },
+      "corner": 4
+    },
+    "tabBar.tab.normal": {
+      "fill": { "kind": "color", "value": "#28333a" },
+      "corner": 4
+    },
+    "tabBar.tab.idle": {
+      "fill": { "kind": "color", "value": "#2d5461" },
+      "corner": 4
+    },
+    "sidebar.container": {
+      "fill": { "kind": "color", "value": "#171c20" }
+    },
+    "sidebar.row.selected": {
+      "fill": { "kind": "color", "value": "#3b4850" }
+    },
+    "sidebar.row.indicator": {
+      "fill": { "kind": "color", "value": "#67d9ff" },
+      "states": [
+        {
+          "name": "connecting",
+          "match": { "channelConnectionState": 1 },
+          "fill": { "kind": "color", "value": "#ffb347" }
+        },
+        {
+          "name": "disconnected",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#d96f5f" }
+        }
+      ]
+    },
+    "inputBox.container": {
+      "fill": { "kind": "color", "value": "#151a1e" }
+    },
+    "inputBox.field": {
+      "fill": { "kind": "color", "value": "#21292f" }
+    },
+    "sessionLauncher.container": {
+      "fill": { "kind": "color", "value": "#1b2227" }
+    },
+    "splitPane.divider": {
+      "fill": { "kind": "color", "value": "#5a6a74" }
+    }
+  }
+}
