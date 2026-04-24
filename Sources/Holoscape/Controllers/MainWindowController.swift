@@ -4,7 +4,8 @@ import AppKit
 class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
-    SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate {
+    SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate,
+    InputResizeHandleViewDelegate {
 
     /// Amplify Task 5.3 makes this reassignable so shaped-window
     /// transitions can swap the underlying `NSWindow` instance without
@@ -51,6 +52,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     weak var currentChromeHostView: ChromeHostView?
     weak var currentChromeInteriorView: InteriorView?
     var chromeWindowControlButtons: [NSWindow.ButtonType: NSButton] = [:]
+    var chromeDragOverlays: [WindowDragOverlay] = []
     private let splitPaneManager = SplitPaneManager(frame: .zero)
 
     // MARK: - Amplify shape state (Task 5)
@@ -92,6 +94,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
+    private let inputResizeHandle = InputResizeHandleView(frame: .zero)
 
     // External chrome bands — decorative strips around the window content
     // area that a skin can paint graphics into (Winamp-style). Default
@@ -194,8 +197,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     private var bugReportDialog: BugReportDialog?
     private let launchTime = Date()
     private var inputHeightConstraint: NSLayoutConstraint?
+    private var inputResizeHandleHeightConstraint: NSLayoutConstraint?
+    private var userInputPanelHeight: CGFloat?
     private let inputMinHeight: CGFloat = 40
-    private let inputMaxHeight: CGFloat = 120
+    private let inputMaxHeight: CGFloat = 180
+    private let inputResizeHandleHeight: CGFloat = 10
 
     /// Coalesces multiple refreshAllTabs() calls into a single
     /// layout pass at the end of the current run loop cycle.
@@ -217,6 +223,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     internal var sessionLauncherForTesting: SessionLauncherView { sessionLauncher }
     internal var sidebarViewForTesting: SidebarView { sidebarView }
     internal var tabBarForTesting: TabBarView { tabBar }
+    internal var inputResizeHandleForTesting: InputResizeHandleView { inputResizeHandle }
+    internal var chromeDragOverlaysForTesting: [WindowDragOverlay] { chromeDragOverlays }
 
     init(channelManager: ChannelManager, configService: ConfigService) {
         self.channelManager = channelManager
@@ -251,6 +259,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.inputContainer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1000, height: 40))
         self.inputBox = InputBoxView(frame: inputContainer.contentView.bounds)
         inputContainer.documentView = inputBox
+        inputContainer.drawsBackground = false
+        inputContainer.borderType = .noBorder
+        inputContainer.wantsLayer = true
         inputContainer.setAccessibilityElement(false)
         inputBox.isVerticallyResizable = true
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -289,6 +300,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         self.skinContext = SkinContext.builtInDefaults(reactive: self.reactiveSnapshot)
 
         super.init()
+
+        inputResizeHandle.resizeDelegate = self
 
         // Card #6027 — close the reverse wire (engine → manager).
         // The engine consults `shouldAnimate()` on every animate call;
@@ -480,6 +493,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         tabBar.translatesAutoresizingMaskIntoConstraints = false
         splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
+        inputResizeHandle.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
 
         // Tab bar lives in the title-bar strip (Warp-style). It sits directly
@@ -487,12 +501,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // to the right edge. Traffic-light zone is ~78pt; leaving 80 here.
         appContentHost.addSubview(tabBar)
         rightPaneContentHost.addSubview(splitPaneManager)
+        rightPaneContentHost.addSubview(inputResizeHandle)
         rightPaneContentHost.addSubview(inputContainer)
 
         let tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
         self.tabBarHeightConstraint = tabBarHeight
         let tabBarLeading = tabBar.leadingAnchor.constraint(equalTo: appContentHost.leadingAnchor, constant: 80)
         self.tabBarLeadingConstraint = tabBarLeading
+        let handleHeight = inputResizeHandle.heightAnchor.constraint(equalToConstant: inputResizeHandleHeight)
+        self.inputResizeHandleHeightConstraint = handleHeight
 
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: appContentHost.topAnchor),
@@ -503,7 +520,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             splitPaneManager.topAnchor.constraint(equalTo: rightPaneContentHost.topAnchor),
             splitPaneManager.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
             splitPaneManager.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
-            splitPaneManager.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
+            splitPaneManager.bottomAnchor.constraint(equalTo: inputResizeHandle.topAnchor),
+
+            inputResizeHandle.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
+            inputResizeHandle.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
+            inputResizeHandle.bottomAnchor.constraint(equalTo: inputContainer.topAnchor),
+            handleHeight,
 
             inputContainer.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
             inputContainer.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
@@ -863,6 +885,26 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
+    private func applyInputPanelChrome() {
+        inputResizeHandle.apply(skinContext: skinContext)
+
+        inputContainer.wantsLayer = true
+        inputContainer.drawsBackground = false
+        inputContainer.borderType = .noBorder
+        inputContainer.contentView.wantsLayer = true
+        inputContainer.contentView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        guard let layer = inputContainer.layer else { return }
+        let resolved = skinContext.currentState(for: .inputBoxContainer)
+        skinContext.applyFill(
+            to: layer,
+            from: resolved,
+            backingScale: window.backingScaleFactor
+        )
+        skinContext.applyBorderAndCorner(to: layer, from: resolved)
+        layer.masksToBounds = true
+    }
+
     /// Swap the active skin. Rebuilds the `SkinContext`, re-injects into
     /// every chrome view, and re-applies window surfaces.
     ///
@@ -903,6 +945,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         inputBox.skinContext = skinContext
         sessionLauncher.skinContext = skinContext
         splitPaneManager.skinContext = skinContext
+        applyInputPanelChrome()
         applyAppContentLayout(layout)
         applyWindowSurfaces()
         applyWindowShape(windowShape)
@@ -1484,10 +1527,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     private func normalizedSkinLayout(_ proposedLayout: SkinLayoutDescriptor?) -> SkinLayoutDescriptor? {
         guard let proposedLayout else { return nil }
+        var resolvedSeam = proposedLayout.seam
+        if let vesselGap = proposedLayout.vesselGap {
+            if var seam = resolvedSeam {
+                seam.thickness = vesselGap
+                resolvedSeam = seam
+            } else {
+                resolvedSeam = SeamLayoutDescriptor(thickness: vesselGap, style: .flat)
+            }
+        }
+
         guard let channel = proposedLayout.channelVessel,
               let screen = proposedLayout.screenVessel,
-              let seam = proposedLayout.seam else {
-            NSLog("MainWindowController: skin layout missing channelVessel/screenVessel/seam; falling back to legacy layout")
+              let seam = resolvedSeam else {
+            NSLog("MainWindowController: skin layout missing channelVessel/screenVessel/seam or vesselGap; falling back to legacy layout")
             return nil
         }
         switch channel.dock {
@@ -1502,6 +1555,21 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             break
         case .unsupported(let raw):
             NSLog("MainWindowController: unsupported channel vessel variant '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        switch channel.verticalAlign ?? .top {
+        case .top, .center, .bottom:
+            break
+        case .unsupported(let raw):
+            NSLog("MainWindowController: unsupported channel vessel verticalAlign '\(raw)'; falling back to legacy layout")
+            return nil
+        }
+        if let height = channel.height, height <= 0 {
+            NSLog("MainWindowController: channel vessel height must be positive; falling back to legacy layout")
+            return nil
+        }
+        if seam.thickness < 0 {
+            NSLog("MainWindowController: vessel gap/seam thickness must be non-negative; falling back to legacy layout")
             return nil
         }
         switch screen.variant ?? .plain {
@@ -1519,6 +1587,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             return nil
         }
         return SkinLayoutDescriptor(
+            vesselGap: proposedLayout.vesselGap,
             channelVessel: channel,
             screenVessel: screen,
             seam: seam
@@ -1558,12 +1627,27 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         channelVesselView.apply(layout: layout)
         sidebarContainer.addSubview(channelVesselView)
-        let constraints = [
-            channelVesselView.topAnchor.constraint(equalTo: sidebarContainer.topAnchor),
+        var constraints = [
             channelVesselView.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
             channelVesselView.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
-            channelVesselView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor),
         ]
+        if let height = layout.height {
+            constraints.append(channelVesselView.heightAnchor.constraint(equalToConstant: height))
+            let offset = layout.verticalOffset ?? 0
+            switch layout.verticalAlign ?? .top {
+            case .top:
+                constraints.append(channelVesselView.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: offset))
+            case .center:
+                constraints.append(channelVesselView.centerYAnchor.constraint(equalTo: sidebarContainer.centerYAnchor, constant: offset))
+            case .bottom:
+                constraints.append(channelVesselView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor, constant: -offset))
+            case .unsupported:
+                constraints.append(channelVesselView.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: offset))
+            }
+        } else {
+            constraints.append(channelVesselView.topAnchor.constraint(equalTo: sidebarContainer.topAnchor))
+            constraints.append(channelVesselView.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor))
+        }
         NSLayoutConstraint.deactivate(sidebarVesselConstraints)
         NSLayoutConstraint.activate(constraints)
         sidebarVesselConstraints = constraints
@@ -1844,7 +1928,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                     authType: .oauth,
                     workingDirectory: workDir,
                     userLabel: label,
-                    instanceNumber: instanceNum
+                    instanceNumber: instanceNum,
+                    command: command ?? "claude"
                 )
             }
             channel.delegate = self
@@ -1873,11 +1958,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         // PTY channels handle their own input — hide InputBox and focus the terminal
         if ptyChannelTypes.contains(channel.channelType) {
             inputContainer.isHidden = true
+            inputResizeHandle.isHidden = true
             inputHeightConstraint?.constant = 0
+            inputResizeHandleHeightConstraint?.constant = 0
             window.makeFirstResponder(channel.contentView)
         } else {
             inputContainer.isHidden = false
-            inputHeightConstraint?.constant = inputMinHeight
+            inputResizeHandle.isHidden = false
+            inputResizeHandleHeightConstraint?.constant = inputResizeHandleHeight
+            inputHeightConstraint?.constant = userInputPanelHeight ?? inputMinHeight
             window.makeFirstResponder(inputBox)
         }
     }
@@ -1971,12 +2060,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     private func createShellChannel() {
+        let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: .shell,
-            role: "Shell",
-            workingDirectory: nil
-        ) { id, _, _, instanceNum, _ in
-            return ShellChannelController(id: id, instanceNumber: instanceNum)
+            role: nil,
+            workingDirectory: defaultDir
+        ) { id, _, _, instanceNum, workDir in
+            return ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
         }
         channel.delegate = self
         channel.activate()
@@ -1984,10 +2074,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     private func createAgentChannel(authType: AgentAuthType) {
-        let projectsDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("projects")
-        let defaultDir = FileManager.default.fileExists(atPath: projectsDir.path)
-            ? projectsDir
-            : URL(fileURLWithPath: NSHomeDirectory())
+        let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
             role: nil,
@@ -1998,7 +2085,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 authType: authType,
                 workingDirectory: workDir,
                 userLabel: nil,
-                instanceNumber: instanceNum
+                instanceNumber: instanceNum,
+                command: "claude"
             )
         }
         channel.delegate = self
@@ -2098,12 +2186,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 return
             }
             // Last channel was closed — create a fresh shell so the window isn't empty
+            let defaultDir = DefaultWorkingDirectory.preferredURL
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: "Shell",
-                workingDirectory: nil
-            ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
+                role: nil,
+                workingDirectory: defaultDir
+            ) { id, _, _, instanceNum, workDir in
+                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
             }
             channel.delegate = self
             channel.activate()
@@ -2266,14 +2355,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let profileManager else { return }
         let profile = profileManager.resolve(label: label)
         launchSession(from: profile)
-        window.makeFirstResponder(inputBox)
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
         guard let profileManager else { return }
         let profile = profileManager.resolve(label: name)
         launchSession(from: profile)
-        window.makeFirstResponder(inputBox)
     }
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
@@ -2301,13 +2388,23 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         resizeInputBox()
     }
 
+    func inputResizeHandleView(_ view: InputResizeHandleView, didDragBy deltaY: CGFloat) {
+        guard !inputContainer.isHidden else { return }
+        let currentHeight = inputHeightConstraint?.constant ?? inputMinHeight
+        let nextHeight = min(max(currentHeight + deltaY, inputMinHeight), inputMaxHeight)
+        userInputPanelHeight = nextHeight
+        inputHeightConstraint?.constant = nextHeight
+        rightPaneContentHost.layoutSubtreeIfNeeded()
+    }
+
     private func resizeInputBox() {
         guard let layoutManager = inputBox.layoutManager,
               let textContainer = inputBox.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let usedHeight = layoutManager.usedRect(for: textContainer).height
         let padding: CGFloat = 12  // top + bottom inset
-        let newHeight = min(max(usedHeight + padding, inputMinHeight), inputMaxHeight)
+        let minimum = userInputPanelHeight ?? inputMinHeight
+        let newHeight = min(max(usedHeight + padding, minimum), inputMaxHeight)
         inputHeightConstraint?.constant = newHeight
     }
 

@@ -6,6 +6,11 @@ import Foundation
 /// composition. V1 keeps this intentionally narrow: one left-docked,
 /// vertical channel vessel; one framed screen vessel; one simple seam.
 struct SkinLayoutDescriptor: Codable, Equatable, Sendable {
+    /// Easy skin-authoring alias for the horizontal space between the
+    /// channel/tab vessel and the screen/terminal vessel. When present,
+    /// this overrides `seam.thickness`; when `seam` is omitted it creates
+    /// a flat spacer of this width.
+    var vesselGap: CGFloat?
     var channelVessel: ChannelVesselLayoutDescriptor?
     var screenVessel: ScreenVesselLayoutDescriptor?
     var seam: SeamLayoutDescriptor?
@@ -16,6 +21,14 @@ struct ChannelVesselLayoutDescriptor: Codable, Equatable, Sendable {
     var size: CGFloat
     var capStart: CGFloat
     var capEnd: CGFloat
+    /// Optional visual height for the tab/channel vessel. Nil preserves
+    /// legacy behavior: the vessel fills the available vertical span.
+    var height: CGFloat?
+    var verticalAlign: ChannelVesselVerticalAlignment?
+    /// Offset in top-left visual coordinates. For `.top`, positive moves
+    /// the vessel down and negative lets it hang over the top. For
+    /// `.bottom`, negative lets it hang below the bottom.
+    var verticalOffset: CGFloat?
     var variant: ChannelVesselVariant?
 }
 
@@ -74,6 +87,44 @@ extension ChannelVesselVariant: Codable {
             try container.encode("plain")
         case .mercuryControlSpine:
             try container.encode("mercuryControlSpine")
+        case .unsupported(let raw):
+            try container.encode(raw)
+        }
+    }
+}
+
+enum ChannelVesselVerticalAlignment: Equatable, Sendable {
+    case top
+    case center
+    case bottom
+    case unsupported(String)
+}
+
+extension ChannelVesselVerticalAlignment: Codable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "top":
+            self = .top
+        case "center":
+            self = .center
+        case "bottom":
+            self = .bottom
+        default:
+            self = .unsupported(raw)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .top:
+            try container.encode("top")
+        case .center:
+            try container.encode("center")
+        case .bottom:
+            try container.encode("bottom")
         case .unsupported(let raw):
             try container.encode(raw)
         }

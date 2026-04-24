@@ -8,6 +8,7 @@ open class HoloscapeTerminalView: LocalProcessTerminalView {
 
     /// Called when the terminal receives new output. Set by the channel controller.
     var onOutput: (() -> Void)?
+    var onUserInput: ((ArraySlice<UInt8>) -> Void)?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -35,5 +36,10 @@ open class HoloscapeTerminalView: LocalProcessTerminalView {
 
     open override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
         onOutput?()
+    }
+
+    open override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        onUserInput?(data)
+        super.send(source: source, data: data)
     }
 }

@@ -87,6 +87,16 @@ final class AuthEnvironmentEdgeCaseTests: XCTestCase {
         XCTAssertTrue(path.contains("/opt/homebrew/bin"), "PATH should include Homebrew")
     }
 
+    func testPathIncludesUserLocalBinForClaudeCLI() {
+        let env = AuthEnvironmentBuilder.buildEnvironment(
+            for: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        let path = env["PATH"]!
+        XCTAssertTrue(path.contains("\(NSHomeDirectory())/.local/bin"), "PATH should include user-local CLI installs")
+    }
+
     func testTermIsXterm256Color() {
         let env = AuthEnvironmentBuilder.buildEnvironment(
             for: .oauth,

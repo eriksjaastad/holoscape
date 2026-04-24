@@ -9,11 +9,15 @@ final class SkinLayoutDescriptorTests: XCTestCase {
           "version": "4.0",
           "name": "Vessel Skin",
           "layout": {
+            "vesselGap": 24,
             "channelVessel": {
               "dock": "left",
               "size": 248,
               "capStart": 96,
               "capEnd": 56,
+              "height": 618,
+              "verticalAlign": "top",
+              "verticalOffset": 18,
               "variant": "mercuryControlSpine"
             },
             "screenVessel": {
@@ -31,10 +35,14 @@ final class SkinLayoutDescriptorTests: XCTestCase {
         let screen = try XCTUnwrap(layout.screenVessel)
         let seam = try XCTUnwrap(layout.seam)
 
+        XCTAssertEqual(layout.vesselGap, 24)
         XCTAssertEqual(channel.dock, .left)
         XCTAssertEqual(channel.size, 248)
         XCTAssertEqual(channel.capStart, 96)
         XCTAssertEqual(channel.capEnd, 56)
+        XCTAssertEqual(channel.height, 618)
+        XCTAssertEqual(channel.verticalAlign, .top)
+        XCTAssertEqual(channel.verticalOffset, 18)
         XCTAssertEqual(channel.variant, .mercuryControlSpine)
         XCTAssertEqual(screen.viewportInsets, SkinLayoutInsets(top: 12, right: 14, bottom: 14, left: 12))
         XCTAssertEqual(screen.variant, .mercuryScreenBody)
@@ -87,6 +95,32 @@ final class SkinLayoutDescriptorTests: XCTestCase {
         }
         guard case .unsupported("heroScreen") = skin.layout?.screenVessel?.variant else {
             return XCTFail("Unknown screen vessel variants must decode as unsupported")
+        }
+    }
+
+    func testUnsupportedVerticalAlignmentDecodesWithoutFailingManifest() throws {
+        let json = """
+        {
+          "layout": {
+            "channelVessel": {
+              "dock": "left",
+              "size": 248,
+              "capStart": 96,
+              "capEnd": 56,
+              "height": 618,
+              "verticalAlign": "baseline"
+            },
+            "screenVessel": {
+              "viewportInsets": { "top": 12, "right": 14, "bottom": 14, "left": 12 }
+            },
+            "seam": { "thickness": 20, "style": "mechanical" }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let skin = try JSONDecoder().decode(SkinDefinition.self, from: json)
+        guard case .unsupported("baseline") = skin.layout?.channelVessel?.verticalAlign else {
+            return XCTFail("Unknown channel vessel verticalAlign values must decode as unsupported")
         }
     }
 }
