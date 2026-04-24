@@ -198,8 +198,15 @@ final class SSHChannelControllerTests: XCTestCase {
         let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
         let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
         let args = c.buildSSHArgs(host: "server.com", user: "erik", directory: "~/proj", command: "bash")
-        XCTAssertTrue(args[2].contains("cd '~/proj'"), "Remote command should cd to escaped directory")
+        XCTAssertTrue(args[2].contains("cd \"$HOME\"/'proj'"), "Remote command should cd to escaped home-relative directory")
         XCTAssertTrue(args[2].contains("&& bash"), "Remote command should chain the command")
+    }
+
+    @MainActor func testSSHArgsHomeDirectoryDoesNotQuoteTilde() {
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
+        let args = c.buildSSHArgs(host: "server.com", user: "erik", directory: "~", command: "bash")
+        XCTAssertEqual(args[2], "bash")
     }
 
     @MainActor func testSSHArgsWithCustomCommand() {
@@ -213,7 +220,7 @@ final class SSHChannelControllerTests: XCTestCase {
         let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
         let c = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
         let args = c.buildSSHArgs(host: "h", user: "u", directory: "~/my project", command: "bash")
-        XCTAssertTrue(args[2].contains("'~/my project'"), "Directory with spaces should be shell-escaped")
+        XCTAssertTrue(args[2].contains("\"$HOME\"/'my project'"), "Home-relative directory with spaces should be shell-escaped without quoting tilde")
     }
 
     // MARK: - State Machine
@@ -318,7 +325,7 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertTrue(mock.startProcessCalled)
         XCTAssertEqual(mock.lastArgs[0], "-t")
         XCTAssertEqual(mock.lastArgs[1], "erik@server.com")
-        XCTAssertTrue(mock.lastArgs[2].contains("cd '~/projects'"))
+        XCTAssertTrue(mock.lastArgs[2].contains("cd \"$HOME\"/'projects'"))
         XCTAssertTrue(mock.lastArgs[2].contains("&& zsh"))
     }
 

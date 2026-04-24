@@ -141,8 +141,24 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
 
     /// Build SSH command-line arguments for connecting to a remote host.
     func buildSSHArgs(host: String, user: String, directory: String, command: String) -> [String] {
-        let escapedDir = shellEscape(directory)
-        let remoteCommand = "cd \(escapedDir) && \(command)"
+        let remoteCommand: String
+        if let directoryExpression = shellDirectoryExpression(directory) {
+            remoteCommand = "cd \(directoryExpression) && \(command)"
+        } else {
+            remoteCommand = command
+        }
         return ["-t", "\(user)@\(host)", remoteCommand]
+    }
+
+    func shellDirectoryExpression(_ directory: String) -> String? {
+        let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "~" else { return nil }
+        guard trimmed.hasPrefix("~/") else {
+            return shellEscape(trimmed)
+        }
+
+        let suffix = String(trimmed.dropFirst(2))
+        guard !suffix.isEmpty else { return nil }
+        return "\"$HOME\"/\(shellEscape(suffix))"
     }
 }

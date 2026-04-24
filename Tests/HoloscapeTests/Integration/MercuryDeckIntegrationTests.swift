@@ -24,8 +24,12 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         XCTAssertEqual(loaded.chrome?.width, 1000)
         XCTAssertEqual(loaded.chrome?.height, 700)
         XCTAssertEqual(loaded.chrome?.interiorRect, SkinRect(x: 16, y: 40, width: 968, height: 644))
+        XCTAssertEqual(loaded.layout?.vesselGap, 20)
         XCTAssertEqual(loaded.layout?.channelVessel?.dock, .left)
         XCTAssertEqual(loaded.layout?.channelVessel?.size, 248)
+        XCTAssertEqual(loaded.layout?.channelVessel?.height, 618)
+        XCTAssertEqual(loaded.layout?.channelVessel?.verticalAlign, .top)
+        XCTAssertEqual(loaded.layout?.channelVessel?.verticalOffset, 18)
         XCTAssertEqual(loaded.layout?.channelVessel?.variant, .mercuryControlSpine)
         XCTAssertEqual(loaded.layout?.screenVessel?.variant, .mercuryScreenBody)
         XCTAssertEqual(loaded.layout?.seam?.thickness, 20)
@@ -76,6 +80,48 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         XCTAssertNotNil(controller.chromeWindowControlButton(.closeButton))
         XCTAssertNotNil(controller.chromeWindowControlButton(.miniaturizeButton))
         XCTAssertNotNil(controller.chromeWindowControlButton(.zoomButton))
+    }
+
+    func testPersistedMercuryDeckPlacesTrafficLightsOnMainTextBody() throws {
+        let controller = try makeController(persistedSkin: "MercuryDeck")
+        drainMainQueue()
+
+        let close = try XCTUnwrap(controller.chromeWindowControlButton(.closeButton))
+        let expectedX: CGFloat = 319
+        let expectedY: CGFloat = 663
+
+        XCTAssertEqual(close.frame.minX, expectedX, accuracy: 0.5,
+                       "Mercury Deck traffic lights should be centered in the generated main-body landing dock")
+        XCTAssertEqual(close.frame.minY, expectedY, accuracy: 0.5,
+                       "Mercury Deck traffic lights should align vertically inside the generated landing dock")
+    }
+
+    func testPersistedMercuryDeckInstallsMainBodyDragShelf() throws {
+        let controller = try makeController(persistedSkin: "MercuryDeck")
+        drainMainQueue()
+
+        XCTAssertEqual(controller.chromeDragOverlaysForTesting.count, 5)
+
+        let mainOverlay = try XCTUnwrap(controller.chromeDragOverlaysForTesting.first {
+            abs($0.frame.minX - 284) < 0.5
+                && abs($0.frame.minY - 622) < 0.5
+        })
+        XCTAssertEqual(mainOverlay.frame.width, 710, accuracy: 0.5)
+        XCTAssertEqual(mainOverlay.frame.height, 70, accuracy: 0.5)
+
+        let leftRailOverlay = try XCTUnwrap(controller.chromeDragOverlaysForTesting.first {
+            abs($0.frame.minX - 284) < 0.5
+                && abs($0.frame.minY - 28) < 0.5
+        })
+        XCTAssertEqual(leftRailOverlay.frame.width, 18, accuracy: 0.5)
+        XCTAssertEqual(leftRailOverlay.frame.height, 594, accuracy: 0.5)
+
+        let spineOverlay = try XCTUnwrap(controller.chromeDragOverlaysForTesting.first {
+            abs($0.frame.minX - 4) < 0.5
+        })
+        XCTAssertEqual(spineOverlay.frame.minY, 603, accuracy: 0.5)
+        XCTAssertEqual(spineOverlay.frame.width, 242, accuracy: 0.5)
+        XCTAssertEqual(spineOverlay.frame.height, 39, accuracy: 0.5)
     }
 
     func testSwitchingFromMercuryDeckToDefaultLeavesWindowHierarchySane() throws {

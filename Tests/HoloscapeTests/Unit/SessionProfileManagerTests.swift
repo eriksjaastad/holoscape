@@ -59,6 +59,76 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testResolveBuiltInClaudeProfileOpensLocalClaudeAgent() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        configService.save(HoloscapeConfig.default)
+
+        let resolved = manager.resolve(label: "Claude")
+        XCTAssertEqual(resolved.label, "Claude")
+        XCTAssertEqual(resolved.connection, .local)
+        XCTAssertEqual(resolved.command, "claude")
+        XCTAssertEqual(resolved.directory, DefaultWorkingDirectory.preferredPath)
+    }
+
+    @MainActor
+    func testResolveBuiltInClaudeProfileIgnoresCaseAndWhitespace() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        configService.save(HoloscapeConfig.default)
+
+        let resolved = manager.resolve(label: " claude ")
+        XCTAssertEqual(resolved.label, "Claude")
+        XCTAssertEqual(resolved.connection, .local)
+        XCTAssertEqual(resolved.command, "claude")
+    }
+
+    @MainActor
+    func testResolveClaudeProjectOpensClaudeInProjectDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-session-profiles-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("holoscape", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let resolved = manager.resolve(label: "claude holoscape")
+        XCTAssertEqual(resolved.label, "Claude-holoscape")
+        XCTAssertEqual(resolved.connection, .local)
+        XCTAssertEqual(resolved.command, "claude")
+        XCTAssertEqual(resolved.directory, project.standardizedFileURL.path)
+    }
+
+    @MainActor
+    func testResolveDirectSSHCommandCreatesSSHProfile() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        configService.save(HoloscapeConfig.default)
+
+        let resolved = manager.resolve(label: "ssh erik@eriks-mac-mini.local")
+        XCTAssertEqual(resolved.label, "eriks-mac-mini.local")
+        XCTAssertEqual(resolved.connection, .ssh)
+        XCTAssertEqual(resolved.host, "eriks-mac-mini.local")
+        XCTAssertEqual(resolved.user, "erik")
+        XCTAssertEqual(resolved.directory, "~")
+    }
+
+    @MainActor
     func testResolveUnknownLabelCreatesSSHProject() {
         let configService = ConfigService()
         let discoveryService = ProjectDiscoveryService(configService: configService)
@@ -75,6 +145,23 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(resolved.directory, "~/projects/new-project")
         XCTAssertEqual(resolved.host, "MacBook.local")
         XCTAssertEqual(resolved.user, "erik")
+    }
+
+    @MainActor
+    func testResolveUnknownLabelWithoutSSHDefaultsCreatesLocalProjectSession() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: "~/projects", connection: "ssh", command: "claude")
+        configService.save(config)
+
+        let resolved = manager.resolve(label: "not-a-configured-remote")
+        XCTAssertEqual(resolved.label, "not-a-configured-remote")
+        XCTAssertEqual(resolved.connection, .local)
+        XCTAssertEqual(resolved.command, "/bin/zsh")
+        XCTAssertFalse(resolved.directory.isEmpty)
     }
 
     // MARK: - Recent Sessions

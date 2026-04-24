@@ -62,4 +62,33 @@ final class ShapedContentViewTests: XCTestCase {
         XCTAssertNotNil(view.hitTest(NSPoint(x: 100, y: 100)),
                         "Clearing the sampler must restore super.hitTest behavior")
     }
+
+    func testWindowDragOverlayHitTestUsesLocalCoordinates() {
+        let overlay = WindowDragOverlay(frame: NSRect(x: 100, y: 600, width: 300, height: 40))
+
+        XCTAssertTrue(overlay.hitTest(NSPoint(x: 10, y: 10)) === overlay,
+                      "Overlay hitTest receives local coordinates; non-zero frame origins must not offset the point twice")
+        XCTAssertNil(overlay.hitTest(NSPoint(x: 310, y: 10)))
+    }
+
+    func testChromeDragRegionWinsRootHitTest() {
+        let view = ShapedContentView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let child = NSView(frame: NSRect(x: 0, y: 250, width: 400, height: 50))
+        view.addSubview(child)
+        view.chromeDragRegions = [CGRect(x: 0, y: 250, width: 400, height: 50)]
+
+        XCTAssertTrue(view.hitTest(NSPoint(x: 100, y: 270)) === view,
+                      "Chrome drag regions must route directly to ShapedContentView so performDrag can run")
+    }
+
+    func testChromeDragRegionRespectsExclusions() {
+        let view = ShapedContentView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let button = NSButton(frame: NSRect(x: 20, y: 260, width: 40, height: 20))
+        view.addSubview(button)
+        view.chromeDragRegions = [CGRect(x: 0, y: 250, width: 400, height: 50)]
+        view.chromeDragExclusionRegions = [button.frame.insetBy(dx: -6, dy: -6)]
+
+        XCTAssertTrue(view.hitTest(NSPoint(x: 30, y: 270)) === button,
+                      "Traffic-light exclusions must remain clickable even inside a drag strip")
+    }
 }

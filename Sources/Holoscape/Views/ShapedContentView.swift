@@ -48,12 +48,33 @@ final class WindowDragOverlay: NSView {
     // the traversal. If a descendant is ever added, switch to
     // `super.hitTest(point)` so the click routes to it.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if bounds.contains(convert(point, from: superview)) { return self }
+        if bounds.contains(point) { return self }
         return nil
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .openHand)
     }
 }
 
 final class ShapedContentView: NSView {
+    /// Chrome-mode drag regions in this view's bottom-left coordinate
+    /// space. These are installed by `MainWindowController` for baked
+    /// chrome skins. They intentionally live at the root hit-test layer
+    /// instead of relying only on transparent overlay subviews; AppKit
+    /// hit-testing through fully-populated borderless windows is too
+    /// easy to break with child views.
+    var chromeDragRegions: [CGRect] = [] {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+
+    /// Rects that must stay interactive even when visually inside a
+    /// drag region, e.g. detached traffic-light buttons.
+    var chromeDragExclusionRegions: [CGRect] = [] {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+
     /// The hit-region oracle driving click-through decisions.
     /// MainWindowController sets this after reconstruction; swapping
     /// in a new sampler is how per-skin shape changes take effect
@@ -87,6 +108,9 @@ final class ShapedContentView: NSView {
         if let sampler = sampler, !sampler.contains(point) {
             return nil
         }
+        if canStartChromeDrag(at: point) {
+            return self
+        }
         return super.hitTest(point)
     }
 
@@ -99,6 +123,11 @@ final class ShapedContentView: NSView {
         // instead of closedHand. State machine needs to reflect the
         // ACTUAL button state, not the consumed-by-tracker state.
         isMouseDown = true
+        let point = convert(event.locationInWindow, from: nil)
+        if canStartChromeDrag(at: point) {
+            window?.performDrag(with: event)
+            return
+        }
         if let tracker = dragRegionTracker, tracker.handleMouseDown(event) {
             // Tracker consumed the event — it invoked performDrag.
             // We must NOT forward to super (which would deliver a
@@ -122,16 +151,30 @@ final class ShapedContentView: NSView {
         // rect to restore to. Subviews override this for their own
         // regions via their own resetCursorRects.
         addCursorRect(bounds, cursor: .arrow)
+        for region in chromeDragRegions {
+            addCursorRect(region, cursor: .openHand)
+        }
     }
 
     override func cursorUpdate(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if canStartChromeDrag(at: point) {
+            (isMouseDown ? NSCursor.closedHand : NSCursor.openHand).set()
+            return
+        }
         if let tracker = dragRegionTracker {
-            let point = convert(event.locationInWindow, from: nil)
             if let cursor = tracker.cursorForPoint(point, mouseDown: isMouseDown) {
                 cursor.set()
                 return
             }
         }
         super.cursorUpdate(with: event)
+    }
+
+    private func canStartChromeDrag(at point: NSPoint) -> Bool {
+        guard chromeDragRegions.contains(where: { $0.contains(point) }) else {
+            return false
+        }
+        return !chromeDragExclusionRegions.contains { $0.contains(point) }
     }
 }
