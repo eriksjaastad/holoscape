@@ -6,7 +6,7 @@ struct AuthEnvironmentBuilder {
         workingDirectory: URL
     ) -> [String: String] {
         var env: [String: String] = [
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),
             "SHELL": "/bin/zsh",
             "TERM": "xterm-256color",

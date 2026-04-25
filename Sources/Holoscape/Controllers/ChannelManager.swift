@@ -40,17 +40,18 @@ class ChannelManager {
         let controller: any ChannelController
         switch profile.connection {
         case .local:
+            let dir = DefaultWorkingDirectory.expandedURL(from: profile.directory)
             if profile.command.contains("zsh") || profile.command.contains("bash") || profile.command == "/bin/zsh" || profile.command == "/bin/bash" {
-                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+                controller = ShellChannelController(id: id, instanceNumber: instanceNumber, workingDirectory: dir.path)
             } else {
-                let dir = URL(fileURLWithPath: (profile.directory as NSString).expandingTildeInPath)
                 controller = AgentChannelController(
                     id: id,
                     authType: .oauth,
                     workingDirectory: dir,
                     userLabel: profile.label,
                     instanceNumber: instanceNumber,
-                    useRawLabel: true
+                    useRawLabel: true,
+                    command: profile.command
                 )
             }
         case .ssh:

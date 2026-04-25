@@ -195,11 +195,15 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
           "version": "4.0",
           "name": "Vesselized",
           "layout": {
+            "vesselGap": 24,
             "channelVessel": {
               "dock": "left",
               "size": 248,
               "capStart": 96,
               "capEnd": 56,
+              "height": 618,
+              "verticalAlign": "top",
+              "verticalOffset": 18,
               "variant": "mercuryControlSpine"
             },
             "screenVessel": {
@@ -217,7 +221,11 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
 
         XCTAssertEqual(loaded.layout?.channelVessel?.dock, .left)
         XCTAssertEqual(loaded.layout?.channelVessel?.size, 248)
+        XCTAssertEqual(loaded.layout?.channelVessel?.height, 618)
+        XCTAssertEqual(loaded.layout?.channelVessel?.verticalAlign, .top)
+        XCTAssertEqual(loaded.layout?.channelVessel?.verticalOffset, 18)
         XCTAssertEqual(loaded.layout?.channelVessel?.variant, .mercuryControlSpine)
+        XCTAssertEqual(loaded.layout?.vesselGap, 24)
         XCTAssertEqual(loaded.layout?.screenVessel?.viewportInsets.top, 12)
         XCTAssertEqual(loaded.layout?.screenVessel?.variant, .mercuryScreenBody)
         XCTAssertEqual(loaded.layout?.seam?.thickness, 20)

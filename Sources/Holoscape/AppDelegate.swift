@@ -90,12 +90,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         // If no channels restored, create a default shell
         if channelManager.count == 0 {
+            let defaultDir = DefaultWorkingDirectory.preferredURL
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: "Shell",
-                workingDirectory: nil
-            ) { id, _, _, instanceNum, _ in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: nil)
+                role: nil,
+                workingDirectory: defaultDir
+            ) { id, _, _, instanceNum, workDir in
+                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
             }
             channel.delegate = windowController
             channel.activate()
@@ -206,20 +207,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // dropped. See the comment on that callback for details.
         switch metadata.type {
         case .shell:
-            let defaultPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects").path
-            var rawDir = metadata.workingDirectory ?? defaultPath
-            // OSC 7 saves file:// URLs — strip to plain path
-            if let url = URL(string: rawDir), url.scheme == "file" {
-                rawDir = url.path
-            }
-            let dir = rawDir
-            // Restore the saved display label; fall back to directory name
-            let label = metadata.role
+            let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
             let controller = ShellChannelController(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
-                label: label,
-                workingDirectory: dir
+                label: restoredShell.label,
+                workingDirectory: restoredShell.workingDirectory
             )
             return controller
         case .agentDirect:
@@ -276,6 +269,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let controller = BridgeChannelController(id: metadata.id, channelManager: cm, instanceNumber: metadata.instanceNumber)
             return controller
         }
+    }
+
+    static func restoredShellLaunchParameters(from metadata: ChannelMetadata) -> (label: String?, workingDirectory: String) {
+        let defaultPath = DefaultWorkingDirectory.preferredPath
+        var rawDir = metadata.workingDirectory ?? defaultPath
+
+        // OSC 7 saves file:// URLs — strip to plain path before comparing.
+        if let url = URL(string: rawDir), url.scheme == "file" {
+            rawDir = url.path
+        }
+
+        let role = metadata.role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isGenericShellRole = role.isEmpty || role == "Shell"
+        let wasLegacyRootShell = rawDir == "/" && (isGenericShellRole || role == "/")
+
+        if wasLegacyRootShell {
+            return (label: nil, workingDirectory: defaultPath)
+        }
+
+        if isGenericShellRole {
+            return (label: nil, workingDirectory: rawDir)
+        }
+
+        return (label: metadata.role, workingDirectory: rawDir)
     }
 
     private func applyAppearance(_ appearance: AppearanceConfig) {

@@ -11,6 +11,10 @@ final class MainWindowControllerVesselLayoutTests: XCTestCase {
         controller.window.contentView?.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(controller.activeSkinLayoutForTesting?.channelVessel?.size, 248)
+        XCTAssertEqual(controller.activeSkinLayoutForTesting?.vesselGap, 20)
+        XCTAssertEqual(controller.activeSkinLayoutForTesting?.channelVessel?.height, 618)
+        XCTAssertEqual(controller.activeSkinLayoutForTesting?.channelVessel?.verticalAlign, .top)
+        XCTAssertEqual(controller.activeSkinLayoutForTesting?.channelVessel?.verticalOffset, 18)
         XCTAssertEqual(controller.activeSkinLayoutForTesting?.channelVessel?.variant, .mercuryControlSpine)
         XCTAssertEqual(controller.activeSkinLayoutForTesting?.screenVessel?.variant, .mercuryScreenBody)
         XCTAssertTrue(controller.channelVesselViewForTesting.superview === controller.sidebarContainerForTesting)
@@ -22,21 +26,41 @@ final class MainWindowControllerVesselLayoutTests: XCTestCase {
         XCTAssertEqual(round(controller.vesselSeamViewForTesting.frame.width), 20)
     }
 
-    func testTrafficLightsLandInsideLeftVesselZone() throws {
+    func testMercuryDeckAppliesChannelHeightAndTopOffset() throws {
+        let controller = try makeController(persistedSkin: "MercuryDeck")
+        drainMainQueue()
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+
+        let root = try XCTUnwrap(controller.window.contentView)
+        let sidebarFrame = controller.sidebarContainerForTesting.convert(
+            controller.sidebarContainerForTesting.bounds,
+            to: root
+        )
+        let channelFrame = controller.channelVesselViewForTesting.convert(
+            controller.channelVesselViewForTesting.bounds,
+            to: root
+        )
+
+        XCTAssertEqual(channelFrame.height, 618, accuracy: 0.5)
+        XCTAssertEqual(sidebarFrame.maxY - channelFrame.maxY, 18, accuracy: 0.5)
+    }
+
+    func testTrafficLightsLandInsideMainBodyZone() throws {
         let controller = try makeController(persistedSkin: "MercuryDeck")
         drainMainQueue()
         controller.window.contentView?.layoutSubtreeIfNeeded()
 
         let root = try XCTUnwrap(controller.window.contentView)
         let close = try XCTUnwrap(controller.chromeWindowControlButton(.closeButton))
-        let channelFrame = controller.channelVesselViewForTesting.convert(
-            controller.channelVesselViewForTesting.bounds,
+        let screenFrame = controller.screenVesselViewForTesting.convert(
+            controller.screenVesselViewForTesting.bounds,
             to: root
         )
         let buttonFrame = close.convert(close.bounds, to: root)
 
-        XCTAssertLessThanOrEqual(buttonFrame.maxX, channelFrame.maxX + 20,
-                                 "Left-docked vessel should provide the visual landing zone for detached traffic lights")
+        XCTAssertGreaterThanOrEqual(buttonFrame.minX, screenFrame.minX,
+                                    "Detached traffic lights should land on the main text body, not the channel spine")
+        XCTAssertLessThanOrEqual(buttonFrame.maxX, screenFrame.maxX)
     }
 
     func testSwitchingBackToDefaultRestoresLegacyInternalStructure() throws {
