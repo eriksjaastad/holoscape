@@ -41,6 +41,21 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(all[2].channelId, third.channelId)
     }
 
+    func testCreateLocalShellProfileUsesProfileDirectory() {
+        let profile = SessionProfile(
+            label: "Shell",
+            connection: .local,
+            command: "/bin/zsh",
+            directory: DefaultWorkingDirectory.preferredPath
+        )
+
+        let channel = manager.createChannel(from: profile)
+        let shell = channel as? ShellChannelController
+
+        XCTAssertEqual(shell?.workingDirectory, DefaultWorkingDirectory.preferredPath)
+        XCTAssertEqual(channel.displayLabel, DefaultWorkingDirectory.preferredURL.lastPathComponent)
+    }
+
     // MARK: - Channel Lookup
 
     func testChannelForIdReturnsCorrectChannel() {

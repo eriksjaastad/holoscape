@@ -69,30 +69,23 @@ extension MainWindowController {
             in: shapedContent
         )
 
-        // Install a CAShapeLayer mask on the content view. Without
-        // this, the NSWindow backing store paints opaque everywhere
-        // regardless of the chrome PNG's alpha — AppKit does not
-        // honor layer.contents alpha as a window shape. The mask is
-        // the load-bearing piece every reference implementation uses
-        // (hfyeomans/winamp-macos-migration, CocoaDev BorderlessWindow,
-        // Matt Gallagher). See
-        // `docs/research/chrome-transparency-root-cause.md`.
-        //
-        // Silhouette: rounded-rect matching the chrome's nominal
-        // width × height with a 16pt corner radius. The live reference
-        // skins (`HoloscapeClassic-live`, `HoloscapeSynthwave`,
-        // `AmplifyDemo`) all author their cut corners at 16pt. When a
-        // future skin declares a different radius, promote this to a
-        // ChromeDescriptor field.
+        // Install a content-view mask derived from Base_Layer alpha.
+        // Without a mask, AppKit paints an opaque backing store even
+        // when the PNG itself has transparent pixels. Using the actual
+        // alpha channel lets a skin draw separate visual masses inside
+        // one NSWindow: transparent gaps stay transparent instead of
+        // being forced back into a single rounded slab.
         installChromeSilhouetteMask(
             on: shapedContent,
             size: nominal,
+            baseImage: baseImage,
             cornerRadius: 16
         )
 
         currentChromeHostView = hostView
         currentChromeInteriorView = interior
         attachAppContentHost(to: interior)
+        let chromeLayout = chromeResolvedLayout(loaded.layout)
 
         // Lock nominal size so chrome coords map 1:1 to the content
         // view. v4 chrome is fixed-size by construction (Req 3.6).
@@ -101,25 +94,18 @@ extension MainWindowController {
         newWindow.setContentSize(nominal)
         newWindow.styleMask.remove(.resizable)
 
-        // Task 15.1 — drag via background. The chrome PNG covers the
-        // entire content view, so every opaque chrome pixel becomes a
-        // drag handle when `isMovableByWindowBackground = true`. This
-        // replaces the pre-v4 path's `WindowDragOverlay` (a 20pt-tall
-        // invisible strip at the top of the content view), which
-        // chrome mode never installs (see `reloadSkin`'s
-        // `chrome != nil` branch — it skips `applyWindowShape` +
-        // `applyDragRegions` entirely).
-        //
-        // Per Req 4.6 + 4.5: when the manifest declares
-        // `dragRegions` polygons, those are honored AS WELL via
-        // the existing `DragRegionTracker` installed by
-        // `applyDragRegions`. Chrome mode doesn't call that path
-        // today (the feature-flag check in `applyDragRegions` is
-        // keyed off `ShapedWindowController.featureFlagEnabled`,
-        // not chrome-mode), so for the PR #7 scope the whole-chrome-
-        // drag is the only drag surface. PR #8+ may wire explicit
-        // drag regions back in if needed.
+        // Keep AppKit's background-drag flag on as a harmless fallback,
+        // but do not rely on it. The chrome window is populated by
+        // app-content subviews, and those subviews usually win hit
+        // testing before "window background" ever sees a mouseDown.
+        // Dedicated invisible overlays below provide the reliable drag
+        // targets users can actually grab.
         newWindow.isMovableByWindowBackground = true
+        installChromeDragHandles(
+            in: shapedContent,
+            chrome: chrome,
+            layout: chromeLayout
+        )
 
         // Add detached traffic-light buttons so the user can close,
         // minimise, and fullscreen a chrome-mode window. Borderless
@@ -135,7 +121,12 @@ extension MainWindowController {
         // AppKit's private titlebar machinery and is not available
         // for detached buttons. Close / miniaturize / fullscreen
         // operations are fully functional.
-        installWindowControlButtons(in: shapedContent, chromeSize: nominal)
+        installWindowControlButtons(
+            in: shapedContent,
+            chrome: chrome,
+            layout: chromeLayout
+        )
+        updateChromeDragExclusions(in: shapedContent)
 
         // Restore first responder AFTER reparenting — the captured
         // responder's `window` now resolves to `newWindow` if it's
@@ -160,26 +151,25 @@ extension MainWindowController {
     /// a standalone button styled identically to the system traffic lights
     /// but unconnected to any titlebar view.
     ///
-    /// Positions mirror standard macOS traffic light placement:
-    ///   • Close:      x = 7,  12 × 12 pt button, 6 pt from visual top
-    ///   • Miniaturize: x = 27
-    ///   • Zoom:       x = 47
-    ///
-    /// These are inside the 16 pt rounded-rect silhouette used by all
-    /// current in-tree chrome skins (verified: button centre at ~(13,12)
-    /// from the top-left corner; arc centre at (16,16); distance ≈ 5 pt,
-    /// well inside the 16 pt arc).
-    func installWindowControlButtons(in contentView: NSView, chromeSize: NSSize) {
+    /// Default placement mirrors standard macOS traffic lights. Vessel
+    /// skins can shift the group to a skin-painted landing dock on the
+    /// main body so controls do not visually belong to the side panel.
+    func installWindowControlButtons(
+        in contentView: NSView,
+        chrome: ChromeDescriptor,
+        layout: SkinLayoutDescriptor?
+    ) {
         chromeWindowControlButtons.removeAll()
 
         let buttonSize = CGSize(width: 12, height: 12)
-        let yFromTop: CGFloat = 6
-        let buttonY = chromeSize.height - yFromTop - buttonSize.height
+        let yFromTop = chromeControlTopY(layout: layout)
+        let buttonY = CGFloat(chrome.height) - yFromTop - buttonSize.height
+        let leadingX = chromeControlLeadingX(chrome: chrome, layout: layout)
 
         let specs: [(NSWindow.ButtonType, CGFloat, Selector, String)] = [
-            (.closeButton,       7,  #selector(handleChromeCloseButton(_:)), "chrome-close-button"),
-            (.miniaturizeButton, 27, #selector(handleChromeMinimizeButton(_:)), "chrome-minimize-button"),
-            (.zoomButton,        47, #selector(handleChromeZoomButton(_:)), "chrome-zoom-button"),
+            (.closeButton,       leadingX,      #selector(handleChromeCloseButton(_:)), "chrome-close-button"),
+            (.miniaturizeButton, leadingX + 20, #selector(handleChromeMinimizeButton(_:)), "chrome-minimize-button"),
+            (.zoomButton,        leadingX + 40, #selector(handleChromeZoomButton(_:)), "chrome-zoom-button"),
         ]
 
         for (buttonType, x, action, identifier) in specs {
@@ -196,6 +186,187 @@ extension MainWindowController {
             contentView.addSubview(btn)
             chromeWindowControlButtons[buttonType] = btn
         }
+    }
+
+    private func chromeControlLeadingX(
+        chrome: ChromeDescriptor,
+        layout: SkinLayoutDescriptor?
+    ) -> CGFloat {
+        guard let layout,
+              let channel = layout.channelVessel,
+              let seam = layout.seam else {
+            return 7
+        }
+
+        switch channel.dock {
+        case .left:
+            // For vessel skins, traffic lights belong visually to the
+            // main text body rather than the detachable channel spine.
+            // Coordinate space is chrome-image top-left; frame x is
+            // unchanged by AppKit's bottom-left y conversion.
+            let mainBodyX = CGFloat(chrome.interiorRect.x) + channel.size + seam.thickness
+            let standardGroupWidth: CGFloat = 52
+            if layout.screenVessel?.variant == .mercuryScreenBody {
+                let mercuryDock = CGRect(x: 296, y: 16, width: 98, height: 30)
+                return mercuryDock.midX - standardGroupWidth / 2
+            }
+            return mainBodyX + 18
+        case .unsupported:
+            return 7
+        }
+    }
+
+    private func chromeResolvedLayout(_ layout: SkinLayoutDescriptor?) -> SkinLayoutDescriptor? {
+        guard var layout else { return nil }
+        guard let vesselGap = layout.vesselGap else { return layout }
+
+        if var seam = layout.seam {
+            seam.thickness = vesselGap
+            layout.seam = seam
+        } else {
+            layout.seam = SeamLayoutDescriptor(thickness: vesselGap, style: .flat)
+        }
+        return layout
+    }
+
+    private func chromeControlTopY(layout: SkinLayoutDescriptor?) -> CGFloat {
+        if layout?.screenVessel?.variant == .mercuryScreenBody {
+            let mercuryDock = CGRect(x: 296, y: 16, width: 98, height: 30)
+            let buttonSize: CGFloat = 12
+            return mercuryDock.midY - buttonSize / 2
+        }
+        return 6
+    }
+
+    /// Install invisible drag handles over non-content chrome. This
+    /// keeps the terminal and tab/sidebar controls interactive while
+    /// giving borderless chrome windows a predictable title-shelf grab
+    /// target.
+    func installChromeDragHandles(
+        in contentView: NSView,
+        chrome: ChromeDescriptor,
+        layout: SkinLayoutDescriptor?
+    ) {
+        tearDownChromeDragHandles()
+
+        let chromeWidth = CGFloat(chrome.width)
+        let chromeHeight = CGFloat(chrome.height)
+        let interiorTop = CGFloat(chrome.interiorRect.y)
+        let topShelfHeight = min(max(interiorTop, 32), 52)
+        guard topShelfHeight > 0 else { return }
+
+        if let layout,
+           let channel = layout.channelVessel,
+           let seam = layout.seam,
+           channel.dock == .left,
+           layout.screenVessel?.variant == .mercuryScreenBody {
+            chromeDragOverlays = mercuryDeckDragHandleRects(
+                chrome: chrome,
+                channel: channel,
+                seam: seam
+            ).compactMap { rect in
+                installChromeDragOverlay(in: contentView, topLeftRect: rect, chromeHeight: chromeHeight)
+            }
+            (contentView as? ShapedContentView)?.chromeDragRegions = chromeDragOverlays.map(\.frame)
+            return
+        }
+
+        var topLeftRects: [CGRect] = []
+        if let layout,
+           let channel = layout.channelVessel,
+           let seam = layout.seam,
+           channel.dock == .left {
+            let mainBodyX = CGFloat(chrome.interiorRect.x) + channel.size + seam.thickness
+            let trailingInset = max(0, chromeWidth - CGFloat(chrome.interiorRect.x + chrome.interiorRect.width))
+            topLeftRects.append(CGRect(
+                x: mainBodyX,
+                y: 0,
+                width: max(0, chromeWidth - mainBodyX - trailingInset),
+                height: topShelfHeight
+            ))
+
+            if channel.variant == .mercuryControlSpine {
+                // The side spine reads as a second small window. Give
+                // its exposed top cap a grab strip without covering the
+                // launcher below it.
+                topLeftRects.append(CGRect(x: 4, y: 58, width: channel.size - 6, height: 18))
+            }
+        } else {
+            topLeftRects.append(CGRect(x: 0, y: 0, width: chromeWidth, height: topShelfHeight))
+        }
+
+        chromeDragOverlays = topLeftRects.compactMap {
+            installChromeDragOverlay(in: contentView, topLeftRect: $0, chromeHeight: chromeHeight)
+        }
+        (contentView as? ShapedContentView)?.chromeDragRegions = chromeDragOverlays.map(\.frame)
+    }
+
+    private func mercuryDeckDragHandleRects(
+        chrome: ChromeDescriptor,
+        channel: ChannelVesselLayoutDescriptor,
+        seam: SeamLayoutDescriptor
+    ) -> [CGRect] {
+        let chromeWidth = CGFloat(chrome.width)
+        let mainBodyX = CGFloat(chrome.interiorRect.x) + channel.size + seam.thickness
+        let mainBodyWidth = max(0, chromeWidth - mainBodyX - 6)
+
+        return [
+            // The visible top metal shelf.
+            CGRect(x: mainBodyX, y: 8, width: mainBodyWidth, height: 70),
+            // Left, right, and bottom frame rails around the console.
+            CGRect(x: mainBodyX, y: 78, width: 18, height: 594),
+            CGRect(x: chromeWidth - 26, y: 78, width: 20, height: 594),
+            CGRect(x: mainBodyX, y: 672, width: mainBodyWidth, height: 20),
+            // The side panel's exposed top cap, aligned from the same
+            // vertical offset the skin declares for the channel vessel.
+            CGRect(
+                x: 4,
+                y: 58,
+                width: max(0, channel.size - 6),
+                height: max(18, min(40, (channel.capStart - (channel.verticalOffset ?? 0)) / 2))
+            ),
+        ]
+    }
+
+    private func installChromeDragOverlay(
+        in contentView: NSView,
+        topLeftRect rect: CGRect,
+        chromeHeight: CGFloat
+    ) -> WindowDragOverlay? {
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        let overlay = WindowDragOverlay(frame: frameFromTopLeftRect(rect, chromeHeight: chromeHeight))
+        overlay.autoresizingMask = []
+        overlay.toolTip = "Drag Holoscape window"
+        overlay.setAccessibilityElement(false)
+        contentView.addSubview(overlay, positioned: .above, relativeTo: currentChromeInteriorView)
+        return overlay
+    }
+
+    func tearDownChromeDragHandles() {
+        for overlay in chromeDragOverlays {
+            overlay.removeFromSuperview()
+        }
+        chromeDragOverlays.removeAll()
+        if let shapedContent = window.contentView as? ShapedContentView {
+            shapedContent.chromeDragRegions = []
+            shapedContent.chromeDragExclusionRegions = []
+        }
+    }
+
+    private func updateChromeDragExclusions(in contentView: NSView) {
+        guard let shapedContent = contentView as? ShapedContentView else { return }
+        shapedContent.chromeDragExclusionRegions = chromeWindowControlButtons.values.map {
+            $0.frame.insetBy(dx: -6, dy: -6)
+        }
+    }
+
+    private func frameFromTopLeftRect(_ rect: CGRect, chromeHeight: CGFloat) -> CGRect {
+        CGRect(
+            x: rect.minX,
+            y: chromeHeight - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
     }
 
     @objc private func handleChromeCloseButton(_ sender: Any?) {
@@ -217,16 +388,17 @@ extension MainWindowController {
         window.toggleFullScreen(sender)
     }
 
-    /// Install a `CAShapeLayer` mask on the content view's layer so
+    /// Install a mask on the content view's layer so
     /// AppKit actually clips the window backing to the chrome
-    /// silhouette. PNG alpha on `ChromeHostView` is the visual
-    /// content; this mask defines the window region. Without it, the
-    /// cut-corner regions render opaque charcoal regardless of PNG
+    /// silhouette. PNG alpha on `ChromeHostView` is both the visual
+    /// content and the source for this mask. Without it, cut corners
+    /// and inter-window gaps render opaque charcoal regardless of PNG
     /// alpha. Canonical recipe — see
     /// `docs/research/chrome-transparency-root-cause.md`.
     func installChromeSilhouetteMask(
         on contentView: NSView,
         size: NSSize,
+        baseImage: CGImage? = nil,
         cornerRadius: CGFloat
     ) {
         contentView.wantsLayer = true
@@ -250,17 +422,27 @@ extension MainWindowController {
         layer.isOpaque = false
 
         let rect = CGRect(origin: .zero, size: size)
-        let path = CGPath(
-            roundedRect: rect,
-            cornerWidth: cornerRadius,
-            cornerHeight: cornerRadius,
-            transform: nil
-        )
-        let mask = CAShapeLayer()
+        let mask = CALayer()
         mask.frame = rect
-        mask.path = path
-        mask.fillColor = NSColor.white.cgColor
-        mask.fillRule = .nonZero
+        if let baseImage {
+            mask.contents = baseImage
+            mask.contentsGravity = .resize
+            mask.contentsScale = max(1, CGFloat(baseImage.width) / max(size.width, 1))
+        } else {
+            let path = CGPath(
+                roundedRect: rect,
+                cornerWidth: cornerRadius,
+                cornerHeight: cornerRadius,
+                transform: nil
+            )
+            let shapeMask = CAShapeLayer()
+            shapeMask.frame = rect
+            shapeMask.path = path
+            shapeMask.fillColor = NSColor.white.cgColor
+            shapeMask.fillRule = .nonZero
+            layer.mask = shapeMask
+            return
+        }
         layer.mask = mask
     }
 
@@ -389,6 +571,7 @@ extension MainWindowController {
 
         let previousResponder = window.firstResponder
         chromeWindowControlButtons.removeAll()
+        tearDownChromeDragHandles()
         currentChromeHostView = nil
         currentChromeInteriorView = nil
 

@@ -14,6 +14,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let authType: AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
+    private let command: String
     private var detectedRole: String?
     private let instanceNumber: Int?
     private let useRawLabel: Bool
@@ -55,7 +56,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         workingDirectory: URL?,
         userLabel: String?,
         instanceNumber: Int?,
-        useRawLabel: Bool = false
+        useRawLabel: Bool = false,
+        command: String = "claude"
     ) {
         self.channelId = id
         self.authType = authType
@@ -67,6 +69,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }()
         self.workingDirectory = workingDirectory
         self.userLabel = userLabel
+        self.command = command
         self.instanceNumber = instanceNumber
         self.useRawLabel = useRawLabel
         self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
@@ -99,8 +102,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
-        // Find claude CLI
-        let claudePath = "/opt/homebrew/bin/claude"
+        let launch = Self.launchInvocation(for: command)
 
         terminalView.onOutput = { [weak self] in
             guard let self else { return }
@@ -108,10 +110,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
 
         terminalView.startProcess(
-            executable: claudePath,
-            args: [],
+            executable: launch.executable,
+            args: launch.args,
             environment: envPairs,
-            execName: "claude",
+            execName: launch.execName,
             currentDirectory: workingDirectory?.path
         )
         state = .active
@@ -127,6 +129,24 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func retry() {
         activate()
+    }
+
+    static func launchInvocation(for command: String) -> (executable: String, args: [String], execName: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ("/usr/bin/env", ["claude"], "claude")
+        }
+
+        if trimmed.contains(where: { $0.isWhitespace }) {
+            return ("/bin/zsh", ["-lc", "exec \(trimmed)"], "zsh")
+        }
+
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            return (expanded, [], URL(fileURLWithPath: expanded).lastPathComponent)
+        }
+
+        return ("/usr/bin/env", [trimmed], trimmed)
     }
 
     func lastLines(_ count: Int) -> [String] {

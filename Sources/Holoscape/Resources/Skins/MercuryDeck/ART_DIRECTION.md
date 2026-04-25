@@ -2,7 +2,7 @@
 
 `MercuryDeck` is now locked as the first vessel-driven hero skin.
 
-This file freezes the composition for the next visual pass so the work does not drift back into perimeter-frame decoration. The current shell PNGs remain scaffold only.
+This file freezes the composition so the work does not drift back into perimeter-frame decoration. The current shell PNGs are generated scaffolds, but they now express the required two-mass direction.
 
 ## Workflow Rule
 
@@ -16,11 +16,14 @@ This file freezes the composition for the next visual pass so the work does not 
 - Left side: vertical control spine with enough width and visual weight to own navigation and window controls.
 - Right side: dominant screen body containing the main terminal cavity.
 - Between them: an explicit mechanical seam. It should look intentional, engineered, and load-bearing, not like a faint divider line.
+- Transparent negative space between the spine and body is allowed and expected; this is how the skin reads as extending outside the main text window while still living in one real macOS window.
 
 ## Channel Vessel Rules
 
 - The channel vessel is a skinned reveal window for the existing channel list.
 - First target is vertical only.
+- Its gap from the screen body, height, vertical alignment, and signed offset are skin variables, not hardcoded controller behavior.
+- Supported alignment language is deliberately simple: `top`, `center`, `bottom`, plus `verticalOffset` for hanging above/below or nudging inward.
 - Build it with cap / stretch / cap logic.
 - The middle span is the stretchable section.
 - Most ornament belongs in the top cap, bottom cap, and anchor regions, not in the stretch zone.
@@ -36,9 +39,15 @@ This file freezes the composition for the next visual pass so the work does not 
 
 ## Traffic-Light Landing Zone
 
-- Reserve a stable traffic-light zone inside the left spine.
-- The shell should look designed around the controls rather than merely leaving room for them.
-- The landing zone should feel structurally integrated with the control spine and seam.
+- Reserve a stable traffic-light zone on the main text body, immediately to the right of the channel spine and seam.
+- The main body should look designed around the controls rather than merely leaving room for them.
+- The landing zone should visually align with the primary text window when the sidebar is expanded or when tabs move into the top strip.
+
+## Input Panel Rules
+
+- The input area should read as a separate adjustable-height drawer attached to the main text body.
+- The resize affordance should be visible but restrained: a small grab groove, not a loud control.
+- The input panel material must differ from both the channel vessel and the tab strip so the typing surface is legible as its own thing.
 
 ## Material And Color Rules
 
@@ -56,6 +65,6 @@ This file freezes the composition for the next visual pass so the work does not 
 
 ## Immediate Implementation Target
 
-- Make the left vessel visually own the sidebar region.
-- Strengthen the seam so the control spine and screen body read as connected hardware masses.
-- Keep the right vessel visually calmer so the screen cavity stays primary.
+- Keep the left vessel visually owning the sidebar region.
+- Preserve the transparent separation between channel spine and screen body.
+- Keep the right vessel visually calmer so the screen cavity stays primary, with the bottom input drawer as the only strong secondary panel.

@@ -7,7 +7,7 @@ This directory is intentionally a scaffold, not finished art.
 ## Current State
 
 - `skin.json` is production-shaped and points at real baked-chrome asset paths.
-- The current shell PNG placeholders are borrowed from `HoloscapeClassic-live` so baked-mode loading, validation, and controller wiring can be exercised immediately.
+- The shell PNGs are generated from `tools/mercury_deck/generate_assets.swift` so the two-mass scaffold is reproducible.
 - Decorative animation regions are ambient only.
 
 ## Required Shell Assets
@@ -17,10 +17,17 @@ These files are already wired in `skin.json` and must remain the authoritative s
 - `assets/chrome@2x.png`
 - `assets/chrome-opaque@2x.png`
 
+Regenerate from repo root with:
+
+```sh
+env CLANG_MODULE_CACHE_PATH=/tmp/holoscape-clang-cache swift tools/mercury_deck/generate_assets.swift
+```
+
 Final art expectations:
 - logical chrome size: `1000 × 700`
 - pixel size: `2000 × 1400`
-- one-shell composition with the viewport cut into the shell, not floating above it
+- two-mass composition: left channel spine, transparent seam gap, right main text body
+- input drawer carved into the bottom of the right main text body
 - soft industrial shading, brushed metal grain, and restrained glass highlights
 
 ## Intended Coordinate Map
@@ -31,22 +38,34 @@ These are the regions the final art should respect.
   - `0,0 → 1000,700`
 - App interior:
   - `x: 16, y: 40, width: 968, height: 644`
+- Left channel body:
+  - `x: 4, y: 58, width: 242, height: 618`
+- Right main body:
+  - `x: 282, y: 8, width: 712, height: 684`
+- Runtime vessel layout variables in `skin.json`:
+  - `layout.vesselGap`: horizontal gap between channel/tab vessel and screen vessel
+  - `layout.channelVessel.height`: side vessel visual height
+  - `layout.channelVessel.verticalAlign`: `top`, `center`, or `bottom`
+  - `layout.channelVessel.verticalOffset`: signed offset after alignment; positive top offset moves down, negative bottom offset hangs below
+- Main traffic-light landing zone:
+  - `x: 296, y: 16, width: 98, height: 30`
 - Top instrument strip:
   - reserved visual band from `y: 0 → 40`
 - Decorative display pocket:
   - `x: 684, y: 6, width: 126, height: 26`
 - Status ladder:
   - `x: 828, y: 10, width: 126, height: 18`
-- Bottom undershine / footlight:
-  - `x: 0, y: 656, width: 1000, height: 44`
+- Bottom input drawer:
+  - `x: 302, y: 596, width: 672, height: 76`
 
 ## First-Pass Art Rules
 
-- Treat the shell as a single hi-fi device, not a collage of many independent windows.
+- Treat the shell as two attached hi-fi device masses, not a single perimeter frame.
+- Keep art coordinates and `skin.json` layout variables in sync; if the side body moves, update `height`, `verticalAlign`, `verticalOffset`, and `vesselGap` rather than burying the change in code.
 - Any meters, pods, vents, labels, or side modules are decorative only.
 - The real app interior must remain dominant and readable.
 - Avoid large saturated neon fills. Mercury Deck should feel premium, not loud.
-- Default chrome controls remain detached traffic lights; do not paint fake replacements that fight them.
+- Default chrome controls remain detached traffic lights; the asset may paint a landing dock but must not paint fake replacements that fight the real buttons.
 
 ## Planned Supporting Assets
 

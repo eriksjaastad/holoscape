@@ -4,11 +4,15 @@
   "author": "Holoscape",
   "description": "Brushed-metal hi-fi deck scaffold — baked chrome hero shell with restrained cyan and amber instrumentation plus ambient status motion.",
   "layout": {
+    "vesselGap": 20,
     "channelVessel": {
       "dock": "left",
       "size": 248,
       "capStart": 96,
       "capEnd": 56,
+      "height": 618,
+      "verticalAlign": "top",
+      "verticalOffset": 18,
       "variant": "mercuryControlSpine"
     },
     "screenVessel": {
@@ -101,15 +105,15 @@
       }
     },
     "tabBar.container": {
-      "fill": { "kind": "color", "value": "#32414a" },
-      "border": { "color": "#5c6f79", "width": 1.0 },
-      "corner": 6,
+      "fill": { "kind": "color", "value": "#1d282e" },
+      "border": { "color": "#7d8990", "width": 1.0 },
+      "corner": 12,
       "shadow": {
         "color": "#000000",
-        "opacity": 0.35,
-        "blur": 6,
+        "opacity": 0.42,
+        "blur": 9,
         "offsetX": 0,
-        "offsetY": 1
+        "offsetY": -1
       }
     },
     "tabBar.tab.active": {
@@ -146,10 +150,21 @@
       ]
     },
     "inputBox.container": {
-      "fill": { "kind": "color", "value": "#151a1e" }
+      "fill": { "kind": "color", "value": "#172024" },
+      "border": { "color": "#76828a", "width": 1.0 },
+      "corner": 14,
+      "shadow": {
+        "color": "#000000",
+        "opacity": 0.42,
+        "blur": 10,
+        "offsetX": 0,
+        "offsetY": 2
+      }
     },
     "inputBox.field": {
-      "fill": { "kind": "color", "value": "#21292f" }
+      "fill": { "kind": "color", "value": "#10171b" },
+      "border": { "color": "#2d3a41", "width": 1.0 },
+      "corner": 10
     },
     "sessionLauncher.container": {
       "fill": { "kind": "color", "value": "#1b2227" }

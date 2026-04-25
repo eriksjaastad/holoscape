@@ -172,7 +172,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.dataSource = self
         comboBox.delegate = self
         comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        comboBox.placeholderString = "Open session..."
+        comboBox.placeholderString = "Project / Claude / ssh host..."
+        comboBox.toolTip = "Type a project folder, 'Claude project', or 'ssh host'. Saved sessions are also listed."
         comboBox.setAccessibilityIdentifier("session-launcher-combo")
         comboBox.translatesAutoresizingMaskIntoConstraints = false
 
