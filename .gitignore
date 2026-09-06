@@ -16,3 +16,4 @@ tools/router/router.lock
 # Local plan files from plan mode
 .claude/plans/
 .scratch/
+PROGRESS.md
