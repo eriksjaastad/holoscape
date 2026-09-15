@@ -1,17 +1,6 @@
 import AppKit
 import SwiftTerm
 
-/// Protocol abstracting terminal process interaction for testability.
-protocol TerminalProcess: AnyObject {
-    @MainActor func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?)
-    @MainActor func send(_ bytes: [UInt8])
-    @MainActor var terminalContentView: NSView { get }
-}
-
-extension LocalProcessTerminalView: TerminalProcess {
-    @MainActor var terminalContentView: NSView { self }
-}
-
 @MainActor
 class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalViewDelegate {
     let channelId: UUID
@@ -67,7 +56,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let sshArgs = buildSSHArgs(host: host, user: user, directory: profile.directory, command: profile.command)
         let env = buildSSHEnvironment()
 
-        (terminal as? HoloscapeTerminalView)?.onOutput = { [weak self] in
+        terminal.setOutputHandler { [weak self] in
             guard let self else { return }
             self.delegate?.channelDidReceiveOutput(self)
         }
@@ -85,7 +74,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func deactivate() {
-        (terminal as? HoloscapeTerminalView)?.onOutput = nil
+        terminal.setOutputHandler(nil)
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -95,19 +84,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let termView = terminal as? LocalProcessTerminalView,
-              let term = termView.terminal else { return [] }
-        // See ShellChannelController.lastLines for the long explanation.
-        // tl;dr: terminal.getText uses buffer-absolute row indexing, not
-        // viewport-relative, so we must offset by buffer.yDisp.
-        let yDisp = term.buffer.yDisp
-        let bottomRow = yDisp + term.rows - 1
-        let text = term.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: term.cols - 1, row: bottomRow)
-        )
-        let lines = text.components(separatedBy: "\n")
-        return Array(lines.suffix(count))
+        terminal.lastLines(count)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
