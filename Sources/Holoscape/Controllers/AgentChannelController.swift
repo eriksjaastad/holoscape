@@ -10,7 +10,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: HoloscapeTerminalView
+    private let terminal: TerminalProcess
     private let authType: AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
@@ -48,7 +48,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         return "Agent"
     }
 
-    var contentView: NSView { terminalView }
+    var contentView: NSView { terminal.terminalContentView }
 
     init(
         id: UUID,
@@ -57,7 +57,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         userLabel: String?,
         instanceNumber: Int?,
         useRawLabel: Bool = false,
-        command: String = "claude"
+        command: String = "claude",
+        terminal: TerminalProcess? = nil
     ) {
         self.channelId = id
         self.authType = authType
@@ -72,9 +73,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.command = command
         self.instanceNumber = instanceNumber
         self.useRawLabel = useRawLabel
-        self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
-        terminalView.processDelegate = self
+        if let terminalView = self.terminal as? LocalProcessTerminalView {
+            terminalView.processDelegate = self
+        }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
 
@@ -88,7 +91,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         guard state == .active else { return }
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
-        terminalView.send(bytes)
+        terminal.send(bytes)
     }
 
     func activate() {
@@ -104,12 +107,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
         let launch = Self.launchInvocation(for: command)
 
-        terminalView.onOutput = { [weak self] in
+        terminal.setOutputHandler { [weak self] in
             guard let self else { return }
             self.delegate?.channelDidReceiveOutput(self)
         }
 
-        terminalView.startProcess(
+        terminal.startProcess(
             executable: launch.executable,
             args: launch.args,
             environment: envPairs,
@@ -122,7 +125,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
-        terminalView.onOutput = nil
+        terminal.setOutputHandler(nil)
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -150,18 +153,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let terminal = terminalView.terminal else { return [] }
-        // See ShellChannelController.lastLines for the long explanation.
-        // tl;dr: terminal.getText uses buffer-absolute row indexing, not
-        // viewport-relative, so we must offset by buffer.yDisp.
-        let yDisp = terminal.buffer.yDisp
-        let bottomRow = yDisp + terminal.rows - 1
-        let text = terminal.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: terminal.cols - 1, row: bottomRow)
-        )
-        let lines = text.components(separatedBy: "\n")
-        return Array(lines.suffix(count))
+        terminal.lastLines(count)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate

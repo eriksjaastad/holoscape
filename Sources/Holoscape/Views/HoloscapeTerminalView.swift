@@ -4,11 +4,13 @@ import SwiftTerm
 /// Subclass of LocalProcessTerminalView that preserves text selection during output
 /// and notifies when new output arrives (for unread tab indicators).
 @MainActor
-open class HoloscapeTerminalView: LocalProcessTerminalView {
+open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
 
     /// Called when the terminal receives new output. Set by the channel controller.
     var onOutput: (() -> Void)?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+
+    var terminalContentView: NSView { self }
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -41,5 +43,24 @@ open class HoloscapeTerminalView: LocalProcessTerminalView {
     open override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         onUserInput?(data)
         super.send(source: source, data: data)
+    }
+
+    func setOutputHandler(_ handler: (() -> Void)?) {
+        onOutput = handler
+    }
+
+    func lastLines(_ count: Int) -> [String] {
+        // SwiftTerm's getText(start:end:) uses buffer-absolute row indexing.
+        // Read from row 0 up to the bottom of the visible area — getText
+        // returns empty for rows beyond the cursor, so this is safe even when
+        // the buffer has fewer lines than `count`. We take the last `count`
+        // lines from the result via .suffix().
+        let bottomRow = terminal.buffer.yDisp + terminal.rows - 1
+        let text = terminal.getText(
+            start: Position(col: 0, row: 0),
+            end: Position(col: terminal.cols - 1, row: bottomRow)
+        )
+        let lines = text.components(separatedBy: "\n")
+        return Array(lines.suffix(count))
     }
 }

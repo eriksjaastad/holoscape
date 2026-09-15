@@ -10,7 +10,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: HoloscapeTerminalView
+    private let terminal: TerminalProcess
     private let instanceNumber: Int?
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
@@ -47,18 +47,20 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Shell") == .orderedSame
     }
 
-    var contentView: NSView { terminalView }
+    var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil) {
+    init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil, terminal: TerminalProcess? = nil) {
         self.channelId = id
         self.instanceNumber = instanceNumber
         self.explicitLabel = label
         self.workingDirectory = workingDirectory
         self.directoryTracker = ShellDirectoryTracker(currentDirectory: workingDirectory)
-        self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
-        terminalView.processDelegate = self
-        terminalView.onUserInput = { [weak self] data in
+        if let terminalView = self.terminal as? LocalProcessTerminalView {
+            terminalView.processDelegate = self
+        }
+        (self.terminal as? HoloscapeTerminalView)?.onUserInput = { [weak self] data in
             self?.handleUserInput(data)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
@@ -69,7 +71,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         guard state == .active else { return }
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
-        terminalView.send(bytes)
+        terminal.send(bytes)
     }
 
     func activate() {
@@ -84,12 +86,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
         // Wire output notifications so channelDidReceiveOutput fires when the
         // shell produces output — this drives the hasUnread / bullet indicator.
-        terminalView.onOutput = { [weak self] in
+        terminal.setOutputHandler { [weak self] in
             guard let self else { return }
             self.delegate?.channelDidReceiveOutput(self)
         }
 
-        terminalView.startProcess(
+        terminal.startProcess(
             executable: shell,
             args: ["-o", "nopromptsp", "--login"],
             environment: envPairs,
@@ -102,7 +104,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
-        terminalView.onOutput = nil
+        terminal.setOutputHandler(nil)
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -112,19 +114,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let terminal = terminalView.terminal else { return [] }
-        // SwiftTerm's getText(start:end:) uses buffer-absolute row indexing.
-        // Read from row 0 up to the bottom of the visible area — getText
-        // returns empty for rows beyond the cursor, so this is safe even when
-        // the buffer has fewer lines than `count`. We take the last `count`
-        // lines from the result via .suffix().
-        let bottomRow = terminal.buffer.yDisp + terminal.rows - 1
-        let text = terminal.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: terminal.cols - 1, row: bottomRow)
-        )
-        let lines = text.components(separatedBy: "\n")
-        return Array(lines.suffix(count))
+        terminal.lastLines(count)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate

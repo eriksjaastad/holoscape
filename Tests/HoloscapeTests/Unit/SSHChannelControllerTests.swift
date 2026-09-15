@@ -6,28 +6,47 @@ import AppKit
 class MockTerminalProcess: TerminalProcess {
     var startProcessCalled = false
     var lastArgs: [String] = []
+    var lastExecutable: String?
+    var lastExecName: String?
+    var lastCurrentDirectory: String?
     var lastEnvironment: [String] = []
     var sentBytes: [[UInt8]] = []
     var terminalContentView: NSView = NSView()
+    var outputHandler: (() -> Void)?
+    var lines: [String] = []
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true
+        lastExecutable = executable
         lastArgs = args
         lastEnvironment = environment ?? []
+        lastExecName = execName
+        lastCurrentDirectory = currentDirectory
     }
 
     func send(_ bytes: [UInt8]) {
         sentBytes.append(bytes)
+    }
+
+    func setOutputHandler(_ handler: (() -> Void)?) {
+        outputHandler = handler
+    }
+
+    func lastLines(_ count: Int) -> [String] {
+        Array(lines.suffix(count))
     }
 }
 
 @MainActor
 class MockChannelDelegate: ChannelControllerDelegate {
     var stateChanges: [ChannelState] = []
+    var outputCount = 0
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
         stateChanges.append(state)
     }
-    func channelDidReceiveOutput(_ channel: any ChannelController) {}
+    func channelDidReceiveOutput(_ channel: any ChannelController) {
+        outputCount += 1
+    }
 }
 
 final class SSHChannelControllerTests: XCTestCase {
