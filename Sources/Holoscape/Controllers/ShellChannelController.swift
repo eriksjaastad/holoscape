@@ -60,7 +60,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let terminalView = self.terminal as? LocalProcessTerminalView {
             terminalView.processDelegate = self
         }
-        (self.terminal as? HoloscapeTerminalView)?.onUserInput = { [weak self] data in
+        self.terminal.setUserInputHandler { [weak self] data in
             self?.handleUserInput(data)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
