@@ -1,19 +1,22 @@
-.PHONY: build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup
+.PHONY: build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup check-submodules
+
+check-submodules:
+	@./scripts/check-submodules.sh
 
 # Default: build debug
-build:
+build: check-submodules
 	swift build
 
 # Run all unit and property tests
-test:
+test: check-submodules
 	swift test
 
 # Run only unit tests
-test-unit:
+test-unit: check-submodules
 	swift test --filter HoloscapeTests
 
 # Run only property-based tests
-test-property:
+test-property: check-submodules
 	swift test --filter HoloscapePropertyTests
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
@@ -61,7 +64,7 @@ test-class:
 	swift test --filter $(CLASS)
 
 # Generate Xcode project and open it
-xcode:
+xcode: check-submodules
 	swift package generate-xcodeproj
 	@echo ""
 	@echo "Xcode project generated. Opening..."
@@ -73,7 +76,7 @@ xcode:
 	open Holoscape.xcodeproj
 
 # Build and assemble .app bundle
-bundle:
+bundle: check-submodules
 	./bundle.sh
 
 bundle-release:

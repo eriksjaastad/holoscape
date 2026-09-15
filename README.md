@@ -107,6 +107,14 @@ Use `--api-port <PORT>` to change the port.
 
 Requires macOS 15+ and Swift 6.0+.
 
+Fresh clones must initialize the shader compiler vendor submodules before building:
+
+```bash
+git submodule update --init --recursive
+```
+
+The Makefile checks this before build/test targets and fails with that exact command if the submodules are missing.
+
 ```bash
 make build            # Debug build
 make bundle           # Debug .app bundle
