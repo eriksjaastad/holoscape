@@ -1,6 +1,6 @@
 # Holoscape Tank Backend Roadmap
 
-Status: execution roadmap, created for card #93191238816264192.
+Status: execution roadmap, created for umbrella card #7164.
 
 ## Product rule
 
@@ -19,15 +19,15 @@ Holoscape should feel wild on the outside and conservative underneath:
 
 ## Umbrella card
 
-- #93191230834503680 — Roadmap: make Holoscape a tank-solid self-contained terminal before feature expansion
+- #7164 — Roadmap: make Holoscape a tank-solid self-contained terminal before feature expansion
 
 ## Phase 0 — Baseline before more feature breadth
 
 Purpose: know what works, what is stale, and what blocks safe development.
 
 New cards:
-- #93191231522369536 — establish Holoscape tank-backend baseline and acceptance gates
-- #93191238816264192 — create this roadmap doc linking existing and new cards
+- #7165 — establish Holoscape tank-backend baseline and acceptance gates
+- #7164 — create this roadmap doc linking existing and new cards
 
 Existing cards folded into this phase:
 - #5866 — re-audit PRD vs current Holoscape build
@@ -47,9 +47,9 @@ Definition of done:
 Purpose: Holoscape must be a reliable terminal before it becomes a clever agent cockpit.
 
 New cards:
-- #93191232218624000 — terminal correctness audit against iTerm daily-driver behavior
-- #93191232860352512 — choose session survival substrate: native PTY manager vs tmux/dtach/abduco
-- #93191233510469632 — implement process/session survival across app quit and crash; blocked by #93191232860352512
+- #7166 — terminal correctness audit against iTerm daily-driver behavior
+- #7167 — choose session survival substrate: native PTY manager vs tmux/dtach/abduco
+- #7168 — implement process/session survival across app quit and crash; blocked by #7167
 
 Existing cards folded into this phase:
 - #5868 — agent channel opens in `/` instead of `~/projects`
@@ -68,8 +68,8 @@ Definition of done:
 Purpose: banners are secondary. The tab/sidebar must hold the truth until the user clears it.
 
 New cards:
-- #93191234168975360 — define persistent channel state model for running/ready/needs-approval/error/stale
-- #93191234823286784 — make Claude/Codex agent status parity work through adapters; blocked by #93191234168975360
+- #7169 — define persistent channel state model for running/ready/needs-approval/error/stale
+- #7170 — make Claude/Codex agent status parity work through adapters; blocked by #7169
 
 Existing cards folded into this phase:
 - #5873 — off-screen notification UX: dock badge, click-through focus, per-channel mute
@@ -91,7 +91,7 @@ Definition of done:
 Purpose: restart should not erase the user's working context.
 
 New cards:
-- #93191235477598208 — make scrollback/history persistence daily-driver reliable
+- #7171 — make scrollback/history persistence daily-driver reliable
 
 Existing cards folded into this phase:
 - #5884 — scrollback persistence across restart
@@ -107,7 +107,7 @@ Definition of done:
 Purpose: a tank terminal cannot surprise the user with repeated TCC prompts or hidden setup mutations.
 
 New cards:
-- #93191236140298240 — harden first-launch setup and macOS permission flow
+- #7172 — harden first-launch setup and macOS permission flow
 
 Existing cards folded into this phase:
 - #5870 — repeated network volume permission prompt
@@ -125,8 +125,8 @@ Definition of done:
 Purpose: Holoscape remains self-contained. External systems attach through removable plugins.
 
 New cards:
-- #93191236790415360 — define removable plugin architecture for external integrations
-- #93191237440532480 — implement first-party Project Tracker plugin after plugin seam exists; blocked by #93191236790415360
+- #7173 — define removable plugin architecture for external integrations
+- #7174 — implement first-party Project Tracker plugin after plugin seam exists; blocked by #7173
 
 Existing cards folded into this phase:
 - #41929732032458752 — implement PT-backed Message Board channel; reframed as optional plugin work
@@ -150,7 +150,7 @@ Definition of done:
 Purpose: Erik owns what looks cool; agents make the state safe and reliable.
 
 New cards:
-- #93191238115815424 — connect skin visuals to real terminal/channel state without destabilizing core
+- #7175 — connect skin visuals to real terminal/channel state without destabilizing core
 
 Existing cards folded into this phase:
 - #6030 — 2026 Winamp / shaped windows / real skinning
@@ -167,10 +167,10 @@ Definition of done:
 
 ## Immediate execution order
 
-1. Finish #93191238816264192 and commit this roadmap.
-2. Start #93191231522369536 and use #5866/#5876/#5973/#5988 as inputs.
-3. Start #93191232218624000 or #93191232860352512 depending on whether the next worker is better suited to testing or architecture research.
-4. Keep #6210 / unrelated watch cards out of this roadmap unless Erik explicitly pulls them in.
+1. Finish #7164 and commit this roadmap.
+2. Start #7165 and use #5866/#5876/#5973/#5988 as inputs.
+3. Start #7166 or #7167 depending on whether the next worker is better suited to testing or architecture research.
+4. Keep unrelated watch cards out of this roadmap unless Erik explicitly pulls them in.
 
 ## Non-goals for the next stretch
 
