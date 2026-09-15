@@ -19,6 +19,7 @@ protocol TerminalProcess: AnyObject {
 
     func send(_ bytes: [UInt8])
     func setOutputHandler(_ handler: (() -> Void)?)
+    func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?)
     func lastLines(_ count: Int) -> [String]
 
     var terminalContentView: NSView { get }

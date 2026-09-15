@@ -34,6 +34,21 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.outputCount, 1)
     }
 
+    func testShellUserInputHandlerRoutesThroughTerminalProcessSeam() {
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: NSHomeDirectory(),
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+
+        XCTAssertEqual(controller.workingDirectory, "/tmp")
+    }
+
     func testShellLastLinesUsesTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         terminal.lines = ["one", "two", "three"]

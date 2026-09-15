@@ -13,6 +13,7 @@ class MockTerminalProcess: TerminalProcess {
     var sentBytes: [[UInt8]] = []
     var terminalContentView: NSView = NSView()
     var outputHandler: (() -> Void)?
+    var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     var lines: [String] = []
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
@@ -30,6 +31,10 @@ class MockTerminalProcess: TerminalProcess {
 
     func setOutputHandler(_ handler: (() -> Void)?) {
         outputHandler = handler
+    }
+
+    func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
+        userInputHandler = handler
     }
 
     func lastLines(_ count: Int) -> [String] {

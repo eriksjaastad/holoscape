@@ -49,6 +49,10 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
         onOutput = handler
     }
 
+    func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
+        onUserInput = handler
+    }
+
     func lastLines(_ count: Int) -> [String] {
         // SwiftTerm's getText(start:end:) uses buffer-absolute row indexing.
         // Read from row 0 up to the bottom of the visible area — getText
