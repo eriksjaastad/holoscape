@@ -66,7 +66,12 @@ class ChannelManager {
                 )
             }
         case .ssh:
-            controller = SSHChannelController(id: id, profile: profile, instanceNumber: instanceNumber)
+            controller = SSHChannelController(
+                id: id,
+                profile: profile,
+                instanceNumber: instanceNumber,
+                brokerSessionCoordinator: brokerSessionCoordinator
+            )
         case .mcp:
             guard let endpointStr = profile.endpoint, let endpoint = URL(string: endpointStr) else {
                 NSLog("ChannelManager: MCP profile '\(profile.label)' missing valid endpoint, skipping")
