@@ -149,6 +149,83 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(failure.code, "runtime-error")
         XCTAssertTrue(failure.message.contains("missingSession"), failure.message)
     }
+
+    func testClientRuntimeSendsRequestsThroughHostTransportAndDecodesResponses() throws {
+        let hostedRuntime = RecordingBrokerSessionRuntime()
+        hostedRuntime.output = Data("client-output".utf8)
+        hostedRuntime.isRunning = true
+        hostedRuntime.terminationStatus = 12
+        let host = BrokerSessionHost(runtime: hostedRuntime)
+        let client = BrokerSessionHostClientRuntime { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "client-runtime-test")
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000009003")!
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try client.createSession(id: sessionID, request: request)
+        try client.attachSession(id: sessionID, channelID: channelID)
+        try client.sendInput(id: sessionID, bytes: Array("pwd\n".utf8))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("client-output".utf8))
+        XCTAssertTrue(try client.isRunning(id: sessionID))
+        XCTAssertEqual(try client.terminationStatus(id: sessionID), 12)
+        XCTAssertEqual(try client.readScrollbackTail(id: sessionID, maxBytes: 32), Data("scrollback-tail".utf8))
+        try client.resizeSession(id: sessionID, size: TerminalGridSize(columns: 120, rows: 40))
+        try client.detachSession(id: sessionID)
+        try client.terminateSession(id: sessionID, exitCode: 12)
+        try client.markSessionErrored(id: sessionID)
+
+        XCTAssertEqual(hostedRuntime.events, [
+            "create client-runtime-test /bin/zsh --login /tmp shell 80x24",
+            "attach client-runtime-test 00000000-0000-0000-0000-000000009003",
+            "sendInput client-runtime-test pwd\\n",
+            "readAvailableOutput client-runtime-test",
+            "isRunning client-runtime-test",
+            "terminationStatus client-runtime-test",
+            "readScrollbackTail client-runtime-test 32",
+            "resize client-runtime-test 120x40",
+            "detach client-runtime-test",
+            "terminate client-runtime-test 12",
+            "markErrored client-runtime-test",
+        ])
+    }
+
+    func testClientRuntimeTurnsHostFailureFramesIntoTypedErrors() throws {
+        let hostedRuntime = RecordingBrokerSessionRuntime()
+        hostedRuntime.error = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(BrokerSessionID(rawValue: "missing-client-session"))
+        let host = BrokerSessionHost(runtime: hostedRuntime)
+        let client = BrokerSessionHostClientRuntime { frame in
+            try host.handle(frame)
+        }
+
+        XCTAssertThrowsError(try client.isRunning(id: BrokerSessionID(rawValue: "missing-client-session"))) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
+                return XCTFail("Expected hostFailure, got \(error)")
+            }
+            XCTAssertEqual(code, "runtime-error")
+            XCTAssertTrue(message.contains("missingSession"), message)
+        }
+    }
+
+    func testClientRuntimeFailsLoudlyWhenHostReturnsUnexpectedResponseShape() throws {
+        let codec = BrokerSessionHostCodec()
+        let client = BrokerSessionHostClientRuntime { _ in
+            try codec.encodeResponse(.running(true))
+        }
+
+        XCTAssertThrowsError(try client.detachSession(id: BrokerSessionID(rawValue: "unexpected-response-client-session"))) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .unexpectedResponse(expected: "ok", actual: .running(true))
+            )
+        }
+    }
 }
 
 private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
