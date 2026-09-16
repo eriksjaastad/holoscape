@@ -57,6 +57,48 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.lastLines(2), ["two", "three"])
     }
 
+    func testShellActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ShellChannelControllerTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(registry: registry, now: { Date(timeIntervalSince1970: 300) })
+        let terminal = MockTerminalProcess()
+        terminal.currentGridSize = TerminalGridSize(columns: 132, rows: 43)
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000716")!
+        let controller = ShellChannelController(
+            id: channelID,
+            instanceNumber: nil,
+            label: "work",
+            workingDirectory: "/Users/test/work",
+            terminal: terminal,
+            brokerSessionCoordinator: coordinator
+        )
+
+        controller.activate()
+
+        let running = try registry.load().single()
+        XCTAssertEqual(running.id, controller.brokerSessionID)
+        XCTAssertEqual(running.channelType, .shell)
+        XCTAssertEqual(running.label, "work")
+        XCTAssertEqual(running.command, "/bin/zsh")
+        XCTAssertEqual(running.arguments, ["-o", "nopromptsp", "--login"])
+        XCTAssertEqual(running.workingDirectory, "/Users/test/work")
+        XCTAssertEqual(running.environmentProfile, .shell)
+        XCTAssertEqual(running.lifecycle, .running)
+        XCTAssertEqual(running.lastAttachedChannelID, channelID)
+
+        controller.deactivate()
+
+        let detached = try registry.load().single()
+        XCTAssertEqual(detached.id, running.id)
+        XCTAssertEqual(detached.lifecycle, .detached)
+        XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),
@@ -77,5 +119,12 @@ final class ShellChannelControllerTests: XCTestCase {
         )
 
         XCTAssertEqual(controller.displayLabel, "logs")
+    }
+}
+
+private extension Array {
+    func single(file: StaticString = #filePath, line: UInt = #line) throws -> Element {
+        XCTAssertEqual(count, 1, file: file, line: line)
+        return self[0]
     }
 }

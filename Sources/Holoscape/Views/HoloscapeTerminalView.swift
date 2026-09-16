@@ -11,6 +11,9 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
 
     var terminalContentView: NSView { self }
+    var currentGridSize: TerminalGridSize {
+        TerminalGridSize(columns: terminal.cols, rows: terminal.rows)
+    }
 
     public override init(frame: CGRect) {
         super.init(frame: frame)

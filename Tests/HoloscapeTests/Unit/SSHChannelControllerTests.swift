@@ -15,6 +15,7 @@ class MockTerminalProcess: TerminalProcess {
     var outputHandler: (() -> Void)?
     var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     var lines: [String] = []
+    var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true

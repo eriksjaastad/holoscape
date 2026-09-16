@@ -116,6 +116,32 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
     }
 
+    func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {
+        var now = Date(timeIntervalSince1970: 200)
+        let coordinator = makeCoordinator(now: { now })
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [record])
+
+        now = Date(timeIntervalSince1970: 201)
+        let errored = try coordinator.markErrored(record.id)
+
+        XCTAssertEqual(errored.lifecycle, .errored)
+        XCTAssertNil(errored.exitCode)
+        XCTAssertEqual(errored.updatedAt, now)
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+    }
+
     func testUpdatingMissingSessionFailsLoudly() throws {
         let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 1) })
 

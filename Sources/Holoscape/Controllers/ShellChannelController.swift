@@ -11,6 +11,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
+    private(set) var brokerSessionID: BrokerSessionID?
     private let instanceNumber: Int?
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
@@ -49,13 +51,21 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil, terminal: TerminalProcess? = nil) {
+    init(
+        id: UUID,
+        instanceNumber: Int?,
+        label: String? = nil,
+        workingDirectory: String? = nil,
+        terminal: TerminalProcess? = nil,
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+    ) {
         self.channelId = id
         self.instanceNumber = instanceNumber
         self.explicitLabel = label
         self.workingDirectory = workingDirectory
         self.directoryTracker = ShellDirectoryTracker(currentDirectory: workingDirectory)
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
         if let terminalView = self.terminal as? LocalProcessTerminalView {
             terminalView.processDelegate = self
@@ -91,6 +101,18 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             self.delegate?.channelDidReceiveOutput(self)
         }
 
+        guard recordBrokerStart(
+            command: shell,
+            arguments: ["-o", "nopromptsp", "--login"],
+            environmentProfile: .shell,
+            label: explicitLabel,
+            workingDirectory: workingDirectory
+        ) else {
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
+        }
+
         terminal.startProcess(
             executable: shell,
             args: ["-o", "nopromptsp", "--login"],
@@ -105,6 +127,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func deactivate() {
         terminal.setOutputHandler(nil)
+        recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -126,6 +149,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
             self.state = .disconnected
             self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
@@ -153,5 +177,56 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         guard nextDirectory != workingDirectory else { return }
         workingDirectory = nextDirectory
         delegate?.channelStateDidChange(self, to: state)
+    }
+
+    private func recordBrokerStart(
+        command: String,
+        arguments: [String],
+        environmentProfile: BrokerEnvironmentProfile,
+        label: String?,
+        workingDirectory: String?
+    ) -> Bool {
+        guard let brokerSessionCoordinator else { return true }
+        let request = BrokerSessionLaunchRequest(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: environmentProfile,
+            initialSize: terminal.currentGridSize
+        )
+        do {
+            brokerSessionID = try brokerSessionCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelId
+            ).id
+            return true
+        } catch {
+            assertionFailure("Broker session start failed: \(error)")
+            return false
+        }
+    }
+
+    private func recordBrokerDetach() {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            _ = try brokerSessionCoordinator.detach(brokerSessionID)
+        } catch {
+            assertionFailure("Broker session detach failed: \(error)")
+        }
+    }
+
+    private func recordBrokerExit(exitCode: Int32?) {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            if let exitCode {
+                _ = try brokerSessionCoordinator.exit(brokerSessionID, exitCode: exitCode)
+            } else {
+                _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
+            }
+        } catch {
+            assertionFailure("Broker session exit failed: \(error)")
+        }
     }
 }

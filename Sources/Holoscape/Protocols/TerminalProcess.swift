@@ -23,4 +23,5 @@ protocol TerminalProcess: AnyObject {
     func lastLines(_ count: Int) -> [String]
 
     var terminalContentView: NSView { get }
+    var currentGridSize: TerminalGridSize { get }
 }
