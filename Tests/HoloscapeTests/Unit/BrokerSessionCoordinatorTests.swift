@@ -38,6 +38,11 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func markSessionErrored(id: BrokerSessionID) throws {
             events.append(.markErrored(id))
         }
+
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { false }
     }
 
     private var tempDirectory: URL!

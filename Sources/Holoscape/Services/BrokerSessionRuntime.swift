@@ -13,6 +13,11 @@ protocol BrokerSessionRuntime {
     func attachSession(id: BrokerSessionID, channelID: UUID) throws
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws
     func markSessionErrored(id: BrokerSessionID) throws
+
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws
+    func isRunning(id: BrokerSessionID) throws -> Bool
 }
 
 /// Compatibility runtime used until the native broker process is introduced.
@@ -22,9 +27,17 @@ protocol BrokerSessionRuntime {
 /// coordinator exercises the same runtime call sites that the durable broker
 /// will implement.
 struct MetadataOnlyBrokerSessionRuntime: BrokerSessionRuntime {
+    enum RuntimeError: Error, Equatable {
+        case unsupportedPTYOperation
+    }
+
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
     func detachSession(id: BrokerSessionID) throws {}
     func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
     func markSessionErrored(id: BrokerSessionID) throws {}
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws { throw RuntimeError.unsupportedPTYOperation }
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws { throw RuntimeError.unsupportedPTYOperation }
+    func isRunning(id: BrokerSessionID) throws -> Bool { throw RuntimeError.unsupportedPTYOperation }
 }
