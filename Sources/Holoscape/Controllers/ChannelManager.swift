@@ -10,9 +10,14 @@ class ChannelManager {
     private(set) var pinnedChannelIds: Set<UUID> = []
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
     private let configService: ConfigService
+    let brokerSessionCoordinator: any BrokerSessionCoordinating
 
-    init(configService: ConfigService) {
+    init(
+        configService: ConfigService,
+        brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator()
+    ) {
         self.configService = configService
+        self.brokerSessionCoordinator = brokerSessionCoordinator
     }
 
     /// Create a new channel and add it to the registry (V1 factory pattern).
@@ -42,7 +47,12 @@ class ChannelManager {
         case .local:
             let dir = DefaultWorkingDirectory.expandedURL(from: profile.directory)
             if profile.command.contains("zsh") || profile.command.contains("bash") || profile.command == "/bin/zsh" || profile.command == "/bin/bash" {
-                controller = ShellChannelController(id: id, instanceNumber: instanceNumber, workingDirectory: dir.path)
+                controller = ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNumber,
+                    workingDirectory: dir.path,
+                    brokerSessionCoordinator: brokerSessionCoordinator
+                )
             } else {
                 controller = AgentChannelController(
                     id: id,
@@ -51,7 +61,8 @@ class ChannelManager {
                     userLabel: profile.label,
                     instanceNumber: instanceNumber,
                     useRawLabel: true,
-                    command: profile.command
+                    command: profile.command,
+                    brokerSessionCoordinator: brokerSessionCoordinator
                 )
             }
         case .ssh:
@@ -59,7 +70,11 @@ class ChannelManager {
         case .mcp:
             guard let endpointStr = profile.endpoint, let endpoint = URL(string: endpointStr) else {
                 NSLog("ChannelManager: MCP profile '\(profile.label)' missing valid endpoint, skipping")
-                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+                controller = ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNumber,
+                    brokerSessionCoordinator: brokerSessionCoordinator
+                )
                 break
             }
             controller = MCPChannelController(id: id, endpoint: endpoint, label: profile.label, instanceNumber: instanceNumber)
@@ -68,7 +83,11 @@ class ChannelManager {
         case .agentChat:
             guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
                 NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
-                controller = ShellChannelController(id: id, instanceNumber: instanceNumber)
+                controller = ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNumber,
+                    brokerSessionCoordinator: brokerSessionCoordinator
+                )
                 break
             }
             let apiKey = loadAPIKey(envVarName: profile.apiKeyEnv)
