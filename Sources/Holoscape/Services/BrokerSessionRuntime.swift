@@ -16,6 +16,7 @@ protocol BrokerSessionRuntime {
 
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(id: BrokerSessionID) throws -> Data
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(id: BrokerSessionID) throws -> Bool
     func terminationStatus(id: BrokerSessionID) throws -> Int32?
@@ -39,6 +40,7 @@ struct MetadataOnlyBrokerSessionRuntime: BrokerSessionRuntime {
     func markSessionErrored(id: BrokerSessionID) throws {}
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws { throw RuntimeError.unsupportedPTYOperation }
     func readAvailableOutput(id: BrokerSessionID) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws { throw RuntimeError.unsupportedPTYOperation }
     func isRunning(id: BrokerSessionID) throws -> Bool { throw RuntimeError.unsupportedPTYOperation }
     func terminationStatus(id: BrokerSessionID) throws -> Int32? { throw RuntimeError.unsupportedPTYOperation }

@@ -19,6 +19,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var createError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
+        var scrollbackOutput = Data("reattach scrollback tail".utf8)
 
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
@@ -43,6 +44,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+            maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
+        }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(id: BrokerSessionID) throws -> Bool { running }
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { observedTerminationStatus }
@@ -239,6 +243,30 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             XCTAssertEqual(error as? RuntimeError, .failed)
         }
         XCTAssertEqual(try coordinator.loadAll(), [])
+    }
+
+    func testReadScrollbackTailRequiresDurableRecordAndUsesRuntimeTail() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 450) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/scrollback-tail",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+
+        XCTAssertEqual(
+            String(decoding: try coordinator.readScrollbackTail(started.id, maxBytes: 15), as: UTF8.self),
+            "scrollback tail"
+        )
+        XCTAssertThrowsError(try coordinator.readScrollbackTail(BrokerSessionID(rawValue: "missing"), maxBytes: 4096)) { error in
+            XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(BrokerSessionID(rawValue: "missing")))
+        }
     }
 
     func testLifecycleTransitionsCallRuntimeFacade() throws {

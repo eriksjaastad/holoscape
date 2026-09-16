@@ -24,6 +24,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
             .readAvailableOutput(id: sessionID),
+            .readScrollbackTail(id: sessionID, maxBytes: 4096),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
             .terminationStatus(id: sessionID),

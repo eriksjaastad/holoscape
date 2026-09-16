@@ -82,6 +82,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
     }
 
+    func testScrollbackTailRetainsOutputAfterPendingOutputIsConsumed() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "scrollback-tail-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        try runtime.sendInput(id: id, bytes: Array("first-scrollback-line\nsecond-scrollback-line\n".utf8))
+        _ = try waitForOutput(from: runtime, id: id, containing: "second-scrollback-line")
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+
+        let fullTail = String(decoding: try runtime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+        XCTAssertTrue(fullTail.contains("first-scrollback-line"), fullTail)
+        XCTAssertTrue(fullTail.contains("second-scrollback-line"), fullTail)
+
+        let clippedTail = try runtime.readScrollbackTail(id: id, maxBytes: 8)
+        XCTAssertEqual(clippedTail.count, 8)
+        XCTAssertTrue(String(decoding: clippedTail, as: UTF8.self).contains("line"))
+        XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
+    }
+
     func testTerminationStatusIsNilWhileRunningAndExitCodeAfterProcessEnds() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "termination-status-native-pty-runtime-test")
