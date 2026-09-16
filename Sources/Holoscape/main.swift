@@ -1,4 +1,9 @@
 import AppKit
+import Foundation
+
+if try BrokerSessionHostCommand(arguments: CommandLine.arguments).runIfRequested() {
+    Foundation.exit(EXIT_SUCCESS)
+}
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)

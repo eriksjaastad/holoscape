@@ -327,6 +327,47 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             }
         }
     }
+
+    func testBrokerHostCommandRunsOnlyWhenExplicitlyRequested() throws {
+        let command = BrokerSessionHostCommand(arguments: ["Holoscape"])
+        XCTAssertFalse(try command.runIfRequested())
+    }
+
+    func testBrokerHostCommandRejectsUnexpectedArgumentsInsteadOfLaunchingGUIFallback() throws {
+        let command = BrokerSessionHostCommand(arguments: ["Holoscape", "--broker-host", "--unknown"])
+
+        XCTAssertThrowsError(try command.runIfRequested()) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostCommand.CommandError,
+                .unexpectedArguments(["--unknown"])
+            )
+        }
+    }
+
+    func testBrokerHostCommandProcessesStdioFramesWithNativeRuntimeBoundary() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let sessionID = BrokerSessionID(rawValue: "broker-host-command-session")
+        let command = BrokerSessionHostCommand(
+            arguments: ["Holoscape", "--broker-host"],
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            runtimeFactory: { runtime }
+        )
+
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
+        try inputPipe.fileHandleForWriting.close()
+
+        XCTAssertTrue(try command.runIfRequested())
+        try outputPipe.fileHandleForWriting.close()
+
+        let responseFrame = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(try codec.decodeResponse(responseFrame), .running(true))
+        XCTAssertEqual(runtime.events, ["isRunning broker-host-command-session"])
+    }
 }
 
 private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
