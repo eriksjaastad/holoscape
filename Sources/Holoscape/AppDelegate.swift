@@ -266,7 +266,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
             let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
-            let controller = SSHChannelController(id: metadata.id, profile: profile, instanceNumber: metadata.instanceNumber)
+            let controller = SSHChannelController(
+                id: metadata.id,
+                profile: profile,
+                instanceNumber: metadata.instanceNumber,
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+            )
             return controller
         case .mcp:
             guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }

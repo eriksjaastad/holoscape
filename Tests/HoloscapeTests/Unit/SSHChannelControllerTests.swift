@@ -399,6 +399,57 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertNotNil(c.activatedAt, "activatedAt should be set after successful activate")
     }
 
+    @MainActor func testSSHActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SSHChannelControllerTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(registry: registry, now: { Date(timeIntervalSince1970: 500) })
+        let terminal = MockTerminalProcess()
+        terminal.currentGridSize = TerminalGridSize(columns: 119, rows: 41)
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000918")!
+        let profile = SessionProfile(
+            label: "macbook-agent",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/projects/holoscape-agent",
+            host: "macbook-pro",
+            user: "erik"
+        )
+        let controller = SSHChannelController(
+            id: channelID,
+            profile: profile,
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: coordinator
+        )
+
+        controller.activate()
+
+        let running = try registry.load().sshSingle()
+        XCTAssertEqual(running.id, controller.brokerSessionID)
+        XCTAssertEqual(running.channelType, .ssh)
+        XCTAssertEqual(running.label, "macbook-agent")
+        XCTAssertEqual(running.command, "/usr/bin/ssh")
+        XCTAssertEqual(running.arguments.first, "-t")
+        XCTAssertEqual(running.arguments[1], "erik@macbook-pro")
+        XCTAssertTrue(running.arguments[2].contains("cd \"$HOME\"/'projects/holoscape-agent'"))
+        XCTAssertEqual(running.workingDirectory, "~/projects/holoscape-agent")
+        XCTAssertEqual(running.environmentProfile, .ssh)
+        XCTAssertEqual(running.lifecycle, .running)
+        XCTAssertEqual(running.lastAttachedChannelID, channelID)
+
+        controller.deactivate()
+
+        let detached = try registry.load().sshSingle()
+        XCTAssertEqual(detached.id, running.id)
+        XCTAssertEqual(detached.lifecycle, .detached)
+        XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
     @MainActor func testDelegateNotifiedThroughFullLifecycle() {
         let mock = MockTerminalProcess()
         let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
@@ -408,5 +459,12 @@ final class SSHChannelControllerTests: XCTestCase {
         c.activate()
         c.deactivate()
         XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .disconnected])
+    }
+}
+
+private extension Array {
+    func sshSingle(file: StaticString = #filePath, line: UInt = #line) throws -> Element {
+        XCTAssertEqual(count, 1, file: file, line: line)
+        return self[0]
     }
 }

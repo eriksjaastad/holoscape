@@ -11,6 +11,8 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
+    private(set) var brokerSessionID: BrokerSessionID?
     let profile: SessionProfile
     private let instanceNumber: Int?
     private(set) var activatedAt: Date?
@@ -24,11 +26,18 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
 
     var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, profile: SessionProfile, instanceNumber: Int?, terminal: TerminalProcess? = nil) {
+    init(
+        id: UUID,
+        profile: SessionProfile,
+        instanceNumber: Int?,
+        terminal: TerminalProcess? = nil,
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+    ) {
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self
@@ -61,6 +70,16 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             self.delegate?.channelDidReceiveOutput(self)
         }
 
+        guard recordBrokerStart(
+            arguments: sshArgs,
+            label: profile.label,
+            workingDirectory: profile.directory
+        ) else {
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
+        }
+
         terminal.startProcess(
             executable: "/usr/bin/ssh",
             args: sshArgs,
@@ -75,6 +94,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
 
     func deactivate() {
         terminal.setOutputHandler(nil)
+        recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -94,6 +114,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
             self.state = .disconnected
             self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
@@ -137,5 +158,54 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let suffix = String(trimmed.dropFirst(2))
         guard !suffix.isEmpty else { return nil }
         return "\"$HOME\"/\(shellEscape(suffix))"
+    }
+
+    private func recordBrokerStart(
+        arguments: [String],
+        label: String?,
+        workingDirectory: String?
+    ) -> Bool {
+        guard let brokerSessionCoordinator else { return true }
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/ssh",
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: .ssh,
+            initialSize: terminal.currentGridSize
+        )
+        do {
+            brokerSessionID = try brokerSessionCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelId
+            ).id
+            return true
+        } catch {
+            assertionFailure("Broker session start failed: \(error)")
+            return false
+        }
+    }
+
+    private func recordBrokerDetach() {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            _ = try brokerSessionCoordinator.detach(brokerSessionID)
+        } catch {
+            assertionFailure("Broker session detach failed: \(error)")
+        }
+    }
+
+    private func recordBrokerExit(exitCode: Int32?) {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            if let exitCode {
+                _ = try brokerSessionCoordinator.exit(brokerSessionID, exitCode: exitCode)
+            } else {
+                _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
+            }
+        } catch {
+            assertionFailure("Broker session exit failed: \(error)")
+        }
     }
 }
