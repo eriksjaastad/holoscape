@@ -51,6 +51,30 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     var contentView: NSView { terminal.terminalContentView }
 
+    static func brokerBacked(
+        id: UUID,
+        instanceNumber: Int?,
+        label: String? = nil,
+        workingDirectory: String? = nil,
+        coordinator: (any BrokerSessionCoordinating)? = nil
+    ) -> ShellChannelController {
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: id,
+            channelType: .shell,
+            label: label,
+            environmentProfile: .shell,
+            coordinator: coordinator ?? BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
+        )
+        return ShellChannelController(
+            id: id,
+            instanceNumber: instanceNumber,
+            label: label,
+            workingDirectory: workingDirectory,
+            terminal: terminal,
+            brokerSessionCoordinator: nil
+        )
+    }
+
     init(
         id: UUID,
         instanceNumber: Int?,
@@ -126,6 +150,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: "zsh",
             currentDirectory: workingDirectory
         )
+        if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+            brokerSessionID = terminalBrokerSessionID
+        }
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
@@ -133,6 +160,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func deactivate() {
         terminal.setOutputHandler(nil)
+        terminal.detachBrokerSession()
         recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)

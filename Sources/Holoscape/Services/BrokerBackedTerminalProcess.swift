@@ -29,6 +29,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
+    var brokerOwnedSessionID: BrokerSessionID? { brokerSessionID }
 
     init(
         channelID: UUID,
@@ -116,6 +117,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     func lastLines(_ count: Int) -> [String] {
         terminalView.lastLines(count)
+    }
+
+    func detachBrokerSession() {
+        guard let brokerSessionID, !didNotifyTermination else { return }
+        outputTimer?.invalidate()
+        outputTimer = nil
+        do {
+            _ = try coordinator.detach(brokerSessionID)
+        } catch {
+            assertionFailure("Broker-backed terminal detach failed: \(error)")
+        }
     }
 
     func pollOutputOnce() {

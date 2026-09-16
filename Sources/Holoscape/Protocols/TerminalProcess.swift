@@ -22,11 +22,15 @@ protocol TerminalProcess: AnyObject {
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?)
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
+    func detachBrokerSession()
 
     var terminalContentView: NSView { get }
     var currentGridSize: TerminalGridSize { get }
+    var brokerOwnedSessionID: BrokerSessionID? { get }
 }
 
 extension TerminalProcess {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
+    func detachBrokerSession() {}
+    var brokerOwnedSessionID: BrokerSessionID? { nil }
 }
