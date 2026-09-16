@@ -1901,12 +1901,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: effectiveLabel ?? "Shell",
                 workingDirectory: dir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(
+                ShellChannelController.brokerBacked(
                     id: id,
                     instanceNumber: instanceNum,
                     label: effectiveLabel,
-                    workingDirectory: workDir?.path,
-                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                    workingDirectory: workDir?.path
                 )
             }
             channel.delegate = self
@@ -2073,11 +2072,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             role: nil,
             workingDirectory: defaultDir
         ) { id, _, _, instanceNum, workDir in
-            return ShellChannelController(
+            return ShellChannelController.brokerBacked(
                 id: id,
                 instanceNumber: instanceNum,
-                workingDirectory: workDir?.path,
-                brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                workingDirectory: workDir?.path
             )
         }
         channel.delegate = self
@@ -2205,11 +2203,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: nil,
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(
+                ShellChannelController.brokerBacked(
                     id: id,
                     instanceNumber: instanceNum,
-                    workingDirectory: workDir?.path,
-                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                    workingDirectory: workDir?.path
                 )
             }
             channel.delegate = self

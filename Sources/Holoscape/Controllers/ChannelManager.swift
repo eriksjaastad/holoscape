@@ -47,11 +47,12 @@ class ChannelManager {
         case .local:
             let dir = DefaultWorkingDirectory.expandedURL(from: profile.directory)
             if profile.command.contains("zsh") || profile.command.contains("bash") || profile.command == "/bin/zsh" || profile.command == "/bin/bash" {
-                controller = ShellChannelController(
+                controller = ShellChannelController.brokerBacked(
                     id: id,
                     instanceNumber: instanceNumber,
+                    label: profile.label,
                     workingDirectory: dir.path,
-                    brokerSessionCoordinator: brokerSessionCoordinator
+                    coordinator: BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
                 )
             } else {
                 controller = AgentChannelController(
@@ -75,10 +76,9 @@ class ChannelManager {
         case .mcp:
             guard let endpointStr = profile.endpoint, let endpoint = URL(string: endpointStr) else {
                 NSLog("ChannelManager: MCP profile '\(profile.label)' missing valid endpoint, skipping")
-                controller = ShellChannelController(
+                controller = ShellChannelController.brokerBacked(
                     id: id,
-                    instanceNumber: instanceNumber,
-                    brokerSessionCoordinator: brokerSessionCoordinator
+                    instanceNumber: instanceNumber
                 )
                 break
             }
@@ -88,10 +88,9 @@ class ChannelManager {
         case .agentChat:
             guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
                 NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
-                controller = ShellChannelController(
+                controller = ShellChannelController.brokerBacked(
                     id: id,
-                    instanceNumber: instanceNumber,
-                    brokerSessionCoordinator: brokerSessionCoordinator
+                    instanceNumber: instanceNumber
                 )
                 break
             }

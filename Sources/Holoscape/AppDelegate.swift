@@ -96,11 +96,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 role: nil,
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(
+                ShellChannelController.brokerBacked(
                     id: id,
                     instanceNumber: instanceNum,
-                    workingDirectory: workDir?.path,
-                    brokerSessionCoordinator: channelManager.brokerSessionCoordinator
+                    workingDirectory: workDir?.path
                 )
             }
             channel.delegate = windowController
@@ -213,12 +212,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         switch metadata.type {
         case .shell:
             let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
-            let controller = ShellChannelController(
+            let controller = ShellChannelController.brokerBacked(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
-                workingDirectory: restoredShell.workingDirectory,
-                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+                workingDirectory: restoredShell.workingDirectory
             )
             return controller
         case .agentDirect:

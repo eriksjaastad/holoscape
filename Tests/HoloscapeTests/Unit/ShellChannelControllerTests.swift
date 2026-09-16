@@ -99,6 +99,57 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertNil(detached.lastAttachedChannelID)
     }
 
+    func testBrokerBackedShellActivationUsesTerminalOwnedSessionWithoutDuplicateMetadata() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ShellChannelControllerBrokerBackedTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: NativePTYBrokerSessionRuntime(),
+            now: { Date(timeIntervalSince1970: 400) }
+        )
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000717")!
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: channelID,
+            channelType: .shell,
+            label: "broker-shell",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        let controller = ShellChannelController(
+            id: channelID,
+            instanceNumber: nil,
+            label: "broker-shell",
+            workingDirectory: "/tmp",
+            terminal: terminal,
+            brokerSessionCoordinator: nil
+        )
+
+        controller.activate()
+        defer {
+            if let id = controller.brokerSessionID { _ = try? coordinator.markErrored(id) }
+        }
+
+        let running = try registry.load().single()
+        XCTAssertEqual(running.id, controller.brokerSessionID)
+        XCTAssertEqual(running.label, "broker-shell")
+        XCTAssertEqual(running.command, "/bin/zsh")
+        XCTAssertEqual(running.lifecycle, .running)
+        XCTAssertEqual(running.lastAttachedChannelID, channelID)
+        XCTAssertEqual(try registry.load().count, 1)
+
+        controller.deactivate()
+
+        let detached = try registry.load().single()
+        XCTAssertEqual(detached.id, running.id)
+        XCTAssertEqual(detached.lifecycle, .detached)
+        XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),
