@@ -81,6 +81,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
 
+    func listSessions() throws -> [BrokerSessionID] {
+        lock.lock()
+        let ids = sessions.keys.sorted { $0.rawValue < $1.rawValue }
+        lock.unlock()
+        return ids
+    }
+
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
         lock.lock()
         defer { lock.unlock() }

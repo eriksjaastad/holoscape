@@ -8,6 +8,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let sessionID = BrokerSessionID(rawValue: "session-host-protocol-test")
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000009001")!
         let requests: [BrokerSessionHostRequest] = [
+            .listSessions,
             .create(
                 id: sessionID,
                 request: BrokerSessionLaunchRequest(
@@ -41,6 +42,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let codec = BrokerSessionHostCodec()
         let responses: [BrokerSessionHostResponse] = [
             .ok,
+            .sessionIDs([
+                BrokerSessionID(rawValue: "response-session-a"),
+                BrokerSessionID(rawValue: "response-session-b"),
+            ]),
             .output(Data([0x00, 0x01, 0x02, 0x0A, 0xFF])),
             .running(true),
             .running(false),
@@ -108,6 +113,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         )
 
         XCTAssertEqual(try host.handle(codec.encodeRequest(.create(id: sessionID, request: request))), try codec.encodeResponse(.ok))
+        XCTAssertEqual(try host.handle(codec.encodeRequest(.listSessions)), try codec.encodeResponse(.sessionIDs([sessionID])))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))), try codec.encodeResponse(.output(Data("broker-output".utf8))))
@@ -121,6 +127,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         XCTAssertEqual(runtime.events, [
             "create host-dispatch-test /bin/zsh --login /tmp shell 80x24",
+            "listSessions",
             "attach host-dispatch-test 00000000-0000-0000-0000-000000009002",
             "sendInput host-dispatch-test pwd\\n",
             "readAvailableOutput host-dispatch-test",
@@ -170,6 +177,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         )
 
         try client.createSession(id: sessionID, request: request)
+        XCTAssertEqual(try client.listSessions(), [sessionID])
         try client.attachSession(id: sessionID, channelID: channelID)
         try client.sendInput(id: sessionID, bytes: Array("pwd\n".utf8))
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("client-output".utf8))
@@ -183,6 +191,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         XCTAssertEqual(hostedRuntime.events, [
             "create client-runtime-test /bin/zsh --login /tmp shell 80x24",
+            "listSessions",
             "attach client-runtime-test 00000000-0000-0000-0000-000000009003",
             "sendInput client-runtime-test pwd\\n",
             "readAvailableOutput client-runtime-test",
@@ -223,6 +232,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             XCTAssertEqual(
                 error as? BrokerSessionHostClientRuntime.ClientError,
                 .unexpectedResponse(expected: "ok", actual: .running(true))
+            )
+        }
+    }
+
+    func testClientRuntimeFailsLoudlyWhenListSessionsReturnsUnexpectedResponseShape() throws {
+        let codec = BrokerSessionHostCodec()
+        let client = BrokerSessionHostClientRuntime { _ in
+            try codec.encodeResponse(.ok)
+        }
+
+        XCTAssertThrowsError(try client.listSessions()) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .unexpectedResponse(expected: "sessionIDs", actual: .ok)
             )
         }
     }
@@ -390,6 +413,17 @@ private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
     var isRunning = false
     var terminationStatus: Int32?
     var error: Error?
+
+    func listSessions() throws -> [BrokerSessionID] {
+        try throwIfNeeded()
+        events.append("listSessions")
+        return events.compactMap { event in
+            guard event.hasPrefix("create ") else { return nil }
+            let parts = event.split(separator: " ")
+            guard parts.count > 1 else { return nil }
+            return BrokerSessionID(rawValue: String(parts[1]))
+        }
+    }
 
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
         try throwIfNeeded()

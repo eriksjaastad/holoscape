@@ -56,6 +56,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
         return URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
     }
 
+    func listSessions() throws -> [BrokerSessionID] {
+        let response = try response(for: .listSessions)
+        guard case let .sessionIDs(ids) = response else {
+            throw ClientError.unexpectedResponse(expected: "sessionIDs", actual: response)
+        }
+        return ids
+    }
+
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
         try expectOK(.create(id: id, request: request))
     }

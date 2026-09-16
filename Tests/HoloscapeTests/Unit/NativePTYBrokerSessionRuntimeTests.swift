@@ -48,6 +48,26 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.isRunning(id: id))
     }
 
+    func testListSessionsReturnsStableSortedSessionIDsWithoutTouchingMissingSessions() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let firstID = BrokerSessionID(rawValue: "list-native-pty-runtime-b")
+        let secondID = BrokerSessionID(rawValue: "list-native-pty-runtime-a")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        XCTAssertEqual(try runtime.listSessions(), [])
+        try runtime.createSession(id: firstID, request: request)
+        defer { try? runtime.markSessionErrored(id: firstID) }
+        try runtime.createSession(id: secondID, request: request)
+        defer { try? runtime.markSessionErrored(id: secondID) }
+
+        XCTAssertEqual(try runtime.listSessions(), [secondID, firstID])
+    }
+
     func testOperationsForMissingSessionFailLoudly() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "missing-native-pty-runtime-test")

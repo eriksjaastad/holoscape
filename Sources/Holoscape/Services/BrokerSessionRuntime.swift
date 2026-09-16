@@ -8,6 +8,7 @@ import Foundation
 /// default implementation records metadata only. The native out-of-process
 /// broker will replace that implementation without changing controller calls.
 protocol BrokerSessionRuntime {
+    func listSessions() throws -> [BrokerSessionID]
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws
     func detachSession(id: BrokerSessionID) throws
     func attachSession(id: BrokerSessionID, channelID: UUID) throws
@@ -33,6 +34,7 @@ struct MetadataOnlyBrokerSessionRuntime: BrokerSessionRuntime {
         case unsupportedPTYOperation
     }
 
+    func listSessions() throws -> [BrokerSessionID] { [] }
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
     func detachSession(id: BrokerSessionID) throws {}
     func attachSession(id: BrokerSessionID, channelID: UUID) throws {}

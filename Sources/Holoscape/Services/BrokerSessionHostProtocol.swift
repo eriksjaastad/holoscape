@@ -8,6 +8,7 @@ import Foundation
 /// messages carry a `BrokerEnvironmentProfile` instead of raw environment
 /// key/value pairs to keep secrets out of durable IPC logs and crash artifacts.
 enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
+    case listSessions
     case create(id: BrokerSessionID, request: BrokerSessionLaunchRequest)
     case detach(id: BrokerSessionID)
     case attach(id: BrokerSessionID, channelID: UUID)
@@ -23,6 +24,7 @@ enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
 
 enum BrokerSessionHostResponse: Codable, Equatable, Sendable {
     case ok
+    case sessionIDs([BrokerSessionID])
     case output(Data)
     case running(Bool)
     case terminationStatus(Int32?)
