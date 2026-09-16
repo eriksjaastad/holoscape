@@ -27,6 +27,35 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
         self.transport = transport
     }
 
+    convenience init(
+        hostExecutableURL: URL,
+        arguments: [String] = [BrokerSessionHostCommand.modeFlag],
+        environment: [String: String]? = nil,
+        responseTimeoutSeconds: Int = 5,
+        codec: BrokerSessionHostCodec = BrokerSessionHostCodec()
+    ) {
+        let lazyTransport = LazyBrokerSessionHostProcessTransport(
+            executableURL: hostExecutableURL,
+            arguments: arguments,
+            environment: environment,
+            responseTimeoutSeconds: responseTimeoutSeconds
+        )
+        self.init(codec: codec) { frame in
+            try lazyTransport.sendFrame(frame)
+        }
+    }
+
+    static func currentExecutableHostRuntime() -> BrokerSessionHostClientRuntime {
+        BrokerSessionHostClientRuntime(hostExecutableURL: currentExecutableURL())
+    }
+
+    private static func currentExecutableURL() -> URL {
+        if let executableURL = Bundle.main.executableURL {
+            return executableURL
+        }
+        return URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+    }
+
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
         try expectOK(.create(id: id, request: request))
     }

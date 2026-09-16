@@ -63,7 +63,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             channelType: .shell,
             label: label,
             environmentProfile: .shell,
-            coordinator: coordinator ?? BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
+            coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
         )
         return ShellChannelController(
             id: id,

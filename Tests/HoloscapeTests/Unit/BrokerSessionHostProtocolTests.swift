@@ -328,6 +328,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testLazyProcessTransportDoesNotLaunchUntilFirstFrameAndThenReusesHelper() throws {
+        let transport = LazyBrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            arguments: []
+        )
+        defer { transport.close() }
+
+        let firstFrame = Data("{\"status\":\"lazy-first\"}\n".utf8)
+        let secondFrame = Data("{\"status\":\"lazy-second\"}\n".utf8)
+
+        XCTAssertEqual(try transport.sendFrame(firstFrame), firstFrame)
+        XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
+    }
+
     func testBrokerHostCommandRunsOnlyWhenExplicitlyRequested() throws {
         let command = BrokerSessionHostCommand(arguments: ["Holoscape"])
         XCTAssertFalse(try command.runIfRequested())
