@@ -27,13 +27,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     private let registry: BrokerSessionRegistry
+    private let runtime: any BrokerSessionRuntime
     private let now: () -> Date
 
     init(
         registry: BrokerSessionRegistry = BrokerSessionRegistry(),
+        runtime: any BrokerSessionRuntime = MetadataOnlyBrokerSessionRuntime(),
         now: @escaping () -> Date = Date.init
     ) {
         self.registry = registry
+        self.runtime = runtime
         self.now = now
     }
 
@@ -59,8 +62,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         attachedChannelID: UUID?
     ) throws -> BrokerSessionRecord {
         let timestamp = now()
+        let id = BrokerSessionID()
+        try runtime.createSession(id: id, request: request)
         let record = BrokerSessionRecord(
-            id: BrokerSessionID(),
+            id: id,
             channelType: channelType,
             label: label,
             command: request.command,
@@ -78,7 +83,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id) { record in
+        try update(id, runtimeAction: { try runtime.detachSession(id: id) }) { record in
             record.withLifecycle(
                 .detached,
                 exitCode: nil,
@@ -89,7 +94,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
-        try update(id) { record in
+        try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
             record.withLifecycle(
                 .running,
                 exitCode: nil,
@@ -100,7 +105,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
-        try update(id) { record in
+        try update(id, runtimeAction: { try runtime.terminateSession(id: id, exitCode: exitCode) }) { record in
             record.withLifecycle(
                 .exited,
                 exitCode: exitCode,
@@ -111,7 +116,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id) { record in
+        try update(id, runtimeAction: { try runtime.markSessionErrored(id: id) }) { record in
             record.withLifecycle(
                 .errored,
                 exitCode: nil,
@@ -123,12 +128,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     private func update(
         _ id: BrokerSessionID,
+        runtimeAction: () throws -> Void = {},
         transform: (BrokerSessionRecord) -> BrokerSessionRecord
     ) throws -> BrokerSessionRecord {
         let records = try registry.load()
         guard let existing = records.first(where: { $0.id == id }) else {
             throw CoordinatorError.missingSession(id)
         }
+        try runtimeAction()
         let updated = transform(existing)
         try registry.upsert(updated)
         return updated

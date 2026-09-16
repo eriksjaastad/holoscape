@@ -2,6 +2,44 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerSessionCoordinatorTests: XCTestCase {
+    private enum RuntimeError: Error, Equatable {
+        case failed
+    }
+
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
+        enum Event: Equatable {
+            case create(BrokerSessionID, BrokerSessionLaunchRequest)
+            case detach(BrokerSessionID)
+            case attach(BrokerSessionID, UUID)
+            case terminate(BrokerSessionID, Int32?)
+            case markErrored(BrokerSessionID)
+        }
+
+        var events: [Event] = []
+        var createError: Error?
+
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            if let createError { throw createError }
+            events.append(.create(id, request))
+        }
+
+        func detachSession(id: BrokerSessionID) throws {
+            events.append(.detach(id))
+        }
+
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {
+            events.append(.attach(id, channelID))
+        }
+
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
+            events.append(.terminate(id, exitCode))
+        }
+
+        func markSessionErrored(id: BrokerSessionID) throws {
+            events.append(.markErrored(id))
+        }
+    }
+
     private var tempDirectory: URL!
 
     override func setUpWithError() throws {
@@ -19,7 +57,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
     }
 
     func testStartCreatesDurableRunningRecordFromSafeLaunchRequest() throws {
-        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         let coordinator = makeCoordinator(now: { now })
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let request = BrokerSessionLaunchRequest(
@@ -143,16 +181,99 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
     }
 
     func testUpdatingMissingSessionFailsLoudly() throws {
-        let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 1) })
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 1) })
 
         XCTAssertThrowsError(try coordinator.detach(BrokerSessionID(rawValue: "missing"))) { error in
             XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(BrokerSessionID(rawValue: "missing")))
         }
+        XCTAssertEqual(runtime.events, [])
     }
 
-    private func makeCoordinator(now: @escaping () -> Date) -> BrokerSessionCoordinator {
+    func testStartCreatesRuntimeSessionBeforePersistingMetadata() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 300) })
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: "/tmp/runtime",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 100, rows: 30)
+        )
+
+        let record = try coordinator.start(
+            request,
+            channelType: .shell,
+            label: "runtime",
+            attachedChannelID: nil
+        )
+
+        XCTAssertEqual(runtime.events, [.create(record.id, request)])
+        XCTAssertEqual(try coordinator.loadAll(), [record])
+    }
+
+    func testRuntimeCreateFailureFailsLoudlyWithoutPersistingMetadata() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = RuntimeError.failed
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 400) })
+
+        XCTAssertThrowsError(try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/runtime-failure",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )) { error in
+            XCTAssertEqual(error as? RuntimeError, .failed)
+        }
+        XCTAssertEqual(try coordinator.loadAll(), [])
+    }
+
+    func testLifecycleTransitionsCallRuntimeFacade() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let firstChannel = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
+        let secondChannel = UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 500) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/runtime-transitions",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: firstChannel
+        )
+
+        _ = try coordinator.detach(started.id)
+        _ = try coordinator.reattach(started.id, attachedChannelID: secondChannel)
+        _ = try coordinator.exit(started.id, exitCode: 0)
+
+        XCTAssertEqual(runtime.events, [
+            .create(started.id, BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/runtime-transitions",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )),
+            .detach(started.id),
+            .attach(started.id, secondChannel),
+            .terminate(started.id, 0)
+        ])
+    }
+
+    private func makeCoordinator(
+        runtime: any BrokerSessionRuntime = MetadataOnlyBrokerSessionRuntime(),
+        now: @escaping () -> Date
+    ) -> BrokerSessionCoordinator {
         BrokerSessionCoordinator(
             registry: BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json")),
+            runtime: runtime,
             now: now
         )
     }
