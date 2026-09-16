@@ -59,6 +59,50 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.lastLines(2), ["beta", "gamma"])
     }
 
+    func testAgentActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AgentChannelControllerTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(registry: registry, now: { Date(timeIntervalSince1970: 400) })
+        let terminal = MockTerminalProcess()
+        terminal.currentGridSize = TerminalGridSize(columns: 101, rows: 37)
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000817")!
+        let controller = AgentChannelController(
+            id: channelID,
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/Users/test/agent-work"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal,
+            brokerSessionCoordinator: coordinator
+        )
+
+        controller.activate()
+
+        let running = try registry.load().agentSingle()
+        XCTAssertEqual(running.id, controller.brokerSessionID)
+        XCTAssertEqual(running.channelType, .agentDirect)
+        XCTAssertEqual(running.label, "Codex")
+        XCTAssertEqual(running.command, "/usr/bin/env")
+        XCTAssertEqual(running.arguments, ["codex"])
+        XCTAssertEqual(running.workingDirectory, "/Users/test/agent-work")
+        XCTAssertEqual(running.environmentProfile, .agentOAuth)
+        XCTAssertEqual(running.lifecycle, .running)
+        XCTAssertEqual(running.lastAttachedChannelID, channelID)
+
+        controller.deactivate()
+
+        let detached = try registry.load().agentSingle()
+        XCTAssertEqual(detached.id, running.id)
+        XCTAssertEqual(detached.lifecycle, .detached)
+        XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
     func testLaunchInvocationUsesEnvForBareCommand() {
         let invocation = AgentChannelController.launchInvocation(for: "claude")
 
@@ -73,5 +117,12 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(invocation.executable, "\(NSHomeDirectory())/.local/bin/claude")
         XCTAssertTrue(invocation.args.isEmpty)
         XCTAssertEqual(invocation.execName, "claude")
+    }
+}
+
+private extension Array {
+    func agentSingle(file: StaticString = #filePath, line: UInt = #line) throws -> Element {
+        XCTAssertEqual(count, 1, file: file, line: line)
+        return self[0]
     }
 }
