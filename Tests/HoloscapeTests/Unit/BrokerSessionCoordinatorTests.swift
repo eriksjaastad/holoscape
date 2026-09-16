@@ -17,6 +17,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         var events: [Event] = []
         var createError: Error?
+        var running = false
+        var observedTerminationStatus: Int32? = 0
 
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
@@ -42,8 +44,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
-        func isRunning(id: BrokerSessionID) throws -> Bool { false }
-        func terminationStatus(id: BrokerSessionID) throws -> Int32? { 0 }
+        func isRunning(id: BrokerSessionID) throws -> Bool { running }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { observedTerminationStatus }
     }
 
     private var tempDirectory: URL!
@@ -271,6 +273,109 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             .attach(started.id, secondChannel),
             .terminate(started.id, 0)
         ])
+    }
+
+    func testReconcileRuntimeStatusPreservesRunningSessions() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 600) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/runtime-running",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "running",
+            attachedChannelID: nil
+        )
+
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled, started)
+        XCTAssertEqual(try coordinator.loadAll(), [started])
+    }
+
+    func testReconcileRuntimeStatusRecordsObservedExitCode() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = false
+        runtime.observedTerminationStatus = 7
+        var now = Date(timeIntervalSince1970: 700)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exit 7"],
+                workingDirectory: "/tmp/runtime-exited",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "exited",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000701")!
+        )
+
+        now = Date(timeIntervalSince1970: 701)
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .exited)
+        XCTAssertEqual(reconciled.exitCode, 7)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+        XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertEqual(runtime.events.last, .terminate(started.id, 7))
+    }
+
+    func testReattachableSessionsRefreshesRuntimeStatusBeforeReturningCandidates() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = false
+        runtime.observedTerminationStatus = 9
+        var now = Date(timeIntervalSince1970: 750)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exit 9"],
+                workingDirectory: "/tmp/reattachable-refresh",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "finished",
+            attachedChannelID: nil
+        )
+
+        now = Date(timeIntervalSince1970: 751)
+        let reattachable = try coordinator.reattachableSessions()
+
+        XCTAssertEqual(reattachable, [])
+        let records = try coordinator.loadAll()
+        XCTAssertEqual(records.count, 1)
+        let refreshed = records[0]
+        XCTAssertEqual(refreshed.id, started.id)
+        XCTAssertEqual(refreshed.lifecycle, BrokerSessionLifecycle.exited)
+        XCTAssertEqual(refreshed.exitCode, 9)
+        XCTAssertEqual(refreshed.updatedAt, now)
+    }
+
+    func testReconcileRuntimeStatusLeavesMetadataOnlyRuntimeUnchanged() throws {
+        let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 800) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/metadata-only",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "metadata-only",
+            attachedChannelID: nil
+        )
+
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled, started)
+        XCTAssertEqual(try coordinator.loadAll(), [started])
     }
 
     private func makeCoordinator(
