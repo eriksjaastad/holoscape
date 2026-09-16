@@ -15,6 +15,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         case launchFailed(String)
         case resizeFailed(errno: Int32)
         case exitCodeMismatch(expected: Int32, observed: Int32)
+        case unsupportedEnvironmentProfile(BrokerEnvironmentProfile, reason: String)
     }
 
     private final class Session: @unchecked Sendable {
@@ -93,7 +94,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         if let workingDirectory = request.workingDirectory {
             process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
         }
-        process.environment = environment(for: request.environmentProfile)
+        process.environment = try environment(for: request.environmentProfile)
 
         let slaveRead = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
         let slaveWrite = FileHandle(fileDescriptor: dup(slaveFD), closeOnDealloc: true)
@@ -217,14 +218,34 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         return session
     }
 
-    private func environment(for profile: BrokerEnvironmentProfile) -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+    private func environment(for profile: BrokerEnvironmentProfile) throws -> [String: String] {
         switch profile {
         case .shell:
-            environment["TERM_PROGRAM"] = "Holoscape"
-        case .agentOAuth, .agentAPI, .ssh:
-            break
+            var environment = ProcessInfo.processInfo.environment
+            // Keep zsh's Apple Terminal-compatible OSC 7 directory updates working
+            // while shell sessions are broker-owned instead of SwiftTerm-owned.
+            environment["TERM_PROGRAM"] = "Apple_Terminal"
+            return environment
+        case .agentOAuth:
+            // Match AgentChannelController's clean OAuth environment. Inheriting
+            // the UI process environment here could silently leak API keys into
+            // subscription-billed agent sessions.
+            return AuthEnvironmentBuilder.buildEnvironment(
+                for: .oauth,
+                workingDirectory: FileManager.default.homeDirectoryForCurrentUser
+            )
+        case .agentAPI:
+            // The registry intentionally stores only a profile name, not raw
+            // secrets. Until the broker has a Keychain-backed env recipe, API-key
+            // sessions must fail loudly instead of launching without auth or
+            // inheriting secrets from the UI process.
+            throw RuntimeError.unsupportedEnvironmentProfile(
+                profile,
+                reason: "agent API broker sessions require a Keychain-backed environment recipe"
+            )
+        case .ssh:
+            let allowedKeys: Set<String> = ["PATH", "HOME", "SHELL", "TERM", "LANG", "SSH_AUTH_SOCK"]
+            return ProcessInfo.processInfo.environment.filter { allowedKeys.contains($0.key) }
         }
-        return environment
     }
 }
