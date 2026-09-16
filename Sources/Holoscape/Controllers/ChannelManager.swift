@@ -11,13 +11,17 @@ class ChannelManager {
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
     private let configService: ConfigService
     let brokerSessionCoordinator: any BrokerSessionCoordinating
+    private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
 
     init(
         configService: ConfigService,
-        brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator()
+        brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(),
+        brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil
     ) {
         self.configService = configService
         self.brokerSessionCoordinator = brokerSessionCoordinator
+        self.brokerBackedShellCoordinator = brokerBackedShellCoordinator
+            ?? BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
     }
 
     /// Create a new channel and add it to the registry (V1 factory pattern).
@@ -52,7 +56,7 @@ class ChannelManager {
                     instanceNumber: instanceNumber,
                     label: profile.label,
                     workingDirectory: dir.path,
-                    coordinator: BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
+                    coordinator: brokerBackedShellCoordinator
                 )
             } else {
                 controller = AgentChannelController(

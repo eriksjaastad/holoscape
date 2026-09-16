@@ -3,6 +3,74 @@ import XCTest
 
 @MainActor
 final class ChannelManagerTests: XCTestCase {
+    private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
+        struct StartCall: Equatable {
+            let request: BrokerSessionLaunchRequest
+            let channelType: ChannelType
+            let label: String?
+            let attachedChannelID: UUID?
+        }
+
+        var startCalls: [StartCall] = []
+        var detachCalls: [BrokerSessionID] = []
+
+        func start(
+            _ request: BrokerSessionLaunchRequest,
+            channelType: ChannelType,
+            label: String?,
+            attachedChannelID: UUID?
+        ) throws -> BrokerSessionRecord {
+            startCalls.append(StartCall(
+                request: request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: attachedChannelID
+            ))
+            return BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "recording-channel-manager-broker-session"),
+                channelType: channelType,
+                label: label,
+                command: request.command,
+                arguments: request.arguments,
+                workingDirectory: request.workingDirectory,
+                environmentProfile: request.environmentProfile,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: attachedChannelID
+            )
+        }
+
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+            detachCalls.append(id)
+            return BrokerSessionRecord(
+                id: id,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: nil,
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        }
+
+        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
+        func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+    }
+
     private var configService: ConfigService!
     private var manager: ChannelManager!
 
@@ -54,6 +122,32 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(shell?.workingDirectory, DefaultWorkingDirectory.preferredPath)
         XCTAssertEqual(channel.displayLabel, DefaultWorkingDirectory.preferredURL.lastPathComponent)
+    }
+
+    func testCreateLocalShellProfileUsesInjectedBrokerBackedShellCoordinator() {
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+        let profile = SessionProfile(
+            label: "Project Shell",
+            connection: .local,
+            command: "/bin/zsh",
+            directory: "/tmp/channel-manager-broker"
+        )
+
+        let channel = manager.createChannel(from: profile)
+        channel.activate()
+        defer { channel.deactivate() }
+
+        XCTAssertEqual(recordingCoordinator.startCalls.count, 1)
+        let call = recordingCoordinator.startCalls[0]
+        XCTAssertEqual(call.channelType, .shell)
+        XCTAssertEqual(call.label, "Project Shell")
+        XCTAssertEqual(call.request.command, "/bin/zsh")
+        XCTAssertEqual(call.request.workingDirectory, "/tmp/channel-manager-broker")
+        XCTAssertEqual(call.request.environmentProfile, .shell)
     }
 
     // MARK: - Channel Lookup
