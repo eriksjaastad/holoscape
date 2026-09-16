@@ -17,6 +17,7 @@ protocol BrokerSessionCoordinating {
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
     func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
+    func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord
 }
 
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
@@ -50,12 +51,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattachableSessions() throws -> [BrokerSessionRecord] {
-        try registry.load().filter { record in
+        try registry.load().compactMap { record in
             switch record.lifecycle {
             case .running, .detached, .stale:
-                return true
+                let reconciled = try reconcileRuntimeStatus(record.id)
+                switch reconciled.lifecycle {
+                case .running, .detached, .stale:
+                    return reconciled
+                case .creating, .reattaching, .exited, .errored, .terminating:
+                    return nil
+                }
             case .creating, .reattaching, .exited, .errored, .terminating:
-                return false
+                return nil
             }
         }
     }
@@ -156,6 +163,42 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         return try runtime.terminationStatus(id: id)
     }
 
+    /// Reconciles durable metadata with the broker/runtime's observed process state.
+    ///
+    /// This is the tab-truth hook for #7168/#7169: callers can refresh a broker
+    /// record after relaunch or before presenting attachable sessions without
+    /// inventing state from stale JSON. Metadata-only runtimes cannot answer
+    /// process liveness, so they intentionally leave the record unchanged instead
+    /// of silently marking it failed.
+    func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+        let existing = try record(for: id)
+        switch existing.lifecycle {
+        case .exited, .errored:
+            return existing
+        case .creating, .running, .detached, .reattaching, .stale, .terminating:
+            break
+        }
+
+        do {
+            if try runtime.isRunning(id: id) {
+                return existing
+            }
+            if let exitCode = try runtime.terminationStatus(id: id) {
+                return try exit(id, exitCode: exitCode)
+            }
+            return try updateMetadataOnly(id) { record in
+                record.withLifecycle(
+                    .errored,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+            }
+        } catch MetadataOnlyBrokerSessionRuntime.RuntimeError.unsupportedPTYOperation {
+            return existing
+        }
+    }
+
     private func update(
         _ id: BrokerSessionID,
         runtimeAction: () throws -> Void = {},
@@ -169,6 +212,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         let updated = transform(existing)
         try registry.upsert(updated)
         return updated
+    }
+
+    private func updateMetadataOnly(
+        _ id: BrokerSessionID,
+        transform: (BrokerSessionRecord) -> BrokerSessionRecord
+    ) throws -> BrokerSessionRecord {
+        try update(id, runtimeAction: {}, transform: transform)
     }
 
     private func record(for id: BrokerSessionID) throws -> BrokerSessionRecord {
