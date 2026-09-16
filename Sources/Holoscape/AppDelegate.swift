@@ -96,7 +96,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 role: nil,
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+                ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    workingDirectory: workDir?.path,
+                    brokerSessionCoordinator: channelManager.brokerSessionCoordinator
+                )
             }
             channel.delegate = windowController
             channel.activate()
@@ -212,7 +217,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
-                workingDirectory: restoredShell.workingDirectory
+                workingDirectory: restoredShell.workingDirectory,
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
             )
             return controller
         case .agentDirect:
@@ -222,7 +228,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 authType: .oauth,
                 workingDirectory: dir,
                 userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber
+                instanceNumber: metadata.instanceNumber,
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
             )
             return controller
         case .agentAPI:
@@ -232,7 +239,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 authType: .apiKey(""),  // TODO: retrieve from secure storage
                 workingDirectory: dir,
                 userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber
+                instanceNumber: metadata.instanceNumber,
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.

@@ -1901,7 +1901,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: effectiveLabel ?? "Shell",
                 workingDirectory: dir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, label: effectiveLabel, workingDirectory: workDir?.path)
+                ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    label: effectiveLabel,
+                    workingDirectory: workDir?.path,
+                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                )
             }
             channel.delegate = self
             channel.activate()
@@ -1929,7 +1935,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                     workingDirectory: workDir,
                     userLabel: label,
                     instanceNumber: instanceNum,
-                    command: command ?? "claude"
+                    command: command ?? "claude",
+                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
                 )
             }
             channel.delegate = self
@@ -2066,7 +2073,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             role: nil,
             workingDirectory: defaultDir
         ) { id, _, _, instanceNum, workDir in
-            return ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+            return ShellChannelController(
+                id: id,
+                instanceNumber: instanceNum,
+                workingDirectory: workDir?.path,
+                brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+            )
         }
         channel.delegate = self
         channel.activate()
@@ -2086,7 +2098,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 workingDirectory: workDir,
                 userLabel: nil,
                 instanceNumber: instanceNum,
-                command: "claude"
+                command: "claude",
+                brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
             )
         }
         channel.delegate = self
@@ -2192,7 +2205,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: nil,
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+                ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    workingDirectory: workDir?.path,
+                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                )
             }
             channel.delegate = self
             channel.activate()
