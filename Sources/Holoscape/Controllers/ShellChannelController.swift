@@ -73,6 +73,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setUserInputHandler { [weak self] data in
             self?.handleUserInput(data)
         }
+        self.terminal.setTerminationHandler { [weak self] exitCode in
+            guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
+            self.state = .disconnected
+            self.delegate?.channelStateDidChange(self, to: .disconnected)
+        }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
     }

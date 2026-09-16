@@ -43,6 +43,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(id: BrokerSessionID) throws -> Bool { false }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { 0 }
     }
 
     private var tempDirectory: URL!

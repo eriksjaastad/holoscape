@@ -22,6 +22,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         let masterHandle: FileHandle
         let lock = NSLock()
         var output = Data()
+        var terminationStatus: Int32?
 
         init(process: Process, masterHandle: FileHandle) {
             self.process = process
@@ -46,6 +47,19 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
             lock.lock()
             defer { lock.unlock() }
             try masterHandle.write(contentsOf: data)
+        }
+
+        func markTerminated(_ status: Int32) {
+            lock.lock()
+            terminationStatus = status
+            lock.unlock()
+        }
+
+        func observedTerminationStatus() -> Int32? {
+            lock.lock()
+            let status = terminationStatus
+            lock.unlock()
+            return status
         }
     }
 
@@ -90,6 +104,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
 
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
         let session = Session(process: process, masterHandle: masterHandle)
+        process.terminationHandler = { [weak session] process in
+            session?.markTerminated(process.terminationStatus)
+        }
         masterHandle.readabilityHandler = { [weak session] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
@@ -161,6 +178,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
 
     func isRunning(id: BrokerSessionID) throws -> Bool {
         try session(for: id).process.isRunning
+    }
+
+    func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+        let session = try session(for: id)
+        if let status = session.observedTerminationStatus() {
+            return status
+        }
+        return session.process.isRunning ? nil : session.process.terminationStatus
     }
 
     private func close(_ session: Session) {
