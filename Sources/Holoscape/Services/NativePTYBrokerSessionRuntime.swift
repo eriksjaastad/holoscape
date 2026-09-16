@@ -23,7 +23,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         let masterHandle: FileHandle
         let lock = NSLock()
         var output = Data()
+        var scrollback = Data()
         var terminationStatus: Int32?
+        private let maxScrollbackBytes = 1_048_576
 
         init(process: Process, masterHandle: FileHandle) {
             self.process = process
@@ -33,6 +35,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         func appendOutput(_ data: Data) {
             lock.lock()
             output.append(data)
+            scrollback.append(data)
+            if scrollback.count > maxScrollbackBytes {
+                scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
+            }
             lock.unlock()
         }
 
@@ -42,6 +48,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
             output.removeAll(keepingCapacity: true)
             lock.unlock()
             return snapshot
+        }
+
+        func readScrollbackTail(maxBytes: Int) -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            guard maxBytes > 0 else { return Data() }
+            guard scrollback.count > maxBytes else { return scrollback }
+            return Data(scrollback.suffix(maxBytes))
         }
 
         func writeInput(_ data: Data) throws {
@@ -162,6 +176,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
         try session(for: id).readOutput()
+    }
+
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        try session(for: id).readScrollbackTail(maxBytes: maxBytes)
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {

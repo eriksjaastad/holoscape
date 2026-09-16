@@ -14,6 +14,7 @@ protocol BrokerSessionCoordinating {
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
+    func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
     func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
@@ -146,6 +147,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
         _ = try record(for: id)
         return try runtime.readAvailableOutput(id: id)
+    }
+
+    func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        _ = try record(for: id)
+        return try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
     }
 
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {

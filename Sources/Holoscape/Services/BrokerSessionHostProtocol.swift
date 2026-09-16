@@ -15,6 +15,7 @@ enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
     case markErrored(id: BrokerSessionID)
     case sendInput(id: BrokerSessionID, bytes: Data)
     case readAvailableOutput(id: BrokerSessionID)
+    case readScrollbackTail(id: BrokerSessionID, maxBytes: Int)
     case resize(id: BrokerSessionID, size: TerminalGridSize)
     case isRunning(id: BrokerSessionID)
     case terminationStatus(id: BrokerSessionID)

@@ -65,6 +65,7 @@ final class ChannelManagerTests: XCTestCase {
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
         func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
