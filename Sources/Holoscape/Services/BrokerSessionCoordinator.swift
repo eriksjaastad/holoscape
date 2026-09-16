@@ -1,5 +1,19 @@
 import Foundation
 
+protocol BrokerSessionCoordinating {
+    func start(
+        _ request: BrokerSessionLaunchRequest,
+        channelType: ChannelType,
+        label: String?,
+        attachedChannelID: UUID?
+    ) throws -> BrokerSessionRecord
+
+    func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+    func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
+    func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
+    func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+}
+
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
 ///
 /// This service is the UI/app-side contract for #7168: controllers should not
@@ -7,7 +21,7 @@ import Foundation
 /// the referenced broker session is missing or corrupt. The future native PTY
 /// broker can sit behind this coordinator without changing channel-controller
 /// persistence semantics.
-struct BrokerSessionCoordinator {
+struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     enum CoordinatorError: Error, Equatable {
         case missingSession(BrokerSessionID)
     }
@@ -90,6 +104,17 @@ struct BrokerSessionCoordinator {
             record.withLifecycle(
                 .exited,
                 exitCode: exitCode,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
+            )
+        }
+    }
+
+    func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+        try update(id) { record in
+            record.withLifecycle(
+                .errored,
+                exitCode: nil,
                 updatedAt: now(),
                 lastAttachedChannelID: nil
             )
