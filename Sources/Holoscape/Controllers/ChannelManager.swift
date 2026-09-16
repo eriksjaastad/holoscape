@@ -21,7 +21,7 @@ class ChannelManager {
         self.configService = configService
         self.brokerSessionCoordinator = brokerSessionCoordinator
         self.brokerBackedShellCoordinator = brokerBackedShellCoordinator
-            ?? BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
+            ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
     }
 
     /// Create a new channel and add it to the registry (V1 factory pattern).
