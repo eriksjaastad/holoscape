@@ -16,6 +16,7 @@ protocol BrokerSessionCoordinating {
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
+    func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
 }
 
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
@@ -148,6 +149,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func isRunning(_ id: BrokerSessionID) throws -> Bool {
         _ = try record(for: id)
         return try runtime.isRunning(id: id)
+    }
+
+    func terminationStatus(_ id: BrokerSessionID) throws -> Int32? {
+        _ = try record(for: id)
+        return try runtime.terminationStatus(id: id)
     }
 
     private func update(

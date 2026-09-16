@@ -22,8 +22,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
+    private var terminationHandler: ((Int32?) -> Void)?
     private var outputTimer: Timer?
     private(set) var brokerSessionID: BrokerSessionID?
+    private var didNotifyTermination = false
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
@@ -108,6 +110,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         userInputHandler = handler
     }
 
+    func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {
+        terminationHandler = handler
+    }
+
     func lastLines(_ count: Int) -> [String] {
         terminalView.lastLines(count)
     }
@@ -116,10 +122,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         guard let brokerSessionID else { return }
         do {
             let data = try coordinator.readAvailableOutput(brokerSessionID)
-            guard !data.isEmpty else { return }
-            let bytes = Array(data)
-            terminalView.feed(byteArray: bytes[...])
-            outputHandler?()
+            if !data.isEmpty {
+                let bytes = Array(data)
+                terminalView.feed(byteArray: bytes[...])
+                outputHandler?()
+            }
+            try notifyTerminationIfNeeded(for: brokerSessionID)
         } catch {
             assertionFailure("Broker-backed terminal output read failed: \(error)")
         }
@@ -144,5 +152,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self?.pollOutputOnce()
             }
         }
+    }
+
+    private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {
+        guard !didNotifyTermination else { return }
+        guard try !coordinator.isRunning(brokerSessionID) else { return }
+        let exitCode = try coordinator.terminationStatus(brokerSessionID)
+        didNotifyTermination = true
+        outputTimer?.invalidate()
+        outputTimer = nil
+        if let exitCode {
+            _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
+        } else {
+            _ = try coordinator.markErrored(brokerSessionID)
+        }
+        terminationHandler?(exitCode)
     }
 }

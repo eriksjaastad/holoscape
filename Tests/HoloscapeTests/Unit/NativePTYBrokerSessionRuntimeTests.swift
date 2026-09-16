@@ -82,6 +82,25 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
     }
 
+    func testTerminationStatusIsNilWhileRunningAndExitCodeAfterProcessEnds() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "termination-status-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "exit 7"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let exitCode = try waitForTerminationStatus(from: runtime, id: id)
+        XCTAssertEqual(exitCode, 7)
+        XCTAssertFalse(try runtime.isRunning(id: id))
+    }
+
     private func waitForOutput(
         from runtime: NativePTYBrokerSessionRuntime,
         id: BrokerSessionID,
@@ -102,5 +121,22 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let output = String(decoding: collected, as: UTF8.self)
         XCTFail("Timed out waiting for PTY output containing \(expected). Output: \(output)", file: file, line: line)
         return output
+    }
+
+    private func waitForTerminationStatus(
+        from runtime: NativePTYBrokerSessionRuntime,
+        id: BrokerSessionID,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> Int32? {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if let status = try runtime.terminationStatus(id: id) {
+                return status
+            }
+            usleep(20_000)
+        }
+        XCTFail("Timed out waiting for PTY termination status", file: file, line: line)
+        return nil
     }
 }

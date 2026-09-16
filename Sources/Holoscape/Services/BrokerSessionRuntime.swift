@@ -18,6 +18,7 @@ protocol BrokerSessionRuntime {
     func readAvailableOutput(id: BrokerSessionID) throws -> Data
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(id: BrokerSessionID) throws -> Bool
+    func terminationStatus(id: BrokerSessionID) throws -> Int32?
 }
 
 /// Compatibility runtime used until the native broker process is introduced.
@@ -40,4 +41,5 @@ struct MetadataOnlyBrokerSessionRuntime: BrokerSessionRuntime {
     func readAvailableOutput(id: BrokerSessionID) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws { throw RuntimeError.unsupportedPTYOperation }
     func isRunning(id: BrokerSessionID) throws -> Bool { throw RuntimeError.unsupportedPTYOperation }
+    func terminationStatus(id: BrokerSessionID) throws -> Int32? { throw RuntimeError.unsupportedPTYOperation }
 }

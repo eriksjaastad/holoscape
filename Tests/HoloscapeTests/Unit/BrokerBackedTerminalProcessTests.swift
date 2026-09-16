@@ -60,6 +60,52 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertGreaterThan(outputNotifications, 0)
     }
 
+    func testProcessExitUpdatesBrokerRecordAndCallsTerminationHandler() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessExitTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        var now = Date(timeIntervalSince1970: 800)
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: NativePTYBrokerSessionRuntime(),
+            now: { now }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008002")!,
+            channelType: .shell,
+            label: "broker-exit",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        var observedExitCode: Int32?
+        terminal.setTerminationHandler { observedExitCode = $0 }
+
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "exit 3"],
+            environment: nil,
+            execName: "sh",
+            currentDirectory: "/tmp"
+        )
+        now = Date(timeIntervalSince1970: 801)
+
+        try waitUntil {
+            terminal.pollOutputOnce()
+            return observedExitCode != nil
+        }
+
+        XCTAssertEqual(observedExitCode, 3)
+        let exited = try registry.load().single()
+        XCTAssertEqual(exited.lifecycle, .exited)
+        XCTAssertEqual(exited.exitCode, 3)
+        XCTAssertNil(exited.lastAttachedChannelID)
+        XCTAssertEqual(exited.updatedAt, now)
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 3,
         condition: () throws -> Bool,
