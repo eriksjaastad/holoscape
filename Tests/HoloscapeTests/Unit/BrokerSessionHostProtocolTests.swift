@@ -227,6 +227,78 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testStdioServerProcessesMultipleDelimitedFramesUntilEOF() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("stdio-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let sessionID = BrokerSessionID(rawValue: "stdio-server-session")
+
+        let server = BrokerSessionHostStdioServer(
+            host: host,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            readChunkSize: 7
+        )
+
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.readAvailableOutput(id: sessionID)))
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
+        try inputPipe.fileHandleForWriting.close()
+
+        try server.runUntilEOF()
+        try outputPipe.fileHandleForWriting.close()
+
+        let frames = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n")
+            .map { Data("\($0)\n".utf8) }
+
+        XCTAssertEqual(frames.count, 2)
+        XCTAssertEqual(try codec.decodeResponse(frames[0]), .output(Data("stdio-output".utf8)))
+        XCTAssertEqual(try codec.decodeResponse(frames[1]), .running(false))
+        XCTAssertEqual(runtime.events, [
+            "readAvailableOutput stdio-server-session",
+            "isRunning stdio-server-session",
+        ])
+    }
+
+    func testStdioServerReturnsProtocolFailureForMalformedFramesAndKeepsRunning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let sessionID = BrokerSessionID(rawValue: "stdio-server-protocol-error-session")
+
+        let server = BrokerSessionHostStdioServer(
+            host: host,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            readChunkSize: 5
+        )
+
+        try inputPipe.fileHandleForWriting.write(contentsOf: Data("not-json\n".utf8))
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
+        try inputPipe.fileHandleForWriting.close()
+
+        try server.runUntilEOF()
+        try outputPipe.fileHandleForWriting.close()
+
+        let frames = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n")
+            .map { Data("\($0)\n".utf8) }
+
+        XCTAssertEqual(frames.count, 2)
+        guard case let .failure(failure) = try codec.decodeResponse(frames[0]) else {
+            return XCTFail("Expected protocol failure response")
+        }
+        XCTAssertEqual(failure.code, "protocol-error")
+        XCTAssertTrue(failure.message.contains("dataCorrupted") || failure.message.contains("DecodingError"), failure.message)
+        XCTAssertEqual(try codec.decodeResponse(frames[1]), .running(false))
+        XCTAssertEqual(runtime.events, ["isRunning stdio-server-protocol-error-session"])
+    }
+
     func testProcessTransportRoundTripsOneDelimitedFrameThroughHelperStdio() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/bin/cat")
