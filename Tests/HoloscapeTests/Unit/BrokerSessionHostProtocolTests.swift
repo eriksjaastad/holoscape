@@ -226,6 +226,35 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             )
         }
     }
+
+    func testProcessTransportRoundTripsOneDelimitedFrameThroughHelperStdio() throws {
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat")
+        )
+        defer { transport.close() }
+
+        let firstFrame = Data("{\"status\":\"first\"}\n".utf8)
+        let secondFrame = Data("{\"status\":\"second\"}\n".utf8)
+
+        XCTAssertEqual(try transport.sendFrame(firstFrame), firstFrame)
+        XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
+    }
+
+    func testProcessTransportFailsLoudlyWhenHelperExitsBeforeResponse() throws {
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        defer { transport.close() }
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            switch error as? BrokerSessionHostProcessTransport.TransportError {
+            case .helperExited, .writeFailed, .helperClosedPipe:
+                break
+            default:
+                XCTFail("Expected process transport failure, got \(error)")
+            }
+        }
+    }
 }
 
 private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
