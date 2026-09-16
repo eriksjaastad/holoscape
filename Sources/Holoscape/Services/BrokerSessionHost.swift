@@ -34,6 +34,8 @@ struct BrokerSessionHost {
 
     private func dispatch(_ request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
         switch request {
+        case .listSessions:
+            return .sessionIDs(try runtime.listSessions())
         case let .create(id, launchRequest):
             try runtime.createSession(id: id, request: launchRequest)
             return .ok

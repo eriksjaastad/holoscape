@@ -21,6 +21,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var observedTerminationStatus: Int32? = 0
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
 
+        func listSessions() throws -> [BrokerSessionID] { [] }
+
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
             events.append(.create(id, request))
