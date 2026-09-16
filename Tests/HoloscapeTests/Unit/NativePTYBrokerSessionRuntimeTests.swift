@@ -101,6 +101,67 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertFalse(try runtime.isRunning(id: id))
     }
 
+    func testShellProfilePreservesAppleTerminalDirectoryUpdateCompatibility() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "shell-environment-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("TERM_PROGRAM=Apple_Terminal"), output)
+    }
+
+    func testAgentOAuthProfileUsesCleanEnvironmentWithoutAPIKeyLeakage() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "agent-oauth-environment-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            workingDirectory: "/tmp",
+            environmentProfile: .agentOAuth,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("TERM=xterm-256color"), output)
+        XCTAssertFalse(output.contains("ANTHROPIC_API_KEY="), output)
+    }
+
+    func testAgentAPIProfileFailsLoudlyUntilKeychainRecipeExists() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "agent-api-environment-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            workingDirectory: "/tmp",
+            environmentProfile: .agentAPI,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        XCTAssertThrowsError(try runtime.createSession(id: id, request: request)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .unsupportedEnvironmentProfile(
+                    .agentAPI,
+                    reason: "agent API broker sessions require a Keychain-backed environment recipe"
+                )
+            )
+        }
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
     private func waitForOutput(
         from runtime: NativePTYBrokerSessionRuntime,
         id: BrokerSessionID,
@@ -138,5 +199,26 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTFail("Timed out waiting for PTY termination status", file: file, line: line)
         return nil
+    }
+
+    private func collectOutput(
+        from runtime: NativePTYBrokerSessionRuntime,
+        id: BrokerSessionID,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> String {
+        var collected = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            let chunk = try runtime.readAvailableOutput(id: id)
+            if chunk.isEmpty, !collected.isEmpty {
+                return String(decoding: collected, as: UTF8.self)
+            }
+            collected.append(chunk)
+            usleep(20_000)
+        }
+        let output = String(decoding: collected, as: UTF8.self)
+        XCTFail("Timed out collecting PTY output. Output: \(output)", file: file, line: line)
+        return output
     }
 }
