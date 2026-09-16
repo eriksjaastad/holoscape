@@ -12,6 +12,10 @@ protocol BrokerSessionCoordinating {
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+    func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
+    func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
+    func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
+    func isRunning(_ id: BrokerSessionID) throws -> Bool
 }
 
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
@@ -126,6 +130,26 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
+        _ = try record(for: id)
+        try runtime.sendInput(id: id, bytes: bytes)
+    }
+
+    func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
+        _ = try record(for: id)
+        return try runtime.readAvailableOutput(id: id)
+    }
+
+    func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {
+        _ = try record(for: id)
+        try runtime.resizeSession(id: id, size: size)
+    }
+
+    func isRunning(_ id: BrokerSessionID) throws -> Bool {
+        _ = try record(for: id)
+        return try runtime.isRunning(id: id)
+    }
+
     private func update(
         _ id: BrokerSessionID,
         runtimeAction: () throws -> Void = {},
@@ -139,6 +163,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         let updated = transform(existing)
         try registry.upsert(updated)
         return updated
+    }
+
+    private func record(for id: BrokerSessionID) throws -> BrokerSessionRecord {
+        let records = try registry.load()
+        guard let existing = records.first(where: { $0.id == id }) else {
+            throw CoordinatorError.missingSession(id)
+        }
+        return existing
     }
 }
 
