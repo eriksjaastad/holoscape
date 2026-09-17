@@ -9,44 +9,78 @@ import Foundation
 struct BrokerSessionHostCommand {
     enum CommandError: Error, Equatable {
         case unexpectedArguments([String])
+        case missingSocketPath
+        case emptySocketPath
     }
 
     static let modeFlag = "--broker-host"
+    static let socketModeFlag = "--broker-host-socket"
 
     private let arguments: [String]
     private let input: FileHandle
     private let output: FileHandle
     private let runtimeFactory: () -> any BrokerSessionRuntime
+    private let socketMaxConnections: Int?
 
     init(
         arguments: [String],
         input: FileHandle = .standardInput,
         output: FileHandle = .standardOutput,
-        runtimeFactory: @escaping () -> any BrokerSessionRuntime = { NativePTYBrokerSessionRuntime() }
+        runtimeFactory: @escaping () -> any BrokerSessionRuntime = { NativePTYBrokerSessionRuntime() },
+        socketMaxConnections: Int? = nil
     ) {
         self.arguments = arguments
         self.input = input
         self.output = output
         self.runtimeFactory = runtimeFactory
+        self.socketMaxConnections = socketMaxConnections
     }
 
     func runIfRequested() throws -> Bool {
-        guard arguments.contains(Self.modeFlag) else {
+        guard arguments.contains(Self.modeFlag) || arguments.contains(Self.socketModeFlag) else {
             return false
         }
 
-        let trailingArguments = arguments.dropFirst()
-        let unexpectedArguments = trailingArguments.filter { $0 != Self.modeFlag }
-        guard unexpectedArguments.isEmpty else {
-            throw CommandError.unexpectedArguments(Array(unexpectedArguments))
+        let trailingArguments = Array(arguments.dropFirst())
+        if trailingArguments.contains(Self.modeFlag) {
+            let unexpectedArguments = trailingArguments.filter { $0 != Self.modeFlag }
+            guard unexpectedArguments.isEmpty else {
+                throw CommandError.unexpectedArguments(Array(unexpectedArguments))
+            }
+
+            let server = BrokerSessionHostStdioServer(
+                host: BrokerSessionHost(runtime: runtimeFactory()),
+                input: input,
+                output: output
+            )
+            try server.runUntilEOF()
+            return true
         }
 
-        let server = BrokerSessionHostStdioServer(
+        guard let flagIndex = trailingArguments.firstIndex(of: Self.socketModeFlag) else {
+            return false
+        }
+        let unexpectedArguments: [String] = trailingArguments.enumerated().compactMap { index, argument in
+            if index == flagIndex || index == flagIndex + 1 { return nil as String? }
+            return argument
+        }
+        guard unexpectedArguments.isEmpty else {
+            throw CommandError.unexpectedArguments(unexpectedArguments)
+        }
+        let socketPathIndex = flagIndex + 1
+        guard trailingArguments.indices.contains(socketPathIndex) else {
+            throw CommandError.missingSocketPath
+        }
+        let socketPath = trailingArguments[socketPathIndex]
+        guard !socketPath.isEmpty else {
+            throw CommandError.emptySocketPath
+        }
+
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
             host: BrokerSessionHost(runtime: runtimeFactory()),
-            input: input,
-            output: output
         )
-        try server.runUntilEOF()
+        try server.run(maxConnections: socketMaxConnections)
         return true
     }
 }

@@ -46,7 +46,19 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
     }
 
     static func currentExecutableHostRuntime() -> BrokerSessionHostClientRuntime {
-        BrokerSessionHostClientRuntime(hostExecutableURL: currentExecutableURL())
+        currentExecutableSocketHostRuntime()
+    }
+
+    static func currentExecutableSocketHostRuntime(
+        socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath()
+    ) -> BrokerSessionHostClientRuntime {
+        let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: currentExecutableURL(),
+            socketPath: socketPath
+        )
+        return BrokerSessionHostClientRuntime { frame in
+            try lazyTransport.sendFrame(frame)
+        }
     }
 
     private static func currentExecutableURL() -> URL {

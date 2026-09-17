@@ -381,6 +381,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testBrokerHostCommandRejectsMissingSocketPath() throws {
+        let command = BrokerSessionHostCommand(arguments: ["Holoscape", "--broker-host-socket"])
+
+        XCTAssertThrowsError(try command.runIfRequested()) { error in
+            XCTAssertEqual(error as? BrokerSessionHostCommand.CommandError, .missingSocketPath)
+        }
+    }
+
     func testBrokerHostCommandProcessesStdioFramesWithNativeRuntimeBoundary() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.isRunning = true
@@ -404,6 +412,39 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let responseFrame = outputPipe.fileHandleForReading.readDataToEndOfFile()
         XCTAssertEqual(try codec.decodeResponse(responseFrame), .running(true))
         XCTAssertEqual(runtime.events, ["isRunning broker-host-command-session"])
+    }
+
+    func testBrokerHostCommandProcessesUnixSocketFramesWithNativeRuntimeBoundary() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let codec = BrokerSessionHostCodec()
+        let socketPath = "/tmp/hs-command-\(UUID().uuidString).sock"
+        let sessionID = BrokerSessionID(rawValue: "broker-host-socket-command-session")
+        let command = BrokerSessionHostCommand(
+            arguments: ["Holoscape", "--broker-host-socket", socketPath],
+            runtimeFactory: { runtime },
+            socketMaxConnections: 1
+        )
+        let serverFinished = expectation(description: "socket command served one request")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                XCTAssertTrue(try command.runIfRequested())
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let responseFrame = try transport.sendFrame(codec.encodeRequest(.isRunning(id: sessionID)))
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(try codec.decodeResponse(responseFrame), .running(true))
+        XCTAssertEqual(runtime.events, ["isRunning broker-host-socket-command-session"])
     }
 
     func testUnixSocketBrokerKeepsRuntimeAcrossDisconnectedClients() throws {
