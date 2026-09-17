@@ -236,6 +236,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 workingDirectory: dir,
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
                 brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
             )
             return controller
@@ -247,6 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 workingDirectory: dir,
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
                 brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
