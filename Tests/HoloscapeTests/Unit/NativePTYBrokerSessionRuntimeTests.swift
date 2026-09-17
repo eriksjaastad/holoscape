@@ -24,9 +24,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(output.contains("holoscape-native-pty"), output)
 
         try runtime.terminateSession(id: id, exitCode: nil)
-        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
-            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
-        }
+        XCTAssertFalse(try runtime.isRunning(id: id))
+        XCTAssertTrue(try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data("holoscape-native-pty".utf8)))
+    }
+
+    func testTerminatePreservesExitedSessionForScrollbackReads() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "terminated-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf preserved-scrollback; exit 3"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 3)
+        _ = try waitForOutput(from: runtime, id: id, containing: "preserved-scrollback")
+
+        try runtime.terminateSession(id: id, exitCode: 3)
+
+        XCTAssertFalse(try runtime.isRunning(id: id))
+        XCTAssertEqual(try runtime.terminationStatus(id: id), 3)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        let scrollback = String(decoding: try runtime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+        XCTAssertTrue(scrollback.contains("preserved-scrollback"), scrollback)
     }
 
     func testDuplicateSessionFailsLoudlyWithoutReplacingOriginalSession() throws {
