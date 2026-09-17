@@ -231,6 +231,17 @@ class ChannelManager {
 
     var count: Int { channels.count }
 
+    func brokerBackedShellSessionToRestore(for channelID: UUID) -> BrokerSessionRecord? {
+        do {
+            return try brokerBackedShellCoordinator.reattachableSessions().first { record in
+                record.channelType == .shell && record.lastAttachedChannelID == channelID
+            }
+        } catch {
+            assertionFailure("ChannelManager failed to load broker-backed shell sessions: \(error)")
+            return nil
+        }
+    }
+
     /// Get the stored label for a channel (used for profile resolution on duplicate).
     func labelForChannel(id: UUID) -> String? {
         return channelLabels[id]

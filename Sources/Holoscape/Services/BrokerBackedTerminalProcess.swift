@@ -36,6 +36,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         channelType: ChannelType,
         label: String?,
         environmentProfile: BrokerEnvironmentProfile,
+        existingBrokerSessionID: BrokerSessionID? = nil,
         coordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime()),
         terminalView: HoloscapeTerminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     ) {
@@ -45,6 +46,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.environmentProfile = environmentProfile
         self.coordinator = coordinator
         self.terminalView = terminalView
+        self.brokerSessionID = existingBrokerSessionID
 
         terminalView.setUserInputHandler { [weak self] data in
             guard let self else { return }
@@ -60,6 +62,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        if let existingBrokerSessionID = brokerSessionID {
+            reattachExistingSession(existingBrokerSessionID)
+            return
+        }
+
         let request = BrokerSessionLaunchRequest(
             command: executable,
             arguments: args,
@@ -81,6 +88,24 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         } catch {
             assertionFailure("Broker-backed terminal start failed: \(error)")
+        }
+    }
+
+    private func reattachExistingSession(_ sessionID: BrokerSessionID) {
+        do {
+            let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
+            brokerSessionID = record.id
+            let tail = try coordinator.readScrollbackTail(record.id, maxBytes: 65_536)
+            if !tail.isEmpty {
+                let bytes = Array(tail)
+                terminalView.feed(byteArray: bytes[...])
+                outputHandler?()
+            }
+            if outputHandler != nil {
+                startOutputPump()
+            }
+        } catch {
+            assertionFailure("Broker-backed terminal reattach failed: \(error)")
         }
     }
 
