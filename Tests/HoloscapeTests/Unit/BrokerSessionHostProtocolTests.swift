@@ -405,6 +405,91 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try codec.decodeResponse(responseFrame), .running(true))
         XCTAssertEqual(runtime.events, ["isRunning broker-host-command-session"])
     }
+
+    func testUnixSocketBrokerKeepsRuntimeAcrossDisconnectedClients() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: host,
+            readChunkSize: 5
+        )
+        let serverFinished = expectation(description: "socket broker served all requests")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 4)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
+        let firstClient = BrokerSessionHostClientRuntime { frame in
+            try firstTransport.sendFrame(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "unix-socket-client-session")
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000009004")!
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try firstClient.createSession(id: sessionID, request: request)
+        try firstClient.detachSession(id: sessionID)
+
+        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
+        let secondClient = BrokerSessionHostClientRuntime { frame in
+            try secondTransport.sendFrame(frame)
+        }
+
+        XCTAssertEqual(try secondClient.listSessions(), [sessionID])
+        try secondClient.attachSession(id: sessionID, channelID: channelID)
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "create unix-socket-client-session /bin/zsh --login /tmp shell 80x24",
+            "detach unix-socket-client-session",
+            "listSessions",
+            "attach unix-socket-client-session 00000000-0000-0000-0000-000000009004",
+        ])
+    }
+
+    private func waitForSocket(at path: String) throws {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: path) {
+                return
+            }
+            usleep(10_000)
+        }
+        XCTFail("Timed out waiting for broker socket at \(path)")
+    }
+}
+
+private final class LockedErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: Error?
+
+    var value: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedError
+    }
+
+    func set(_ error: Error) {
+        lock.lock()
+        storedError = error
+        lock.unlock()
+    }
 }
 
 private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
