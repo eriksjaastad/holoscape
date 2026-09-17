@@ -153,7 +153,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         guard case let .failure(failure) = response else {
             return XCTFail("Expected failure response, got \(response)")
         }
-        XCTAssertEqual(failure.code, "runtime-error")
+        XCTAssertEqual(failure.code, "missing-session")
         XCTAssertTrue(failure.message.contains("missingSession"), failure.message)
     }
 
@@ -217,7 +217,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
                 return XCTFail("Expected hostFailure, got \(error)")
             }
-            XCTAssertEqual(code, "runtime-error")
+            XCTAssertEqual(code, "missing-session")
             XCTAssertTrue(message.contains("missingSession"), message)
         }
     }

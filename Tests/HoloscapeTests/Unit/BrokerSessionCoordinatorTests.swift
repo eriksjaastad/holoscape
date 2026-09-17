@@ -424,6 +424,45 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [reconciled])
     }
 
+    func testReconcileRuntimeStatusRequiresTypedHostMissingSessionFailureBeforeMarkingStale() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 785)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/typed-missing-runtime",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "typed-stale-runtime",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000785")!
+        )
+
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "runtime-error",
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        XCTAssertThrowsError(try coordinator.reconcileRuntimeStatus(started.id)) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error else {
+                return XCTFail("Expected hostFailure, got \(error)")
+            }
+            XCTAssertEqual(code, "runtime-error")
+        }
+
+        now = Date(timeIntervalSince1970: 786)
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "missing-session",
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .stale)
+        XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+    }
+
     func testReconcileRuntimeStatusLeavesMetadataOnlyRuntimeUnchanged() throws {
         let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 800) })
         let started = try coordinator.start(

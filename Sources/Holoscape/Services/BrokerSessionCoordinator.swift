@@ -249,7 +249,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
             return runtimeError == .missingSession(id)
         }
-        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(_, message) = error,
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
+           code == "missing-session",
            message.contains("missingSession"),
            message.contains(id.rawValue) {
             return true
