@@ -265,6 +265,26 @@ class ChannelManager {
         }
     }
 
+    func brokerBackedAgentSessionToRestore(
+        for channelID: UUID,
+        channelType: ChannelType,
+        brokerSessionID: BrokerSessionID? = nil
+    ) -> BrokerSessionRecord? {
+        do {
+            let sessions = try brokerBackedShellCoordinator.reattachableSessions()
+            if let brokerSessionID,
+               let exactMatch = sessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
+                return exactMatch
+            }
+            return sessions.first { record in
+                record.channelType == channelType && record.lastAttachedChannelID == channelID
+            }
+        } catch {
+            assertionFailure("ChannelManager failed to load broker-backed agent sessions: \(error)")
+            return nil
+        }
+    }
+
     func firstUnmatchedBrokerBackedShellSessionToRestore() -> BrokerSessionRecord? {
         do {
             return try brokerBackedShellCoordinator.reattachableSessions()

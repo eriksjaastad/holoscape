@@ -287,6 +287,117 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.id, expectedSessionID)
     }
 
+    func testBrokerBackedAgentSessionToRestorePrefersPersistedBrokerSessionID() {
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007301")!
+        let expectedSessionID = BrokerSessionID(rawValue: "persisted-agent-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "shell-session-not-agent"),
+                channelType: .shell,
+                label: "Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "stale-last-attached-agent-session"),
+                channelType: .agentDirect,
+                label: "Claude",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/agent-old",
+                environmentProfile: .agentOAuth,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .agentDirect,
+                label: "Claude",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/agent-current",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.brokerBackedAgentSessionToRestore(
+            for: channelID,
+            channelType: .agentDirect,
+            brokerSessionID: expectedSessionID
+        )
+
+        XCTAssertEqual(match?.id, expectedSessionID)
+        XCTAssertEqual(match?.workingDirectory, "/tmp/agent-current")
+    }
+
+    func testBrokerBackedAgentSessionToRestoreMatchesAgentRecordByLastAttachedChannel() {
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007302")!
+        let expectedSessionID = BrokerSessionID(rawValue: "matching-api-agent-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "wrong-agent-kind"),
+                channelType: .agentDirect,
+                label: "Claude OAuth",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/oauth-agent",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .agentAPI,
+                label: "Claude API",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/api-agent",
+                environmentProfile: .agentAPI,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: channelID
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.brokerBackedAgentSessionToRestore(
+            for: channelID,
+            channelType: .agentAPI
+        )
+
+        XCTAssertEqual(match?.id, expectedSessionID)
+        XCTAssertEqual(match?.channelType, .agentAPI)
+    }
+
     func testFirstUnmatchedBrokerBackedShellSessionToRestoreFindsCrashSurvivingShellWithoutSavedChannel() {
         let expectedSessionID = BrokerSessionID(rawValue: "crash-surviving-shell-session")
         let recordingCoordinator = RecordingBrokerSessionCoordinator()
