@@ -27,10 +27,12 @@ protocol TerminalProcess: AnyObject {
     var terminalContentView: NSView { get }
     var currentGridSize: TerminalGridSize { get }
     var brokerOwnedSessionID: BrokerSessionID? { get }
+    var startFailureDescription: String? { get }
 }
 
 extension TerminalProcess {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func detachBrokerSession() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
+    var startFailureDescription: String? { nil }
 }

@@ -150,6 +150,20 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertNil(detached.lastAttachedChannelID)
     }
 
+    func testActivationDoesNotMarkChannelActiveWhenTerminalStartFails() {
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "broker unavailable"
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+        controller.delegate = delegate
+
+        controller.activate()
+
+        XCTAssertTrue(terminal.startProcessCalled)
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .disconnected])
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),
