@@ -161,14 +161,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     }
 
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
-        let session = try removeSession(id)
-        let isRunning = session.process.isRunning
-        let observedExitCode = isRunning ? nil : Optional(session.process.terminationStatus)
-        let hasMismatchedExitCode = exitCode.map { expected in
-            observedExitCode.map { observed in observed != expected } ?? false
-        } ?? false
-        close(session)
-        if let exitCode, let observedExitCode, hasMismatchedExitCode {
+        let session = try session(for: id)
+        if session.process.isRunning {
+            session.process.terminate()
+            session.process.waitUntilExit()
+        }
+        let observedExitCode = session.process.terminationStatus
+        session.markTerminated(observedExitCode)
+        if let exitCode, observedExitCode != exitCode {
             throw RuntimeError.exitCodeMismatch(expected: exitCode, observed: observedExitCode)
         }
     }

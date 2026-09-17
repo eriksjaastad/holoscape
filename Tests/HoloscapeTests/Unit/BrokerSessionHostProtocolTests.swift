@@ -482,6 +482,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(output.contains("reattached-hosted-native-pty"), output)
 
         try secondClient.terminateSession(id: sessionID, exitCode: nil)
+        XCTAssertEqual(try secondClient.listSessions(), [sessionID])
+        XCTAssertFalse(try secondClient.isRunning(id: sessionID))
+        let scrollback = String(
+            decoding: try secondClient.readScrollbackTail(id: sessionID, maxBytes: 4096),
+            as: UTF8.self
+        )
+        XCTAssertTrue(scrollback.contains("reattached-hosted-native-pty"), scrollback)
+        try secondClient.markSessionErrored(id: sessionID)
         XCTAssertEqual(try secondClient.listSessions(), [])
     }
 
