@@ -230,6 +230,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
+            let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
+                for: metadata.id,
+                channelType: .agentDirect,
+                brokerSessionID: metadata.brokerSessionID
+            )
             let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
                 authType: .oauth,
@@ -237,11 +242,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                existingBrokerSessionID: metadata.brokerSessionID
+                existingBrokerSessionID: brokerSession?.id
             )
             return controller
         case .agentAPI:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
+            let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
+                for: metadata.id,
+                channelType: .agentAPI,
+                brokerSessionID: metadata.brokerSessionID
+            )
             let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
                 authType: .apiKey(""),  // TODO: retrieve from secure storage
@@ -249,7 +259,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                existingBrokerSessionID: metadata.brokerSessionID
+                existingBrokerSessionID: brokerSession?.id
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.
