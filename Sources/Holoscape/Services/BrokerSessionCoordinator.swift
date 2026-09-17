@@ -180,9 +180,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
         switch existing.lifecycle {
-        case .exited, .errored:
+        case .exited, .errored, .stale:
             return existing
-        case .creating, .running, .detached, .reattaching, .stale, .terminating:
+        case .creating, .running, .detached, .reattaching, .terminating:
             break
         }
 
@@ -203,6 +203,15 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             }
         } catch MetadataOnlyBrokerSessionRuntime.RuntimeError.unsupportedPTYOperation {
             return existing
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return try updateMetadataOnly(id) { record in
+                record.withLifecycle(
+                    .stale,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+            }
         }
     }
 
@@ -234,6 +243,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             throw CoordinatorError.missingSession(id)
         }
         return existing
+    }
+
+    private func isMissingRuntimeSessionError(_ error: Error, id: BrokerSessionID) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
+            return runtimeError == .missingSession(id)
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(_, message) = error,
+           message.contains("missingSession"),
+           message.contains(id.rawValue) {
+            return true
+        }
+        return false
     }
 }
 

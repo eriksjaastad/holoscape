@@ -17,6 +17,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         var events: [Event] = []
         var createError: Error?
+        var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
@@ -50,8 +51,14 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
-        func isRunning(id: BrokerSessionID) throws -> Bool { running }
-        func terminationStatus(id: BrokerSessionID) throws -> Int32? { observedTerminationStatus }
+        func isRunning(id: BrokerSessionID) throws -> Bool {
+            if let statusError { throw statusError }
+            return running
+        }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            if let statusError { throw statusError }
+            return observedTerminationStatus
+        }
     }
 
     private var tempDirectory: URL!
@@ -386,6 +393,35 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(refreshed.lifecycle, BrokerSessionLifecycle.exited)
         XCTAssertEqual(refreshed.exitCode, 9)
         XCTAssertEqual(refreshed.updatedAt, now)
+    }
+
+    func testReconcileRuntimeStatusMarksMissingRuntimeSessionStaleInsteadOfThrowing() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let missingID = BrokerSessionID(rawValue: "missing-runtime-session")
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(missingID)
+        var now = Date(timeIntervalSince1970: 775)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/missing-runtime",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "stale-runtime",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000775")!
+        )
+
+        now = Date(timeIntervalSince1970: 776)
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(started.id)
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .stale)
+        XCTAssertNil(reconciled.exitCode)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+        XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertEqual(try coordinator.reattachableSessions(), [reconciled])
     }
 
     func testReconcileRuntimeStatusLeavesMetadataOnlyRuntimeUnchanged() throws {
