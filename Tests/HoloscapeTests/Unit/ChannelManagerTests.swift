@@ -13,6 +13,7 @@ final class ChannelManagerTests: XCTestCase {
 
         var startCalls: [StartCall] = []
         var detachCalls: [BrokerSessionID] = []
+        var reattachableSessionRecords: [BrokerSessionRecord] = []
 
         func start(
             _ request: BrokerSessionLaunchRequest,
@@ -61,6 +62,7 @@ final class ChannelManagerTests: XCTestCase {
         }
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
@@ -149,6 +151,64 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(call.request.command, "/bin/zsh")
         XCTAssertEqual(call.request.workingDirectory, "/tmp/channel-manager-broker")
         XCTAssertEqual(call.request.environmentProfile, .shell)
+    }
+
+    func testBrokerBackedShellSessionToRestoreMatchesShellRecordByLastAttachedChannel() {
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007101")!
+        let expectedSessionID = BrokerSessionID(rawValue: "matching-shell-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "other-channel-session"),
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: UUID()
+            ),
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "matching-agent-session"),
+                channelType: .agentDirect,
+                label: nil,
+                command: "claude",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .agentOAuth,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.brokerBackedShellSessionToRestore(for: channelID)
+
+        XCTAssertEqual(match?.id, expectedSessionID)
     }
 
     // MARK: - Channel Lookup

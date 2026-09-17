@@ -10,6 +10,7 @@ protocol BrokerSessionCoordinating {
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
+    func reattachableSessions() throws -> [BrokerSessionRecord]
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws

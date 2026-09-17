@@ -106,6 +106,70 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(exited.updatedAt, now)
     }
 
+    func testStartReattachesExistingBrokerSessionInsteadOfCreatingReplacement() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessReattachTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: NativePTYBrokerSessionRuntime(),
+            now: { Date(timeIntervalSince1970: 900) }
+        )
+        let originalChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000008003")!
+        let restoredChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000008004")!
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "broker-reattach",
+            attachedChannelID: originalChannelID
+        )
+        try coordinator.sendInput(record.id, bytes: Array("before-ui-restore\n".utf8))
+        _ = try waitForBrokerOutput(from: coordinator, id: record.id, containing: "before-ui-restore")
+        _ = try coordinator.detach(record.id)
+
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: restoredChannelID,
+            channelType: .shell,
+            label: "broker-reattach",
+            environmentProfile: .shell,
+            existingBrokerSessionID: record.id,
+            coordinator: coordinator
+        )
+        var outputNotifications = 0
+        restoredTerminal.setOutputHandler { outputNotifications += 1 }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        restoredTerminal.send(Array("after-ui-restore\n".utf8))
+        try waitUntil {
+            restoredTerminal.pollOutputOnce()
+            return outputNotifications > 0
+        }
+
+        let sessions = try registry.load()
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].id, record.id)
+        XCTAssertEqual(sessions[0].command, "/bin/cat")
+        XCTAssertEqual(sessions[0].lifecycle, .running)
+        XCTAssertEqual(sessions[0].lastAttachedChannelID, restoredChannelID)
+        XCTAssertEqual(restoredTerminal.brokerSessionID, record.id)
+        XCTAssertTrue(try coordinator.isRunning(record.id))
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 3,
         condition: () throws -> Bool,
@@ -118,6 +182,29 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }
         XCTFail("Timed out waiting for condition", file: file, line: line)
+    }
+
+    private func waitForBrokerOutput(
+        from coordinator: BrokerSessionCoordinator,
+        id: BrokerSessionID,
+        containing expected: String,
+        timeout: TimeInterval = 3,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> String {
+        var collected = Data()
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            collected.append(try coordinator.readAvailableOutput(id))
+            let output = String(decoding: collected, as: UTF8.self)
+            if output.contains(expected) {
+                return output
+            }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        let output = String(decoding: collected, as: UTF8.self)
+        XCTFail("Timed out waiting for broker output containing \(expected). Saw: \(output)", file: file, line: line)
+        return output
     }
 }
 

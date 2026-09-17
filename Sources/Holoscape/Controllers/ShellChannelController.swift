@@ -56,6 +56,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         instanceNumber: Int?,
         label: String? = nil,
         workingDirectory: String? = nil,
+        existingBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)? = nil
     ) -> ShellChannelController {
         let terminal = BrokerBackedTerminalProcess(
@@ -63,6 +64,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             channelType: .shell,
             label: label,
             environmentProfile: .shell,
+            existingBrokerSessionID: existingBrokerSessionID,
             coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
         )
         return ShellChannelController(
