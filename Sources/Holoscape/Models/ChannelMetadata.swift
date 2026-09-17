@@ -14,12 +14,13 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let apiURL: String?       // Agent Chat
     let apiKeyEnv: String?    // Agent Chat
     let pinnedAt: Date?       // Tab pinning
+    let brokerSessionID: BrokerSessionID? // Durable broker session for UI restore
 
     init(id: UUID, type: ChannelType, role: String, context: String? = nil,
          instanceNumber: Int? = nil, workingDirectory: String? = nil,
          host: String? = nil, user: String? = nil, command: String? = nil,
          endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil,
-         pinnedAt: Date? = nil) {
+         pinnedAt: Date? = nil, brokerSessionID: BrokerSessionID? = nil) {
         self.id = id
         self.type = type
         self.role = role
@@ -33,5 +34,6 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.apiURL = apiURL
         self.apiKeyEnv = apiKeyEnv
         self.pinnedAt = pinnedAt
+        self.brokerSessionID = brokerSessionID
     }
 }

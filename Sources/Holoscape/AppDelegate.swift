@@ -212,7 +212,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         switch metadata.type {
         case .shell:
             let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
-            let brokerSession = channelManagerRef?.brokerBackedShellSessionToRestore(for: metadata.id)
+            let brokerSession = channelManagerRef?.brokerBackedShellSessionToRestore(
+                for: metadata.id,
+                brokerSessionID: metadata.brokerSessionID
+            )
             let controller = ShellChannelController.brokerBacked(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
