@@ -230,26 +230,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
-            let controller = AgentChannelController(
+            let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
                 authType: .oauth,
                 workingDirectory: dir,
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+                existingBrokerSessionID: metadata.brokerSessionID
             )
             return controller
         case .agentAPI:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
-            let controller = AgentChannelController(
+            let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
                 authType: .apiKey(""),  // TODO: retrieve from secure storage
                 workingDirectory: dir,
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+                existingBrokerSessionID: metadata.brokerSessionID
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.

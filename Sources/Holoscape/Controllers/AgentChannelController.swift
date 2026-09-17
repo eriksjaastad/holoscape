@@ -60,6 +60,48 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     var contentView: NSView { terminal.terminalContentView }
 
+    static func brokerBacked(
+        id: UUID,
+        authType: AgentAuthType,
+        workingDirectory: URL?,
+        userLabel: String?,
+        instanceNumber: Int?,
+        useRawLabel: Bool = false,
+        command: String = "claude",
+        existingBrokerSessionID: BrokerSessionID? = nil,
+        coordinator: (any BrokerSessionCoordinating)? = nil
+    ) -> AgentChannelController {
+        let environmentProfile: BrokerEnvironmentProfile
+        let channelType: ChannelType
+        switch authType {
+        case .oauth:
+            environmentProfile = .agentOAuth
+            channelType = .agentDirect
+        case .apiKey:
+            environmentProfile = .agentAPI
+            channelType = .agentAPI
+        }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: id,
+            channelType: channelType,
+            label: userLabel,
+            environmentProfile: environmentProfile,
+            existingBrokerSessionID: existingBrokerSessionID,
+            coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
+        )
+        return AgentChannelController(
+            id: id,
+            authType: authType,
+            workingDirectory: workingDirectory,
+            userLabel: userLabel,
+            instanceNumber: instanceNumber,
+            useRawLabel: useRawLabel,
+            command: command,
+            terminal: terminal,
+            brokerSessionCoordinator: nil
+        )
+    }
+
     init(
         id: UUID,
         authType: AgentAuthType,
@@ -89,6 +131,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         super.init()
         if let terminalView = self.terminal as? LocalProcessTerminalView {
             terminalView.processDelegate = self
+        }
+        self.terminal.setTerminationHandler { [weak self] exitCode in
+            guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
+            self.state = .disconnected
+            self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
@@ -143,6 +191,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: launch.execName,
             currentDirectory: workingDirectory?.path
         )
+        if let startFailure = terminal.startFailureDescription {
+            NSLog("Agent terminal start failed: \(startFailure)")
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
+        }
+        if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+            brokerSessionID = terminalBrokerSessionID
+        }
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
@@ -150,6 +207,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func deactivate() {
         terminal.setOutputHandler(nil)
+        terminal.detachBrokerSession()
         recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
