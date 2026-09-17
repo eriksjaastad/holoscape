@@ -194,7 +194,8 @@ class ChannelManager {
                 endpoint: endpoint,
                 apiURL: apiURL,
                 apiKeyEnv: apiKeyEnv,
-                pinnedAt: pinnedTimestamps[id]
+                pinnedAt: pinnedTimestamps[id],
+                brokerSessionID: (channel as? ShellChannelController)?.brokerSessionID
             )
         }
         configService.save(config)
@@ -231,9 +232,17 @@ class ChannelManager {
 
     var count: Int { channels.count }
 
-    func brokerBackedShellSessionToRestore(for channelID: UUID) -> BrokerSessionRecord? {
+    func brokerBackedShellSessionToRestore(
+        for channelID: UUID,
+        brokerSessionID: BrokerSessionID? = nil
+    ) -> BrokerSessionRecord? {
         do {
-            return try brokerBackedShellCoordinator.reattachableSessions().first { record in
+            let sessions = try brokerBackedShellCoordinator.reattachableSessions()
+            if let brokerSessionID,
+               let exactMatch = sessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
+                return exactMatch
+            }
+            return sessions.first { record in
                 record.channelType == .shell && record.lastAttachedChannelID == channelID
             }
         } catch {

@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
@@ -72,6 +73,34 @@ final class ChannelManagerTests: XCTestCase {
         func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
         func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
         func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+    }
+
+    private final class StubTerminalProcess: TerminalProcess {
+        let terminalContentView = NSView()
+        let currentGridSize = TerminalGridSize(columns: 80, rows: 24)
+        let brokerOwnedSessionID: BrokerSessionID?
+        private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
+
+        init(brokerOwnedSessionID: BrokerSessionID?) {
+            self.brokerOwnedSessionID = brokerOwnedSessionID
+        }
+
+        func startProcess(
+            executable: String,
+            args: [String],
+            environment: [String]?,
+            execName: String?,
+            currentDirectory: String?
+        ) {}
+
+        func send(_ bytes: [UInt8]) {
+            userInputHandler?(ArraySlice(bytes))
+        }
+
+        func setOutputHandler(_ handler: (() -> Void)?) {}
+        func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) { userInputHandler = handler }
+        func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
+        func lastLines(_ count: Int) -> [String] { [] }
     }
 
     private var configService: ConfigService!
@@ -211,6 +240,53 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.id, expectedSessionID)
     }
 
+    func testBrokerBackedShellSessionToRestorePrefersPersistedBrokerSessionID() {
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007201")!
+        let expectedSessionID = BrokerSessionID(rawValue: "persisted-broker-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "stale-last-attached-session"),
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.brokerBackedShellSessionToRestore(
+            for: channelID,
+            brokerSessionID: expectedSessionID
+        )
+
+        XCTAssertEqual(match?.id, expectedSessionID)
+    }
+
     // MARK: - Channel Lookup
 
     func testChannelForIdReturnsCorrectChannel() {
@@ -328,6 +404,33 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(newManager.count, 1)
         let restored = newManager.allChannels().first
         XCTAssertEqual(restored?.channelId, channel.channelId)
+    }
+
+    func testSaveStatePersistsBrokerBackedShellSessionIDForExactRestore() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerBrokerSaveTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let brokerSessionID = BrokerSessionID(rawValue: "persisted-shell-broker-session")
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                terminal: StubTerminalProcess(brokerOwnedSessionID: brokerSessionID)
+            )
+        }
+        channel.activate()
+
+        manager.saveState()
+
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.count, 1)
+        XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
     }
 
     func testRestoreStateWithEmptyConfig() {
