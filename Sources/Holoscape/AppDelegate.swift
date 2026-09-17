@@ -90,16 +90,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         // If no channels restored, create a default shell
         if channelManager.count == 0 {
+            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
             let defaultDir = DefaultWorkingDirectory.preferredURL
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: nil,
-                workingDirectory: defaultDir
+                role: existingBrokerSession?.label,
+                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
             ) { id, _, _, instanceNum, workDir in
                 ShellChannelController.brokerBacked(
                     id: id,
                     instanceNumber: instanceNum,
-                    workingDirectory: workDir?.path
+                    label: existingBrokerSession?.label,
+                    workingDirectory: workDir?.path,
+                    existingBrokerSessionID: existingBrokerSession?.id
                 )
             }
             channel.delegate = windowController
