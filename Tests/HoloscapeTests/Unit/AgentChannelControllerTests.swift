@@ -3,6 +3,71 @@ import XCTest
 
 @MainActor
 final class AgentChannelControllerTests: XCTestCase {
+    private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
+        struct StartCall: Equatable {
+            let request: BrokerSessionLaunchRequest
+            let channelType: ChannelType
+            let label: String?
+            let attachedChannelID: UUID?
+        }
+
+        var startCalls: [StartCall] = []
+        var detachCalls: [BrokerSessionID] = []
+
+        func start(
+            _ request: BrokerSessionLaunchRequest,
+            channelType: ChannelType,
+            label: String?,
+            attachedChannelID: UUID?
+        ) throws -> BrokerSessionRecord {
+            startCalls.append(StartCall(request: request, channelType: channelType, label: label, attachedChannelID: attachedChannelID))
+            return BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "recording-agent-broker-session"),
+                channelType: channelType,
+                label: label,
+                command: request.command,
+                arguments: request.arguments,
+                workingDirectory: request.workingDirectory,
+                environmentProfile: request.environmentProfile,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: attachedChannelID
+            )
+        }
+
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+            detachCalls.append(id)
+            return BrokerSessionRecord(
+                id: id,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: nil,
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        }
+
+        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
+        func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+    }
+
     func testActivateUsesInjectedTerminalProcess() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(
@@ -101,6 +166,34 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(detached.id, running.id)
         XCTAssertEqual(detached.lifecycle, .detached)
         XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
+    func testBrokerBackedAgentUsesTerminalProcessBrokerInsteadOfDoubleRecording() {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000818")!
+        let controller = AgentChannelController.brokerBacked(
+            id: channelID,
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp/agent-broker-backed"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            coordinator: coordinator
+        )
+
+        controller.activate()
+        defer { controller.deactivate() }
+
+        XCTAssertEqual(coordinator.startCalls.count, 1)
+        let call = coordinator.startCalls[0]
+        XCTAssertEqual(call.channelType, .agentDirect)
+        XCTAssertEqual(call.label, "Codex")
+        XCTAssertEqual(call.attachedChannelID, channelID)
+        XCTAssertEqual(call.request.command, "/usr/bin/env")
+        XCTAssertEqual(call.request.arguments, ["codex"])
+        XCTAssertEqual(call.request.workingDirectory, "/tmp/agent-broker-backed")
+        XCTAssertEqual(call.request.environmentProfile, .agentOAuth)
+        XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "recording-agent-broker-session"))
     }
 
     func testLaunchInvocationUsesEnvForBareCommand() {

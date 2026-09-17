@@ -59,7 +59,7 @@ class ChannelManager {
                     coordinator: brokerBackedShellCoordinator
                 )
             } else {
-                controller = AgentChannelController(
+                controller = AgentChannelController.brokerBacked(
                     id: id,
                     authType: .oauth,
                     workingDirectory: dir,
@@ -67,7 +67,7 @@ class ChannelManager {
                     instanceNumber: instanceNumber,
                     useRawLabel: true,
                     command: profile.command,
-                    brokerSessionCoordinator: brokerSessionCoordinator
+                    coordinator: brokerBackedShellCoordinator
                 )
             }
         case .ssh:
