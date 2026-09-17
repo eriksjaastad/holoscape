@@ -24,7 +24,7 @@ struct BrokerSessionHost {
         } catch {
             response = .failure(
                 BrokerSessionHostFailure(
-                    code: "runtime-error",
+                    code: failureCode(for: error),
                     message: String(describing: error)
                 )
             )
@@ -66,5 +66,12 @@ struct BrokerSessionHost {
         case let .terminationStatus(id):
             return .terminationStatus(try runtime.terminationStatus(id: id))
         }
+    }
+
+    private func failureCode(for error: Error) -> String {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.missingSession = error {
+            return "missing-session"
+        }
+        return "runtime-error"
     }
 }
