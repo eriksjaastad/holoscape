@@ -3,6 +3,25 @@ import XCTest
 
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
+    private enum RuntimeError: Error, Equatable {
+        case createFailed
+    }
+
+    private final class FailingCreateRuntime: BrokerSessionRuntime {
+        func listSessions() throws -> [BrokerSessionID] { [] }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { throw RuntimeError.createFailed }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { false }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     func testStartCreatesBrokerRecordAndRoutesInputThroughNativePTYRuntime() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessTests-")
@@ -168,6 +187,40 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(sessions[0].lastAttachedChannelID, restoredChannelID)
         XCTAssertEqual(restoredTerminal.brokerSessionID, record.id)
         XCTAssertTrue(try coordinator.isRunning(record.id))
+    }
+
+    func testStartFailureIsObservableAndDoesNotExposePhantomBrokerSession() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessFailureTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: FailingCreateRuntime(),
+            now: { Date(timeIntervalSince1970: 950) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008005")!,
+            channelType: .shell,
+            label: "broker-failure",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertTrue(terminal.startFailureDescription?.contains("createFailed") == true, terminal.startFailureDescription ?? "nil")
+        XCTAssertEqual(try registry.load(), [])
     }
 
     private func waitUntil(

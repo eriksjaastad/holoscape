@@ -152,6 +152,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: "zsh",
             currentDirectory: workingDirectory
         )
+        if let startFailure = terminal.startFailureDescription {
+            NSLog("Shell terminal start failed: \(startFailure)")
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
+        }
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
             brokerSessionID = terminalBrokerSessionID
         }

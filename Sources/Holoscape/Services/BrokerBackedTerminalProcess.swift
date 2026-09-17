@@ -26,6 +26,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var outputTimer: Timer?
     private(set) var brokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
+    private(set) var startFailureDescription: String?
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
@@ -62,6 +63,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        startFailureDescription = nil
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -87,11 +89,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 startOutputPump()
             }
         } catch {
-            assertionFailure("Broker-backed terminal start failed: \(error)")
+            brokerSessionID = nil
+            startFailureDescription = String(describing: error)
+            NSLog("Broker-backed terminal start failed: \(error)")
         }
     }
 
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
+        startFailureDescription = nil
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
@@ -105,7 +110,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 startOutputPump()
             }
         } catch {
-            assertionFailure("Broker-backed terminal reattach failed: \(error)")
+            brokerSessionID = nil
+            startFailureDescription = String(describing: error)
+            NSLog("Broker-backed terminal reattach failed: \(error)")
         }
     }
 
