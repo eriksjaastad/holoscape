@@ -81,13 +81,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     }
 
     private func isSocketConnectable() -> Bool {
-        do {
-            let probeFrame = try BrokerSessionHostCodec().encodeRequest(.listSessions)
-            _ = try BrokerSessionHostUnixSocketTransport(socketPath: socketPath).sendFrame(probeFrame)
-            return true
-        } catch {
-            return false
-        }
+        BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath)
     }
 
     static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {
