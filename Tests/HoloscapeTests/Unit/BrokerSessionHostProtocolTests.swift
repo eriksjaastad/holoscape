@@ -447,6 +447,44 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(runtime.events, ["isRunning broker-host-socket-command-session"])
     }
 
+    func testHostedNativePTYSessionSurvivesClientRuntimeDiscardAndReattach() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let sessionID = BrokerSessionID(rawValue: "hosted-native-pty-reattach-session")
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000009005")!
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        var firstClient: BrokerSessionHostClientRuntime? = BrokerSessionHostClientRuntime { frame in
+            try host.handle(frame)
+        }
+        try firstClient?.createSession(id: sessionID, request: request)
+        try firstClient?.detachSession(id: sessionID)
+        firstClient = nil
+
+        let secondClient = BrokerSessionHostClientRuntime { frame in
+            try host.handle(frame)
+        }
+        XCTAssertEqual(try secondClient.listSessions(), [sessionID])
+        try secondClient.attachSession(id: sessionID, channelID: channelID)
+        XCTAssertTrue(try secondClient.isRunning(id: sessionID))
+        try secondClient.sendInput(id: sessionID, bytes: Array("reattached-hosted-native-pty\n".utf8))
+
+        let output = try waitForOutput(
+            from: secondClient,
+            id: sessionID,
+            containing: "reattached-hosted-native-pty"
+        )
+        XCTAssertTrue(output.contains("reattached-hosted-native-pty"), output)
+
+        try secondClient.terminateSession(id: sessionID, exitCode: nil)
+        XCTAssertEqual(try secondClient.listSessions(), [])
+    }
+
     func testUnixSocketBrokerKeepsRuntimeAcrossDisconnectedClients() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.isRunning = true
@@ -513,6 +551,28 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             usleep(10_000)
         }
         XCTFail("Timed out waiting for broker socket at \(path)")
+    }
+
+    private func waitForOutput(
+        from runtime: BrokerSessionHostClientRuntime,
+        id: BrokerSessionID,
+        containing expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> String {
+        var collected = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            collected.append(try runtime.readAvailableOutput(id: id))
+            let output = String(decoding: collected, as: UTF8.self)
+            if output.contains(expected) {
+                return output
+            }
+            usleep(20_000)
+        }
+        let output = String(decoding: collected, as: UTF8.self)
+        XCTFail("Timed out waiting for output containing \(expected). Saw: \(output)", file: file, line: line)
+        return output
     }
 }
 
