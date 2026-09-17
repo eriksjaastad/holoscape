@@ -166,6 +166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldSave {
             windowController?.channelManager.saveState()
+            windowController?.channelManager.detachAllChannelsForAppTermination()
         }
         windowController?.historyBuffer.stopPeriodicFlush()
         windowController?.historyBuffer.flush()

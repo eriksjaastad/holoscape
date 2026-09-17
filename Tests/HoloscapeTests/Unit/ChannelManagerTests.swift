@@ -381,6 +381,20 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(manager.count, 1)
     }
 
+    func testDetachAllChannelsForAppTerminationDeactivatesWithoutRemovingTabs() {
+        let first = createMockChannel(type: .shell, role: "Shell") as! MockChannelController
+        let second = createMockChannel(type: .agentDirect, role: "Agent") as! MockChannelController
+        first.activate()
+        second.activate()
+
+        manager.detachAllChannelsForAppTermination()
+
+        XCTAssertEqual(first.deactivateCallCount, 1)
+        XCTAssertEqual(second.deactivateCallCount, 1)
+        XCTAssertEqual(manager.count, 2)
+        XCTAssertEqual(manager.allChannels().map(\.channelId), [first.channelId, second.channelId])
+    }
+
     // MARK: - Close Confirmation
 
     func testNeedsCloseConfirmationWhenActive() {
