@@ -287,6 +287,51 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.id, expectedSessionID)
     }
 
+    func testFirstUnmatchedBrokerBackedShellSessionToRestoreFindsCrashSurvivingShellWithoutSavedChannel() {
+        let expectedSessionID = BrokerSessionID(rawValue: "crash-surviving-shell-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "agent-session-not-shell"),
+                channelType: .agentDirect,
+                label: "Agent",
+                command: "claude",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .agentOAuth,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/recovered",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.firstUnmatchedBrokerBackedShellSessionToRestore()
+
+        XCTAssertEqual(match?.id, expectedSessionID)
+        XCTAssertEqual(match?.label, "Recovered Shell")
+        XCTAssertEqual(match?.workingDirectory, "/tmp/recovered")
+    }
+
     // MARK: - Channel Lookup
 
     func testChannelForIdReturnsCorrectChannel() {

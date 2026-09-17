@@ -251,6 +251,16 @@ class ChannelManager {
         }
     }
 
+    func firstUnmatchedBrokerBackedShellSessionToRestore() -> BrokerSessionRecord? {
+        do {
+            return try brokerBackedShellCoordinator.reattachableSessions()
+                .first { $0.channelType == .shell }
+        } catch {
+            assertionFailure("ChannelManager failed to load unmatched broker-backed shell sessions: \(error)")
+            return nil
+        }
+    }
+
     /// Get the stored label for a channel (used for profile resolution on duplicate).
     func labelForChannel(id: UUID) -> String? {
         return channelLabels[id]
