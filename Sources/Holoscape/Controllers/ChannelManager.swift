@@ -129,6 +129,16 @@ class ChannelManager {
         // Note: highWaterMarks are NOT decremented on close (no renumbering)
     }
 
+    /// Detach live channel views during app termination without mutating the
+    /// saved tab registry. Broker-backed sessions must remain durable and
+    /// reattachable after the UI process exits; this is intentionally different
+    /// from `closeChannel`, which removes a tab from Holoscape's model.
+    func detachAllChannelsForAppTermination() {
+        for channel in allChannels() where channel.state != .disconnected {
+            channel.deactivate()
+        }
+    }
+
     /// Get a channel by ID.
     func channel(for id: UUID) -> (any ChannelController)? {
         return channels[id]
