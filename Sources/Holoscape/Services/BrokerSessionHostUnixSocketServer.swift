@@ -69,7 +69,13 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
             throw ServerError.socketFailed(String(cString: strerror(errno)))
         }
 
-        unlink(socketPath)
+        if FileManager.default.fileExists(atPath: socketPath) {
+            if Self.socketPathHasReachableBroker(socketPath) {
+                Darwin.close(fd)
+                throw ServerError.bindFailed("socket path already has a reachable broker: \(socketPath)")
+            }
+            unlink(socketPath)
+        }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -99,6 +105,18 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
 
         return fd
+    }
+
+    static func socketPathHasReachableBroker(_ socketPath: String) -> Bool {
+        do {
+            let codec = BrokerSessionHostCodec()
+            let probeFrame = try codec.encodeRequest(.listSessions)
+            let responseFrame = try BrokerSessionHostUnixSocketTransport(socketPath: socketPath).sendFrame(probeFrame)
+            _ = try codec.decodeResponse(responseFrame)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func handleConnection(_ clientFD: Int32) throws {

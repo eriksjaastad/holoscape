@@ -543,6 +543,91 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testUnixSocketServerDetectsReachableBrokerBeforeReplacingSocketPath() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-existing-broker-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: host,
+            readChunkSize: 5
+        )
+        let serverFinished = expectation(description: "socket broker served probe and request")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 2)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath))
+
+        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
+        let client = BrokerSessionHostClientRuntime { frame in
+            try transport.sendFrame(frame)
+        }
+
+        XCTAssertTrue(try client.isRunning(id: BrokerSessionID(rawValue: "existing-broker-session")))
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "listSessions",
+            "isRunning existing-broker-session",
+        ])
+    }
+
+    func testUnixSocketServerRefusesToReplaceReachableBrokerAtSamePath() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-refuse-replace-broker-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(socketPath: socketPath, host: host)
+        let serverFinished = expectation(description: "original socket broker stayed reachable")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 3)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let replacement = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime())
+        )
+        XCTAssertThrowsError(try replacement.run(maxConnections: 1)) { error in
+            guard case let BrokerSessionHostUnixSocketServer.ServerError.bindFailed(message) = error else {
+                return XCTFail("Expected bindFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("already has a reachable broker"), message)
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let client = BrokerSessionHostClientRuntime { frame in
+            try transport.sendFrame(frame)
+        }
+        XCTAssertEqual(try client.listSessions(), [])
+        XCTAssertTrue(try client.isRunning(id: BrokerSessionID(rawValue: "original-broker-still-active")))
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "listSessions",
+            "listSessions",
+            "isRunning original-broker-still-active",
+        ])
+    }
+
     private func waitForSocket(at path: String) throws {
         for _ in 0..<100 {
             if FileManager.default.fileExists(atPath: path) {
