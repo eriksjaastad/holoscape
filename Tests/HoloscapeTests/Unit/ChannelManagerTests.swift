@@ -443,6 +443,88 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.workingDirectory, "/tmp/recovered")
     }
 
+    func testSavedBrokerBackedAgentRestoresAndReattachesAcrossManagerRelaunch() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerAgentRelaunchTests-")
+            .appendingPathComponent(UUID().uuidString)
+        let configDirectory = tempDirectory.appendingPathComponent("config")
+        let registryDirectory = tempDirectory.appendingPathComponent("registry")
+        try FileManager.default.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: registryDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: NativePTYBrokerSessionRuntime(),
+            now: { Date(timeIntervalSince1970: 7_400) }
+        )
+        let firstConfig = ConfigService(configDir: configDirectory)
+        let firstManager = ChannelManager(
+            configService: firstConfig,
+            brokerBackedShellCoordinator: coordinator
+        )
+        let profile = SessionProfile(
+            label: "Crash Agent",
+            connection: .local,
+            command: "/bin/cat",
+            directory: tempDirectory.path
+        )
+        let original = firstManager.createChannel(from: profile)
+        original.activate()
+        guard let originalAgent = original as? AgentChannelController,
+              let brokerSessionID = originalAgent.brokerSessionID else {
+            return XCTFail("Broker-backed agent did not expose a broker session id")
+        }
+        defer { _ = try? coordinator.markErrored(brokerSessionID) }
+
+        firstManager.saveState()
+        firstManager.detachAllChannelsForAppTermination()
+
+        let detachedRecords = try registry.load()
+        XCTAssertEqual(detachedRecords.count, 1)
+        let detachedRecord = try XCTUnwrap(detachedRecords.first)
+        XCTAssertEqual(detachedRecord.id, brokerSessionID)
+        XCTAssertEqual(detachedRecord.lifecycle, .detached)
+        XCTAssertNil(detachedRecord.lastAttachedChannelID)
+
+        let secondManager = ChannelManager(
+            configService: ConfigService(configDir: configDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        secondManager.restoreState { metadata in
+            guard metadata.type == .agentDirect else { return nil }
+            let brokerSession = secondManager.brokerBackedAgentSessionToRestore(
+                for: metadata.id,
+                channelType: .agentDirect,
+                brokerSessionID: metadata.brokerSessionID
+            )
+            return AgentChannelController.brokerBacked(
+                id: metadata.id,
+                authType: .oauth,
+                workingDirectory: metadata.workingDirectory.map(URL.init(fileURLWithPath:)),
+                userLabel: metadata.role,
+                instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
+                existingBrokerSessionID: brokerSession?.id,
+                coordinator: coordinator
+            )
+        }
+        let restoredChannels = secondManager.allChannels()
+        XCTAssertEqual(restoredChannels.count, 1)
+        let restored = restoredChannels.first as? AgentChannelController
+        restored?.activate()
+
+        XCTAssertEqual(restored?.brokerSessionID, brokerSessionID)
+        let reattachedRecords = try registry.load()
+        XCTAssertEqual(reattachedRecords.count, 1)
+        let reattachedRecord = try XCTUnwrap(reattachedRecords.first)
+        XCTAssertEqual(reattachedRecord.id, brokerSessionID)
+        XCTAssertEqual(reattachedRecord.lifecycle, .running)
+        XCTAssertEqual(reattachedRecord.lastAttachedChannelID, original.channelId)
+        XCTAssertEqual(reattachedRecord.command, "/bin/cat")
+        XCTAssertEqual(reattachedRecord.workingDirectory, tempDirectory.path)
+    }
+
     // MARK: - Channel Lookup
 
     func testChannelForIdReturnsCorrectChannel() {
