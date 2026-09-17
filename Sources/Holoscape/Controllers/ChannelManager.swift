@@ -180,6 +180,9 @@ class ChannelManager {
 
             if let shellChannel = channel as? ShellChannelController {
                 workingDir = shellChannel.workingDirectory
+            } else if let agentChannel = channel as? AgentChannelController {
+                workingDir = agentChannel.persistedWorkingDirectory
+                command = agentChannel.persistedCommand
             } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
@@ -206,6 +209,7 @@ class ChannelManager {
                 apiKeyEnv: apiKeyEnv,
                 pinnedAt: pinnedTimestamps[id],
                 brokerSessionID: (channel as? ShellChannelController)?.brokerSessionID
+                    ?? (channel as? AgentChannelController)?.brokerSessionID
             )
         }
         configService.save(config)

@@ -492,6 +492,42 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
     }
 
+    func testSaveStatePersistsAgentLaunchIntentAndBrokerSessionIDForRestore() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerAgentBrokerSaveTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: recordingCoordinator
+        )
+        let channel = manager.createChannel(type: .agentDirect, role: "Codex", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            AgentChannelController(
+                id: id,
+                authType: .oauth,
+                workingDirectory: URL(fileURLWithPath: "/tmp/holoscape-agent-restore"),
+                userLabel: "Codex",
+                instanceNumber: instanceNumber,
+                command: "codex --dangerously-bypass-approvals-and-sandbox",
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil),
+                brokerSessionCoordinator: recordingCoordinator
+            )
+        }
+        channel.activate()
+
+        manager.saveState()
+
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.count, 1)
+        XCTAssertEqual(savedChannels.first?.workingDirectory, "/tmp/holoscape-agent-restore")
+        XCTAssertEqual(savedChannels.first?.command, "codex --dangerously-bypass-approvals-and-sandbox")
+        XCTAssertEqual(savedChannels.first?.brokerSessionID, BrokerSessionID(rawValue: "recording-channel-manager-broker-session"))
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }

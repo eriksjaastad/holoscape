@@ -26,6 +26,14 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         workingDirectory?.path
     }
 
+    var persistedWorkingDirectory: String? {
+        workingDirectory?.path
+    }
+
+    var persistedCommand: String {
+        command
+    }
+
     var displayLabel: String {
         if useRawLabel, let label = userLabel {
             if let num = instanceNumber {
