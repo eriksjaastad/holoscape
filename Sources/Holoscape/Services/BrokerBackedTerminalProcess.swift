@@ -114,9 +114,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 startOutputPump()
             }
         } catch {
-            brokerSessionID = nil
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
+            if startFailureKind == .brokerHostUnavailable {
+                brokerSessionID = sessionID
+            } else {
+                brokerSessionID = nil
+            }
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
     }

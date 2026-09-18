@@ -297,6 +297,57 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(stale.lastAttachedChannelID)
     }
 
+    func testReattachBrokerHostUnavailablePreservesSessionIDForRetry() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessHostUnavailableReattachTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let sessionID = BrokerSessionID(rawValue: "host-unavailable-restored-agent-session")
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let record = BrokerSessionRecord(
+            id: sessionID,
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/host-unavailable-agent",
+            environmentProfile: .agentOAuth,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastAttachedChannelID: nil
+        )
+        try registry.upsert(record)
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: FailingReattachRuntime(reattachError: BrokerSessionHostClientRuntime.ClientError.transportFailed("socketTimedOut(/tmp/missing.sock)")),
+            now: { Date(timeIntervalSince1970: 2) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008007")!,
+            channelType: .agentDirect,
+            label: "Codex",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp/host-unavailable-agent"
+        )
+
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(terminal.startFailureKind, .brokerHostUnavailable)
+        XCTAssertEqual(try registry.load(), [record])
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 3,
         condition: () throws -> Bool,
