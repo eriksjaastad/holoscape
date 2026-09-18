@@ -193,8 +193,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if let startFailure = terminal.startFailureDescription {
             NSLog("Agent terminal start failed: \(startFailure)")
-            state = .disconnected
-            delegate?.channelStateDidChange(self, to: .disconnected)
+            let failedState = channelState(for: terminal.startFailureKind)
+            state = failedState
+            delegate?.channelStateDidChange(self, to: failedState)
             return
         }
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
@@ -233,6 +234,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
 
         return ("/usr/bin/env", [trimmed], trimmed)
+    }
+
+    private func channelState(for startFailureKind: TerminalStartFailureKind?) -> ChannelState {
+        switch startFailureKind {
+        case .brokerHostUnavailable, .brokerSessionStale:
+            return .stale
+        case .failed, .none:
+            return .disconnected
+        }
     }
 
     func lastLines(_ count: Int) -> [String] {

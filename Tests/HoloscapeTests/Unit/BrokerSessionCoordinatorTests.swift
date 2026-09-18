@@ -17,6 +17,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         var events: [Event] = []
         var createError: Error?
+        var attachError: Error?
         var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
@@ -34,6 +35,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
 
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {
+            if let attachError { throw attachError }
             events.append(.attach(id, channelID))
         }
 
@@ -484,6 +486,59 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(reconciled, started)
         XCTAssertEqual(try coordinator.reattachableSessions(), [started])
+        XCTAssertEqual(try coordinator.loadAll(), [started])
+    }
+
+    func testReattachMissingRuntimeSessionMarksRecordStaleAndFailsLoudly() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 792)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/stale-reattach-agent",
+                environmentProfile: .agentOAuth,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .agentDirect,
+            label: "stale-reattach-agent",
+            attachedChannelID: nil
+        )
+        now = Date(timeIntervalSince1970: 793)
+        runtime.attachError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(started.id)
+
+        XCTAssertThrowsError(try coordinator.reattach(started.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .staleSession(started.id))
+        }
+        let records = try coordinator.loadAll()
+        XCTAssertEqual(records.count, 1)
+        let stale = records[0]
+        XCTAssertEqual(stale.lifecycle, BrokerSessionLifecycle.stale)
+        XCTAssertEqual(stale.updatedAt, now)
+        XCTAssertNil(stale.lastAttachedChannelID)
+    }
+
+    func testReattachBrokerHostTransportFailureDoesNotMutateRecord() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 794) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/reattach-host-unavailable",
+                environmentProfile: .agentOAuth,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .agentDirect,
+            label: "reattach-host-unavailable",
+            attachedChannelID: nil
+        )
+        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.transportFailed("socketTimedOut(/tmp/missing.sock)")
+
+        XCTAssertThrowsError(try coordinator.reattach(started.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .brokerHostUnavailable(started.id, "socketTimedOut(/tmp/missing.sock)"))
+        }
         XCTAssertEqual(try coordinator.loadAll(), [started])
     }
 

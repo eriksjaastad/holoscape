@@ -351,6 +351,7 @@ class SidebarTabEntry: NSButton {
         case .active:       return NSColor.systemGreen.cgColor
         case .connecting:   return NSColor.systemYellow.cgColor
         case .disconnected: return NSColor.systemRed.cgColor
+        case .stale:        return NSColor.systemOrange.cgColor
         }
     }
 
@@ -436,7 +437,7 @@ class SidebarTabEntry: NSButton {
         // Map the incoming view-level state into this row's snapshot
         // so state-variant resolution picks the right fill + text.
         //   notificationKind: 0 none, 1 idle_prompt, 2 permission_prompt
-        //   channelConnectionState: 0 active, 1 connecting, 2 disconnected
+        //   channelConnectionState: 0 active, 1 connecting, 2 disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
         let notificationKind: Int32
@@ -450,6 +451,7 @@ class SidebarTabEntry: NSButton {
         case .active:       connectionState = 0
         case .connecting:   connectionState = 1
         case .disconnected: connectionState = 2
+        case .stale:        connectionState = 3
         }
         snapshot.setChannelState(
             channelId: channelId.map { Int32(truncatingIfNeeded: $0.hashValue) } ?? 0,
@@ -464,6 +466,7 @@ class SidebarTabEntry: NSButton {
         case .active:       statusTextField.stringValue = elapsedTime ?? ""
         case .connecting:   statusTextField.stringValue = "connecting..."
         case .disconnected: statusTextField.stringValue = "disconnected"
+        case .stale:        statusTextField.stringValue = "stale"
         }
         if notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"

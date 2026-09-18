@@ -32,6 +32,8 @@ protocol BrokerSessionCoordinating {
 struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     enum CoordinatorError: Error, Equatable {
         case missingSession(BrokerSessionID)
+        case staleSession(BrokerSessionID)
+        case brokerHostUnavailable(BrokerSessionID, String)
     }
 
     private let registry: BrokerSessionRegistry
@@ -108,13 +110,27 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
-            record.withLifecycle(
-                .running,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: attachedChannelID
-            )
+        do {
+            return try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
+                record.withLifecycle(
+                    .running,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: attachedChannelID
+                )
+            }
+        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
+            throw CoordinatorError.brokerHostUnavailable(id, message)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            _ = try updateMetadataOnly(id) { record in
+                record.withLifecycle(
+                    .stale,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+            }
+            throw CoordinatorError.staleSession(id)
         }
     }
 

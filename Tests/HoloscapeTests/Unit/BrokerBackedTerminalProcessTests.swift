@@ -7,6 +7,27 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         case createFailed
     }
 
+    private final class FailingReattachRuntime: BrokerSessionRuntime {
+        let reattachError: Error
+
+        init(reattachError: Error) {
+            self.reattachError = reattachError
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { [] }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws { throw reattachError }
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     private final class FailingCreateRuntime: BrokerSessionRuntime {
         func listSessions() throws -> [BrokerSessionID] { [] }
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { throw RuntimeError.createFailed }
@@ -220,7 +241,60 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertNil(terminal.brokerSessionID)
         XCTAssertTrue(terminal.startFailureDescription?.contains("createFailed") == true, terminal.startFailureDescription ?? "nil")
+        XCTAssertEqual(terminal.startFailureKind, .failed)
         XCTAssertEqual(try registry.load(), [])
+    }
+
+    func testReattachMissingRuntimeSessionIsObservableAsStaleAndMarksRecordStale() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessStaleReattachTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let sessionID = BrokerSessionID(rawValue: "stale-restored-agent-session")
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        try registry.upsert(BrokerSessionRecord(
+            id: sessionID,
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/stale-agent",
+            environmentProfile: .agentOAuth,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastAttachedChannelID: nil
+        ))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: FailingReattachRuntime(reattachError: NativePTYBrokerSessionRuntime.RuntimeError.missingSession(sessionID)),
+            now: { Date(timeIntervalSince1970: 2) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008006")!,
+            channelType: .agentDirect,
+            label: "Codex",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp/stale-agent"
+        )
+
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertEqual(terminal.startFailureKind, .brokerSessionStale)
+        let stale = try registry.load().single()
+        XCTAssertEqual(stale.lifecycle, .stale)
+        XCTAssertNil(stale.lastAttachedChannelID)
     }
 
     private func waitUntil(
