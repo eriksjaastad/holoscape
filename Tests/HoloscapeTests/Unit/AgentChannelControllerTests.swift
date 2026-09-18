@@ -217,6 +217,30 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    func testActivationPreservesBrokerSessionIDWhenBrokerHostIsUnavailable() {
+        let preservedID = BrokerSessionID(rawValue: "agent-host-unavailable-session")
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = preservedID
+        terminal.startFailureDescription = "broker host unavailable"
+        terminal.startFailureKind = .brokerHostUnavailable
+        let delegate = MockChannelDelegate()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal
+        )
+        controller.delegate = delegate
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.brokerSessionID, preservedID)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
+    }
+
     func testLaunchInvocationUsesEnvForBareCommand() {
         let invocation = AgentChannelController.launchInvocation(for: "claude")
 

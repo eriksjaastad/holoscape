@@ -178,6 +178,23 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    func testActivationPreservesBrokerSessionIDWhenBrokerHostIsUnavailable() {
+        let preservedID = BrokerSessionID(rawValue: "shell-host-unavailable-session")
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = preservedID
+        terminal.startFailureDescription = "broker host unavailable"
+        terminal.startFailureKind = .brokerHostUnavailable
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+        controller.delegate = delegate
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.brokerSessionID, preservedID)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),

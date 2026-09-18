@@ -194,6 +194,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let startFailure = terminal.startFailureDescription {
             NSLog("Agent terminal start failed: \(startFailure)")
             let failedState = channelState(for: terminal.startFailureKind)
+            if terminal.startFailureKind == .brokerHostUnavailable,
+               let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
             return
