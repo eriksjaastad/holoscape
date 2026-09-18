@@ -16,6 +16,7 @@ class MockTerminalProcess: TerminalProcess {
     var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     var lines: [String] = []
     var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
+    var brokerOwnedSessionID: BrokerSessionID?
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
 

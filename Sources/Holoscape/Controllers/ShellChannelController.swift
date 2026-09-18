@@ -155,6 +155,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
             let failedState = channelState(for: terminal.startFailureKind)
+            if terminal.startFailureKind == .brokerHostUnavailable,
+               let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
             return
