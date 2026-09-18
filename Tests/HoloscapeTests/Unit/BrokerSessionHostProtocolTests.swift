@@ -590,6 +590,94 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    @MainActor
+    func testBrokerBackedAgentSessionReattachesThroughUnixSocketHostRuntime() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SocketHostedAgentReattachTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let socketPath = "/tmp/hs-agent-reattach-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
+        )
+        let serverFinished = expectation(description: "socket broker served agent relaunch requests")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 6)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let firstCoordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: BrokerSessionHostClientRuntime { frame in try firstTransport.sendFrame(frame) },
+            now: { Date(timeIntervalSince1970: 9_100) }
+        )
+        let firstChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009101")!
+        let firstTerminal = BrokerBackedTerminalProcess(
+            channelID: firstChannelID,
+            channelType: .agentDirect,
+            label: "Socket Agent",
+            environmentProfile: .agentOAuth,
+            coordinator: firstCoordinator
+        )
+        firstTerminal.startProcess(
+            executable: "/bin/cat",
+            args: [],
+            environment: nil,
+            execName: "cat",
+            currentDirectory: tempDirectory.path
+        )
+        let brokerSessionID = try XCTUnwrap(firstTerminal.brokerSessionID)
+        firstTerminal.detachBrokerSession()
+
+        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let secondCoordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: BrokerSessionHostClientRuntime { frame in try secondTransport.sendFrame(frame) },
+            now: { Date(timeIntervalSince1970: 9_101) }
+        )
+        let restoredChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009102")!
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: restoredChannelID,
+            channelType: .agentDirect,
+            label: "Socket Agent",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: brokerSessionID,
+            coordinator: secondCoordinator
+        )
+        restoredTerminal.startProcess(
+            executable: "/bin/cat",
+            args: [],
+            environment: nil,
+            execName: "cat",
+            currentDirectory: tempDirectory.path
+        )
+
+        XCTAssertEqual(restoredTerminal.brokerSessionID, brokerSessionID)
+        XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
+        let records = try registry.load()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].id, brokerSessionID)
+        XCTAssertEqual(records[0].channelType, .agentDirect)
+        XCTAssertEqual(records[0].lifecycle, .running)
+        XCTAssertEqual(records[0].lastAttachedChannelID, restoredChannelID)
+
+        _ = try secondCoordinator.markErrored(brokerSessionID)
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+    }
+
     func testUnixSocketServerRefusesToReplaceReachableBrokerAtSamePath() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.isRunning = true

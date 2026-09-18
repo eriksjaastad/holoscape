@@ -203,6 +203,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             }
         } catch MetadataOnlyBrokerSessionRuntime.RuntimeError.unsupportedPTYOperation {
             return existing
+        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
+            return existing
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
             return try updateMetadataOnly(id) { record in
                 record.withLifecycle(

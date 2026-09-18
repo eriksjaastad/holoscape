@@ -463,6 +463,30 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(reconciled.lastAttachedChannelID)
     }
 
+    func testReconcileRuntimeStatusPreservesRecordWhenBrokerHostTransportIsUnavailable() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 790) })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/host-unavailable-agent",
+                environmentProfile: .agentOAuth,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .agentDirect,
+            label: "host-unavailable-agent",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000790")!
+        )
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("socketTimedOut(/tmp/missing.sock)")
+
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled, started)
+        XCTAssertEqual(try coordinator.reattachableSessions(), [started])
+        XCTAssertEqual(try coordinator.loadAll(), [started])
+    }
+
     func testReconcileRuntimeStatusLeavesMetadataOnlyRuntimeUnchanged() throws {
         let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 800) })
         let started = try coordinator.start(
