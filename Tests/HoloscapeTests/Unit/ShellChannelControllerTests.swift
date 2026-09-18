@@ -164,6 +164,20 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .disconnected])
     }
 
+    func testActivationMarksChannelStaleWhenRestoredBrokerSessionIsMissing() {
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+        controller.delegate = delegate
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),

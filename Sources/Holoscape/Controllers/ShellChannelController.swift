@@ -154,8 +154,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
-            state = .disconnected
-            delegate?.channelStateDidChange(self, to: .disconnected)
+            let failedState = channelState(for: terminal.startFailureKind)
+            state = failedState
+            delegate?.channelStateDidChange(self, to: failedState)
             return
         }
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
@@ -213,6 +214,15 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func handleUserInput(_ data: ArraySlice<UInt8>) {
         guard let nextDirectory = directoryTracker.consume(data: data) else { return }
         updateWorkingDirectory(nextDirectory)
+    }
+
+    private func channelState(for startFailureKind: TerminalStartFailureKind?) -> ChannelState {
+        switch startFailureKind {
+        case .brokerHostUnavailable, .brokerSessionStale:
+            return .stale
+        case .failed, .none:
+            return .disconnected
+        }
     }
 
     private func updateWorkingDirectory(_ nextDirectory: String) {

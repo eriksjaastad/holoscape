@@ -196,6 +196,27 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "recording-agent-broker-session"))
     }
 
+    func testActivationMarksAgentStaleWhenRestoredBrokerSessionIsMissing() {
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        let delegate = MockChannelDelegate()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal
+        )
+        controller.delegate = delegate
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
+    }
+
     func testLaunchInvocationUsesEnvForBareCommand() {
         let invocation = AgentChannelController.launchInvocation(for: "claude")
 

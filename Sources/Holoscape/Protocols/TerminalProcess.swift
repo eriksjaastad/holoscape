@@ -28,6 +28,13 @@ protocol TerminalProcess: AnyObject {
     var currentGridSize: TerminalGridSize { get }
     var brokerOwnedSessionID: BrokerSessionID? { get }
     var startFailureDescription: String? { get }
+    var startFailureKind: TerminalStartFailureKind? { get }
+}
+
+enum TerminalStartFailureKind: Equatable, Sendable {
+    case failed
+    case brokerHostUnavailable
+    case brokerSessionStale
 }
 
 extension TerminalProcess {
@@ -35,4 +42,5 @@ extension TerminalProcess {
     func detachBrokerSession() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
     var startFailureDescription: String? { nil }
+    var startFailureKind: TerminalStartFailureKind? { nil }
 }

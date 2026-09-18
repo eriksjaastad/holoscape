@@ -17,6 +17,7 @@ class MockTerminalProcess: TerminalProcess {
     var lines: [String] = []
     var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
     var startFailureDescription: String?
+    var startFailureKind: TerminalStartFailureKind?
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true

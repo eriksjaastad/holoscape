@@ -27,6 +27,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var brokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
     private(set) var startFailureDescription: String?
+    private(set) var startFailureKind: TerminalStartFailureKind?
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
@@ -64,6 +65,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         currentDirectory: String?
     ) {
         startFailureDescription = nil
+        startFailureKind = nil
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -91,12 +93,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } catch {
             brokerSessionID = nil
             startFailureDescription = String(describing: error)
+            startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
         }
     }
 
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
         startFailureDescription = nil
+        startFailureKind = nil
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
@@ -112,6 +116,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } catch {
             brokerSessionID = nil
             startFailureDescription = String(describing: error)
+            startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
     }
@@ -211,5 +216,29 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             _ = try coordinator.markErrored(brokerSessionID)
         }
         terminationHandler?(exitCode)
+    }
+
+    private func classifyStartFailure(_ error: Error) -> TerminalStartFailureKind {
+        if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError {
+            switch coordinatorError {
+            case .missingSession, .staleSession:
+                return .brokerSessionStale
+            case .brokerHostUnavailable:
+                return .brokerHostUnavailable
+            }
+        }
+        if case BrokerSessionHostClientRuntime.ClientError.transportFailed = error {
+            return .brokerHostUnavailable
+        }
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .missingSession = runtimeError {
+            return .brokerSessionStale
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
+           code == "missing-session",
+           message.contains("missingSession") {
+            return .brokerSessionStale
+        }
+        return .failed
     }
 }
