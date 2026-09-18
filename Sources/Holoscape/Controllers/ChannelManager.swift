@@ -13,6 +13,10 @@ class ChannelManager {
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
 
+    var brokerBackedTerminalCoordinator: any BrokerSessionCoordinating {
+        brokerBackedShellCoordinator
+    }
+
     init(
         configService: ConfigService,
         brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(),

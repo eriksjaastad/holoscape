@@ -1905,7 +1905,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                     id: id,
                     instanceNumber: instanceNum,
                     label: effectiveLabel,
-                    workingDirectory: workDir?.path
+                    workingDirectory: workDir?.path,
+                    coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
             channel.delegate = self
@@ -1928,14 +1929,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: label,
                 workingDirectory: dir ?? URL(fileURLWithPath: NSHomeDirectory())
             ) { id, _, _, instanceNum, workDir in
-                AgentChannelController(
+                AgentChannelController.brokerBacked(
                     id: id,
                     authType: .oauth,
                     workingDirectory: workDir,
                     userLabel: label,
                     instanceNumber: instanceNum,
                     command: command ?? "claude",
-                    brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                    coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
             channel.delegate = self
@@ -2075,7 +2076,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             return ShellChannelController.brokerBacked(
                 id: id,
                 instanceNumber: instanceNum,
-                workingDirectory: workDir?.path
+                workingDirectory: workDir?.path,
+                coordinator: self.channelManager.brokerBackedTerminalCoordinator
             )
         }
         channel.delegate = self
@@ -2090,14 +2092,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             role: nil,
             workingDirectory: defaultDir
         ) { id, type, _, instanceNum, workDir in
-            AgentChannelController(
+            AgentChannelController.brokerBacked(
                 id: id,
                 authType: authType,
                 workingDirectory: workDir,
                 userLabel: nil,
                 instanceNumber: instanceNum,
                 command: "claude",
-                brokerSessionCoordinator: self.channelManager.brokerSessionCoordinator
+                coordinator: self.channelManager.brokerBackedTerminalCoordinator
             )
         }
         channel.delegate = self

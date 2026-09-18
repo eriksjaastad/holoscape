@@ -7,7 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
-    private var channelManagerRef: ChannelManager?
+    var channelManagerRef: ChannelManager?
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var apiServer: HoloscapeAPIServer?
 
@@ -207,7 +207,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     // MARK: - Private
 
-    private func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
+    func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
         // NOTE: This method only CONSTRUCTS controllers. Activation is the
         // caller's responsibility — the restore callback in
         // `applicationDidFinishLaunching` calls `activate()` after setting
@@ -225,7 +225,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
                 workingDirectory: restoredShell.workingDirectory,
-                existingBrokerSessionID: brokerSession?.id
+                existingBrokerSessionID: brokerSession?.id,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
         case .agentDirect:
@@ -242,7 +243,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                existingBrokerSessionID: brokerSession?.id
+                existingBrokerSessionID: brokerSession?.id,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
         case .agentAPI:
@@ -259,7 +261,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
-                existingBrokerSessionID: brokerSession?.id
+                existingBrokerSessionID: brokerSession?.id,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.
