@@ -770,6 +770,53 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.workingDirectory, "/tmp/recreate-me")
     }
 
+    func testContextMenuRecreateSessionRunsRecoveryAndPersistsReplacementID() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MainWindowContextMenuStaleBrokerRecoveryTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                workingDirectory: "/tmp/context-menu-recreate",
+                terminal: terminal
+            )
+        }
+        channel.activate()
+        manager.saveState()
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+
+        let menu = try XCTUnwrap(windowController.buildContextMenu(for: channel.channelId))
+        let recreateItem = try XCTUnwrap(menu.items.first { $0.title == "Recreate Session" })
+        XCTAssertTrue(recreateItem.isEnabled)
+        XCTAssertEqual(recreateItem.representedObject as? UUID, channel.channelId)
+
+        let replacementID = BrokerSessionID(rawValue: "context-menu-replacement-broker-session")
+        terminal.startFailureDescription = nil
+        terminal.startFailureKind = nil
+        terminal.brokerOwnedSessionID = replacementID
+
+        let recreateAction = try XCTUnwrap(recreateItem.action)
+        XCTAssertTrue(NSApp.sendAction(recreateAction, to: recreateItem.target, from: recreateItem))
+
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.count, 1)
+        let saved = try XCTUnwrap(savedChannels.first)
+        XCTAssertEqual(channel.state, .active)
+        XCTAssertEqual(saved.id, channel.channelId)
+        XCTAssertEqual(saved.brokerSessionID, replacementID)
+        XCTAssertEqual(saved.workingDirectory, "/tmp/context-menu-recreate")
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }
