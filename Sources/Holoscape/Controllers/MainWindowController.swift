@@ -2323,9 +2323,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID,
-              let channel = channelManager.channel(for: id) else { return }
-        channel.retry()
+        guard let id = sender.representedObject as? UUID else { return }
+        guard channelManager.recoverChannel(id: id) != nil else { return }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
