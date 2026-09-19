@@ -214,6 +214,7 @@ final class AgentChannelControllerTests: XCTestCase {
         controller.activate()
 
         XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
@@ -238,6 +239,7 @@ final class AgentChannelControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.state, .stale)
         XCTAssertEqual(controller.brokerSessionID, preservedID)
+        XCTAssertEqual(controller.recoveryAction, .retryBrokerHost)
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
