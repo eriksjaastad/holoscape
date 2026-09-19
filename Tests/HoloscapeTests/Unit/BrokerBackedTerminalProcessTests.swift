@@ -43,6 +43,32 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class StaleThenCreateRuntime: BrokerSessionRuntime {
+        let staleID: BrokerSessionID
+        var createdIDs: [BrokerSessionID] = []
+
+        init(staleID: BrokerSessionID) {
+            self.staleID = staleID
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { createdIDs }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { createdIDs.append(id) }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {
+            if id == staleID {
+                throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
+            }
+        }
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     func testStartCreatesBrokerRecordAndRoutesInputThroughNativePTYRuntime() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessTests-")
@@ -346,6 +372,81 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(terminal.brokerSessionID, sessionID)
         XCTAssertEqual(terminal.startFailureKind, .brokerHostUnavailable)
         XCTAssertEqual(try registry.load(), [record])
+    }
+
+    func testRetryAfterStaleReattachCreatesReplacementBrokerSession() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessStaleRetryTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let staleID = BrokerSessionID(rawValue: "stale-retry-restored-agent-session")
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        try registry.upsert(BrokerSessionRecord(
+            id: staleID,
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/stale-retry-agent",
+            environmentProfile: .agentOAuth,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastAttachedChannelID: nil
+        ))
+        let runtime = StaleThenCreateRuntime(staleID: staleID)
+        var now = Date(timeIntervalSince1970: 2)
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: runtime,
+            now: { now }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008008")!,
+            channelType: .agentDirect,
+            label: "Codex",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: staleID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp/stale-retry-agent"
+        )
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertEqual(terminal.startFailureKind, .brokerSessionStale)
+
+        now = Date(timeIntervalSince1970: 3)
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp/stale-retry-agent"
+        )
+
+        guard let replacementID = terminal.brokerSessionID else {
+            return XCTFail("Expected stale retry to create a replacement broker session")
+        }
+        XCTAssertNil(terminal.startFailureKind)
+        XCTAssertNotEqual(replacementID, staleID)
+        XCTAssertEqual(runtime.createdIDs, [replacementID])
+        let records = try registry.load().sorted { $0.createdAt < $1.createdAt }
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[0].id, staleID)
+        XCTAssertEqual(records[0].lifecycle, .stale)
+        XCTAssertEqual(records[1].id, replacementID)
+        XCTAssertEqual(records[1].lifecycle, .running)
+        XCTAssertEqual(records[1].command, "/usr/bin/env")
+        XCTAssertEqual(records[1].arguments, ["codex"])
+        XCTAssertEqual(records[1].workingDirectory, "/tmp/stale-retry-agent")
     }
 
     private func waitUntil(
