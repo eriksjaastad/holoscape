@@ -542,6 +542,68 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [started])
     }
 
+    func testBrokerHostMissingSessionCodeMarksRecordStaleEvenWithNonSwiftErrorMessage() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 795)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/socket-host-missing-agent",
+                environmentProfile: .agentOAuth,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .agentDirect,
+            label: "socket-host-missing-agent",
+            attachedChannelID: nil
+        )
+        now = Date(timeIntervalSince1970: 796)
+        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "missing-session",
+            message: "session not found: \(started.id.rawValue)"
+        )
+
+        XCTAssertThrowsError(try coordinator.reattach(started.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .staleSession(started.id))
+        }
+        let records = try coordinator.loadAll()
+        XCTAssertEqual(records.count, 1)
+        let stale = records[0]
+        XCTAssertEqual(stale.lifecycle, BrokerSessionLifecycle.stale)
+        XCTAssertEqual(stale.updatedAt, now)
+        XCTAssertNil(stale.lastAttachedChannelID)
+    }
+
+    func testReconcileBrokerHostMissingSessionCodeMarksRecordStaleEvenWithNonSwiftErrorMessage() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 797)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/socket-host-reconcile-missing-agent",
+                environmentProfile: .agentOAuth,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .agentDirect,
+            label: "socket-host-reconcile-missing-agent",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000797")!
+        )
+        now = Date(timeIntervalSince1970: 798)
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "missing-session",
+            message: "session not found: \(started.id.rawValue)"
+        )
+
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .stale)
+        XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+    }
+
     func testReconcileRuntimeStatusLeavesMetadataOnlyRuntimeUnchanged() throws {
         let coordinator = makeCoordinator(now: { Date(timeIntervalSince1970: 800) })
         let started = try coordinator.start(
