@@ -148,6 +148,18 @@ class ChannelManager {
         return channels[id]
     }
 
+    /// Run the user-facing recovery action for a stale/disconnected tab and
+    /// immediately persist the result. Stale broker-session recreation keeps the
+    /// Holoscape tab UUID stable while replacing the stored broker session ID
+    /// with the session created by the retry path.
+    @discardableResult
+    func recoverChannel(id: UUID) -> ChannelRecoveryAction? {
+        guard let channel = channels[id], let action = channel.recoveryAction else { return nil }
+        channel.retry()
+        saveState()
+        return action
+    }
+
     /// Return all channels in tab order.
     func allChannels() -> [any ChannelController] {
         return channelOrder.compactMap { channels[$0] }

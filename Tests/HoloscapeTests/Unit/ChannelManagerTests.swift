@@ -721,6 +721,55 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels.first?.brokerSessionID, BrokerSessionID(rawValue: "recording-channel-manager-broker-session"))
     }
 
+    func testRecoverChannelRecreatesStaleBrokerSessionAndPersistsReplacementID() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerStaleBrokerRecoveryTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                workingDirectory: "/tmp/recreate-me",
+                terminal: terminal
+            )
+        }
+        channel.activate()
+        manager.saveState()
+
+        XCTAssertEqual(channel.state, .stale)
+        XCTAssertEqual(channel.recoveryAction, .recreateBrokerSession)
+        let staleSavedChannels = configService.load().channels
+        XCTAssertEqual(staleSavedChannels.count, 1)
+        XCTAssertEqual(staleSavedChannels.first?.id, channel.channelId)
+        XCTAssertNil(staleSavedChannels.first?.brokerSessionID)
+
+        let replacementID = BrokerSessionID(rawValue: "replacement-broker-session")
+        terminal.startFailureDescription = nil
+        terminal.startFailureKind = nil
+        terminal.brokerOwnedSessionID = replacementID
+
+        let action = manager.recoverChannel(id: channel.channelId)
+
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.count, 1)
+        let saved = try XCTUnwrap(savedChannels.first)
+        XCTAssertEqual(action, .recreateBrokerSession)
+        XCTAssertEqual(channel.state, .active)
+        XCTAssertEqual(saved.id, channel.channelId)
+        XCTAssertEqual(saved.brokerSessionID, replacementID)
+        XCTAssertEqual(saved.workingDirectory, "/tmp/recreate-me")
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }
