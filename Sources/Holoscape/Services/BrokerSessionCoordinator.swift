@@ -269,7 +269,6 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
            code == "missing-session",
-           message.contains("missingSession"),
            message.contains(id.rawValue) {
             return true
         }
