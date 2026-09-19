@@ -2245,10 +2245,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         menu.addItem(NSMenuItem.separator())
 
-        let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(contextMenuReconnect(_:)), keyEquivalent: "")
+        let recoveryAction = channel.recoveryAction
+        let reconnectItem = NSMenuItem(title: recoveryAction?.menuTitle ?? "Reconnect", action: #selector(contextMenuReconnect(_:)), keyEquivalent: "")
         reconnectItem.target = self
         reconnectItem.representedObject = channelId
-        reconnectItem.isEnabled = channel.state == .disconnected
+        reconnectItem.isEnabled = recoveryAction != nil
         menu.addItem(reconnectItem)
 
         menu.addItem(NSMenuItem.separator())

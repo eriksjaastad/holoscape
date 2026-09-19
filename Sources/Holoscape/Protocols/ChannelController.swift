@@ -9,6 +9,7 @@ protocol ChannelController: AnyObject {
     var hasUnread: Bool { get set }
     var state: ChannelState { get }
     var contentView: NSView { get }
+    var recoveryAction: ChannelRecoveryAction? { get }
 
     func sendInput(_ text: String)
     func activate()
@@ -23,4 +24,24 @@ protocol ChannelController: AnyObject {
 
 extension ChannelController {
     var activatedAt: Date? { nil }
+    var recoveryAction: ChannelRecoveryAction? {
+        state == .disconnected ? .reconnect : nil
+    }
+}
+
+enum ChannelRecoveryAction: Equatable, Sendable {
+    case reconnect
+    case retryBrokerHost
+    case recreateBrokerSession
+
+    var menuTitle: String {
+        switch self {
+        case .reconnect:
+            return "Reconnect"
+        case .retryBrokerHost:
+            return "Retry Broker Host"
+        case .recreateBrokerSession:
+            return "Recreate Session"
+        }
+    }
 }

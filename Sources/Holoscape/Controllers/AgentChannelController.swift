@@ -21,6 +21,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let instanceNumber: Int?
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
+    private var lastStartFailureKind: TerminalStartFailureKind?
 
     var notificationDirectoryPath: String? {
         workingDirectory?.path
@@ -59,6 +60,18 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var contentView: NSView { terminal.terminalContentView }
+
+    var recoveryAction: ChannelRecoveryAction? {
+        guard state == .disconnected || state == .stale else { return nil }
+        switch lastStartFailureKind {
+        case .brokerHostUnavailable:
+            return .retryBrokerHost
+        case .brokerSessionStale:
+            return .recreateBrokerSession
+        case .failed, .none:
+            return state == .disconnected ? .reconnect : nil
+        }
+    }
 
     static func brokerBacked(
         id: UUID,
@@ -194,6 +207,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let startFailure = terminal.startFailureDescription {
             NSLog("Agent terminal start failed: \(startFailure)")
             let failedState = channelState(for: terminal.startFailureKind)
+            lastStartFailureKind = terminal.startFailureKind
             if terminal.startFailureKind == .brokerHostUnavailable,
                let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
                 brokerSessionID = terminalBrokerSessionID
@@ -205,6 +219,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
             brokerSessionID = terminalBrokerSessionID
         }
+        lastStartFailureKind = nil
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
