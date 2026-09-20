@@ -174,6 +174,31 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertTrue(entry.accessibilityHelp()?.contains("will not spawn a replacement") == true, entry.accessibilityHelp() ?? "nil")
     }
 
+    /// #7373 follow-up — a sidebar row that recovered (recreated or reattached
+    /// after a relaunch) must stop advertising stale recovery guidance.
+    func testRecoveredSidebarEntryClearsStaleRecoveryGuidance() throws {
+        let view = SidebarView(frame: NSRect(x: 0, y: 0, width: 220, height: 400))
+        let channel = MockChannelController(type: .shell, label: "Recovered", state: .stale)
+        channel.recoveryActionOverride = .retryBrokerHost
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        channel.recoveryActionOverride = nil
+        channel.activate()
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        guard let scroll = view.subviews.compactMap({ $0 as? NSScrollView }).first,
+              let stack = scroll.documentView as? NSStackView,
+              let entry = stack.arrangedSubviews.first as? SidebarTabEntry else {
+            XCTFail("Expected one SidebarTabEntry after updateTabs")
+            return
+        }
+
+        XCTAssertEqual(channel.state, .active)
+        XCTAssertNil(entry.toolTip)
+        XCTAssertNil(entry.accessibilityHelp(), "Recovered row must not keep stale recovery instructions: \(entry.accessibilityHelp() ?? "nil")")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "active")
+    }
+
     // MARK: - Helpers
 
     // MARK: - Notification-state regression guards
