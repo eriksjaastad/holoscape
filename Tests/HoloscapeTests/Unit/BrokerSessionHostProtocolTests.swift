@@ -591,6 +591,109 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
     }
 
     @MainActor
+    func testBrokerBackedShellTabRestoresThroughUnixSocketHostRuntimeAcrossAppRelaunch() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SocketHostedShellRelaunchTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let socketPath = "/tmp/hs-shell-relaunch-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
+        )
+        let serverFinished = expectation(description: "socket broker served shell relaunch requests")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 9)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let firstCoordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: BrokerSessionHostClientRuntime { frame in try firstTransport.sendFrame(frame) },
+            now: { Date(timeIntervalSince1970: 9_200) }
+        )
+        let firstLaunchManager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: firstCoordinator
+        )
+        let firstShell = firstLaunchManager.createChannel(
+            type: .shell,
+            role: "Socket Shell",
+            workingDirectory: tempDirectory
+        ) { id, _, _, instanceNumber, workDir in
+            ShellChannelController.brokerBacked(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Socket Shell",
+                workingDirectory: workDir?.path,
+                coordinator: firstCoordinator
+            )
+        }
+        firstShell.activate()
+        let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
+        firstLaunchManager.saveState()
+        firstLaunchManager.detachAllChannelsForAppTermination()
+
+        XCTAssertEqual(configService.load().channels.count, 1)
+        XCTAssertEqual(configService.load().channels.first?.brokerSessionID, brokerSessionID)
+
+        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let secondCoordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: BrokerSessionHostClientRuntime { frame in try secondTransport.sendFrame(frame) },
+            now: { Date(timeIntervalSince1970: 9_201) }
+        )
+        let secondLaunchManager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: secondCoordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = secondLaunchManager
+        secondLaunchManager.restoreState { metadata in
+            guard let controller = appDelegate.createChannelFromMetadata(metadata) else { return nil }
+            controller.activate()
+            return controller
+        }
+
+        XCTAssertEqual(appDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 0)
+        XCTAssertEqual(secondLaunchManager.count, 1)
+        let restoredShell = try XCTUnwrap(secondLaunchManager.allChannels().first as? ShellChannelController)
+        XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(restoredShell.workingDirectory, tempDirectory.path)
+        XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
+        try secondCoordinator.sendInput(brokerSessionID, bytes: Array("hosted-shell-relaunch-reattach\n".utf8))
+        let output = try waitForCoordinatorOutput(
+            from: secondCoordinator,
+            id: brokerSessionID,
+            containing: "hosted-shell-relaunch-reattach"
+        )
+        XCTAssertTrue(output.contains("hosted-shell-relaunch-reattach"), output)
+
+        let records = try registry.load()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].id, brokerSessionID)
+        XCTAssertEqual(records[0].channelType, .shell)
+        XCTAssertEqual(records[0].lifecycle, .running)
+        XCTAssertEqual(records[0].lastAttachedChannelID, restoredShell.channelId)
+        XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+    }
+
+    @MainActor
     func testBrokerBackedAgentSessionReattachesThroughUnixSocketHostRuntime() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SocketHostedAgentReattachTests-")
@@ -753,6 +856,28 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
         let output = String(decoding: collected, as: UTF8.self)
         XCTFail("Timed out waiting for output containing \(expected). Saw: \(output)", file: file, line: line)
+        return output
+    }
+
+    private func waitForCoordinatorOutput(
+        from coordinator: any BrokerSessionCoordinating,
+        id: BrokerSessionID,
+        containing expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> String {
+        var collected = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            collected.append(try coordinator.readAvailableOutput(id))
+            let output = String(decoding: collected, as: UTF8.self)
+            if output.contains(expected) {
+                return output
+            }
+            usleep(20_000)
+        }
+        let output = String(decoding: collected, as: UTF8.self)
+        XCTFail("Timed out waiting for coordinator output containing \(expected). Saw: \(output)", file: file, line: line)
         return output
     }
 }
