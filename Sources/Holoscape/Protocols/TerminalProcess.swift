@@ -27,6 +27,11 @@ protocol TerminalProcess: AnyObject {
     var terminalContentView: NSView { get }
     var currentGridSize: TerminalGridSize { get }
     var brokerOwnedSessionID: BrokerSessionID? { get }
+    /// Identity of a broker session this terminal tried to reuse but the broker
+    /// no longer owns. Reported only on a stale/missing-session failure so the
+    /// owning tab can keep the recovery guidance and the tab/session
+    /// association stable across relaunch.
+    var staleBrokerSessionID: BrokerSessionID? { get }
     var startFailureDescription: String? { get }
     var startFailureKind: TerminalStartFailureKind? { get }
 }
@@ -41,6 +46,7 @@ extension TerminalProcess {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func detachBrokerSession() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
+    var staleBrokerSessionID: BrokerSessionID? { nil }
     var startFailureDescription: String? { nil }
     var startFailureKind: TerminalStartFailureKind? { nil }
 }

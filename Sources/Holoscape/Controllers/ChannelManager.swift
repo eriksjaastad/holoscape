@@ -195,12 +195,15 @@ class ChannelManager {
             var apiKeyEnv: String?
 
             var workingDir: String?
+            var staleBrokerSessionID: BrokerSessionID?
 
             if let shellChannel = channel as? ShellChannelController {
                 workingDir = shellChannel.workingDirectory
+                staleBrokerSessionID = shellChannel.staleBrokerSessionID
             } else if let agentChannel = channel as? AgentChannelController {
                 workingDir = agentChannel.persistedWorkingDirectory
                 command = agentChannel.persistedCommand
+                staleBrokerSessionID = agentChannel.staleBrokerSessionID
             } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
@@ -210,6 +213,19 @@ class ChannelManager {
             } else if let chatChannel = channel as? GroupChatChannelController {
                 apiURL = chatChannel.apiURL
                 apiKeyEnv = chatChannel.apiKeyEnv
+            }
+
+            // A stale tab has no live broker handle to reattach; its dead session
+            // identity is the only durable truth. Keeping the two mutually
+            // exclusive stops the next launch from offering a dead session for
+            // reattach while the tab reports recreate guidance.
+            let brokerSessionID: BrokerSessionID?
+            if staleBrokerSessionID != nil {
+                brokerSessionID = nil
+            } else {
+                brokerSessionID = (channel as? ShellChannelController)?.brokerSessionID
+                    ?? (channel as? AgentChannelController)?.brokerSessionID
+                    ?? restoredBrokerSessionIDs[id]
             }
 
             return ChannelMetadata(
@@ -226,9 +242,8 @@ class ChannelManager {
                 apiURL: apiURL,
                 apiKeyEnv: apiKeyEnv,
                 pinnedAt: pinnedTimestamps[id],
-                brokerSessionID: (channel as? ShellChannelController)?.brokerSessionID
-                    ?? (channel as? AgentChannelController)?.brokerSessionID
-                    ?? restoredBrokerSessionIDs[id]
+                brokerSessionID: brokerSessionID,
+                staleBrokerSessionID: staleBrokerSessionID
             )
         }
         configService.save(config)
@@ -397,10 +412,24 @@ class ChannelManager {
         from sessions: [BrokerSessionRecord]
     ) -> [BrokerSessionRecord] {
         let restoredChannelIDs = Set(channelOrder)
-        let persistedBrokerSessionIDs = Set(configService.load().channels.compactMap(\.brokerSessionID))
-        let liveBrokerSessionIDs = Set(allChannels().compactMap { channel in
-            (channel as? ShellChannelController)?.brokerSessionID
-                ?? (channel as? AgentChannelController)?.brokerSessionID
+        // A tab owns both its live broker handle and the identity of a broker
+        // session it went stale on. Both count as known so a dead session is
+        // never resurrected as an extra "recovered" tab next to the tab that
+        // already reports its recreate guidance.
+        let persistedBrokerSessionIDs = Set(
+            configService.load().channels
+                .flatMap { [$0.brokerSessionID, $0.staleBrokerSessionID] }
+                .compactMap { $0 }
+        )
+        let liveBrokerSessionIDs = Set(allChannels().flatMap { channel -> [BrokerSessionID] in
+            switch channel {
+            case let shell as ShellChannelController:
+                return [shell.brokerSessionID, shell.staleBrokerSessionID].compactMap { $0 }
+            case let agent as AgentChannelController:
+                return [agent.brokerSessionID, agent.staleBrokerSessionID].compactMap { $0 }
+            default:
+                return []
+            }
         })
         let knownBrokerSessionIDs = persistedBrokerSessionIDs.union(liveBrokerSessionIDs)
 

@@ -948,6 +948,60 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.workingDirectory, "/tmp/recreate-me")
     }
 
+    func testSaveStatePersistsStaleBrokerIdentityWithoutOfferingDeadSessionForReattach() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerStaleIdentityPersistenceTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let deadSessionID = BrokerSessionID(rawValue: "stale-identity-persistence-session")
+        let configService = ConfigService(configDir: tempDirectory)
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007374")!
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(
+                id: channelID,
+                type: .shell,
+                role: "holoscape",
+                workingDirectory: "/tmp/stale-identity",
+                brokerSessionID: deadSessionID
+            )
+        ]
+        configService.save(config)
+
+        let manager = ChannelManager(configService: configService)
+        let terminal = MockTerminalProcess()
+        terminal.staleBrokerSessionID = deadSessionID
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        manager.restoreState { metadata in
+            let controller = ShellChannelController(
+                id: metadata.id,
+                instanceNumber: nil,
+                label: "holoscape",
+                workingDirectory: "/tmp/stale-identity",
+                terminal: terminal
+            )
+            controller.activate()
+            return controller
+        }
+
+        let restored = try XCTUnwrap(manager.allChannels().first as? ShellChannelController)
+        XCTAssertEqual(restored.state, .stale)
+        XCTAssertEqual(restored.recoveryAction, .recreateBrokerSession)
+
+        manager.saveState()
+
+        let saved = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(saved.id, channelID)
+        XCTAssertNil(
+            saved.brokerSessionID,
+            "A stale tab must not persist a dead session as a reattachable broker handle"
+        )
+        XCTAssertEqual(saved.staleBrokerSessionID, deadSessionID)
+    }
+
     func testContextMenuRecreateSessionRunsRecoveryAndPersistsReplacementID() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MainWindowContextMenuStaleBrokerRecoveryTests-")
