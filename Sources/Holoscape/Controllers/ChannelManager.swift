@@ -246,11 +246,7 @@ class ChannelManager {
                 apiURL: apiURL,
                 apiKeyEnv: apiKeyEnv,
                 pinnedAt: pinnedTimestamps[id],
-                persistentState: PersistentChannelState.fromRuntimeState(
-                    channel.state,
-                    source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
-                    recoveryAction: channel.recoveryAction
-                ),
+                persistentState: channel.persistentState,
                 brokerSessionID: brokerSessionID,
                 staleBrokerSessionID: staleBrokerSessionID
             )

@@ -25,7 +25,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let instanceNumber: Int?
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
+    private(set) var adapterPersistentState: PersistentChannelState?
     private var lastStartFailureKind: TerminalStartFailureKind?
+
+    var persistentState: PersistentChannelState {
+        adapterPersistentState ?? PersistentChannelState.fromRuntimeState(
+            state,
+            source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
+            recoveryAction: recoveryAction
+        )
+    }
 
     var notificationDirectoryPath: String? {
         workingDirectory?.path
@@ -253,6 +262,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         activate()
     }
 
+    func applyPersistentState(_ state: PersistentChannelState) {
+        adapterPersistentState = state
+        delegate?.channelStateDidChange(self, to: self.state)
+    }
+
     static func launchInvocation(for command: String) -> (executable: String, args: [String], execName: String) {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -289,6 +303,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// keeps the dead identity and offers `recreateBrokerSession`.
     private func applyBrokerFailure(kind: TerminalStartFailureKind?) -> ChannelState {
         lastStartFailureKind = kind
+        adapterPersistentState = nil
         switch kind {
         case .brokerHostUnavailable:
             // Outage is retryable: keep the handle so retry reattaches the same

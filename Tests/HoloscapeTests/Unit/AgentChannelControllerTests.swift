@@ -124,6 +124,53 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.lastLines(2), ["beta", "gamma"])
     }
 
+    func testAgentAdapterStateOverridesRuntimeStateForPersistence() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        XCTAssertEqual(controller.state, .active)
+
+        let state = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_020),
+            reason: "codex awaiting approval"
+        )
+        controller.applyPersistentState(state)
+
+        XCTAssertEqual(controller.persistentState, state)
+        XCTAssertEqual(controller.state, .active, "adapter state must not fake a process lifecycle transition")
+    }
+
+    func testAgentAdapterStateClearsAfterBrokerFailureTakesOver() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        controller.applyPersistentState(PersistentChannelState(kind: .needsApproval, source: .agentAdapter))
+
+        terminal.startFailureKind = .brokerHostUnavailable
+        terminal.sessionFailureHandler?(TerminalSessionFailure(kind: .brokerHostUnavailable, description: "host unavailable"))
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.persistentState.kind, .stale)
+        XCTAssertNotEqual(controller.persistentState.source, .agentAdapter)
+    }
+
     func testAgentActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentChannelControllerTests-")
