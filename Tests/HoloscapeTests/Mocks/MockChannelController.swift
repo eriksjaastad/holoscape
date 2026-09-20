@@ -10,9 +10,14 @@ class MockChannelController: NSObject, ChannelController {
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
     var displayLabel: String
+    var recoveryActionOverride: ChannelRecoveryAction?
     private let _contentView = NSView()
 
     var contentView: NSView { _contentView }
+
+    var recoveryAction: ChannelRecoveryAction? {
+        recoveryActionOverride ?? (state == .disconnected ? .reconnect : nil)
+    }
 
     var activateCallCount = 0
     var deactivateCallCount = 0

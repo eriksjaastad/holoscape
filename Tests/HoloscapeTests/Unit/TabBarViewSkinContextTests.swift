@@ -109,6 +109,29 @@ final class TabBarViewSkinContextTests: XCTestCase {
                            "Fallback background must match the hardcoded (0.06, 0.06, 0.12, 1.0)")
         }
     }
+
+    func testStaleBrokerRecoveryGuidanceIsVisibleOnTabButton() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Recovered", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let buttons = view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+        guard let button = buttons.first else {
+            XCTFail("Expected one tab button after updateTabs")
+            return
+        }
+
+        XCTAssertTrue(button.title.contains("recreate session"), button.title)
+        XCTAssertEqual(button.accessibilityValue() as? String, "stale: recreate session")
+        XCTAssertTrue(button.toolTip?.contains("Broker session is stale or missing") == true, button.toolTip ?? "nil")
+        XCTAssertTrue(button.accessibilityHelp()?.contains("persists the new broker session ID") == true, button.accessibilityHelp() ?? "nil")
+    }
 }
 
 // MARK: - Testing hook

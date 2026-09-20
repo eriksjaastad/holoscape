@@ -226,6 +226,8 @@ class TabBarView: NSView {
             title += " (\(elapsed))"
         } else if channel.state == .connecting {
             title += " ..."
+        } else if channel.state == .stale, let recoveryAction = channel.recoveryAction {
+            title += " — \(recoveryAction.surfaceStatusText)"
         }
         if channel.hasUnread {
             title = "\u{25CF} " + title
@@ -243,7 +245,16 @@ class TabBarView: NSView {
 
         button.setAccessibilityTitle(title)
         button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
-        if let notificationType = notifications[channel.channelId] {
+        let staleRecoveryAction = channel.state == .stale ? channel.recoveryAction : nil
+        if let staleRecoveryAction {
+            button.toolTip = staleRecoveryAction.operatorGuidance
+            button.setAccessibilityValue("stale: \(staleRecoveryAction.surfaceStatusText)")
+            button.setAccessibilityHelp(staleRecoveryAction.operatorGuidance)
+        } else {
+            button.toolTip = nil
+        }
+
+        if staleRecoveryAction == nil, let notificationType = notifications[channel.channelId] {
             switch notificationType {
             case "idle_prompt":
                 button.setAccessibilityValue("ready")
@@ -252,7 +263,7 @@ class TabBarView: NSView {
             default:
                 button.setAccessibilityValue(notificationType)
             }
-        } else {
+        } else if staleRecoveryAction == nil {
             button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
         }
     }
