@@ -113,11 +113,18 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.recordBrokerExit(exitCode: exitCode)
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self?.handleProcessTermination(exitCode: exitCode)
         }
+    }
+
+    /// Broker/state bookkeeping for a terminated ssh process.
+    ///
+    /// Extracted from the SwiftTerm delegate callback so the exit path has exactly
+    /// one implementation and can be exercised without an AppKit terminal view.
+    func handleProcessTermination(exitCode: Int32?) {
+        recordBrokerExit(exitCode: exitCode)
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
     }
 
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
@@ -182,7 +189,11 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             ).id
             return true
         } catch {
-            assertionFailure("Broker session start failed: \(error)")
+            // SSH channels own their broker metadata directly, so a broker host
+            // outage is an expected runtime condition here. Report it and let
+            // activate() take its explicit disconnected/reconnect path instead of
+            // trapping the app.
+            NSLog("SSH broker session start failed: \(error)")
             return false
         }
     }
@@ -192,7 +203,11 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         do {
             _ = try brokerSessionCoordinator.detach(brokerSessionID)
         } catch {
-            assertionFailure("Broker session detach failed: \(error)")
+            // Detach runs on tab teardown and during app termination. If the
+            // broker host is unavailable, the durable record keeps its current
+            // lifecycle — still reattachable and reconciled on the next launch —
+            // so log loudly rather than trapping the app while it is closing.
+            NSLog("SSH broker session detach failed: \(error)")
         }
     }
 
@@ -205,7 +220,9 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
                 _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
             }
         } catch {
-            assertionFailure("Broker session exit failed: \(error)")
+            // Same boundary as detach: an unavailable broker must not trap the app
+            // on process exit. The unrecorded transition stays reconcilable.
+            NSLog("SSH broker session exit failed: \(error)")
         }
     }
 }

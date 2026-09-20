@@ -20,6 +20,7 @@ class MockTerminalProcess: TerminalProcess {
     var staleBrokerSessionID: BrokerSessionID?
     var sessionFailure: TerminalSessionFailure?
     var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
+    var terminationHandler: ((Int32?) -> Void)?
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
 
@@ -42,6 +43,16 @@ class MockTerminalProcess: TerminalProcess {
 
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
         sessionFailureHandler = handler
+    }
+
+    func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {
+        terminationHandler = handler
+    }
+
+    /// Deliver a process termination the way a real terminal process does, so
+    /// controller exit bookkeeping runs.
+    func reportTermination(exitCode: Int32?) {
+        terminationHandler?(exitCode)
     }
 
     /// Drive the mid-session failure boundary the way the broker-backed terminal
@@ -466,6 +477,78 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertEqual(detached.id, running.id)
         XCTAssertEqual(detached.lifecycle, .detached)
         XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
+    // MARK: - #7375 coordinator broker-record failures
+
+    private static func macbookProfile() -> SessionProfile {
+        SessionProfile(
+            label: "macbook-agent",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/projects/holoscape-agent",
+            host: "macbook-pro",
+            user: "erik"
+        )
+    }
+
+    /// #7375 — an SSH tab whose broker host disappears must not trap while
+    /// recording detach metadata, and the durable record must stay reattachable.
+    @MainActor func testSSHDeactivateWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = SSHChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000741")!,
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.deactivate()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.recoveryAction, .reconnect)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed detach must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID], "The detach attempt must still reach the coordinator")
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded detach must leave the durable record reattachable for the next launch"
+        )
+    }
+
+    /// The process-exit path is the other place SSH tabs record broker metadata,
+    /// and it also runs from a delegate callback rather than a user action.
+    @MainActor func testSSHProcessTerminationWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = SSHChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000742")!,
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.handleProcessTermination(exitCode: 7)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed exit must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded exit must not fabricate an exited lifecycle"
+        )
     }
 
     @MainActor func testDelegateNotifiedThroughFullLifecycle() {

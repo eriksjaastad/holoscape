@@ -99,6 +99,93 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertNil(detached.lastAttachedChannelID)
     }
 
+    /// #7375 — a coordinator-backed shell whose broker host is unavailable must
+    /// not trap while recording broker metadata; the failure stays explicit and
+    /// the tab stays recoverable.
+    func testCoordinatorBackedShellActivationWithBrokerHostOutageStaysRecoverable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000721")!,
+            instanceNumber: nil,
+            label: "work",
+            workingDirectory: "/Users/test/work",
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.delegate = delegate
+        fixture.runtime.mode = .hostUnavailable
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertNil(controller.brokerSessionID)
+        XCTAssertEqual(controller.recoveryAction, .reconnect)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .disconnected])
+        XCTAssertTrue(try fixture.records().isEmpty, "A failed broker start must not leave a phantom record")
+    }
+
+    func testCoordinatorBackedShellDetachWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000722")!,
+            instanceNumber: nil,
+            label: "work",
+            workingDirectory: "/Users/test/work",
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.deactivate()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.recoveryAction, .reconnect)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed detach must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID], "The detach attempt must still reach the coordinator")
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded detach must leave the durable record reattachable for the next launch"
+        )
+    }
+
+    func testCoordinatorBackedShellExitWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000723")!,
+            instanceNumber: nil,
+            label: "work",
+            workingDirectory: "/Users/test/work",
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.delegate = delegate
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        terminal.reportTermination(exitCode: 7)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed exit must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded exit must not fabricate an exited lifecycle"
+        )
+    }
+
     func testBrokerBackedShellActivationUsesTerminalOwnedSessionWithoutDuplicateMetadata() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ShellChannelControllerBrokerBackedTests-")
