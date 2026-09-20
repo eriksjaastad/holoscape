@@ -1982,6 +1982,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         activeChannelId = id
         channel.hasUnread = false
         apiServer?.clearNotification(for: id)
+        publishActiveChannelStateToReactiveSnapshot(channel)
         splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
@@ -2046,6 +2047,19 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let notifications = apiServer?.channelNotifications ?? [:]
         tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
         sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
+    }
+
+    /// Publish the focused channel's durable state into the shared skin/shader
+    /// snapshot. Per-row sidebar entries keep private snapshots; this shared
+    /// snapshot drives active/global chrome surfaces such as the tab bar,
+    /// input panel, vessel chrome, and future shader uniforms.
+    private func publishActiveChannelStateToReactiveSnapshot(_ channel: any ChannelController) {
+        reactiveSnapshot.setChannelState(
+            channelId: Int32(truncatingIfNeeded: channel.channelId.hashValue),
+            isActive: 1,
+            unread: channel.hasUnread ? 1 : 0
+        )
+        reactiveSnapshot.applyPersistentChannelState(channel.persistentState)
     }
 
     func refreshLauncher() {
@@ -2600,6 +2614,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - ChannelControllerDelegate
 
     func channelDidReceiveOutput(_ channel: any ChannelController) {
+        reactiveSnapshot.recordOutputEvent()
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Tabs stay in place — no reordering on output
@@ -2611,6 +2626,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
+        if channel.channelId == activeChannelId {
+            publishActiveChannelStateToReactiveSnapshot(channel)
+            applyInputPanelChrome()
+            tabBar.skinContext = skinContext
+            splitPaneManager.skinContext = skinContext
+        }
         scheduleRefreshAllTabs()
         scheduleSaveState()
     }

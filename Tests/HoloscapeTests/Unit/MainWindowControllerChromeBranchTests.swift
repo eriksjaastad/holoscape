@@ -21,6 +21,66 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
 
     // MARK: - Controller transitions
 
+    func testSwitchToChannelPublishesDurableActiveStateToSharedReactiveSnapshot() throws {
+        let controller = try makeController()
+        let channel = controller.channelManager.createChannel(
+            type: .agentDirect,
+            role: "Claude",
+            workingDirectory: nil
+        ) { id, type, label, _, _ in
+            let mock = MockChannelController(id: id, type: type, label: label, state: .active)
+            mock.hasUnread = true
+            mock.persistentStateOverride = PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+            return mock
+        }
+
+        controller.switchToChannel(channel.channelId)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelIsActive"), 1)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelUnread"), 0,
+                       "Switching to a channel clears unread before publishing skin state")
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "agentState"), 2)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 1)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "notificationKind"), 2)
+    }
+
+    func testActiveChannelStateChangeUpdatesSharedReactiveSnapshot() throws {
+        let controller = try makeController()
+        let channel = controller.channelManager.createChannel(
+            type: .shell,
+            role: "Shell",
+            workingDirectory: nil
+        ) { id, type, label, _, _ in
+            MockChannelController(id: id, type: type, label: label, state: .active)
+        }
+
+        controller.switchToChannel(channel.channelId)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 0)
+
+        let mock = try XCTUnwrap(channel as? MockChannelController)
+        mock.persistentStateOverride = PersistentChannelState(
+            kind: .stale,
+            source: .brokerRegistry,
+            recoveryAction: .retryBrokerHost
+        )
+        controller.channelStateDidChange(mock, to: .stale)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "agentState"), 3)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 3)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "notificationKind"), 3)
+    }
+
+    func testChannelOutputPublishesGlobalOutputEventForSkinTimers() throws {
+        let controller = try makeController()
+        let channel = MockChannelController(state: .active)
+        let before = controller.reactiveSnapshot.intValue(forMatchKey: "outputEventCount")
+
+        controller.channelDidReceiveOutput(channel)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "outputEventCount"), (before ?? 0) &+ 1)
+        XCTAssertGreaterThan(controller.reactiveSnapshot.timestamp(named: "iTimeLastOutput") ?? 0, 0)
+    }
+
     func testPersistedV4SkinLaunchAttachesStableHostInsideInteriorView() throws {
         let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
         drainMainQueue()
