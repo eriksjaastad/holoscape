@@ -43,6 +43,21 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testStoredByteCountReportsZeroAfterManualPrune() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "manual-scrollback-prune")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
+
+        try store.append(Data("sensitive-output\n".utf8), for: id)
+        XCTAssertEqual(try store.storedByteCount(for: id), "sensitive-output\n".utf8.count)
+
+        try store.remove(for: id)
+
+        XCTAssertEqual(try store.storedByteCount(for: id), 0)
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data())
+    }
+
     private func makeTempDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiskBackedScrollbackStoreTests")

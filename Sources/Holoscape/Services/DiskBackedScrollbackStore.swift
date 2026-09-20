@@ -57,6 +57,14 @@ struct DiskBackedScrollbackStore: Sendable {
         }
     }
 
+    func storedByteCount(for id: BrokerSessionID) throws -> Int {
+        let fileManager = FileManager.default
+        let url = try fileURL(for: id)
+        guard fileManager.fileExists(atPath: url.path) else { return 0 }
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        return attributes[.size] as? Int ?? 0
+    }
+
     private func prune(_ url: URL) throws {
         guard maxRetainedBytes > 0 else {
             try Data().write(to: url, options: .atomic)
