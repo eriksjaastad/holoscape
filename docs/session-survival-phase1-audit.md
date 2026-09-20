@@ -11,10 +11,11 @@ Status: phase 1 is no longer blocked on the original process-survival substrate 
 - Missing broker / stale session behavior: covered by stale and broker-host-unavailable tests in `BrokerSessionCoordinatorTests`, `BrokerBackedTerminalProcessTests`, `ShellChannelControllerTests`, and `AgentChannelControllerTests`.
 - Stale broker guidance stable across relaunch/restore: covered by `StaleBrokerRelaunchTests`, `ChannelManagerTests.testSaveStatePersistsStaleBrokerIdentityWithoutOfferingDeadSessionForReattach`, and the tab/sidebar guidance tests.
 - Live tab survives the broker host disappearing underneath it (no trap; downgrade to retryable stale, handle preserved, no replacement): covered by the host-loss tests in `BrokerBackedTerminalProcessTests`, the live-downgrade tests in `ShellChannelControllerTests`/`AgentChannelControllerTests`, and `StaleBrokerRelaunchTests.testLiveTabThatLostBrokerHostKeepsRetryGuidanceAcrossRelaunchWithoutReplacement`.
+- Coordinator-owned broker metadata transitions survive a broker outage (detach/exit/start no longer assert; the record keeps its reattachable lifecycle): covered by the `CoordinatorBackedBrokerFixture` tests in `ShellChannelControllerTests`, `AgentChannelControllerTests`, and `SSHChannelControllerTests`.
 
 ## Remaining focused slices before closing umbrella
 
-- Coordinator-owning paths still assert on broker errors: `recordBrokerStart`/`recordBrokerDetach`/`recordBrokerExit` in `ShellChannelController`, `AgentChannelController`, and `SSHChannelController` call `assertionFailure` when the coordinator throws. Broker-backed shell/agent tabs inject no coordinator so they are unaffected, but SSH tabs and injected-coordinator channels can still trap if the host dies during detach/exit.
+- The registry-load paths in `ChannelManager` still assert when `brokerBackedShellCoordinator` cannot list or reconcile sessions (`ChannelManager.swift` restore helpers). That is the "registry unreadable/corrupt" class rather than a live broker outage, and it decides whether a launch restores tabs at all, so it needs its own recovery decision.
 - Unmatched-broker recovery still treats `.stale` records as crash survivors: `ChannelManager.restoreUnmatchedBrokerBackedSessions` can surface a dead session as a "recovered" tab when no tab owns it.
 
 ## Non-goals still deferred
