@@ -16,38 +16,64 @@ final class StaleBrokerRelaunchTests: XCTestCase {
 
     /// Broker runtime double. `lostSessionIDs` models broker sessions whose PTY
     /// the host no longer owns (host restart, reaped process); every other
-    /// session stays attachable and running.
+    /// session stays attachable and running. `isHostAvailable = false` models the
+    /// broker host itself disappearing underneath a running session.
     private final class RelaunchBrokerRuntime: BrokerSessionRuntime {
         private let lostSessionIDs: Set<BrokerSessionID>
+        var isHostAvailable = true
         private(set) var createdIDs: [BrokerSessionID] = []
 
         init(lostSessionIDs: Set<BrokerSessionID> = []) {
             self.lostSessionIDs = lostSessionIDs
         }
 
+        private func hostUnavailable() throws -> Never {
+            throw BrokerSessionHostClientRuntime.ClientError.transportFailed(
+                "socketTimedOut(/tmp/holoscape-broker.sock)"
+            )
+        }
+
         func listSessions() throws -> [BrokerSessionID] { createdIDs }
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            if !isHostAvailable { try hostUnavailable() }
             createdIDs.append(id)
         }
-        func detachSession(id: BrokerSessionID) throws {}
+        func detachSession(id: BrokerSessionID) throws {
+            if !isHostAvailable { try hostUnavailable() }
+        }
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {
+            if !isHostAvailable { try hostUnavailable() }
             if lostSessionIDs.contains(id) {
                 throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
             }
         }
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
         func markSessionErrored(id: BrokerSessionID) throws {}
-        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
-        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
-        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
-        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
+            if !isHostAvailable { try hostUnavailable() }
+        }
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            if !isHostAvailable { try hostUnavailable() }
+            return Data()
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+            if !isHostAvailable { try hostUnavailable() }
+            return Data()
+        }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
+            if !isHostAvailable { try hostUnavailable() }
+        }
         func isRunning(id: BrokerSessionID) throws -> Bool {
+            if !isHostAvailable { try hostUnavailable() }
             if lostSessionIDs.contains(id) {
                 throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
             }
             return true
         }
-        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            if !isHostAvailable { try hostUnavailable() }
+            return nil
+        }
     }
 
     // MARK: - Fixtures
@@ -290,6 +316,87 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         let saved = try savedChannel(secondLaunch.configService, id: Self.tabID)
         XCTAssertEqual(saved.brokerSessionID, replacementIDs.first)
         XCTAssertNil(saved.staleBrokerSessionID)
+    }
+
+    /// A running tab whose broker host disappears mid-session must keep retry
+    /// guidance across the relaunch and must not spawn a replacement process.
+    func testLiveTabThatLostBrokerHostKeepsRetryGuidanceAcrossRelaunchWithoutReplacement() throws {
+        let runtime = RelaunchBrokerRuntime()
+        let fixture = try LaunchFixture(
+            channels: [Self.savedShellTab(brokerSessionID: Self.lostSessionID)],
+            records: [Self.lostSessionRecord(lifecycle: .detached)],
+            runtime: runtime
+        )
+        defer { fixture.cleanup() }
+
+        fixture.launch()
+        let tab = try XCTUnwrap(fixture.manager.allChannels().first as? ShellChannelController)
+        XCTAssertEqual(tab.state, .active)
+        let sessionID = try XCTUnwrap(tab.brokerSessionID)
+
+        // The broker host disappears underneath the running tab; the user's
+        // keystroke is what notices it.
+        runtime.isHostAvailable = false
+        tab.sendInput("echo host-lost")
+
+        XCTAssertEqual(tab.state, .stale)
+        XCTAssertEqual(tab.recoveryAction, .retryBrokerHost)
+        XCTAssertEqual(tab.brokerSessionID, sessionID, "A host outage must keep the handle for retry")
+
+        fixture.quit()
+        let saved = try savedChannel(fixture.configService, id: Self.tabID)
+        XCTAssertEqual(saved.brokerSessionID, sessionID, "The outage tab must persist its handle for the next launch")
+        XCTAssertNil(saved.staleBrokerSessionID)
+
+        let relaunched = try LaunchFixture(
+            channels: fixture.configService.load().channels,
+            records: try fixture.registry.load(),
+            runtime: runtime
+        )
+        defer { relaunched.cleanup() }
+        relaunched.launch()
+
+        guard let restoredTab = relaunched.manager.allChannels().first as? ShellChannelController else {
+            return XCTFail("Expected the outage tab to be restored")
+        }
+        XCTAssertEqual(relaunched.manager.count, 1)
+        XCTAssertEqual(restoredTab.channelId, Self.tabID)
+        XCTAssertEqual(restoredTab.state, .stale)
+        XCTAssertEqual(restoredTab.recoveryAction, .retryBrokerHost)
+        XCTAssertEqual(restoredTab.brokerSessionID, sessionID)
+        XCTAssertTrue(
+            runtime.createdIDs.isEmpty,
+            "A broker host outage must not spawn a replacement session on relaunch"
+        )
+    }
+
+    /// The registry-lost variant of the same story: once the host is back, retry
+    /// reattaches the preserved session instead of replacing it.
+    func testRetryAfterRelaunchedHostOutageReattachesThePreservedSession() throws {
+        let runtime = RelaunchBrokerRuntime()
+        let fixture = try LaunchFixture(
+            channels: [Self.savedShellTab(brokerSessionID: Self.lostSessionID)],
+            records: [Self.lostSessionRecord(lifecycle: .detached)],
+            runtime: runtime
+        )
+        defer { fixture.cleanup() }
+
+        fixture.launch()
+        let tab = try XCTUnwrap(fixture.manager.allChannels().first as? ShellChannelController)
+        let sessionID = try XCTUnwrap(tab.brokerSessionID)
+        runtime.isHostAvailable = false
+        tab.sendInput("echo host-lost")
+        XCTAssertEqual(tab.recoveryAction, .retryBrokerHost)
+
+        // Host comes back and the user retries the tab.
+        runtime.isHostAvailable = true
+        let action = fixture.manager.recoverChannel(id: Self.tabID)
+
+        XCTAssertEqual(action, .retryBrokerHost)
+        XCTAssertEqual(tab.state, .active)
+        XCTAssertEqual(tab.brokerSessionID, sessionID)
+        XCTAssertNil(tab.recoveryAction)
+        XCTAssertTrue(runtime.createdIDs.isEmpty, "Retry after an outage must reattach the same broker session")
     }
 
     // MARK: - Regression guards for the neighbouring restore paths
