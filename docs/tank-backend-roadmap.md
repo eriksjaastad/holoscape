@@ -125,7 +125,7 @@ Definition of done:
 Purpose: Holoscape remains self-contained. External systems attach through removable plugins.
 
 New cards:
-- #7173 — define removable plugin architecture for external integrations
+- #7173 — define removable plugin architecture for external integrations. Architecture: `docs/plugin-architecture.md`.
 - #7174 — implement first-party Project Tracker plugin after plugin seam exists; blocked by #7173
 
 Existing cards folded into this phase:
