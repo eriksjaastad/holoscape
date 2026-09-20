@@ -112,6 +112,15 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
         lock.withLock { _notificationKind = newValue }
     }
 
+    /// Publish durable channel truth into the skin/shader snapshot. This is the
+    /// bridge for card #7175: skins consume `PersistentChannelState` directly
+    /// instead of inferring important states from ad hoc notification strings.
+    func applyPersistentChannelState(_ state: PersistentChannelState) {
+        setAgentState(state.kind.reactiveAgentStateOrdinal)
+        setChannelConnectionState(state.kind.reactiveChannelConnectionOrdinal)
+        setNotificationKind(state.kind.reactiveNotificationKindOrdinal)
+    }
+
     /// Set the sprite state ordinal. Callers pass `SpriteState.rawInt`
     /// (0=normal … 6=selected). No timestamp stamping — sprite state is
     /// continuous UI feedback, not an animation trigger; re-rendering

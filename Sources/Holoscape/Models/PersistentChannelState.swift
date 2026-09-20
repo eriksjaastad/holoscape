@@ -107,6 +107,53 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
         case .stale: return "stale"
         }
     }
+
+    /// Ordinal consumed by `ReactiveUniformSnapshot.agentState` and the
+    /// Holoscape shader/chrome contract in `docs/skins/05-reactive-uniforms.md`:
+    /// 0=idle, 1=thinking/running, 2=tool-use/operator-wait, 3=error.
+    ///
+    /// This keeps MercuryDeck/state-variant skins tied to the durable tab truth
+    /// model instead of one-off notification strings.
+    var reactiveAgentStateOrdinal: Int32 {
+        switch self {
+        case .ready:
+            return 0
+        case .running:
+            return 1
+        case .needsApproval:
+            return 2
+        case .error, .stale:
+            return 3
+        }
+    }
+
+    /// Ordinal consumed by sidebar/tab state variants:
+    /// 0=connected/usable, 1=attention-needed, 2=error/disconnected, 3=stale.
+    var reactiveChannelConnectionOrdinal: Int32 {
+        switch self {
+        case .ready, .running:
+            return 0
+        case .needsApproval:
+            return 1
+        case .error:
+            return 2
+        case .stale:
+            return 3
+        }
+    }
+
+    /// Notification ordinal used by chrome state variants:
+    /// 0=none, 1=info, 2=warn, 3=error.
+    var reactiveNotificationKindOrdinal: Int32 {
+        switch self {
+        case .ready, .running:
+            return 0
+        case .needsApproval:
+            return 2
+        case .error, .stale:
+            return 3
+        }
+    }
 }
 
 enum PersistentChannelStateSource: String, Codable, CaseIterable, Sendable {
