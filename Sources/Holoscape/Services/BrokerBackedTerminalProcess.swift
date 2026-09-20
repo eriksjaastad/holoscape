@@ -49,7 +49,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         label: String?,
         environmentProfile: BrokerEnvironmentProfile,
         existingBrokerSessionID: BrokerSessionID? = nil,
-        coordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime()),
+        coordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(
+            runtime: NativePTYBrokerSessionRuntime(scrollbackDirectory: ScrollbackPersistencePolicy.defaultDiskDirectory)
+        ),
         terminalView: HoloscapeTerminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     ) {
         self.channelID = channelID

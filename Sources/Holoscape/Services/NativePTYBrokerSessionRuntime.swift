@@ -19,17 +19,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     }
 
     private final class Session: @unchecked Sendable {
+        let id: BrokerSessionID
         let process: Process
         let masterHandle: FileHandle
+        let scrollbackStore: DiskBackedScrollbackStore?
         let lock = NSLock()
         var output = Data()
         var scrollback = Data()
         var terminationStatus: Int32?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
 
-        init(process: Process, masterHandle: FileHandle) {
+        init(id: BrokerSessionID, process: Process, masterHandle: FileHandle, scrollbackStore: DiskBackedScrollbackStore?) {
+            self.id = id
             self.process = process
             self.masterHandle = masterHandle
+            self.scrollbackStore = scrollbackStore
         }
 
         func appendOutput(_ data: Data) {
@@ -40,6 +44,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
                 scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
             }
             lock.unlock()
+            do {
+                try scrollbackStore?.append(data, for: id)
+            } catch {
+                NSLog("Broker scrollback persistence failed for \(id.rawValue): \(error)")
+            }
         }
 
         func readOutput() -> Data {
@@ -80,6 +89,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
 
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
+    private let scrollbackStore: DiskBackedScrollbackStore?
+
+    init(scrollbackDirectory: URL? = nil) {
+        if let scrollbackDirectory {
+            self.scrollbackStore = DiskBackedScrollbackStore(directory: scrollbackDirectory)
+        } else {
+            self.scrollbackStore = nil
+        }
+    }
 
     func listSessions() throws -> [BrokerSessionID] {
         lock.lock()
@@ -125,7 +143,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         process.standardError = slaveError
 
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
-        let session = Session(process: process, masterHandle: masterHandle)
+        let session = Session(id: id, process: process, masterHandle: masterHandle, scrollbackStore: scrollbackStore)
         process.terminationHandler = { [weak session] process in
             session?.markTerminated(process.terminationStatus)
         }
@@ -186,7 +204,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
-        try session(for: id).readScrollbackTail(maxBytes: maxBytes)
+        if let session = existingSession(for: id) {
+            return session.readScrollbackTail(maxBytes: maxBytes)
+        }
+        if let scrollbackStore {
+            return try scrollbackStore.readTail(for: id, maxBytes: maxBytes)
+        }
+        throw RuntimeError.missingSession(id)
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
@@ -224,12 +248,17 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     }
 
     private func session(for id: BrokerSessionID) throws -> Session {
-        lock.lock()
-        let session = sessions[id]
-        lock.unlock()
+        let session = existingSession(for: id)
         guard let session else {
             throw RuntimeError.missingSession(id)
         }
+        return session
+    }
+
+    private func existingSession(for id: BrokerSessionID) -> Session? {
+        lock.lock()
+        let session = sessions[id]
+        lock.unlock()
         return session
     }
 

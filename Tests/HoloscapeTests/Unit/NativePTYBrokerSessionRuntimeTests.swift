@@ -153,6 +153,32 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
+    func testDiskBackedScrollbackCanBeReadAfterRuntimeInstanceLoss() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NativePTYBrokerSessionRuntimeScrollbackTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "disk-backed-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf durable-scrollback; exit 0"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        let firstRuntime = NativePTYBrokerSessionRuntime(scrollbackDirectory: directory)
+        try firstRuntime.createSession(id: id, request: request)
+        _ = try waitForTerminationStatus(from: firstRuntime, id: id)
+        _ = try waitForOutput(from: firstRuntime, id: id, containing: "durable-scrollback")
+
+        let replacementRuntime = NativePTYBrokerSessionRuntime(scrollbackDirectory: directory)
+        let restored = String(decoding: try replacementRuntime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+
+        XCTAssertTrue(restored.contains("durable-scrollback"), restored)
+    }
+
     func testTerminationStatusIsNilWhileRunningAndExitCodeAfterProcessEnds() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "termination-status-native-pty-runtime-test")
