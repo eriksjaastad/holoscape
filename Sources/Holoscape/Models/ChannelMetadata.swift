@@ -14,6 +14,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let apiURL: String?       // Agent Chat
     let apiKeyEnv: String?    // Agent Chat
     let pinnedAt: Date?       // Tab pinning
+    let persistentState: PersistentChannelState?
     let brokerSessionID: BrokerSessionID? // Durable broker session for UI restore
     /// Identity of a broker session this tab could not reattach because the
     /// broker no longer owns it. Persisted only while the tab is stale and
@@ -25,7 +26,8 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
          instanceNumber: Int? = nil, workingDirectory: String? = nil,
          host: String? = nil, user: String? = nil, command: String? = nil,
          endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil,
-         pinnedAt: Date? = nil, brokerSessionID: BrokerSessionID? = nil,
+         pinnedAt: Date? = nil, persistentState: PersistentChannelState? = nil,
+         brokerSessionID: BrokerSessionID? = nil,
          staleBrokerSessionID: BrokerSessionID? = nil) {
         self.id = id
         self.type = type
@@ -40,6 +42,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.apiURL = apiURL
         self.apiKeyEnv = apiKeyEnv
         self.pinnedAt = pinnedAt
+        self.persistentState = persistentState
         self.brokerSessionID = brokerSessionID
         self.staleBrokerSessionID = staleBrokerSessionID
     }

@@ -29,7 +29,7 @@ extension ChannelController {
     }
 }
 
-enum ChannelRecoveryAction: Equatable, Sendable {
+enum ChannelRecoveryAction: Codable, Equatable, Sendable {
     case reconnect
     case retryBrokerHost
     case recreateBrokerSession
