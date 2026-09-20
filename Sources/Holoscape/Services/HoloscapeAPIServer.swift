@@ -11,6 +11,7 @@ class HoloscapeAPIServer {
 
     /// Notification state per channel: "permission_prompt", "idle_prompt", or nil (normal)
     private(set) var channelNotifications: [UUID: String] = [:]
+    private let agentStatusAdapter = AgentStatusAdapter()
 
     init(channelManager: ChannelManager, windowController: MainWindowController, port: UInt16 = 7865) {
         self.channelManager = channelManager
@@ -148,6 +149,8 @@ class HoloscapeAPIServer {
                 "label": channel.displayLabel,
                 "type": channel.channelType.rawValue,
                 "state": channel.state.rawValue,
+                "persistent_state": channel.persistentState.kind.rawValue,
+                "persistent_state_source": channel.persistentState.source.rawValue,
                 "notification_type": channelNotifications[channel.channelId] as Any,
                 "is_active": channel.channelId == activeId
             ]
@@ -221,9 +224,18 @@ class HoloscapeAPIServer {
         }
 
         let cwd = json["cwd"] as? String
+        let tool = json["tool"] as? String ?? json["agent"] as? String
+        let reason = json["reason"] as? String
         // Match notification to a channel by working directory
         if let cwd, let channel = resolveChannelByCwd(cwd: cwd) {
             channelNotifications[channel.channelId] = type
+            if let persistentState = agentStatusAdapter.persistentState(
+                tool: tool,
+                event: type,
+                reason: reason
+            ) {
+                channel.applyPersistentState(persistentState)
+            }
             // Trigger tab refresh to update colors
             windowController?.refreshAllTabs()
 

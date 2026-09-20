@@ -8,6 +8,7 @@ protocol ChannelController: AnyObject {
     var displayLabel: String { get }
     var hasUnread: Bool { get set }
     var state: ChannelState { get }
+    var persistentState: PersistentChannelState { get }
     var contentView: NSView { get }
     var recoveryAction: ChannelRecoveryAction? { get }
 
@@ -16,6 +17,7 @@ protocol ChannelController: AnyObject {
     func deactivate()
     func retry()
     func lastLines(_ count: Int) -> [String]
+    func applyPersistentState(_ state: PersistentChannelState)
 
     var commandHistory: CommandHistory { get }
     var delegate: ChannelControllerDelegate? { get set }
@@ -24,9 +26,14 @@ protocol ChannelController: AnyObject {
 
 extension ChannelController {
     var activatedAt: Date? { nil }
+    var persistentState: PersistentChannelState {
+        PersistentChannelState.fromRuntimeState(state, recoveryAction: recoveryAction)
+    }
     var recoveryAction: ChannelRecoveryAction? {
         state == .disconnected ? .reconnect : nil
     }
+
+    func applyPersistentState(_ state: PersistentChannelState) {}
 }
 
 enum ChannelRecoveryAction: Codable, Equatable, Sendable {
