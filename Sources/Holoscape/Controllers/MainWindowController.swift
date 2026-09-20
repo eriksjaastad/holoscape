@@ -640,6 +640,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let newItem = NSMenuItem(title: "New Session", action: #selector(handleNewSession), keyEquivalent: "n")
         newItem.target = self
 
+        let newShellChannelItem = NSMenuItem(title: "New Shell Channel", action: #selector(createShellChannel), keyEquivalent: "n")
+        newShellChannelItem.keyEquivalentModifierMask = [.command, .shift]
+        newShellChannelItem.target = self
+
         let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(showChannelPicker), keyEquivalent: "")
         newChannelItem.target = self
 
@@ -652,6 +656,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         if let fileMenu = NSApp.mainMenu?.item(withTitle: "File")?.submenu {
             fileMenu.addItem(newItem)
+            fileMenu.addItem(newShellChannelItem)
             fileMenu.addItem(newChannelItem)
             fileMenu.addItem(closeItem)
             fileMenu.addItem(NSMenuItem.separator())
@@ -2072,7 +2077,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         }
     }
 
-    private func createShellChannel() {
+    @objc func createShellChannel() {
         let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: .shell,

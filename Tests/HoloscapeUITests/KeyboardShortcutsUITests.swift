@@ -16,6 +16,18 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
+    func testCmdShiftNCreatesLocalShellWithoutPicker() throws {
+        let countBefore = sidebarEntryCount()
+
+        app.typeKey("n", modifierFlags: [.command, .shift])
+
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "Cmd+Shift+N should not show the New Channel picker")
+        let shell = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(shell.waitForExistence(timeout: 3), "Cmd+Shift+N should create a new local shell channel")
+        shell.click()
+        assertActiveChannelResponsive(message: "Cmd+Shift+N shell channel should be responsive")
+    }
+
     func testCmdW() throws {
         let countBefore = sidebarEntryCount()
         createChannel(type: "Shell")
@@ -155,8 +167,7 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
 
     func testNoShortcutConflicts() throws {
         // Run through all shortcuts in sequence
-        app.typeKey("n", modifierFlags: .command)
-        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey("n", modifierFlags: [.command, .shift])
 
         app.typeKey("t", modifierFlags: .command)
         app.typeKey("t", modifierFlags: .command)
