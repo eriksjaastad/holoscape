@@ -11,12 +11,20 @@ class MockChannelController: NSObject, ChannelController {
     weak var delegate: ChannelControllerDelegate?
     var displayLabel: String
     var recoveryActionOverride: ChannelRecoveryAction?
+    var persistentStateOverride: PersistentChannelState?
     private let _contentView = NSView()
 
     var contentView: NSView { _contentView }
 
     var recoveryAction: ChannelRecoveryAction? {
         recoveryActionOverride ?? (state == .disconnected ? .reconnect : nil)
+    }
+
+    var persistentState: PersistentChannelState {
+        persistentStateOverride ?? PersistentChannelState.fromRuntimeState(
+            state,
+            recoveryAction: recoveryAction
+        )
     }
 
     var activateCallCount = 0
