@@ -7,7 +7,7 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, @unchecked Sendable {
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -204,11 +204,23 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        try readScrollbackReplay(id: id, maxBytes: maxBytes).data
+    }
+
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         if let session = existingSession(for: id) {
-            return session.readScrollbackTail(maxBytes: maxBytes)
+            return ScrollbackReplay(
+                data: session.readScrollbackTail(maxBytes: maxBytes),
+                source: .liveBrokerMemory,
+                maxBytes: maxBytes
+            )
         }
         if let scrollbackStore {
-            return try scrollbackStore.readTail(for: id, maxBytes: maxBytes)
+            return ScrollbackReplay(
+                data: try scrollbackStore.readTail(for: id, maxBytes: maxBytes),
+                source: .persistedDiskTail,
+                maxBytes: maxBytes
+            )
         }
         throw RuntimeError.missingSession(id)
     }

@@ -16,10 +16,21 @@ protocol BrokerSessionCoordinating {
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data
+    func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
     func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
     func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+}
+
+extension BrokerSessionCoordinating {
+    func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        ScrollbackReplay(
+            data: try readScrollbackTail(id, maxBytes: maxBytes),
+            source: .unknown,
+            maxBytes: maxBytes
+        )
+    }
 }
 
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
@@ -194,8 +205,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        try readScrollbackReplay(id, maxBytes: maxBytes).data
+    }
+
+    func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         _ = try record(for: id)
-        return try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
+        if let replayRuntime = runtime as? ScrollbackReplayReportingRuntime {
+            return try replayRuntime.readScrollbackReplay(id: id, maxBytes: maxBytes)
+        }
+        return ScrollbackReplay(
+            data: try runtime.readScrollbackTail(id: id, maxBytes: maxBytes),
+            source: .unknown,
+            maxBytes: maxBytes
+        )
     }
 
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {

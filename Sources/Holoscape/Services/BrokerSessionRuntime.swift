@@ -23,6 +23,22 @@ protocol BrokerSessionRuntime {
     func terminationStatus(id: BrokerSessionID) throws -> Int32?
 }
 
+enum ScrollbackReplaySource: Equatable, Sendable {
+    case liveBrokerMemory
+    case persistedDiskTail
+    case unknown
+}
+
+struct ScrollbackReplay: Equatable, Sendable {
+    let data: Data
+    let source: ScrollbackReplaySource
+    let maxBytes: Int
+}
+
+protocol ScrollbackReplayReportingRuntime {
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
+}
+
 /// Compatibility runtime used until the native broker process is introduced.
 ///
 /// It intentionally does not launch a hidden fallback broker. Controllers still

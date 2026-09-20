@@ -38,6 +38,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var sessionFailure: TerminalSessionFailure?
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
+    private(set) var lastScrollbackReplay: ScrollbackReplay?
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
@@ -78,6 +79,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     ) {
         startFailureDescription = nil
         startFailureKind = nil
+        lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
         if let existingBrokerSessionID = brokerSessionID {
@@ -115,20 +117,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
         startFailureDescription = nil
         startFailureKind = nil
+        lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
-            let tail = try coordinator.readScrollbackTail(
-                record.id,
-                maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
-            )
-            if !tail.isEmpty {
-                let bytes = Array(tail)
-                terminalView.feed(byteArray: bytes[...])
-                outputHandler?()
-            }
+            restoreScrollbackReplay(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
             }
@@ -151,6 +146,49 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
+    }
+
+    private func restoreScrollbackReplay(for sessionID: BrokerSessionID) {
+        do {
+            let replay = try coordinator.readScrollbackReplay(
+                sessionID,
+                maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
+            )
+            lastScrollbackReplay = replay
+            guard !replay.data.isEmpty else { return }
+            feedStatusLine(scrollbackReplayStatus(for: replay))
+            let bytes = Array(replay.data)
+            terminalView.feed(byteArray: bytes[...])
+            outputHandler?()
+        } catch {
+            // Scrollback corruption must not turn a successfully reattached live
+            // process into a stale tab. Surface the recovery plainly in the
+            // terminal, then continue with live output from the broker.
+            lastScrollbackReplay = nil
+            feedStatusLine(
+                "Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally."
+            )
+            outputHandler?()
+            NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
+        }
+    }
+
+    private func scrollbackReplayStatus(for replay: ScrollbackReplay) -> String {
+        let source: String
+        switch replay.source {
+        case .liveBrokerMemory:
+            source = "live broker memory"
+        case .persistedDiskTail:
+            source = "persisted disk scrollback"
+        case .unknown:
+            source = "broker scrollback"
+        }
+        return "Holoscape restored \(replay.data.count) bytes from \(source). Older output beyond the \(replay.maxBytes)-byte replay cap is not retained."
+    }
+
+    private func feedStatusLine(_ message: String) {
+        let bytes = Array("\r\n[\(message)]\r\n".utf8)
+        terminalView.feed(byteArray: bytes[...])
     }
 
     func send(_ bytes: [UInt8]) {

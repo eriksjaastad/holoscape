@@ -175,8 +175,11 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let replacementRuntime = NativePTYBrokerSessionRuntime(scrollbackDirectory: directory)
         let restored = String(decoding: try replacementRuntime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+        let replay = try replacementRuntime.readScrollbackReplay(id: id, maxBytes: 4096)
 
         XCTAssertTrue(restored.contains("durable-scrollback"), restored)
+        XCTAssertEqual(replay.source, .persistedDiskTail)
+        XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("durable-scrollback"))
     }
 
     func testTerminationStatusIsNilWhileRunningAndExitCodeAfterProcessEnds() throws {
