@@ -1890,10 +1890,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - URL Scheme
 
     func openChannel(type: String, directory: String?, label: String?, command: String? = nil) {
-        let dir = directory.map { URL(fileURLWithPath: $0) }
+        let explicitDir = directory.flatMap { path -> URL? in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return DefaultWorkingDirectory.expandedURL(from: trimmed)
+        }
 
         switch type {
         case "shell":
+            let dir = explicitDir
             let dirName = dir?.lastPathComponent
             let effectiveLabel = label ?? dirName
             let channel = channelManager.createChannel(
@@ -1924,10 +1929,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             switchToChannel(channel.channelId)
 
         case "agent":
+            let dir = DefaultWorkingDirectory.launchURL(fromOptionalPath: directory)
             let channel = channelManager.createChannel(
                 type: .agentDirect,
                 role: label,
-                workingDirectory: dir ?? URL(fileURLWithPath: NSHomeDirectory())
+                workingDirectory: dir
             ) { id, _, _, instanceNum, workDir in
                 AgentChannelController.brokerBacked(
                     id: id,
