@@ -418,6 +418,46 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(exited.updatedAt, now)
     }
 
+    /// Teardown while the broker host is unreachable must not trap, and must leave
+    /// the durable record reattachable: the record keeps its lifecycle, and the
+    /// terminal keeps the handle the next launch reads.
+    func testDetachFailureWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008020")!,
+            channelType: .shell,
+            label: "detach-outage",
+            environmentProfile: .shell,
+            coordinator: fixture.coordinator
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        let sessionID = try XCTUnwrap(terminal.brokerSessionID)
+
+        // The broker host disappears before the tab is torn down (tab close or app
+        // termination).
+        fixture.runtime.mode = .hostUnavailable
+        terminal.detachBrokerSession()
+
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID], "The detach attempt must still reach the coordinator")
+        XCTAssertEqual(
+            terminal.brokerOwnedSessionID,
+            sessionID,
+            "A failed detach must keep the handle for the next launch"
+        )
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded detach must leave the durable record reattachable for reconcile"
+        )
+    }
+
     func testStartReattachesExistingBrokerSessionInsteadOfCreatingReplacement() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessReattachTests-")
