@@ -18,6 +18,8 @@ class MockTerminalProcess: TerminalProcess {
     var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
     var brokerOwnedSessionID: BrokerSessionID?
     var staleBrokerSessionID: BrokerSessionID?
+    var sessionFailure: TerminalSessionFailure?
+    var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
 
@@ -36,6 +38,18 @@ class MockTerminalProcess: TerminalProcess {
 
     func setOutputHandler(_ handler: (() -> Void)?) {
         outputHandler = handler
+    }
+
+    func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
+        sessionFailureHandler = handler
+    }
+
+    /// Drive the mid-session failure boundary the way the broker-backed terminal
+    /// does when the host disappears under a live tab.
+    func reportSessionFailure(kind: TerminalStartFailureKind, description: String = "transportFailed(socketTimedOut)") {
+        let failure = TerminalSessionFailure(kind: kind, description: description)
+        sessionFailure = failure
+        sessionFailureHandler?(failure)
     }
 
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {

@@ -243,6 +243,64 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    /// Agent tabs must downgrade the same way shell tabs do when the broker host
+    /// disappears underneath a running session.
+    func testLiveAgentTabDowngradesToRetryableStaleWhenBrokerHostDisappears() {
+        let preservedID = BrokerSessionID(rawValue: "agent-live-host-loss-session")
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal
+        )
+        controller.delegate = delegate
+        controller.activate()
+        XCTAssertEqual(controller.state, .active)
+
+        terminal.brokerOwnedSessionID = preservedID
+        terminal.reportSessionFailure(kind: .brokerHostUnavailable)
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.brokerSessionID, preservedID)
+        XCTAssertNil(controller.staleBrokerSessionID)
+        XCTAssertEqual(controller.recoveryAction, .retryBrokerHost)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .stale])
+
+        terminal.reportSessionFailure(kind: .brokerHostUnavailable)
+        controller.sendInput("echo still-here")
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .stale])
+        XCTAssertTrue(terminal.sentBytes.isEmpty)
+    }
+
+    /// A dropped session reported mid-run must offer recreate, not retry: the
+    /// failure kind decides the guidance, not when it was noticed.
+    func testLiveAgentTabDowngradesToRecreateWhenBrokerDropsTheSession() {
+        let deadID = BrokerSessionID(rawValue: "agent-live-dropped-session")
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.brokerOwnedSessionID = deadID
+        terminal.staleBrokerSessionID = deadID
+
+        terminal.reportSessionFailure(kind: .brokerSessionStale)
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertNil(controller.brokerSessionID)
+        XCTAssertEqual(controller.staleBrokerSessionID, deadID)
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+    }
+
     func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {
         let deadID = BrokerSessionID(rawValue: "agent-stale-restored-session")
         let terminal = MockTerminalProcess()

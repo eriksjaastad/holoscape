@@ -198,6 +198,35 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    /// A running tab whose broker host disappears must downgrade to an explicit
+    /// retryable stale state, keep the session handle for retry, and stop
+    /// accepting input — not trap inside an output poll or a keystroke.
+    func testLiveTabDowngradesToRetryableStaleWhenBrokerHostDisappears() {
+        let preservedID = BrokerSessionID(rawValue: "shell-live-host-loss-session")
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+        controller.delegate = delegate
+        controller.activate()
+        XCTAssertEqual(controller.state, .active)
+
+        terminal.brokerOwnedSessionID = preservedID
+        terminal.reportSessionFailure(kind: .brokerHostUnavailable)
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.brokerSessionID, preservedID, "A host outage must keep the handle so retry reattaches the same session")
+        XCTAssertNil(controller.staleBrokerSessionID)
+        XCTAssertEqual(controller.recoveryAction, .retryBrokerHost)
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .stale])
+
+        // Repeated reports and late keystrokes must not churn the tab or write
+        // input into a session that is known to be unreachable.
+        terminal.reportSessionFailure(kind: .brokerHostUnavailable)
+        controller.sendInput("echo still-here")
+        XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .stale])
+        XCTAssertTrue(terminal.sentBytes.isEmpty, "A downgraded tab must not forward input into a lost session")
+    }
+
     func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {
         let deadID = BrokerSessionID(rawValue: "shell-stale-restored-session")
         let terminal = MockTerminalProcess()

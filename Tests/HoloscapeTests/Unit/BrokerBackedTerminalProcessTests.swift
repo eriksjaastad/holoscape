@@ -69,6 +69,252 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    /// Models a broker host that accepts a session and then disappears: every
+    /// follow-up operation on the live session reports transport failure until
+    /// `isHostAvailable` is restored (the host coming back).
+    private final class HostLossRuntime: BrokerSessionRuntime {
+        var isHostAvailable = true
+        private(set) var createdIDs: [BrokerSessionID] = []
+
+        private func hostUnavailable() throws -> Never {
+            throw BrokerSessionHostClientRuntime.ClientError.transportFailed(
+                "socketTimedOut(/tmp/holoscape-broker.sock)"
+            )
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { createdIDs }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            if !isHostAvailable { try hostUnavailable() }
+            createdIDs.append(id)
+        }
+        func detachSession(id: BrokerSessionID) throws { if !isHostAvailable { try hostUnavailable() } }
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws { if !isHostAvailable { try hostUnavailable() } }
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws { if !isHostAvailable { try hostUnavailable() } }
+        func markSessionErrored(id: BrokerSessionID) throws { if !isHostAvailable { try hostUnavailable() } }
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws { if !isHostAvailable { try hostUnavailable() } }
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            if !isHostAvailable { try hostUnavailable() }
+            return Data()
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+            if !isHostAvailable { try hostUnavailable() }
+            return Data()
+        }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
+            if !isHostAvailable { try hostUnavailable() }
+        }
+        func isRunning(id: BrokerSessionID) throws -> Bool {
+            if !isHostAvailable { try hostUnavailable() }
+            return true
+        }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            if !isHostAvailable { try hostUnavailable() }
+            return nil
+        }
+    }
+
+    /// Models a reachable broker that no longer owns the attached session:
+    /// follow-up operations report the session as missing.
+    private final class MidSessionLossRuntime: BrokerSessionRuntime {
+        private(set) var createdIDs: [BrokerSessionID] = []
+
+        func listSessions() throws -> [BrokerSessionID] { createdIDs }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { createdIDs.append(id) }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
+    /// Broker terminal wired to a temp registry so mid-session failures can be
+    /// driven directly.
+    private struct MidSessionFixture {
+        let directory: URL
+        let registry: BrokerSessionRegistry
+        let coordinator: BrokerSessionCoordinator
+        let terminal: BrokerBackedTerminalProcess
+
+        func cleanup() {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    private func makeMidSessionFixture(
+        runtime: any BrokerSessionRuntime,
+        channelID: String,
+        continueAfterStart: Bool = true
+    ) throws -> MidSessionFixture {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessMidSessionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: runtime,
+            now: { Date(timeIntervalSince1970: 1_200) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: channelID)!,
+            channelType: .shell,
+            label: "broker-mid-session",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        if continueAfterStart {
+            terminal.startProcess(
+                executable: "/bin/zsh",
+                args: ["--login"],
+                environment: nil,
+                execName: "zsh",
+                currentDirectory: "/tmp"
+            )
+        }
+        return MidSessionFixture(
+            directory: tempDirectory,
+            registry: registry,
+            coordinator: coordinator,
+            terminal: terminal
+        )
+    }
+
+    func testOutputPollAfterBrokerHostLossReportsHostFailureAndKeepsSessionForRetry() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008010")
+        defer { fixture.cleanup() }
+        guard let sessionID = fixture.terminal.brokerSessionID else {
+            return XCTFail("Expected the broker session to start")
+        }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.pollOutputOnce()
+        fixture.terminal.pollOutputOnce()
+        fixture.terminal.pollOutputOnce()
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable], "Repeated polls during an outage must report once, not storm")
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID, "A host outage must keep the session handle for retry")
+        XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .running, "Host loss must not mark a possibly-live session as errored")
+    }
+
+    func testSendAfterBrokerHostLossReportsHostFailureInsteadOfTrapping() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008011")
+        defer { fixture.cleanup() }
+        guard let sessionID = fixture.terminal.brokerSessionID else {
+            return XCTFail("Expected the broker session to start")
+        }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.send(Array("hello\n".utf8))
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable])
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+    }
+
+    func testResizeAfterBrokerHostLossReportsHostFailureInsteadOfTrapping() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008012")
+        defer { fixture.cleanup() }
+        guard let sessionID = fixture.terminal.brokerSessionID else {
+            return XCTFail("Expected the broker session to start")
+        }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.resizeToCurrentGrid()
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable])
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+    }
+
+    func testRetryAfterBrokerHostLossReattachesSameSessionWithoutReplacement() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008013")
+        defer { fixture.cleanup() }
+        guard let sessionID = fixture.terminal.brokerSessionID else {
+            return XCTFail("Expected the broker session to start")
+        }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.pollOutputOnce()
+        XCTAssertEqual(failures.count, 1)
+
+        runtime.isHostAvailable = true
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertNil(fixture.terminal.sessionFailure, "A successful retry must clear the recorded session failure")
+        XCTAssertNil(fixture.terminal.startFailureKind)
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(
+            runtime.createdIDs,
+            [sessionID],
+            "Retry after a host outage must reattach, never spawn a replacement"
+        )
+    }
+
+    func testMidSessionBrokerLossReportsStaleFailureAndKeepsDeadIdentity() throws {
+        let runtime = MidSessionLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008014")
+        defer { fixture.cleanup() }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+        guard let sessionID = fixture.terminal.brokerSessionID else {
+            return XCTFail("Expected the broker session to start")
+        }
+
+        fixture.terminal.pollOutputOnce()
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
+        XCTAssertNil(fixture.terminal.brokerSessionID, "A dropped session must not stay attached")
+        XCTAssertEqual(fixture.terminal.staleBrokerSessionID, sessionID)
+    }
+
+    func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {
+        let fixture = try makeMidSessionFixture(
+            runtime: HostLossRuntime(),
+            channelID: "00000000-0000-0000-0000-000000008015",
+            continueAfterStart: false
+        )
+        defer { fixture.cleanup() }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        // No session has ever started: a stale/disconnected tab can still receive
+        // keystrokes and layout passes from the view. Those must be inert, not a
+        // crash and not a fabricated host outage.
+        fixture.terminal.send(Array("x".utf8))
+        fixture.terminal.resizeToCurrentGrid()
+        fixture.terminal.pollOutputOnce()
+
+        XCTAssertTrue(failures.isEmpty, "A tab with no live session must not report a broker host outage")
+        XCTAssertNil(fixture.terminal.sessionFailure)
+    }
+
     func testStartCreatesBrokerRecordAndRoutesInputThroughNativePTYRuntime() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessTests-")

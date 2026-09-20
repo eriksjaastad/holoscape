@@ -21,6 +21,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let coordinator: any BrokerSessionCoordinating
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
+    private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
     private var outputTimer: Timer?
@@ -32,6 +33,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// dead identity for the next launch.
     private(set) var staleBrokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
+    /// Most recent failure observed while operating the live session. `nil` means
+    /// the session is healthy (or has not started yet).
+    private(set) var sessionFailure: TerminalSessionFailure?
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
 
@@ -73,6 +77,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startFailureDescription = nil
         startFailureKind = nil
         staleBrokerSessionID = nil
+        sessionFailure = nil
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -109,6 +114,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startFailureDescription = nil
         startFailureKind = nil
         staleBrokerSessionID = nil
+        sessionFailure = nil
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
@@ -144,25 +150,36 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     func send(_ bytes: [UInt8]) {
         guard let brokerSessionID else {
-            assertionFailure("Broker-backed terminal input before session start")
+            // Keystrokes can still reach the view of a stale or disconnected tab.
+            // There is no live session to write to, and that is not a broker host
+            // outage, so log and ignore rather than trapping the app.
+            NSLog("Broker-backed terminal input ignored: no live broker session")
+            return
+        }
+        guard sessionFailure == nil else {
+            // The outage (or dropped session) was already reported to the tab,
+            // which is showing its recovery guidance; late keystrokes are inert.
             return
         }
         do {
             try coordinator.sendInput(brokerSessionID, bytes: bytes)
             pollOutputOnce()
         } catch {
-            assertionFailure("Broker-backed terminal input failed: \(error)")
+            reportSessionFailure(error)
         }
     }
 
     func setOutputHandler(_ handler: (() -> Void)?) {
         outputHandler = handler
         if handler == nil {
-            outputTimer?.invalidate()
-            outputTimer = nil
-        } else if brokerSessionID != nil {
+            stopOutputPump()
+        } else if brokerSessionID != nil, sessionFailure == nil {
             startOutputPump()
         }
+    }
+
+    func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
+        sessionFailureHandler = handler
     }
 
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
@@ -179,8 +196,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     func detachBrokerSession() {
         guard let brokerSessionID, !didNotifyTermination else { return }
-        outputTimer?.invalidate()
-        outputTimer = nil
+        stopOutputPump()
         do {
             _ = try coordinator.detach(brokerSessionID)
         } catch {
@@ -194,6 +210,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func pollOutputOnce() {
+        guard sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
         do {
             let data = try coordinator.readAvailableOutput(brokerSessionID)
@@ -204,19 +221,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             try notifyTerminationIfNeeded(for: brokerSessionID)
         } catch {
-            assertionFailure("Broker-backed terminal output read failed: \(error)")
+            reportSessionFailure(error)
         }
     }
 
     func resizeToCurrentGrid() {
+        guard sessionFailure == nil else { return }
         guard let brokerSessionID else {
-            assertionFailure("Broker-backed terminal resize before session start")
+            NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
         }
         do {
             try coordinator.resize(brokerSessionID, size: currentGridSize)
         } catch {
-            assertionFailure("Broker-backed terminal resize failed: \(error)")
+            reportSessionFailure(error)
         }
     }
 
@@ -227,6 +245,46 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self?.pollOutputOnce()
             }
         }
+    }
+
+    private func stopOutputPump() {
+        outputTimer?.invalidate()
+        outputTimer = nil
+    }
+
+    /// Record a mid-session broker failure once, stop polling, and report it so
+    /// the owning tab can downgrade to an explicit recovery state.
+    ///
+    /// The broker host disappearing underneath a running tab is an expected
+    /// runtime condition, so it is reported through the session-failure boundary
+    /// instead of trapping. The durable broker handle is preserved for the
+    /// retryable cases so retry reattaches the same session rather than starting
+    /// a replacement.
+    private func reportSessionFailure(_ error: Error) {
+        let kind = classifyStartFailure(error)
+        switch kind {
+        case .brokerHostUnavailable, .failed:
+            // The host is unreachable (or the failure is unclassified) but the
+            // session may still be alive: keep the handle so retry reattaches it.
+            break
+        case .brokerSessionStale:
+            // The broker no longer owns the session: hand the dead identity to the
+            // tab and drop the live handle so retry starts a replacement.
+            if let sessionID = brokerSessionID {
+                brokerSessionID = nil
+                staleBrokerSessionID = sessionID
+            }
+        }
+
+        let failure = TerminalSessionFailure(kind: kind, description: String(describing: error))
+        guard sessionFailure != failure else {
+            NSLog("Broker-backed terminal session still failing: \(failure.description)")
+            return
+        }
+        sessionFailure = failure
+        stopOutputPump()
+        NSLog("Broker-backed terminal session failed (\(failure.kind)): \(failure.description)")
+        sessionFailureHandler?(failure)
     }
 
     private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {

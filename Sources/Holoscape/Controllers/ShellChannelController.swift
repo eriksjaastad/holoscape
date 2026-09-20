@@ -119,6 +119,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setUserInputHandler { [weak self] data in
             self?.handleUserInput(data)
         }
+        self.terminal.setSessionFailureHandler { [weak self] failure in
+            self?.handleSessionFailure(failure)
+        }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
@@ -184,27 +187,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
-            let failedState = channelState(for: terminal.startFailureKind)
-            lastStartFailureKind = terminal.startFailureKind
-            switch terminal.startFailureKind {
-            case .brokerHostUnavailable:
-                // Outage is retryable: keep the handle so retry reattaches the
-                // same broker session instead of spawning a replacement.
-                if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
-                    brokerSessionID = terminalBrokerSessionID
-                }
-                staleBrokerSessionID = nil
-            case .brokerSessionStale:
-                // The broker no longer owns the session. Retry must spawn a
-                // replacement, so drop the live handle, but keep the dead
-                // identity so guidance and tab metadata survive relaunch.
-                brokerSessionID = nil
-                staleBrokerSessionID = terminal.staleBrokerSessionID
-            case .failed, .none:
-                // Hard failures leave whatever durable identity the tab already
-                // had; only a successful attach clears it.
-                break
-            }
+            let failedState = applyBrokerFailure(kind: terminal.startFailureKind)
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
             return
@@ -275,6 +258,51 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         case .failed, .none:
             return .disconnected
         }
+    }
+
+    /// Apply a broker failure reported by the terminal — at start time or from a
+    /// live session that lost its broker — to the tab's recovery fields.
+    ///
+    /// Keeping this in one place is what makes the guidance a tab shows depend on
+    /// the failure kind rather than on when the failure was noticed: a broker host
+    /// outage keeps the handle and offers `retryBrokerHost`, a dropped session
+    /// keeps the dead identity and offers `recreateBrokerSession`.
+    private func applyBrokerFailure(kind: TerminalStartFailureKind?) -> ChannelState {
+        lastStartFailureKind = kind
+        switch kind {
+        case .brokerHostUnavailable:
+            // Outage is retryable: keep the handle so retry reattaches the same
+            // broker session instead of spawning a replacement.
+            if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
+            staleBrokerSessionID = nil
+        case .brokerSessionStale:
+            // The broker no longer owns the session. Retry must spawn a
+            // replacement, so drop the live handle, but keep the dead identity so
+            // guidance and tab metadata survive relaunch.
+            brokerSessionID = nil
+            staleBrokerSessionID = terminal.staleBrokerSessionID
+        case .failed, .none:
+            // Hard failures leave whatever durable identity the tab already had;
+            // only a successful attach clears it.
+            break
+        }
+        return channelState(for: kind)
+    }
+
+    /// Downgrade a live tab whose broker host or session disappeared underneath
+    /// it. Reported by the terminal process so the failure is explicit instead of
+    /// being swallowed or trapping in the middle of an output poll.
+    private func handleSessionFailure(_ failure: TerminalSessionFailure) {
+        let downgradedState = applyBrokerFailure(kind: failure.kind)
+        guard state != downgradedState else {
+            // Repeated reports (further keystrokes, a layout pass) must not churn
+            // the tab bar or rewrite persisted state.
+            return
+        }
+        state = downgradedState
+        delegate?.channelStateDidChange(self, to: downgradedState)
     }
 
     private func updateWorkingDirectory(_ nextDirectory: String) {
