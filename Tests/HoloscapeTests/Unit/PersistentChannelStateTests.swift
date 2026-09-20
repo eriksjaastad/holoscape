@@ -81,4 +81,39 @@ final class PersistentChannelStateTests: XCTestCase {
         XCTAssertEqual(decoded.persistentState?.source, .brokerRegistry)
         XCTAssertEqual(decoded.persistentState?.recoveryAction, .recreateBrokerSession)
     }
+
+    func testPersistentKindsExposeStableReactiveOrdinalsForSkins() {
+        XCTAssertEqual(PersistentChannelStateKind.ready.reactiveAgentStateOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.running.reactiveAgentStateOrdinal, 1)
+        XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveAgentStateOrdinal, 2)
+        XCTAssertEqual(PersistentChannelStateKind.error.reactiveAgentStateOrdinal, 3)
+        XCTAssertEqual(PersistentChannelStateKind.stale.reactiveAgentStateOrdinal, 3)
+
+        XCTAssertEqual(PersistentChannelStateKind.ready.reactiveChannelConnectionOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.running.reactiveChannelConnectionOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveChannelConnectionOrdinal, 1)
+        XCTAssertEqual(PersistentChannelStateKind.error.reactiveChannelConnectionOrdinal, 2)
+        XCTAssertEqual(PersistentChannelStateKind.stale.reactiveChannelConnectionOrdinal, 3)
+
+        XCTAssertEqual(PersistentChannelStateKind.ready.reactiveNotificationKindOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.running.reactiveNotificationKindOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveNotificationKindOrdinal, 2)
+        XCTAssertEqual(PersistentChannelStateKind.error.reactiveNotificationKindOrdinal, 3)
+        XCTAssertEqual(PersistentChannelStateKind.stale.reactiveNotificationKindOrdinal, 3)
+    }
+
+    func testReactiveSnapshotAppliesPersistentChannelState() {
+        let snapshot = ReactiveUniformSnapshot()
+        snapshot.applyPersistentChannelState(PersistentChannelState(kind: .needsApproval, source: .agentAdapter))
+
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "agentState"), 2)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "channelConnectionState"), 1)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "notificationKind"), 2)
+
+        snapshot.applyPersistentChannelState(PersistentChannelState(kind: .stale, source: .brokerRegistry))
+
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "agentState"), 3)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "channelConnectionState"), 3)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "notificationKind"), 3)
+    }
 }

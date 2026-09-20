@@ -139,6 +139,7 @@ class SidebarView: NSView {
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
+                    persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
                     elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
                     isPinned: isPinned,
@@ -160,6 +161,7 @@ class SidebarView: NSView {
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
+                    persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
                     elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
                     isPinned: isPinned,
@@ -418,13 +420,13 @@ class SidebarTabEntry: NSButton {
         ])
     }
 
-    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil) {
+    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState? = nil, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil) {
         // Stash the call so a later skin swap can re-apply the same
         // state without the caller re-running updateTabs.
         lastConfigure = { [weak self] in
             self?.applyConfigure(
                 label: label, channelType: channelType, hasUnread: hasUnread,
-                state: state, isActive: isActive, elapsedTime: elapsedTime,
+                state: state, persistentState: persistentState, isActive: isActive, elapsedTime: elapsedTime,
                 isPinned: isPinned, notificationType: notificationType,
                 recoveryAction: recoveryAction
             )
@@ -432,29 +434,37 @@ class SidebarTabEntry: NSButton {
         lastConfigure?()
     }
 
-    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?) {
+    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState?, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?) {
         self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
 
-        // Map the incoming view-level state into this row's snapshot
-        // so state-variant resolution picks the right fill + text.
-        //   notificationKind: 0 none, 1 idle_prompt, 2 permission_prompt
-        //   channelConnectionState: 0 active, 1 connecting, 2 disconnected, 3 stale
+        // Map durable persistent tab truth into this row's snapshot so
+        // state-variant resolution picks the right fill + text. Legacy
+        // notificationType is still accepted for old hook callers, but it
+        // no longer owns needs-approval/error/stale visual truth when a
+        // PersistentChannelState is available.
+        //   notificationKind: 0 none, 1 info, 2 warn/needs-approval, 3 error
+        //   channelConnectionState: 0 usable, 1 attention, 2 error/disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
         let notificationKind: Int32
-        switch notificationType {
-        case "idle_prompt":       notificationKind = 1
-        case "permission_prompt": notificationKind = 2
-        default:                  notificationKind = 0
-        }
         let connectionState: Int32
-        switch state {
-        case .active:       connectionState = 0
-        case .connecting:   connectionState = 1
-        case .disconnected: connectionState = 2
-        case .stale:        connectionState = 3
+        if let persistentState {
+            notificationKind = persistentState.kind.reactiveNotificationKindOrdinal
+            connectionState = persistentState.kind.reactiveChannelConnectionOrdinal
+        } else {
+            switch notificationType {
+            case "idle_prompt":       notificationKind = 1
+            case "permission_prompt": notificationKind = 2
+            default:                  notificationKind = 0
+            }
+            switch state {
+            case .active:       connectionState = 0
+            case .connecting:   connectionState = 1
+            case .disconnected: connectionState = 2
+            case .stale:        connectionState = 3
+            }
         }
         snapshot.setChannelState(
             channelId: channelId.map { Int32(truncatingIfNeeded: $0.hashValue) } ?? 0,
@@ -463,17 +473,30 @@ class SidebarTabEntry: NSButton {
         )
         snapshot.setChannelConnectionState(connectionState)
         snapshot.setNotificationKind(notificationKind)
+        if let persistentState {
+            snapshot.setAgentState(persistentState.kind.reactiveAgentStateOrdinal)
+        }
 
         // Status text is view-level content (not a color) — drive it here.
-        switch state {
-        case .active:       statusTextField.stringValue = elapsedTime ?? ""
-        case .connecting:   statusTextField.stringValue = "connecting..."
-        case .disconnected: statusTextField.stringValue = "disconnected"
-        case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
+        if let persistentState {
+            switch persistentState.kind {
+            case .ready: statusTextField.stringValue = "ready"
+            case .running: statusTextField.stringValue = elapsedTime ?? "running"
+            case .needsApproval: statusTextField.stringValue = "needs approval"
+            case .error: statusTextField.stringValue = persistentState.reason ?? "error"
+            case .stale: statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? persistentState.reason ?? "stale"
+            }
+        } else {
+            switch state {
+            case .active:       statusTextField.stringValue = elapsedTime ?? ""
+            case .connecting:   statusTextField.stringValue = "connecting..."
+            case .disconnected: statusTextField.stringValue = "disconnected"
+            case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
+            }
         }
-        if notificationType == "permission_prompt" {
+        if persistentState == nil, notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"
-        } else if notificationType == "idle_prompt" {
+        } else if persistentState == nil, notificationType == "idle_prompt" {
             statusTextField.stringValue = "ready"
         }
 
