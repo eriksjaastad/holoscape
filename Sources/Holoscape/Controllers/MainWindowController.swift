@@ -659,6 +659,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let closeItem = NSMenuItem(title: "Close Channel", action: #selector(closeActiveChannel), keyEquivalent: "w")
         closeItem.target = self
 
+        let pruneScrollbackItem = NSMenuItem(title: "Clear Active Channel Scrollback Tail", action: #selector(clearActiveChannelScrollbackTail), keyEquivalent: "")
+        pruneScrollbackItem.target = self
+
         let toggleSidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "s")
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .shift]
         toggleSidebarItem.target = self
@@ -668,6 +671,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             fileMenu.addItem(newShellChannelItem)
             fileMenu.addItem(newChannelItem)
             fileMenu.addItem(closeItem)
+            fileMenu.addItem(pruneScrollbackItem)
             fileMenu.addItem(NSMenuItem.separator())
             fileMenu.addItem(toggleSidebarItem)
         }
@@ -2089,6 +2093,58 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         channel.delegate = self
         channel.activate()
         switchToChannel(channel.channelId)
+    }
+
+    @objc func clearActiveChannelScrollbackTail() {
+        guard let activeChannelId,
+              let channel = channelManager.channel(for: activeChannelId) else {
+            presentScrollbackMaintenanceResult(
+                title: "No Active Channel",
+                message: "Select a broker-backed shell or agent channel before clearing persisted scrollback."
+            )
+            return
+        }
+        guard let brokerSessionID = persistedScrollbackSessionID(for: channel) else {
+            presentScrollbackMaintenanceResult(
+                title: "No Persisted Scrollback Tail",
+                message: "The active channel is not backed by a persisted broker session."
+            )
+            return
+        }
+
+        let store = DiskBackedScrollbackStore(directory: ScrollbackPersistencePolicy.defaultDiskDirectory)
+        do {
+            let bytes = try store.storedByteCount(for: brokerSessionID)
+            try store.remove(for: brokerSessionID)
+            presentScrollbackMaintenanceResult(
+                title: "Scrollback Tail Cleared",
+                message: "Removed \(bytes) bytes of persisted disk scrollback for \(channel.displayLabel). The live terminal contents remain visible until overwritten or the tab is relaunched."
+            )
+        } catch {
+            presentScrollbackMaintenanceResult(
+                title: "Could Not Clear Scrollback Tail",
+                message: "Holoscape could not remove persisted scrollback for session \(brokerSessionID.rawValue): \(error)"
+            )
+            NSLog("MainWindowController: failed to clear scrollback tail for \(brokerSessionID.rawValue): \(error)")
+        }
+    }
+
+    private func persistedScrollbackSessionID(for channel: any ChannelController) -> BrokerSessionID? {
+        if let shell = channel as? ShellChannelController {
+            return shell.brokerSessionID ?? shell.staleBrokerSessionID
+        }
+        if let agent = channel as? AgentChannelController {
+            return agent.brokerSessionID ?? agent.staleBrokerSessionID
+        }
+        return nil
+    }
+
+    private func presentScrollbackMaintenanceResult(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
     }
 
     private struct AgentChannelPromptResult {
