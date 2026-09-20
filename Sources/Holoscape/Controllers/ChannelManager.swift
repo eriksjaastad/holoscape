@@ -7,6 +7,7 @@ class ChannelManager {
     private var instanceCounters: [String: Int] = [:]
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
+    private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
     private(set) var pinnedChannelIds: Set<UUID> = []
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
     private let configService: ConfigService
@@ -130,6 +131,7 @@ class ChannelManager {
         channels.removeValue(forKey: id)
         channelOrder.removeAll { $0 == id }
         channelLabels.removeValue(forKey: id)
+        restoredBrokerSessionIDs.removeValue(forKey: id)
         // Note: highWaterMarks are NOT decremented on close (no renumbering)
     }
 
@@ -226,6 +228,7 @@ class ChannelManager {
                 pinnedAt: pinnedTimestamps[id],
                 brokerSessionID: (channel as? ShellChannelController)?.brokerSessionID
                     ?? (channel as? AgentChannelController)?.brokerSessionID
+                    ?? restoredBrokerSessionIDs[id]
             )
         }
         configService.save(config)
@@ -241,6 +244,9 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
+                if let brokerSessionID = metadata.brokerSessionID {
+                    restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
+                }
                 if let pinnedAt = metadata.pinnedAt {
                     pinnedChannelIds.insert(controller.channelId)
                     pinnedTimestamps[controller.channelId] = pinnedAt
@@ -303,12 +309,53 @@ class ChannelManager {
 
     func firstUnmatchedBrokerBackedShellSessionToRestore() -> BrokerSessionRecord? {
         do {
-            return try brokerBackedShellCoordinator.reattachableSessions()
-                .first { $0.channelType == .shell }
+            return try unmatchedBrokerBackedSessionsToRestore(
+                from: brokerBackedShellCoordinator.reattachableSessions()
+            )
+            .first { $0.channelType == .shell }
         } catch {
             assertionFailure("ChannelManager failed to load unmatched broker-backed shell sessions: \(error)")
             return nil
         }
+    }
+
+    func unmatchedBrokerBackedSessionsToRestore() -> [BrokerSessionRecord] {
+        do {
+            return try unmatchedBrokerBackedSessionsToRestore(
+                from: brokerBackedShellCoordinator.reattachableSessions()
+            )
+        } catch {
+            assertionFailure("ChannelManager failed to load unmatched broker-backed sessions: \(error)")
+            return []
+        }
+    }
+
+    @discardableResult
+    func restoreUnmatchedBrokerBackedSessions(
+        factory: (ChannelMetadata) -> (any ChannelController)?
+    ) -> Int {
+        let records = unmatchedBrokerBackedSessionsToRestore()
+        var restoredCount = 0
+        for record in records {
+            let metadata = ChannelMetadata(
+                id: UUID(),
+                type: record.channelType,
+                role: restoredRole(for: record),
+                workingDirectory: record.workingDirectory,
+                command: restoredCommand(for: record),
+                brokerSessionID: record.id
+            )
+            guard let controller = factory(metadata) else { continue }
+            channels[controller.channelId] = controller
+            channelOrder.append(controller.channelId)
+            channelLabels[controller.channelId] = metadata.role
+            restoredBrokerSessionIDs[controller.channelId] = record.id
+            restoredCount += 1
+        }
+        if restoredCount > 0 {
+            saveState()
+        }
+        return restoredCount
     }
 
     /// Get the stored label for a channel (used for profile resolution on duplicate).
@@ -344,6 +391,61 @@ class ChannelManager {
         case .mcp: return "MCP"
         case .bridge: return "Bridge"
         }
+    }
+
+    private func unmatchedBrokerBackedSessionsToRestore(
+        from sessions: [BrokerSessionRecord]
+    ) -> [BrokerSessionRecord] {
+        let restoredChannelIDs = Set(channelOrder)
+        let persistedBrokerSessionIDs = Set(configService.load().channels.compactMap(\.brokerSessionID))
+        let liveBrokerSessionIDs = Set(allChannels().compactMap { channel in
+            (channel as? ShellChannelController)?.brokerSessionID
+                ?? (channel as? AgentChannelController)?.brokerSessionID
+        })
+        let knownBrokerSessionIDs = persistedBrokerSessionIDs.union(liveBrokerSessionIDs)
+
+        return sessions.filter { record in
+            switch record.channelType {
+            case .shell, .agentDirect, .agentAPI:
+                break
+            case .groupChat, .ssh, .mcp, .bridge:
+                return false
+            }
+            if knownBrokerSessionIDs.contains(record.id) {
+                return false
+            }
+            if let lastAttachedChannelID = record.lastAttachedChannelID,
+               restoredChannelIDs.contains(lastAttachedChannelID) {
+                return false
+            }
+            return true
+        }
+    }
+
+    private func restoredRole(for record: BrokerSessionRecord) -> String {
+        if let label = record.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+            return label
+        }
+        return defaultRole(for: record.channelType)
+    }
+
+    private func restoredCommand(for record: BrokerSessionRecord) -> String? {
+        guard record.channelType == .agentDirect || record.channelType == .agentAPI else { return nil }
+        if record.command == "/usr/bin/env", record.arguments.count == 1 {
+            return record.arguments[0]
+        }
+        if record.arguments.isEmpty {
+            return record.command
+        }
+        return ([record.command] + record.arguments).map(shellEscaped).joined(separator: " ")
+    }
+
+    private func shellEscaped(_ token: String) -> String {
+        if token.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+           !token.contains("'") {
+            return token
+        }
+        return "'\(token.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     /// Load API key from environment variable or fallback to agent-chat.env file.

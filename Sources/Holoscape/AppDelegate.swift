@@ -86,6 +86,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 }
                 return controller
             }
+
+            restoreUnmatchedBrokerBackedSessionsAsTabs()
         }
 
         // If no channels restored, create a default shell
@@ -206,6 +208,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     // MARK: - Private
+
+    @discardableResult
+    func restoreUnmatchedBrokerBackedSessionsAsTabs() -> Int {
+        // A hard crash can leave the broker registry with live sessions that
+        // never made it into the saved tab list. Surface those survivors as
+        // durable tabs instead of forcing the user to rediscover or leak the
+        // broker-owned process.
+        guard let channelManager = channelManagerRef else { return 0 }
+        return channelManager.restoreUnmatchedBrokerBackedSessions { [weak self] metadata in
+            guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
+            controller.delegate = self.windowController
+            controller.activate()
+            return controller
+        }
+    }
 
     func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
         // NOTE: This method only CONSTRUCTS controllers. Activation is the

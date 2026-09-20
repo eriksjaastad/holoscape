@@ -443,6 +443,184 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.workingDirectory, "/tmp/recovered")
     }
 
+    func testUnmatchedBrokerBackedSessionsToRestoreExcludesAlreadyRestoredTabs() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerUnmatchedBrokerFilterTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let persistedBrokerSessionID = BrokerSessionID(rawValue: "persisted-shell-session")
+        let attachedChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000007401")!
+        let expectedShellSessionID = BrokerSessionID(rawValue: "unmatched-shell-session")
+        let expectedAgentSessionID = BrokerSessionID(rawValue: "unmatched-agent-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: persistedBrokerSessionID,
+                channelType: .shell,
+                label: "Persisted Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/persisted",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "attached-restored-shell-session"),
+                channelType: .shell,
+                label: "Attached Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/attached",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: attachedChannelID
+            ),
+            BrokerSessionRecord(
+                id: expectedShellSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/recovered-shell",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 3),
+                updatedAt: Date(timeIntervalSince1970: 3),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: expectedAgentSessionID,
+                channelType: .agentDirect,
+                label: "Recovered Agent",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/recovered-agent",
+                environmentProfile: .agentOAuth,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 4),
+                updatedAt: Date(timeIntervalSince1970: 4),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let configService = ConfigService(configDir: tempDirectory)
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(
+                id: UUID(),
+                type: .shell,
+                role: "Persisted Shell",
+                brokerSessionID: persistedBrokerSessionID
+            )
+        ]
+        configService.save(config)
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+        manager.restoreState { metadata in
+            ShellChannelController(
+                id: attachedChannelID,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+
+        let matches = manager.unmatchedBrokerBackedSessionsToRestore()
+
+        XCTAssertEqual(matches.map(\.id), [expectedShellSessionID, expectedAgentSessionID])
+    }
+
+    func testRestoreUnmatchedBrokerBackedSessionsCreatesDurableTabsAndPersistsThem() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerUnmatchedBrokerRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let shellSessionID = BrokerSessionID(rawValue: "unmatched-shell-to-restore")
+        let agentSessionID = BrokerSessionID(rawValue: "unmatched-agent-to-restore")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: shellSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/recovered-shell-tab",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: agentSessionID,
+                channelType: .agentDirect,
+                label: "Recovered Agent",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/recovered-agent-tab",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let restoredCount = manager.restoreUnmatchedBrokerBackedSessions { metadata in
+            switch metadata.type {
+            case .shell:
+                return ShellChannelController(
+                    id: metadata.id,
+                    instanceNumber: metadata.instanceNumber,
+                    label: metadata.role,
+                    workingDirectory: metadata.workingDirectory,
+                    terminal: StubTerminalProcess(brokerOwnedSessionID: metadata.brokerSessionID)
+                )
+            case .agentDirect:
+                return AgentChannelController(
+                    id: metadata.id,
+                    authType: .oauth,
+                    workingDirectory: metadata.workingDirectory.map(URL.init(fileURLWithPath:)),
+                    userLabel: metadata.role,
+                    instanceNumber: metadata.instanceNumber,
+                    command: metadata.command ?? "claude",
+                    terminal: StubTerminalProcess(brokerOwnedSessionID: metadata.brokerSessionID)
+                )
+            default:
+                return nil
+            }
+        }
+
+        XCTAssertEqual(restoredCount, 2)
+        XCTAssertEqual(manager.allChannels().map(\.channelType), [.shell, .agentDirect])
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.brokerSessionID), [shellSessionID, agentSessionID])
+        XCTAssertEqual(savedChannels.map(\.workingDirectory), ["/tmp/recovered-shell-tab", "/tmp/recovered-agent-tab"])
+        XCTAssertEqual(savedChannels[1].command, "codex")
+    }
+
     func testSavedBrokerBackedAgentRestoresAndReattachesAcrossManagerRelaunch() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerAgentRelaunchTests-")

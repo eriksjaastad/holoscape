@@ -118,6 +118,55 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.state, .active)
     }
 
+    func testRestoreUnmatchedBrokerBackedSessionsAsTabsReattachesAndPersistsRecoveredShell() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let brokerSessionID = BrokerSessionID(rawValue: "app-unmatched-shell-broker-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/app-unmatched-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 20),
+                updatedAt: Date(timeIntervalSince1970: 21),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateUnmatchedBrokerRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+
+        let restoredCount = appDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs()
+
+        XCTAssertEqual(restoredCount, 1)
+        let restoredShell = try XCTUnwrap(manager.allChannels().first as? ShellChannelController)
+        XCTAssertEqual(restoredShell.state, .active)
+        XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(restoredShell.workingDirectory, "/tmp/app-unmatched-shell")
+        XCTAssertEqual(coordinator.startCallCount, 0)
+        XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID])
+        XCTAssertEqual(coordinator.readScrollbackTailCalls.map(\.id), [brokerSessionID])
+
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.count, 1)
+        XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(savedChannels.first?.workingDirectory, "/tmp/app-unmatched-shell")
+    }
+
     func testRestoredLegacyRootShellMigratesToDefaultProjectDirectory() {
         let metadata = ChannelMetadata(
             id: UUID(),
