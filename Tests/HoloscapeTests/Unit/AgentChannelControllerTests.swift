@@ -243,6 +243,48 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {
+        let deadID = BrokerSessionID(rawValue: "agent-stale-restored-session")
+        let terminal = MockTerminalProcess()
+        terminal.staleBrokerSessionID = deadID
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertNil(controller.brokerSessionID)
+        XCTAssertEqual(controller.staleBrokerSessionID, deadID)
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+    }
+
+    func testRestoredStaleAgentReportsRecreateGuidanceWithoutStartingAProcess() {
+        let deadID = BrokerSessionID(rawValue: "agent-restored-stale-session")
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal,
+            restoredStaleBrokerSessionID: deadID
+        )
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.staleBrokerSessionID, deadID)
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+        XCTAssertFalse(terminal.startProcessCalled)
+    }
+
     func testLaunchInvocationUsesEnvForBareCommand() {
         let invocation = AgentChannelController.launchInvocation(for: "claude")
 

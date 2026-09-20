@@ -318,6 +318,11 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertNil(terminal.brokerSessionID)
         XCTAssertEqual(terminal.startFailureKind, .brokerSessionStale)
+        XCTAssertEqual(
+            terminal.staleBrokerSessionID,
+            sessionID,
+            "The dead session identity must be reported so the owning tab can persist its recreate guidance"
+        )
         let stale = try registry.load().single()
         XCTAssertEqual(stale.lifecycle, .stale)
         XCTAssertNil(stale.lastAttachedChannelID)
@@ -422,6 +427,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         XCTAssertNil(terminal.brokerSessionID)
         XCTAssertEqual(terminal.startFailureKind, .brokerSessionStale)
+        XCTAssertEqual(terminal.staleBrokerSessionID, staleID)
 
         now = Date(timeIntervalSince1970: 3)
         terminal.startProcess(
@@ -436,6 +442,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return XCTFail("Expected stale retry to create a replacement broker session")
         }
         XCTAssertNil(terminal.startFailureKind)
+        XCTAssertNil(terminal.staleBrokerSessionID, "A replacement session clears the dead identity")
         XCTAssertNotEqual(replacementID, staleID)
         XCTAssertEqual(runtime.createdIDs, [replacementID])
         let records = try registry.load().sorted { $0.createdAt < $1.createdAt }

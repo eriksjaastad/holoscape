@@ -25,6 +25,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var terminationHandler: ((Int32?) -> Void)?
     private var outputTimer: Timer?
     private(set) var brokerSessionID: BrokerSessionID?
+    /// Identity of the broker session this terminal failed to reattach because
+    /// the broker no longer owns it. Kept separate from `brokerSessionID` so a
+    /// retry spawns the replacement the stale guidance promises instead of
+    /// reattaching the dead session, while the owning tab can still persist the
+    /// dead identity for the next launch.
+    private(set) var staleBrokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
@@ -66,6 +72,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     ) {
         startFailureDescription = nil
         startFailureKind = nil
+        staleBrokerSessionID = nil
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -101,6 +108,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
         startFailureDescription = nil
         startFailureKind = nil
+        staleBrokerSessionID = nil
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
@@ -116,9 +124,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } catch {
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
-            if startFailureKind == .brokerHostUnavailable {
+            switch startFailureKind {
+            case .brokerHostUnavailable:
+                // The host is unreachable but the session may still be alive:
+                // keep the handle so retry reattaches instead of replacing it.
                 brokerSessionID = sessionID
-            } else {
+            case .brokerSessionStale:
+                // The broker no longer owns this session. Drop the live handle so
+                // retry spawns a replacement, and report the dead identity so the
+                // tab can keep its recreate guidance across relaunch.
+                brokerSessionID = nil
+                staleBrokerSessionID = sessionID
+            case .failed, .none:
                 brokerSessionID = nil
             }
             NSLog("Broker-backed terminal reattach failed: \(error)")
@@ -167,7 +184,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             _ = try coordinator.detach(brokerSessionID)
         } catch {
-            assertionFailure("Broker-backed terminal detach failed: \(error)")
+            // Detach runs on tab teardown and again during app termination. A
+            // broker host outage — or a broker that already dropped the session —
+            // must not trap the app while it is quitting. The durable broker
+            // record from `ChannelManager.saveState` is what the next launch
+            // reads, so report loudly and leave it reattachable for reconcile.
+            NSLog("Broker-backed terminal detach failed: \(error)")
         }
     }
 

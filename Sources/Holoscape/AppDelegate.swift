@@ -77,17 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             // "restored shell's terminal buffer appears empty" bug reproduced
             // in DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory.
             // This mirrors the default-channel fix in PR #57.
-            channelManager.restoreState { [weak self] metadata in
-                guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
-                controller.delegate = self.windowController
-                // agentAPI deliberately waits for a valid key before activating.
-                if metadata.type != .agentAPI {
-                    controller.activate()
-                }
-                return controller
-            }
-
-            restoreUnmatchedBrokerBackedSessionsAsTabs()
+            restoreSavedChannelsAndRecoveredBrokerSessions()
         }
 
         // If no channels restored, create a default shell
@@ -209,6 +199,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     // MARK: - Private
 
+    /// Restore the saved tab list, then surface broker sessions that survived a
+    /// hard crash without a saved tab entry.
+    ///
+    /// Split out of `applicationDidFinishLaunching` so relaunch/restore behavior
+    /// (including which tabs are allowed to activate) is directly testable.
+    func restoreSavedChannelsAndRecoveredBrokerSessions() {
+        guard let channelManager = channelManagerRef else { return }
+        channelManager.restoreState { [weak self] metadata in
+            self?.restoreChannel(from: metadata)
+        }
+        restoreUnmatchedBrokerBackedSessionsAsTabs()
+    }
+
+    /// Restore one saved tab: construct its controller, wire the delegate, and
+    /// activate it.
+    ///
+    /// Two restore paths deliberately skip activation:
+    /// - `agentAPI` waits for a valid key before starting a process.
+    /// - a tab restored into an already-stale broker state has no live broker
+    ///   session to attach; activating it would spawn a replacement the user did
+    ///   not ask for and would discard the stale recovery guidance. It waits for
+    ///   an explicit recovery action (`ChannelManager.recoverChannel`).
+    @discardableResult
+    func restoreChannel(from metadata: ChannelMetadata) -> (any ChannelController)? {
+        guard let controller = createChannelFromMetadata(metadata) else { return nil }
+        controller.delegate = windowController
+        // The same activation ordering comment from applicationDidFinishLaunching
+        // applies here: delegate first, then activate, so state-change callbacks
+        // are not dropped on restore.
+        if metadata.type != .agentAPI, controller.state != .stale {
+            controller.activate()
+        }
+        return controller
+    }
+
     @discardableResult
     func restoreUnmatchedBrokerBackedSessionsAsTabs() -> Int {
         // A hard crash can leave the broker registry with live sessions that
@@ -243,6 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 label: restoredShell.label,
                 workingDirectory: restoredShell.workingDirectory,
                 existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
@@ -261,6 +287,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
                 existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
@@ -279,6 +306,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 instanceNumber: metadata.instanceNumber,
                 command: metadata.command ?? "claude",
                 existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore

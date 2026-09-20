@@ -198,6 +198,63 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.stateChanges, [.connecting, .stale])
     }
 
+    func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {
+        let deadID = BrokerSessionID(rawValue: "shell-stale-restored-session")
+        let terminal = MockTerminalProcess()
+        terminal.staleBrokerSessionID = deadID
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertNil(controller.brokerSessionID, "A stale tab must not keep a live broker handle to reattach")
+        XCTAssertEqual(controller.staleBrokerSessionID, deadID, "Stale identity must survive so guidance persists across relaunch")
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+    }
+
+    func testRestoredStaleTabReportsRecreateGuidanceWithoutStartingAProcess() {
+        let deadID = BrokerSessionID(rawValue: "shell-restored-stale-session")
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            label: "holoscape",
+            workingDirectory: "/tmp/restored-stale",
+            terminal: terminal,
+            restoredStaleBrokerSessionID: deadID
+        )
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.staleBrokerSessionID, deadID)
+        XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+        XCTAssertFalse(
+            terminal.startProcessCalled,
+            "Restoring a stale tab must not spawn a replacement the user did not ask for"
+        )
+    }
+
+    func testRecoveryFromRestoredStaleTabStartsReplacementAndClearsStaleIdentity() {
+        let deadID = BrokerSessionID(rawValue: "shell-restored-stale-session")
+        let replacementID = BrokerSessionID(rawValue: "shell-replacement-session")
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            terminal: terminal,
+            restoredStaleBrokerSessionID: deadID
+        )
+        terminal.brokerOwnedSessionID = replacementID
+
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, replacementID)
+        XCTAssertNil(controller.staleBrokerSessionID)
+        XCTAssertNil(controller.recoveryAction)
+    }
+
     func testGenericShellLabelUsesDirectoryName() {
         let controller = ShellChannelController(
             id: UUID(),

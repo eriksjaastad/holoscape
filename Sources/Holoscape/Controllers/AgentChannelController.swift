@@ -13,6 +13,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let terminal: TerminalProcess
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
+    /// Broker session this tab could not reattach because the broker no longer
+    /// owns it. Retained (and persisted) while the tab is stale so the recreate
+    /// guidance and the tab/session association survive relaunch/restore.
+    private(set) var staleBrokerSessionID: BrokerSessionID?
     private let authType: AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
@@ -82,6 +86,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         useRawLabel: Bool = false,
         command: String = "claude",
         existingBrokerSessionID: BrokerSessionID? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)? = nil
     ) -> AgentChannelController {
         let environmentProfile: BrokerEnvironmentProfile
@@ -111,7 +116,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             useRawLabel: useRawLabel,
             command: command,
             terminal: terminal,
-            brokerSessionCoordinator: nil
+            brokerSessionCoordinator: nil,
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID
         )
     }
 
@@ -124,7 +130,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         useRawLabel: Bool = false,
         command: String = "claude",
         terminal: TerminalProcess? = nil,
-        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil
     ) {
         self.channelId = id
         self.authType = authType
@@ -157,6 +164,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         // Detect role from CLAUDE.md if working directory provided
         if let dir = workingDirectory {
             self.detectedRole = RoleDetector.detectRole(in: dir)
+        }
+
+        // A tab whose broker session the broker no longer owns comes back stale
+        // with the same recreate guidance it showed before the app quit. It does
+        // not activate: starting a replacement here would be a silent substitute
+        // for the recovery action the guidance promises.
+        if let restoredStaleBrokerSessionID {
+            self.staleBrokerSessionID = restoredStaleBrokerSessionID
+            self.lastStartFailureKind = .brokerSessionStale
+            self.state = .stale
         }
     }
 
@@ -208,9 +225,24 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             NSLog("Agent terminal start failed: \(startFailure)")
             let failedState = channelState(for: terminal.startFailureKind)
             lastStartFailureKind = terminal.startFailureKind
-            if terminal.startFailureKind == .brokerHostUnavailable,
-               let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
-                brokerSessionID = terminalBrokerSessionID
+            switch terminal.startFailureKind {
+            case .brokerHostUnavailable:
+                // Outage is retryable: keep the handle so retry reattaches the
+                // same broker session instead of spawning a replacement.
+                if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                    brokerSessionID = terminalBrokerSessionID
+                }
+                staleBrokerSessionID = nil
+            case .brokerSessionStale:
+                // The broker no longer owns the session. Retry must spawn a
+                // replacement, so drop the live handle, but keep the dead
+                // identity so guidance and tab metadata survive relaunch.
+                brokerSessionID = nil
+                staleBrokerSessionID = terminal.staleBrokerSessionID
+            case .failed, .none:
+                // Hard failures leave whatever durable identity the tab already
+                // had; only a successful attach clears it.
+                break
             }
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
@@ -220,6 +252,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             brokerSessionID = terminalBrokerSessionID
         }
         lastStartFailureKind = nil
+        staleBrokerSessionID = nil
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)

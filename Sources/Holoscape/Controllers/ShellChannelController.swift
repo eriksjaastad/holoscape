@@ -13,6 +13,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let terminal: TerminalProcess
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
+    /// Broker session this tab could not reattach because the broker no longer
+    /// owns it. Retained (and persisted) while the tab is stale so the recreate
+    /// guidance and the tab/session association survive relaunch/restore.
+    private(set) var staleBrokerSessionID: BrokerSessionID?
     private let instanceNumber: Int?
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
@@ -70,6 +74,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label: String? = nil,
         workingDirectory: String? = nil,
         existingBrokerSessionID: BrokerSessionID? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)? = nil
     ) -> ShellChannelController {
         let terminal = BrokerBackedTerminalProcess(
@@ -86,7 +91,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: label,
             workingDirectory: workingDirectory,
             terminal: terminal,
-            brokerSessionCoordinator: nil
+            brokerSessionCoordinator: nil,
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID
         )
     }
 
@@ -96,7 +102,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label: String? = nil,
         workingDirectory: String? = nil,
         terminal: TerminalProcess? = nil,
-        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil
     ) {
         self.channelId = id
         self.instanceNumber = instanceNumber
@@ -120,6 +127,16 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
+
+        // A tab whose broker session the broker no longer owns comes back stale
+        // with the same recreate guidance it showed before the app quit. It does
+        // not activate: starting a replacement here would be a silent substitute
+        // for the recovery action the guidance promises.
+        if let restoredStaleBrokerSessionID {
+            self.staleBrokerSessionID = restoredStaleBrokerSessionID
+            self.lastStartFailureKind = .brokerSessionStale
+            self.state = .stale
+        }
     }
 
     func sendInput(_ text: String) {
@@ -169,9 +186,24 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             NSLog("Shell terminal start failed: \(startFailure)")
             let failedState = channelState(for: terminal.startFailureKind)
             lastStartFailureKind = terminal.startFailureKind
-            if terminal.startFailureKind == .brokerHostUnavailable,
-               let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
-                brokerSessionID = terminalBrokerSessionID
+            switch terminal.startFailureKind {
+            case .brokerHostUnavailable:
+                // Outage is retryable: keep the handle so retry reattaches the
+                // same broker session instead of spawning a replacement.
+                if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                    brokerSessionID = terminalBrokerSessionID
+                }
+                staleBrokerSessionID = nil
+            case .brokerSessionStale:
+                // The broker no longer owns the session. Retry must spawn a
+                // replacement, so drop the live handle, but keep the dead
+                // identity so guidance and tab metadata survive relaunch.
+                brokerSessionID = nil
+                staleBrokerSessionID = terminal.staleBrokerSessionID
+            case .failed, .none:
+                // Hard failures leave whatever durable identity the tab already
+                // had; only a successful attach clears it.
+                break
             }
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
@@ -181,6 +213,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             brokerSessionID = terminalBrokerSessionID
         }
         lastStartFailureKind = nil
+        staleBrokerSessionID = nil
         state = .active
         activatedAt = Date()
         delegate?.channelStateDidChange(self, to: .active)
