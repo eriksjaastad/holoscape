@@ -7,11 +7,10 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     func testCmdN() throws {
         app.typeKey("n", modifierFlags: .command)
 
-        // Should show combo box or dialog for new session
-        let dialog = app.dialogs.firstMatch
+        // Should focus the unified new-channel launcher, not a separate picker.
         let comboBox = app.comboBoxes.firstMatch
-        let appeared = dialog.waitForExistence(timeout: 3) || comboBox.waitForExistence(timeout: 1)
-        XCTAssertTrue(appeared, "Cmd+N should show new session dialog or combo box")
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Cmd+N should show the unified new-channel launcher")
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "Cmd+N should not show a separate New Channel picker")
 
         app.typeKey(.escape, modifierFlags: [])
     }
