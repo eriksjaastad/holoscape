@@ -142,7 +142,8 @@ class SidebarView: NSView {
                     isActive: channel.channelId == activeId,
                     elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
                     isPinned: isPinned,
-                    notificationType: notificationType
+                    notificationType: notificationType,
+                    recoveryAction: channel.state == .stale ? channel.recoveryAction : nil
                 )
                 // Reorder if needed
                 let arrangedViews = stackView.arrangedSubviews
@@ -162,7 +163,8 @@ class SidebarView: NSView {
                     isActive: channel.channelId == activeId,
                     elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
                     isPinned: isPinned,
-                    notificationType: notificationType
+                    notificationType: notificationType,
+                    recoveryAction: channel.state == .stale ? channel.recoveryAction : nil
                 )
                 entry.channelId = channel.channelId
                 entry.target = self
@@ -416,20 +418,21 @@ class SidebarTabEntry: NSButton {
         ])
     }
 
-    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
+    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil) {
         // Stash the call so a later skin swap can re-apply the same
         // state without the caller re-running updateTabs.
         lastConfigure = { [weak self] in
             self?.applyConfigure(
                 label: label, channelType: channelType, hasUnread: hasUnread,
                 state: state, isActive: isActive, elapsedTime: elapsedTime,
-                isPinned: isPinned, notificationType: notificationType
+                isPinned: isPinned, notificationType: notificationType,
+                recoveryAction: recoveryAction
             )
         }
         lastConfigure?()
     }
 
-    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?) {
+    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?) {
         self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
@@ -466,7 +469,7 @@ class SidebarTabEntry: NSButton {
         case .active:       statusTextField.stringValue = elapsedTime ?? ""
         case .connecting:   statusTextField.stringValue = "connecting..."
         case .disconnected: statusTextField.stringValue = "disconnected"
-        case .stale:        statusTextField.stringValue = "stale"
+        case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
         }
         if notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"
@@ -494,15 +497,24 @@ class SidebarTabEntry: NSButton {
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
 
-        if let notificationType {
+        if let recoveryAction, state == .stale {
+            let guidance = recoveryAction.operatorGuidance
+            toolTip = guidance
+            setAccessibilityValue("stale: \(recoveryAction.surfaceStatusText)")
+            setAccessibilityHelp(guidance)
+        } else {
+            toolTip = nil
+        }
+
+        if recoveryAction == nil, let notificationType {
             switch notificationType {
             case "idle_prompt": setAccessibilityValue("ready")
             case "permission_prompt": setAccessibilityValue("needs-approval")
             default: setAccessibilityValue(notificationType)
             }
-        } else if state == .disconnected {
+        } else if recoveryAction == nil, state == .disconnected {
             setAccessibilityValue("disconnected")
-        } else {
+        } else if recoveryAction == nil {
             setAccessibilityValue(isActive ? "active" : "normal")
         }
     }

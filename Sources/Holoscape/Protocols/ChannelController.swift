@@ -45,6 +45,17 @@ enum ChannelRecoveryAction: Equatable, Sendable {
         }
     }
 
+    var surfaceStatusText: String {
+        switch self {
+        case .reconnect:
+            return "reconnect"
+        case .retryBrokerHost:
+            return "retry broker"
+        case .recreateBrokerSession:
+            return "recreate session"
+        }
+    }
+
     var operatorGuidance: String {
         switch self {
         case .reconnect:
