@@ -167,6 +167,67 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(savedChannels.first?.workingDirectory, "/tmp/app-unmatched-shell")
     }
 
+    func testRecoveredUnmatchedBrokerSessionDoesNotDuplicateAcrossRepeatedRelaunches() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let brokerSessionID = BrokerSessionID(rawValue: "app-repeated-relaunch-unmatched-shell-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/app-repeated-relaunch-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 30),
+                updatedAt: Date(timeIntervalSince1970: 31),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRepeatedBrokerRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+
+        let firstLaunchManager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+        let firstLaunchDelegate = AppDelegate()
+        firstLaunchDelegate.channelManagerRef = firstLaunchManager
+
+        XCTAssertEqual(firstLaunchDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 1)
+        XCTAssertEqual(firstLaunchManager.count, 1)
+        XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
+
+        let secondLaunchManager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+        let secondLaunchDelegate = AppDelegate()
+        secondLaunchDelegate.channelManagerRef = secondLaunchManager
+        secondLaunchManager.restoreState { metadata in
+            guard let controller = secondLaunchDelegate.createChannelFromMetadata(metadata) else { return nil }
+            controller.activate()
+            return controller
+        }
+
+        XCTAssertEqual(secondLaunchDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 0)
+        XCTAssertEqual(secondLaunchManager.count, 1)
+        let secondLaunchChannels = secondLaunchManager.allChannels()
+        XCTAssertEqual(secondLaunchChannels.count, 1)
+        let restoredShell = try XCTUnwrap(secondLaunchChannels.first as? ShellChannelController)
+        XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(restoredShell.workingDirectory, "/tmp/app-repeated-relaunch-shell")
+        XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
+        XCTAssertEqual(coordinator.startCallCount, 0, "Repeated relaunch must reattach the recovered session, not spawn a replacement")
+        XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID, brokerSessionID])
+    }
+
     func testRestoredLegacyRootShellMigratesToDefaultProjectDirectory() {
         let metadata = ChannelMetadata(
             id: UUID(),
