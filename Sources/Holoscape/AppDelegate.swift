@@ -37,13 +37,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
             windowController?.setProfileManager(profileManager)
 
-            // Set up notifications (deferred to avoid TCC prompt on startup)
+            // Set up notifications without triggering a macOS TCC prompt on
+            // first launch. Authorization is requested lazily when the first
+            // eligible background notification would actually be delivered.
             notificationService = NotificationService(configService: configService)
             notificationService?.channelSwitchDelegate = windowController
             windowController?.setNotificationService(notificationService!)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.notificationService?.requestAuthorization()
-            }
         }
 
         // Start API server for MCP integration
