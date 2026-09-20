@@ -22,6 +22,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         private let lostSessionIDs: Set<BrokerSessionID>
         var isHostAvailable = true
         private(set) var createdIDs: [BrokerSessionID] = []
+        private(set) var attachedIDs: [BrokerSessionID] = []
 
         init(lostSessionIDs: Set<BrokerSessionID> = []) {
             self.lostSessionIDs = lostSessionIDs
@@ -43,6 +44,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         }
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {
             if !isHostAvailable { try hostUnavailable() }
+            attachedIDs.append(id)
             if lostSessionIDs.contains(id) {
                 throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
             }
@@ -397,6 +399,69 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         XCTAssertEqual(tab.brokerSessionID, sessionID)
         XCTAssertNil(tab.recoveryAction)
         XCTAssertTrue(runtime.createdIDs.isEmpty, "Retry after an outage must reattach the same broker session")
+    }
+
+    /// #7376 — when the broker registry cannot be read, the launch must keep the
+    /// saved tab and its persisted broker identity instead of trapping or
+    /// replacing the session, and a later readable launch must still reattach it.
+    func testUnreadableBrokerRegistryKeepsSavedTabAndIdentityInsteadOfReplacingTheSession() throws {
+        let runtime = RelaunchBrokerRuntime()
+        let fixture = try LaunchFixture(
+            channels: [Self.savedShellTab(brokerSessionID: Self.lostSessionID)],
+            records: [Self.lostSessionRecord(lifecycle: .detached)],
+            runtime: runtime
+        )
+        defer { fixture.cleanup() }
+        try Data("{ truncated broker registry".utf8)
+            .write(to: fixture.registry.fileURL, options: [.atomic])
+
+        fixture.launch()
+
+        guard let tab = fixture.manager.allChannels().first as? ShellChannelController else {
+            return XCTFail("A registry read failure must still restore the saved tab")
+        }
+        XCTAssertEqual(fixture.manager.count, 1)
+        XCTAssertEqual(tab.channelId, Self.tabID)
+        XCTAssertNotEqual(tab.state, .active, "No broker session can be attached while the registry is unreadable")
+        XCTAssertEqual(tab.recoveryAction, .reconnect)
+        XCTAssertNotNil(fixture.manager.brokerRegistryReadFailure, "The launch must record why no session was attached")
+        // Known gap, flagged for its own slice, and asserted as today's behavior
+        // rather than the desired one: the restore path still activates the tab, so
+        // the doomed start creates exactly one session that cannot be recorded
+        // (`BrokerSessionCoordinator.start` creates the session before it upserts).
+        // When that rollback slice lands, this expectation should become zero.
+        XCTAssertEqual(
+            runtime.createdIDs.count,
+            1,
+            "The unreadable-registry launch still attempts one broker start that cannot be recorded"
+        )
+
+        fixture.quit()
+        let saved = try savedChannel(fixture.configService, id: Self.tabID)
+        XCTAssertEqual(
+            saved.brokerSessionID,
+            Self.lostSessionID,
+            "The saved broker identity must survive a registry read failure"
+        )
+
+        // Registry readable again: the next launch must reattach the original
+        // session rather than starting a replacement.
+        try fixture.registry.save([Self.lostSessionRecord(lifecycle: .detached)])
+        let relaunched = try LaunchFixture(
+            channels: fixture.configService.load().channels,
+            records: try fixture.registry.load(),
+            runtime: runtime
+        )
+        defer { relaunched.cleanup() }
+        relaunched.launch()
+
+        guard let restoredTab = relaunched.manager.allChannels().first as? ShellChannelController else {
+            return XCTFail("Expected the tab to be restored once the registry is readable again")
+        }
+        XCTAssertEqual(restoredTab.state, .active)
+        XCTAssertEqual(restoredTab.brokerSessionID, Self.lostSessionID)
+        XCTAssertTrue(runtime.attachedIDs.contains(Self.lostSessionID), "The original session must still be reattachable")
+        XCTAssertNil(relaunched.manager.brokerRegistryReadFailure)
     }
 
     // MARK: - Regression guards for the neighbouring restore paths

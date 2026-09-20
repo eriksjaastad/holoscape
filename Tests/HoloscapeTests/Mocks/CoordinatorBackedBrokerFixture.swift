@@ -42,4 +42,17 @@ final class CoordinatorBackedBrokerFixture {
     func cleanup() {
         try? FileManager.default.removeItem(at: directory)
     }
+
+    /// Make the registry unreadable the way a truncated or corrupt
+    /// `sessions.json` does: `BrokerSessionRegistry.load()` throws rather than
+    /// pretending the registry is empty, which is what the restore paths must
+    /// survive without trapping.
+    func corruptRegistry() throws {
+        try Data("{ this is not a broker session registry".utf8)
+            .write(to: registry.fileURL, options: [.atomic])
+    }
+
+    func registryFileContents() throws -> String {
+        try String(contentsOf: registry.fileURL, encoding: .utf8)
+    }
 }
