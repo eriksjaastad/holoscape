@@ -443,6 +443,14 @@ class ChannelManager {
             case .groupChat, .ssh, .mcp, .bridge:
                 return false
             }
+            // A record the broker already marked stale is not a crash survivor: the
+            // process behind it is gone, so surfacing it would only add a dead tab
+            // that the user has to clear. A saved tab that owns this identity still
+            // restores with its recreate guidance through the saved-tab lookup, which
+            // is where that decision belongs.
+            if record.lifecycle == .stale {
+                return false
+            }
             if knownBrokerSessionIDs.contains(record.id) {
                 return false
             }

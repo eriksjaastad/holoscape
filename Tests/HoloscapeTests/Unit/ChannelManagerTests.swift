@@ -542,6 +542,78 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), [expectedShellSessionID, expectedAgentSessionID])
     }
 
+    /// #7378 — crash/unmatched recovery must not surface a session the broker has
+    /// already marked stale. That process is gone, so a "recovered" tab for it is
+    /// only a dead tab; whatever owns the identity reports its own recreate
+    /// guidance through the saved-tab path.
+    func testUnmatchedBrokerRecoverySkipsStaleRecordsAndKeepsLiveOnes() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerUnmatchedStaleFilterTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory.appendingPathComponent("config"))
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let staleSessionID = BrokerSessionID(rawValue: "unmatched-stale-session")
+        let liveSessionID = BrokerSessionID(rawValue: "unmatched-live-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: staleSessionID,
+                channelType: .shell,
+                label: "Dead Shell",
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/tmp/unmatched-dead-shell",
+                environmentProfile: .shell,
+                lifecycle: .stale,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: liveSessionID,
+                channelType: .shell,
+                label: "Live Shell",
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/tmp/unmatched-live-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 3),
+                updatedAt: Date(timeIntervalSince1970: 4),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        XCTAssertEqual(
+            manager.unmatchedBrokerBackedSessionsToRestore().map(\.id),
+            [liveSessionID],
+            "A session the broker already marked stale is not a crash survivor"
+        )
+        XCTAssertEqual(
+            manager.firstUnmatchedBrokerBackedShellSessionToRestore()?.id,
+            liveSessionID,
+            "The default-shell fallback must not adopt a dead session"
+        )
+
+        let restoredCount = manager.restoreUnmatchedBrokerBackedSessions { _ in MockChannelController() }
+
+        XCTAssertEqual(restoredCount, 1, "Only the live survivor may become a recovered tab")
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertEqual(
+            configService.load().channels.map(\.brokerSessionID),
+            [liveSessionID],
+            "A stale record must not be persisted as a recovered tab"
+        )
+    }
+
     func testRestoreUnmatchedBrokerBackedSessionsCreatesDurableTabsAndPersistsThem() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerUnmatchedBrokerRestoreTests-")
