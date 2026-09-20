@@ -118,7 +118,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
-            let tail = try coordinator.readScrollbackTail(record.id, maxBytes: 65_536)
+            let tail = try coordinator.readScrollbackTail(
+                record.id,
+                maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
+            )
             if !tail.isEmpty {
                 let bytes = Array(tail)
                 terminalView.feed(byteArray: bytes[...])
