@@ -94,8 +94,35 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             updatedAt: timestamp,
             lastAttachedChannelID: attachedChannelID
         )
-        try registry.upsert(record)
+        do {
+            try registry.upsert(record)
+        } catch {
+            // The runtime session exists but Holoscape could not record it, so it
+            // could never be reattached, exited, or recovered: roll it back before
+            // surfacing the failure, otherwise the broker is left owning an
+            // untracked process.
+            rollbackUnrecordedStart(id, registryFailure: error)
+            throw error
+        }
         return record
+    }
+
+    /// Terminate the session created by a start whose registry write failed.
+    ///
+    /// A rollback failure is reported loudly and never replaces the original start
+    /// failure: the caller must see why the start failed, and the orphaned session
+    /// id is only visible in this log because nothing else can find it.
+    private func rollbackUnrecordedStart(_ id: BrokerSessionID, registryFailure: Error) {
+        do {
+            try runtime.terminateSession(id: id, exitCode: nil)
+            NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
+        } catch {
+            NSLog(
+                "Broker session rollback failed for \(id.rawValue): \(error). "
+                    + "The session created by the failed start may still be running untracked "
+                    + "(registry failure: \(registryFailure))"
+            )
+        }
     }
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {

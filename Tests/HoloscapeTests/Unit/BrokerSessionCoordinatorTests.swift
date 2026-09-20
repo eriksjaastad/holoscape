@@ -18,6 +18,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var events: [Event] = []
         var createError: Error?
         var attachError: Error?
+        var terminateError: Error?
         var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
@@ -41,6 +42,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
             events.append(.terminate(id, exitCode))
+            if let terminateError { throw terminateError }
         }
 
         func markSessionErrored(id: BrokerSessionID) throws {
@@ -254,6 +256,65 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             XCTAssertEqual(error as? RuntimeError, .failed)
         }
         XCTAssertEqual(try coordinator.loadAll(), [])
+    }
+
+    /// #7377 — an unrecordable start must not leave an orphaned runtime session.
+    func testStartTerminatesRuntimeSessionWhenRegistryWriteFails() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let registry = try makeUnwritableRegistry()
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: registry,
+            now: { Date(timeIntervalSince1970: 500) }
+        )
+        let request = launchRequest(workingDirectory: "/tmp/unrecordable")
+
+        XCTAssertThrowsError(
+            try coordinator.start(request, channelType: .shell, label: "unrecordable", attachedChannelID: nil)
+        ) { error in
+            // Callers must still see the registry failure, not a rollback artifact.
+            XCTAssertFalse(error is BrokerSessionCoordinator.CoordinatorError, "Unexpected coordinator error: \(error)")
+        }
+
+        guard case let .create(createdID, _) = runtime.events.first else {
+            return XCTFail("Expected the runtime session to be created before the registry write: \(runtime.events)")
+        }
+        XCTAssertEqual(
+            runtime.events,
+            [.create(createdID, request), .terminate(createdID, nil)],
+            "A start whose registry write fails must terminate the session it just created"
+        )
+        XCTAssertEqual(try registry.load(), [], "A rolled-back start must not persist a record")
+    }
+
+    /// #7377 — when the rollback itself fails, the original registry failure still
+    /// surfaces instead of being masked by the cleanup attempt.
+    func testStartRollbackFailureStillSurfacesTheRegistryFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.terminateError = RuntimeError.failed
+        let registry = try makeUnwritableRegistry()
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: registry,
+            now: { Date(timeIntervalSince1970: 600) }
+        )
+        let request = launchRequest(workingDirectory: "/tmp/unrecordable-rollback")
+
+        XCTAssertThrowsError(
+            try coordinator.start(request, channelType: .shell, label: "unrecordable", attachedChannelID: nil)
+        ) { error in
+            XCTAssertNotEqual(error as? RuntimeError, .failed, "The rollback failure must not replace the registry failure")
+            XCTAssertFalse(error is BrokerSessionCoordinator.CoordinatorError, "Unexpected coordinator error: \(error)")
+        }
+
+        guard case let .create(createdID, _) = runtime.events.first else {
+            return XCTFail("Expected the runtime session to be created: \(runtime.events)")
+        }
+        XCTAssertEqual(
+            runtime.events,
+            [.create(createdID, request), .terminate(createdID, nil)],
+            "The rollback must still be attempted when it is going to fail"
+        )
     }
 
     func testReadScrollbackTailRequiresDurableRecordAndUsesRuntimeTail() throws {
@@ -626,12 +687,32 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(
         runtime: any BrokerSessionRuntime = MetadataOnlyBrokerSessionRuntime(),
+        registry: BrokerSessionRegistry? = nil,
         now: @escaping () -> Date
     ) -> BrokerSessionCoordinator {
         BrokerSessionCoordinator(
-            registry: BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json")),
+            registry: registry ?? BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json")),
             runtime: runtime,
             now: now
+        )
+    }
+
+    /// A registry whose reads succeed but whose writes cannot land: the parent
+    /// path is an ordinary file, so `createDirectory` fails the way a
+    /// permission-denied or unwritable registry location does.
+    private func makeUnwritableRegistry() throws -> BrokerSessionRegistry {
+        let blocker = tempDirectory.appendingPathComponent("blocked")
+        try Data("not a directory".utf8).write(to: blocker)
+        return BrokerSessionRegistry(fileURL: blocker.appendingPathComponent("sessions.json"))
+    }
+
+    private func launchRequest(workingDirectory: String) -> BrokerSessionLaunchRequest {
+        BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: workingDirectory,
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
     }
 }
