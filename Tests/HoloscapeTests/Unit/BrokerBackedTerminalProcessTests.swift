@@ -69,6 +69,23 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class CorruptScrollbackRuntime: BrokerSessionRuntime {
+        enum Error: Swift.Error, Equatable { case corruptTail }
+
+        func listSessions() throws -> [BrokerSessionID] { [] }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { throw Error.corruptTail }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     /// Models a broker host that accepts a session and then disappears: every
     /// follow-up operation on the live session reports transport failure until
     /// `isHostAvailable` is restored (the host coming back).
@@ -519,7 +536,61 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(sessions[0].lifecycle, .running)
         XCTAssertEqual(sessions[0].lastAttachedChannelID, restoredChannelID)
         XCTAssertEqual(restoredTerminal.brokerSessionID, record.id)
+        XCTAssertEqual(restoredTerminal.lastScrollbackReplay?.source, .liveBrokerMemory)
+        XCTAssertTrue(restoredTerminal.lastLines(20).joined(separator: "\n").contains("live broker memory"))
         XCTAssertTrue(try coordinator.isRunning(record.id))
+    }
+
+    func testCorruptScrollbackReplayDoesNotFailSuccessfulReattach() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessCorruptScrollbackTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let sessionID = BrokerSessionID(rawValue: "corrupt-scrollback-reattach")
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        try registry.upsert(BrokerSessionRecord(
+            id: sessionID,
+            channelType: .shell,
+            label: "Shell",
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastAttachedChannelID: nil
+        ))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: CorruptScrollbackRuntime(),
+            now: { Date(timeIntervalSince1970: 2) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008030")!,
+            channelType: .shell,
+            label: "Shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertNil(terminal.startFailureKind)
+        XCTAssertNil(terminal.lastScrollbackReplay)
+        XCTAssertTrue(terminal.lastLines(20).joined(separator: "\n").contains("could not restore its persisted scrollback"))
+        XCTAssertEqual(try registry.load().single().lifecycle, .running)
     }
 
     func testStartFailureIsObservableAndDoesNotExposePhantomBrokerSession() throws {
