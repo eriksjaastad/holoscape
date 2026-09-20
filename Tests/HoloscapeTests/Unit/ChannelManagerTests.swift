@@ -899,6 +899,71 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels.first?.brokerSessionID, BrokerSessionID(rawValue: "recording-channel-manager-broker-session"))
     }
 
+    /// #7376 — an unreadable broker registry during restore must be reported, not
+    /// trapped, and must not be mistaken for "the sessions are gone".
+    func testAgentSessionRestoreLookupWithUnreadableRegistryReportsFailureInsteadOfTrapping() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let configService = ConfigService(configDir: fixture.directory.appendingPathComponent("config"))
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: fixture.coordinator
+        )
+        let sessionID = BrokerSessionID(rawValue: "unreadable-registry-session")
+        try fixture.corruptRegistry()
+
+        XCTAssertNil(
+            manager.brokerBackedAgentSessionToRestore(
+                for: UUID(),
+                channelType: .agentDirect,
+                brokerSessionID: sessionID
+            )
+        )
+        XCTAssertNotNil(manager.brokerRegistryReadFailure, "The read failure must be surfaced, not swallowed")
+        XCTAssertNil(manager.brokerBackedShellSessionToRestore(for: UUID(), brokerSessionID: sessionID))
+
+        // A readable registry clears the reported failure again.
+        try fixture.registry.save([])
+        XCTAssertEqual(manager.unmatchedBrokerBackedSessionsToRestore(), [])
+        XCTAssertNil(manager.brokerRegistryReadFailure, "A successful read must clear the reported failure")
+    }
+
+    func testFirstUnmatchedLookupWithUnreadableRegistryReportsFailureInsteadOfTrapping() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let configService = ConfigService(configDir: fixture.directory.appendingPathComponent("config"))
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: fixture.coordinator
+        )
+        try fixture.corruptRegistry()
+
+        XCTAssertNil(manager.firstUnmatchedBrokerBackedShellSessionToRestore())
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
+        XCTAssertEqual(manager.unmatchedBrokerBackedSessionsToRestore(), [])
+    }
+
+    func testUnmatchedBrokerRecoveryWithUnreadableRegistryRestoresNothingAndKeepsTheFile() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let configService = ConfigService(configDir: fixture.directory.appendingPathComponent("config"))
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: fixture.coordinator
+        )
+        try fixture.corruptRegistry()
+
+        let restored = manager.restoreUnmatchedBrokerBackedSessions { _ in MockChannelController() }
+
+        XCTAssertEqual(restored, 0, "An unreadable registry cannot be trusted to surface recovered tabs")
+        XCTAssertEqual(manager.count, 0)
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
+        XCTAssertTrue(
+            try fixture.registryFileContents().contains("not a broker session registry"),
+            "A read failure must not rewrite or erase the durable session file"
+        )
+    }
+
     func testRecoverChannelRecreatesStaleBrokerSessionAndPersistsReplacementID() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerStaleBrokerRecoveryTests-")

@@ -8,6 +8,10 @@ class ChannelManager {
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
+    /// Last failure hit while reading the broker registry during restore. Non-nil
+    /// means Holoscape could not tell whether broker sessions survived, so tabs
+    /// were restored from saved metadata alone. Cleared by the next successful read.
+    private(set) var brokerRegistryReadFailure: String?
     private(set) var pinnedChannelIds: Set<UUID> = []
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
     private let configService: ConfigService
@@ -283,22 +287,38 @@ class ChannelManager {
 
     var count: Int { channels.count }
 
+    /// Reattachable broker sessions, or `nil` when the broker registry cannot be
+    /// read during restore.
+    ///
+    /// A read failure must not be mistaken for "the registry is readable and this
+    /// session is gone". Callers keep the saved tab and its persisted broker
+    /// identity instead of replacing the session, and the failure is recorded in
+    /// `brokerRegistryReadFailure` so the launch fails loudly instead of silently
+    /// discarding what it could not read.
+    private func reattachableBrokerSessions(context: String) -> [BrokerSessionRecord]? {
+        do {
+            let sessions = try brokerBackedShellCoordinator.reattachableSessions()
+            brokerRegistryReadFailure = nil
+            return sessions
+        } catch {
+            let failure = String(describing: error)
+            brokerRegistryReadFailure = failure
+            NSLog("ChannelManager could not read broker sessions during \(context): \(failure)")
+            return nil
+        }
+    }
+
     func brokerBackedShellSessionToRestore(
         for channelID: UUID,
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
-        do {
-            let sessions = try brokerBackedShellCoordinator.reattachableSessions()
-            if let brokerSessionID,
-               let exactMatch = sessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
-                return exactMatch
-            }
-            return sessions.first { record in
-                record.channelType == .shell && record.lastAttachedChannelID == channelID
-            }
-        } catch {
-            assertionFailure("ChannelManager failed to load broker-backed shell sessions: \(error)")
-            return nil
+        guard let sessions = reattachableBrokerSessions(context: "shell tab restore") else { return nil }
+        if let brokerSessionID,
+           let exactMatch = sessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
+            return exactMatch
+        }
+        return sessions.first { record in
+            record.channelType == .shell && record.lastAttachedChannelID == channelID
         }
     }
 
@@ -307,42 +327,25 @@ class ChannelManager {
         channelType: ChannelType,
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
-        do {
-            let sessions = try brokerBackedShellCoordinator.reattachableSessions()
-            if let brokerSessionID,
-               let exactMatch = sessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
-                return exactMatch
-            }
-            return sessions.first { record in
-                record.channelType == channelType && record.lastAttachedChannelID == channelID
-            }
-        } catch {
-            assertionFailure("ChannelManager failed to load broker-backed agent sessions: \(error)")
-            return nil
+        guard let sessions = reattachableBrokerSessions(context: "agent tab restore") else { return nil }
+        if let brokerSessionID,
+           let exactMatch = sessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
+            return exactMatch
+        }
+        return sessions.first { record in
+            record.channelType == channelType && record.lastAttachedChannelID == channelID
         }
     }
 
     func firstUnmatchedBrokerBackedShellSessionToRestore() -> BrokerSessionRecord? {
-        do {
-            return try unmatchedBrokerBackedSessionsToRestore(
-                from: brokerBackedShellCoordinator.reattachableSessions()
-            )
+        guard let sessions = reattachableBrokerSessions(context: "default shell recovery") else { return nil }
+        return unmatchedBrokerBackedSessionsToRestore(from: sessions)
             .first { $0.channelType == .shell }
-        } catch {
-            assertionFailure("ChannelManager failed to load unmatched broker-backed shell sessions: \(error)")
-            return nil
-        }
     }
 
     func unmatchedBrokerBackedSessionsToRestore() -> [BrokerSessionRecord] {
-        do {
-            return try unmatchedBrokerBackedSessionsToRestore(
-                from: brokerBackedShellCoordinator.reattachableSessions()
-            )
-        } catch {
-            assertionFailure("ChannelManager failed to load unmatched broker-backed sessions: \(error)")
-            return []
-        }
+        guard let sessions = reattachableBrokerSessions(context: "crash recovery") else { return [] }
+        return unmatchedBrokerBackedSessionsToRestore(from: sessions)
     }
 
     @discardableResult
