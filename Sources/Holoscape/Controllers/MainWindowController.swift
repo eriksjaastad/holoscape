@@ -2096,19 +2096,78 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         switchToChannel(channel.channelId)
     }
 
+    private struct AgentChannelPromptResult {
+        let workingDirectory: URL
+        let label: String
+    }
+
+    static func resolvedAgentChannelPrompt(
+        directoryInput: String,
+        labelInput: String,
+        defaultDirectory: URL
+    ) -> (workingDirectory: URL, label: String) {
+        let trimmedDirectory = directoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directoryPath = trimmedDirectory.isEmpty ? defaultDirectory.path : (trimmedDirectory as NSString).expandingTildeInPath
+        let workingDirectory = URL(fileURLWithPath: directoryPath)
+        let trimmedLabel = labelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultLabel = workingDirectory.lastPathComponent.isEmpty ? "Agent" : workingDirectory.lastPathComponent
+        return (workingDirectory, trimmedLabel.isEmpty ? defaultLabel : trimmedLabel)
+    }
+
+    private func promptForAgentChannel(defaultDirectory: URL) -> AgentChannelPromptResult? {
+        let directoryField = NSTextField(string: defaultDirectory.path)
+        directoryField.identifier = NSUserInterfaceItemIdentifier("agent-channel-directory-field")
+        directoryField.placeholderString = defaultDirectory.path
+        directoryField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
+        let labelField = NSTextField(string: defaultDirectory.lastPathComponent)
+        labelField.identifier = NSUserInterfaceItemIdentifier("agent-channel-label-field")
+        labelField.placeholderString = "Optional label"
+        labelField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+
+        let directoryLabel = NSTextField(labelWithString: "Working directory")
+        let labelLabel = NSTextField(labelWithString: "Label")
+        stack.addArrangedSubview(directoryLabel)
+        stack.addArrangedSubview(directoryField)
+        stack.addArrangedSubview(labelLabel)
+        stack.addArrangedSubview(labelField)
+
+        let alert = NSAlert()
+        alert.messageText = "New Agent Channel"
+        alert.informativeText = "Choose where the OAuth agent should start. The label defaults to the directory name."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let resolved = Self.resolvedAgentChannelPrompt(
+            directoryInput: directoryField.stringValue,
+            labelInput: labelField.stringValue,
+            defaultDirectory: defaultDirectory
+        )
+        return AgentChannelPromptResult(workingDirectory: resolved.workingDirectory, label: resolved.label)
+    }
+
     private func createAgentChannel(authType: AgentAuthType) {
         let defaultDir = DefaultWorkingDirectory.preferredURL
+        guard let prompt = promptForAgentChannel(defaultDirectory: defaultDir) else { return }
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
-            role: nil,
-            workingDirectory: defaultDir
+            role: prompt.label,
+            workingDirectory: prompt.workingDirectory
         ) { id, type, _, instanceNum, workDir in
             AgentChannelController.brokerBacked(
                 id: id,
                 authType: authType,
                 workingDirectory: workDir,
-                userLabel: nil,
+                userLabel: prompt.label,
                 instanceNumber: instanceNum,
+                useRawLabel: true,
                 command: "claude",
                 coordinator: self.channelManager.brokerBackedTerminalCoordinator
             )
