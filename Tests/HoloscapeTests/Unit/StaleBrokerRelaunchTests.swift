@@ -23,6 +23,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         var isHostAvailable = true
         private(set) var createdIDs: [BrokerSessionID] = []
         private(set) var attachedIDs: [BrokerSessionID] = []
+        private(set) var terminatedIDs: [BrokerSessionID] = []
 
         init(lostSessionIDs: Set<BrokerSessionID> = []) {
             self.lostSessionIDs = lostSessionIDs
@@ -49,7 +50,9 @@ final class StaleBrokerRelaunchTests: XCTestCase {
                 throw NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
             }
         }
-        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
+            terminatedIDs.append(id)
+        }
         func markSessionErrored(id: BrokerSessionID) throws {}
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
             if !isHostAvailable { try hostUnavailable() }
@@ -425,15 +428,13 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         XCTAssertNotEqual(tab.state, .active, "No broker session can be attached while the registry is unreadable")
         XCTAssertEqual(tab.recoveryAction, .reconnect)
         XCTAssertNotNil(fixture.manager.brokerRegistryReadFailure, "The launch must record why no session was attached")
-        // Known gap, flagged for its own slice, and asserted as today's behavior
-        // rather than the desired one: the restore path still activates the tab, so
-        // the doomed start creates exactly one session that cannot be recorded
-        // (`BrokerSessionCoordinator.start` creates the session before it upserts).
-        // When that rollback slice lands, this expectation should become zero.
+        // The launch still attempts a broker start, and that start cannot be
+        // recorded while the registry is unreadable — so the coordinator must roll
+        // the created session back. Nothing may be left running untracked.
         XCTAssertEqual(
-            runtime.createdIDs.count,
-            1,
-            "The unreadable-registry launch still attempts one broker start that cannot be recorded"
+            runtime.terminatedIDs,
+            runtime.createdIDs,
+            "Every session created by an unrecordable start must be terminated"
         )
 
         fixture.quit()
