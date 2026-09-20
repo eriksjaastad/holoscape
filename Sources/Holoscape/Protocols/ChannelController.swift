@@ -44,4 +44,15 @@ enum ChannelRecoveryAction: Equatable, Sendable {
             return "Recreate Session"
         }
     }
+
+    var operatorGuidance: String {
+        switch self {
+        case .reconnect:
+            return "Restart this channel from its saved launch metadata."
+        case .retryBrokerHost:
+            return "Broker host is unavailable. Restart Holoscape or the bundled broker host, then retry; Holoscape preserved the broker session ID and will not spawn a replacement while the host is missing."
+        case .recreateBrokerSession:
+            return "Broker session is stale or missing. Recreate starts a replacement process for this tab and persists the new broker session ID."
+        }
+    }
 }

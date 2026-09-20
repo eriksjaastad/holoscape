@@ -2250,6 +2250,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         reconnectItem.target = self
         reconnectItem.representedObject = channelId
         reconnectItem.isEnabled = recoveryAction != nil
+        reconnectItem.toolTip = recoveryAction?.operatorGuidance
         menu.addItem(reconnectItem)
 
         menu.addItem(NSMenuItem.separator())
