@@ -25,7 +25,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Send
         var output = Data()
         var scrollback = Data()
         var terminationStatus: Int32?
-        private let maxScrollbackBytes = 1_048_576
+        private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
 
         init(process: Process, masterHandle: FileHandle) {
             self.process = process

@@ -115,6 +115,11 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID])
         XCTAssertEqual(coordinator.reattachCalls.map(\.attachedChannelID), [channelID])
         XCTAssertEqual(coordinator.readScrollbackTailCalls.map(\.id), [brokerSessionID])
+        XCTAssertEqual(
+            coordinator.readScrollbackTailCalls.map(\.maxBytes),
+            [ScrollbackPersistencePolicy.maxReplayBytesOnReattach],
+            "Restored broker-backed agent tabs must replay the documented daily-driver scrollback tail, not the old audit-only 64 KiB cap"
+        )
         XCTAssertEqual(controller.state, .active)
     }
 
