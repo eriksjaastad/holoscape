@@ -8,25 +8,26 @@ Relaunch should restore enough per-channel terminal context to understand what a
 
 ## Current implementation slice
 
-Broker-backed terminal sessions retain a bounded raw-byte scrollback ring in the broker runtime. When Holoscape reattaches a saved broker session after app quit/relaunch, `BrokerBackedTerminalProcess` asks the coordinator for the documented replay tail and feeds it back into the terminal view.
+Broker-backed terminal sessions retain a bounded raw-byte scrollback ring in the broker runtime and mirror the same bounded tail to disk. When Holoscape reattaches a saved broker session after app quit/relaunch, `BrokerBackedTerminalProcess` asks the coordinator for the documented replay tail and feeds it back into the terminal view. If the in-memory runtime has been replaced, `NativePTYBrokerSessionRuntime` can still read the persisted per-session tail by broker session id.
 
 Policy constants live in `ScrollbackPersistencePolicy`:
 
 - `maxRetainedBytesPerSession = 1_048_576` bytes;
-- `maxReplayBytesOnReattach = 1_048_576` bytes.
+- `maxReplayBytesOnReattach = 1_048_576` bytes;
+- `defaultDiskDirectory = $HOLOSCAPE_CONFIG_DIR/scrollback` when set, otherwise `~/.holoscape/scrollback`.
 
-This replaces the earlier audit-only 64 KiB replay cap. The runtime still drops older bytes FIFO once a session exceeds the per-session retention limit.
+This replaces the earlier audit-only 64 KiB replay cap. The runtime drops older bytes FIFO once a session exceeds the per-session retention limit, both in memory and on disk.
 
 ## Privacy behavior
 
 - Broker session records and channel config persist launch metadata only: command, arguments, working directory, environment profile, lifecycle, and broker session identity.
 - Raw terminal output is not written into `sessions.json`, channel config, or broker IPC request logs by this policy.
-- Raw terminal output is still retained in the broker runtime scrollback ring until it ages out of the cap.
-- Holoscape does not redact output. If a command prints a secret, that secret can be replayed on reattach until it is pushed out of the ring.
+- Raw terminal output is written to bounded per-session files under the scrollback directory so it can survive runtime replacement.
+- Holoscape does not redact output. If a command prints a secret, that secret can be replayed on reattach until it is pushed out of the per-session cap.
 - Environment profiles remain named recipes; raw inherited environment values are not serialized into the durable broker registry.
 
 ## Remaining #7171 work
 
-- Durable disk-backed scrollback beyond broker-process lifetime is not implemented yet.
-- If durable raw scrollback is added later, it needs an opt-in storage location, corruption handling, retention pruning, and secret/privacy tests before use.
+- Reattach UX still needs to surface whether replayed bytes came from the broker process or the persisted tail.
+- Corruption handling is currently fail-loud/read error propagation; user-facing recovery/pruning UX still needs a slice.
 - UI should eventually expose enough context about restored scrollback limits that users understand why older output may be missing.

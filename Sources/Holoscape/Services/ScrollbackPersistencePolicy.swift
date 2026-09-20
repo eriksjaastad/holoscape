@@ -13,5 +13,14 @@ struct ScrollbackPersistencePolicy: Equatable, Sendable {
     static let maxRetainedBytesPerSession = 1_048_576
     static let maxReplayBytesOnReattach = maxRetainedBytesPerSession
 
+    static var defaultDiskDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override).appendingPathComponent("scrollback", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".holoscape", isDirectory: true)
+            .appendingPathComponent("scrollback", isDirectory: true)
+    }
+
     private init() {}
 }
