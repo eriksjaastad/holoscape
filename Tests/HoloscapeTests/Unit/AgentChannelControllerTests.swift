@@ -196,6 +196,65 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "recording-agent-broker-session"))
     }
 
+    /// #7375 — coordinator-backed agent tabs must survive broker host loss while
+    /// recording detach/exit metadata instead of trapping.
+    func testCoordinatorBackedAgentDetachWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000731")!,
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.deactivate()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.recoveryAction, .reconnect)
+        XCTAssertEqual(controller.brokerSessionID, sessionID)
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID])
+        XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
+    }
+
+    func testCoordinatorBackedAgentExitWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = AgentChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000732")!,
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.delegate = delegate
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        terminal.reportTermination(exitCode: nil)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.brokerSessionID, sessionID)
+        XCTAssertEqual(
+            fixture.runtime.erroredIDs,
+            [sessionID],
+            "A nil exit code must still attempt the errored transition"
+        )
+        XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
+    }
+
     func testActivationMarksAgentStaleWhenRestoredBrokerSessionIsMissing() {
         let terminal = MockTerminalProcess()
         terminal.startFailureDescription = "missing broker session"

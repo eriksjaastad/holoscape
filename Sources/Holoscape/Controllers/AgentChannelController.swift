@@ -377,7 +377,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             ).id
             return true
         } catch {
-            assertionFailure("Broker session start failed: \(error)")
+            // An injected coordinator means this channel owns its broker metadata
+            // (test-injected agents). A broker host outage here is an expected
+            // runtime condition, so report it and let the caller take its explicit
+            // disconnected/reconnect path instead of trapping.
+            NSLog("Agent broker session start failed: \(error)")
             return false
         }
     }
@@ -387,7 +391,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         do {
             _ = try brokerSessionCoordinator.detach(brokerSessionID)
         } catch {
-            assertionFailure("Broker session detach failed: \(error)")
+            // Detach runs on tab teardown and during app termination. If the
+            // broker host is unavailable, the durable record keeps its current
+            // lifecycle — still reattachable and reconciled on the next launch —
+            // so log loudly rather than trapping the app while it is closing.
+            NSLog("Agent broker session detach failed: \(error)")
         }
     }
 
@@ -400,7 +408,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
                 _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
             }
         } catch {
-            assertionFailure("Broker session exit failed: \(error)")
+            // Same boundary as detach: an unavailable broker must not trap the app
+            // on process exit. The unrecorded transition stays reconcilable.
+            NSLog("Agent broker session exit failed: \(error)")
         }
     }
 }
