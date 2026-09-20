@@ -7,6 +7,15 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate,
     InputResizeHandleViewDelegate {
 
+    enum UnifiedLauncherAction: Equatable {
+        case shell
+        case agentOAuth
+        case agentAPIKey
+        case groupChat
+        case bridge
+        case sessionProfile(String)
+    }
+
     /// Amplify Task 5.3 makes this reassignable so shaped-window
     /// transitions can swap the underlying `NSWindow` instance without
     /// breaking every caller that reads `.window`. Outside the shape-
@@ -644,7 +653,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         newShellChannelItem.keyEquivalentModifierMask = [.command, .shift]
         newShellChannelItem.target = self
 
-        let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(showChannelPicker), keyEquivalent: "")
+        let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(presentUnifiedChannelLauncher), keyEquivalent: "")
         newChannelItem.target = self
 
         let closeItem = NSMenuItem(title: "Close Channel", action: #selector(closeActiveChannel), keyEquivalent: "w")
@@ -2042,39 +2051,25 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func handleNewSession() {
-        if sidebarExpanded {
-            sessionLauncher.focus()
-        } else {
-            showChannelPicker()
+        presentUnifiedChannelLauncher()
+    }
+
+    @objc func presentUnifiedChannelLauncher() {
+        if !sidebarExpanded {
+            sidebarExpanded = true
+            applySidebarState(animated: true)
+
+            var config = configService.load()
+            config.sidebarExpanded = sidebarExpanded
+            configService.save(config)
         }
+
+        refreshLauncher()
+        sessionLauncher.presentChoices()
     }
 
     @objc func showChannelPicker() {
-        let alert = NSAlert()
-        alert.messageText = "New Channel"
-        alert.informativeText = "Select channel type:"
-        alert.addButton(withTitle: "Shell")
-        alert.addButton(withTitle: "Agent (OAuth)")
-        alert.addButton(withTitle: "Agent (API Key)")
-        alert.addButton(withTitle: "Group Chat")
-        alert.addButton(withTitle: "Bridge")
-        alert.addButton(withTitle: "Cancel")
-
-        let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn:                      // 1000 — Shell
-            createShellChannel()
-        case .alertSecondButtonReturn:                     // 1001 — Agent (OAuth)
-            createAgentChannel(authType: .oauth)
-        case .alertThirdButtonReturn:                      // 1002 — Agent (API Key)
-            createAgentChannel(authType: .apiKey(""))
-        case NSApplication.ModalResponse(rawValue: 1003):  // Group Chat
-            createGroupChatChannel()
-        case NSApplication.ModalResponse(rawValue: 1004):  // Bridge
-            createBridgeChannel()
-        default:
-            break
-        }
+        presentUnifiedChannelLauncher()
     }
 
     @objc func createShellChannel() {
@@ -2440,21 +2435,53 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - SessionLauncherDelegate
 
+    static func unifiedLauncherAction(for label: String) -> UnifiedLauncherAction {
+        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "shell":
+            return .shell
+        case "agent (oauth)", "agent oauth", "oauth agent":
+            return .agentOAuth
+        case "agent (api key)", "agent api key", "api key agent":
+            return .agentAPIKey
+        case "group chat", "chat":
+            return .groupChat
+        case "bridge":
+            return .bridge
+        default:
+            return .sessionProfile(label)
+        }
+    }
+
+    private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction) {
+        switch action {
+        case .shell:
+            createShellChannel()
+        case .agentOAuth:
+            createAgentChannel(authType: .oauth)
+        case .agentAPIKey:
+            createAgentChannel(authType: .apiKey(""))
+        case .groupChat:
+            createGroupChatChannel()
+        case .bridge:
+            createBridgeChannel()
+        case .sessionProfile(let label):
+            guard let profileManager else { return }
+            let profile = profileManager.resolve(label: label)
+            launchSession(from: profile)
+        }
+    }
+
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile label: String) {
-        guard let profileManager else { return }
-        let profile = profileManager.resolve(label: label)
-        launchSession(from: profile)
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
-        guard let profileManager else { return }
-        let profile = profileManager.resolve(label: name)
-        launchSession(from: profile)
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: name))
     }
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
         Task {
-            if let profileManager {
+            if profileManager != nil {
                 let discoveryService = ProjectDiscoveryService(configService: configService)
                 _ = await discoveryService.refresh()
                 refreshLauncher()

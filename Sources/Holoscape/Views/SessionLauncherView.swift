@@ -172,8 +172,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.dataSource = self
         comboBox.delegate = self
         comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        comboBox.placeholderString = "Project / Claude / ssh host..."
-        comboBox.toolTip = "Type a project folder, 'Claude project', or 'ssh host'. Saved sessions are also listed."
+        comboBox.placeholderString = "New Channel / project / Claude / ssh host..."
+        comboBox.toolTip = "Choose Shell, Agent, Group Chat, Bridge, a saved session, a project folder, or type 'ssh host'."
         comboBox.setAccessibilityIdentifier("session-launcher-combo")
         comboBox.translatesAutoresizingMaskIntoConstraints = false
 
@@ -234,6 +234,13 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     /// Focus the combobox for keyboard input.
     func focus() {
         window?.makeFirstResponder(comboBox)
+    }
+
+    /// Focus the unified launcher and open its dropdown so File → New Channel
+    /// lands on the same keyboard-navigable entry point as the sidebar control.
+    func presentChoices() {
+        focus()
+        comboBox.performClick(nil)
     }
 
     @objc private func refreshClicked() {

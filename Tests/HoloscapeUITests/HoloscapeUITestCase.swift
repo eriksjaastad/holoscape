@@ -38,18 +38,25 @@ class HoloscapeUITestCase: XCTestCase {
 
     // MARK: - Channel Helpers
 
-    /// Create a channel via File > New Channel dialog.
+    /// Create a channel via the unified File > New Channel launcher.
     /// Valid types: "Shell", "Agent (OAuth)", "Agent (API Key)", "Group Chat", "Bridge"
     func createChannel(type: String) {
         app.menuBars.firstMatch.menuBarItems["File"].click()
         let newChannelItem = app.menuItems["New Channel"]
         XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2), "New Channel menu item should exist")
         newChannelItem.click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "New Channel dialog should appear")
-        let button = dialog.buttons[type]
-        XCTAssertTrue(button.waitForExistence(timeout: 2), "\(type) button should exist in dialog")
-        button.click()
+        let comboBox = app.comboBoxes["session-launcher-combo"]
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Unified New Channel launcher should appear")
+        comboBox.typeText(type)
+        comboBox.typeKey(.return, modifierFlags: [])
+
+        if type.hasPrefix("Agent (") {
+            let dialog = app.dialogs.firstMatch
+            XCTAssertTrue(dialog.waitForExistence(timeout: 3), "Agent channel directory/label prompt should appear")
+            let createButton = dialog.buttons["Create"]
+            XCTAssertTrue(createButton.waitForExistence(timeout: 2), "Agent prompt should have a Create button")
+            createButton.click()
+        }
     }
 
     /// Find a sidebar entry by partial identifier match (CONTAINS).

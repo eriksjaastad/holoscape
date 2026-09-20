@@ -74,6 +74,27 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testBuiltInProfilesExposeAllNewChannelTypesInLauncher() {
+        let labels = SessionProfileManager.builtInProfiles.map(\.label)
+
+        XCTAssertTrue(labels.contains("Shell"))
+        XCTAssertTrue(labels.contains("Agent (OAuth)"))
+        XCTAssertTrue(labels.contains("Agent (API Key)"))
+        XCTAssertTrue(labels.contains("Group Chat"))
+        XCTAssertTrue(labels.contains("Bridge"))
+    }
+
+    @MainActor
+    func testUnifiedLauncherMapsNewChannelItemsToDirectActions() {
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Shell"), .shell)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (OAuth)"), .agentOAuth)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (API Key)"), .agentAPIKey)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Group Chat"), .groupChat)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Bridge"), .bridge)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "holoscape"), .sessionProfile("holoscape"))
+    }
+
+    @MainActor
     func testResolveBuiltInClaudeProfileIgnoresCaseAndWhitespace() {
         let configService = ConfigService()
         let discoveryService = ProjectDiscoveryService(configService: configService)
