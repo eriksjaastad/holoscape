@@ -252,6 +252,7 @@ class TabBarView: NSView {
             button.setAccessibilityHelp(staleRecoveryAction.operatorGuidance)
         } else {
             button.toolTip = nil
+            button.setAccessibilityHelp(nil)
         }
 
         if staleRecoveryAction == nil, let notificationType = notifications[channel.channelId] {

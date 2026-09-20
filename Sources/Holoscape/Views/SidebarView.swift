@@ -504,6 +504,7 @@ class SidebarTabEntry: NSButton {
             setAccessibilityHelp(guidance)
         } else {
             toolTip = nil
+            setAccessibilityHelp(nil)
         }
 
         if recoveryAction == nil, let notificationType {
