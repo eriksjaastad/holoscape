@@ -23,6 +23,7 @@ struct ProjectTrackerPlugin: Sendable {
     static let pluginID = "com.holoscape.project-tracker"
     static let defaultEndpoint = "http://localhost:8000"
     static let openBoardCommandID = "project-tracker-open-board"
+    static let openTaskCommandID = "project-tracker-open-task"
     static let taskStatusAdapterID = "project-tracker-task-status"
 
     static let manifest = PluginManifest(
@@ -201,17 +202,42 @@ struct ProjectTrackerPluginRuntimePlan: Equatable, Sendable {
         return url
     }
 
+    func projectTaskURL(projectSlug: String, taskID: String) throws -> URL {
+        let boardURL = try projectBoardURL(projectSlug: projectSlug)
+        let id = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty,
+              id.range(of: #"^[0-9]{1,18}$"#, options: .regularExpression) != nil else {
+            throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
+        }
+        guard var components = URLComponents(url: boardURL, resolvingAgainstBaseURL: false) else {
+            throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
+        }
+        components.queryItems = [URLQueryItem(name: "task", value: id)]
+        guard let url = components.url else { throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID) }
+        return url
+    }
+
     func commandAction(
         descriptorID: String,
         arguments: [String: String]
     ) throws -> PluginCommandAction {
-        guard descriptorID == ProjectTrackerPlugin.openBoardCommandID else {
+        switch descriptorID {
+        case ProjectTrackerPlugin.openBoardCommandID:
+            guard let projectSlug = arguments["projectSlug"] else {
+                throw ProjectTrackerPluginRuntimeError.missingCommandArgument("projectSlug")
+            }
+            return .openExternalURL(try projectBoardURL(projectSlug: projectSlug))
+        case ProjectTrackerPlugin.openTaskCommandID:
+            guard let projectSlug = arguments["projectSlug"] else {
+                throw ProjectTrackerPluginRuntimeError.missingCommandArgument("projectSlug")
+            }
+            guard let taskID = arguments["taskID"] else {
+                throw ProjectTrackerPluginRuntimeError.missingCommandArgument("taskID")
+            }
+            return .openExternalURL(try projectTaskURL(projectSlug: projectSlug, taskID: taskID))
+        default:
             throw ProjectTrackerPluginRuntimeError.unknownCommand(descriptorID)
         }
-        guard let projectSlug = arguments["projectSlug"] else {
-            throw ProjectTrackerPluginRuntimeError.missingCommandArgument("projectSlug")
-        }
-        return .openExternalURL(try projectBoardURL(projectSlug: projectSlug))
     }
 }
 
@@ -359,6 +385,7 @@ enum ProjectTrackerPluginUnavailableReason: Equatable, Sendable {
 
 enum ProjectTrackerPluginRuntimeError: Error, Equatable, CustomStringConvertible {
     case invalidProjectSlug(String)
+    case invalidTaskID(String)
     case missingCommandArgument(String)
     case unknownCommand(String)
 
@@ -366,6 +393,8 @@ enum ProjectTrackerPluginRuntimeError: Error, Equatable, CustomStringConvertible
         switch self {
         case .invalidProjectSlug(let slug):
             return "Project Tracker project slug is invalid: \(slug)"
+        case .invalidTaskID(let taskID):
+            return "Project Tracker task id is invalid: \(taskID)"
         case .missingCommandArgument(let argument):
             return "Project Tracker plugin command is missing required argument: \(argument)"
         case .unknownCommand(let commandID):

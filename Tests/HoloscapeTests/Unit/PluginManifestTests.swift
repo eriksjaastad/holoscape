@@ -226,6 +226,42 @@ final class PluginManifestTests: XCTestCase {
         }
     }
 
+    func testProjectTrackerCommandActionOpensOnlyExplicitTaskURL() throws {
+        let plan = try projectTrackerRuntimePlan()
+
+        XCTAssertEqual(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openTaskCommandID,
+                arguments: ["projectSlug": "holoscape", "taskID": "7174"]
+            ),
+            .openExternalURL(try XCTUnwrap(URL(string: "http://localhost:8000/kanban/holoscape?task=7174")))
+        )
+        XCTAssertThrowsError(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openTaskCommandID,
+                arguments: ["projectSlug": "holoscape", "taskID": "../7174"]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ProjectTrackerPluginRuntimeError, .invalidTaskID("../7174"))
+        }
+        XCTAssertThrowsError(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openTaskCommandID,
+                arguments: [:]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ProjectTrackerPluginRuntimeError, .missingCommandArgument("projectSlug"))
+        }
+        XCTAssertThrowsError(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openTaskCommandID,
+                arguments: ["projectSlug": "holoscape"]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ProjectTrackerPluginRuntimeError, .missingCommandArgument("taskID"))
+        }
+    }
+
     func testProjectTrackerCommandRejectsUnknownDescriptorWithoutFallback() throws {
         let plan = try projectTrackerRuntimePlan()
 
@@ -252,6 +288,12 @@ final class PluginManifestTests: XCTestCase {
                 displayName: "Open Project Tracker Board",
                 requiredArguments: ["projectSlug"]
             ),
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: ProjectTrackerPlugin.openTaskCommandID,
+                displayName: "Open Project Tracker Task",
+                requiredArguments: ["projectSlug", "taskID"]
+            ),
         ])
     }
 
@@ -268,6 +310,23 @@ final class PluginManifestTests: XCTestCase {
         )
 
         let expectedURL = try XCTUnwrap(URL(string: "http://localhost:8000/kanban/holoscape"))
+        XCTAssertEqual(result, .openedExternalURL(expectedURL))
+        XCTAssertEqual(opener.openedURLs, [expectedURL])
+    }
+
+    func testPluginCommandRouterOpensProjectTrackerTaskThroughInjectedURLOpener() throws {
+        let opener = RecordingPluginExternalURLOpener()
+        let router = PluginCommandRouter(
+            startupSnapshot: PluginManager().prepareStartup(),
+            externalURLOpener: opener
+        )
+
+        let result = try router.execute(
+            descriptorID: ProjectTrackerPlugin.openTaskCommandID,
+            arguments: ["projectSlug": "holoscape", "taskID": "7174"]
+        )
+
+        let expectedURL = try XCTUnwrap(URL(string: "http://localhost:8000/kanban/holoscape?task=7174"))
         XCTAssertEqual(result, .openedExternalURL(expectedURL))
         XCTAssertEqual(opener.openedURLs, [expectedURL])
     }
@@ -433,6 +492,12 @@ final class PluginManifestTests: XCTestCase {
                 id: ProjectTrackerPlugin.openBoardCommandID,
                 displayName: "Open Project Tracker Board",
                 requiredArguments: ["projectSlug"]
+            ),
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: ProjectTrackerPlugin.openTaskCommandID,
+                displayName: "Open Project Tracker Task",
+                requiredArguments: ["projectSlug", "taskID"]
             ),
         ])
         XCTAssertEqual(snapshot.contributions.statusAdapters, [

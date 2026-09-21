@@ -173,6 +173,12 @@ struct PluginContributions: Equatable, Sendable {
                 displayName: "Open Project Tracker Board",
                 requiredArguments: ["projectSlug"]
             ),
+            .init(
+                pluginID: plan.pluginID,
+                id: ProjectTrackerPlugin.openTaskCommandID,
+                displayName: "Open Project Tracker Task",
+                requiredArguments: ["projectSlug", "taskID"]
+            ),
         ]
         statusAdapters = [
             .init(
