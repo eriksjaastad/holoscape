@@ -22,6 +22,7 @@ struct PluginRegistry: Sendable {
 struct ProjectTrackerPlugin: Sendable {
     static let pluginID = "com.holoscape.project-tracker"
     static let defaultEndpoint = "http://localhost:8000"
+    static let openBoardCommandID = "project-tracker-open-board"
 
     static let manifest = PluginManifest(
         id: pluginID,
@@ -196,6 +197,23 @@ struct ProjectTrackerPluginRuntimePlan: Equatable, Sendable {
         }
         return url
     }
+
+    func commandAction(
+        descriptorID: String,
+        arguments: [String: String]
+    ) throws -> PluginCommandAction {
+        guard descriptorID == ProjectTrackerPlugin.openBoardCommandID else {
+            throw ProjectTrackerPluginRuntimeError.unknownCommand(descriptorID)
+        }
+        guard let projectSlug = arguments["projectSlug"] else {
+            throw ProjectTrackerPluginRuntimeError.missingCommandArgument("projectSlug")
+        }
+        return .openExternalURL(try projectBoardURL(projectSlug: projectSlug))
+    }
+}
+
+enum PluginCommandAction: Equatable, Sendable {
+    case openExternalURL(URL)
 }
 
 enum ProjectTrackerPluginStartError: Error, Equatable, CustomStringConvertible {
@@ -294,11 +312,17 @@ enum ProjectTrackerPluginUnavailableReason: Equatable, Sendable {
 
 enum ProjectTrackerPluginRuntimeError: Error, Equatable, CustomStringConvertible {
     case invalidProjectSlug(String)
+    case missingCommandArgument(String)
+    case unknownCommand(String)
 
     var description: String {
         switch self {
         case .invalidProjectSlug(let slug):
             return "Project Tracker project slug is invalid: \(slug)"
+        case .missingCommandArgument(let argument):
+            return "Project Tracker plugin command is missing required argument: \(argument)"
+        case .unknownCommand(let commandID):
+            return "Project Tracker plugin command is unknown: \(commandID)"
         }
     }
 }
