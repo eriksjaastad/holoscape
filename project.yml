@@ -12,15 +12,118 @@ packages:
   SwiftCheck:
     url: https://github.com/typelift/SwiftCheck.git
     from: "0.12.0"
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: "0.9.0"
+
+schemes:
+  Holoscape:
+    build:
+      targets:
+        Holoscape: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HoloscapeUITests
 
 targets:
+  Cspirv_cross:
+    type: library.static
+    platform: macOS
+    sources:
+      - Vendor/Cspirv_cross/spirv_cross.cpp
+      - Vendor/Cspirv_cross/spirv_parser.cpp
+      - Vendor/Cspirv_cross/spirv_cross_parsed_ir.cpp
+      - Vendor/Cspirv_cross/spirv_cfg.cpp
+      - Vendor/Cspirv_cross/spirv_cross_c.cpp
+      - Vendor/Cspirv_cross/spirv_glsl.cpp
+      - Vendor/Cspirv_cross/spirv_msl.cpp
+      - path: Vendor/Cspirv_cross/include
+        buildPhase: headers
+    settings:
+      DEFINES_MODULE: YES
+      MODULEMAP_FILE: Vendor/Cspirv_cross/include/module.modulemap
+      HEADER_SEARCH_PATHS:
+        - $(SRCROOT)/Vendor/spirv-cross
+      GCC_PREPROCESSOR_DEFINITIONS:
+        - SPIRV_CROSS_C_API_GLSL=1
+        - SPIRV_CROSS_C_API_MSL=1
+      CLANG_CXX_LANGUAGE_STANDARD: c++17
+
+  Cglslang:
+    type: library.static
+    platform: macOS
+    sources:
+      - Vendor/Cglslang/glslang/GenericCodeGen/CodeGen.cpp
+      - Vendor/Cglslang/glslang/GenericCodeGen/Link.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/glslang_tab.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/attribute.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/Constant.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/iomapper.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/InfoSink.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/Initialize.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/IntermTraverse.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/Intermediate.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/ParseContextBase.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/ParseHelper.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/PoolAlloc.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/RemoveTree.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/Scan.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/ShaderLang.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/SpirvIntrinsics.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/SymbolTable.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/Versions.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/intermOut.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/limits.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/linkValidate.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/parseConst.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/reflection.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/preprocessor/Pp.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/preprocessor/PpAtom.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/preprocessor/PpContext.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/preprocessor/PpScanner.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/preprocessor/PpTokens.cpp
+      - Vendor/Cglslang/glslang/MachineIndependent/propagateNoContraction.cpp
+      - Vendor/Cglslang/glslang/CInterface/glslang_c_interface.cpp
+      - Vendor/Cglslang/glslang/ResourceLimits/ResourceLimits.cpp
+      - Vendor/Cglslang/glslang/ResourceLimits/resource_limits_c.cpp
+      - Vendor/Cglslang/glslang/OSDependent/Unix/ossource.cpp
+      - Vendor/Cglslang/SPIRV/GlslangToSpv.cpp
+      - Vendor/Cglslang/SPIRV/InReadableOrder.cpp
+      - Vendor/Cglslang/SPIRV/Logger.cpp
+      - Vendor/Cglslang/SPIRV/SpvBuilder.cpp
+      - Vendor/Cglslang/SPIRV/SpvPostProcess.cpp
+      - Vendor/Cglslang/SPIRV/doc.cpp
+      - Vendor/Cglslang/SPIRV/disassemble.cpp
+      - Vendor/Cglslang/SPIRV/CInterface/spirv_c_interface.cpp
+      - path: Vendor/Cglslang/include
+        buildPhase: headers
+    settings:
+      DEFINES_MODULE: YES
+      MODULEMAP_FILE: Vendor/Cglslang/include/module.modulemap
+      HEADER_SEARCH_PATHS:
+        - $(SRCROOT)/Vendor/glslang-override
+        - $(SRCROOT)/Vendor/Cglslang
+        - $(SRCROOT)/Vendor/glslang
+      CLANG_CXX_LANGUAGE_STANDARD: c++17
+
   Holoscape:
     type: application
     platform: macOS
     sources:
-      - Sources/Holoscape
+      - path: Sources/Holoscape
+        excludes:
+          - Resources/Skins/**
+      - path: Sources/Holoscape/Resources/Skins
+        type: folder
+        buildPhase: resources
     dependencies:
+      - target: Cglslang
+      - target: Cspirv_cross
       - package: SwiftTerm
+      - package: ZIPFoundation
     settings:
       SWIFT_VERSION: "6.0"
       PRODUCT_BUNDLE_IDENTIFIER: com.holoscape.app
@@ -34,6 +137,9 @@ targets:
       - Tests/HoloscapeTests
     dependencies:
       - target: Holoscape
+      - target: Cglslang
+      - target: Cspirv_cross
+      - package: ZIPFoundation
     settings:
       SWIFT_VERSION: "6.0"
       GENERATE_INFOPLIST_FILE: YES
@@ -46,6 +152,7 @@ targets:
     dependencies:
       - target: Holoscape
       - package: SwiftCheck
+      - package: ZIPFoundation
     settings:
       SWIFT_VERSION: "6.0"
       GENERATE_INFOPLIST_FILE: YES
@@ -58,5 +165,5 @@ targets:
     dependencies:
       - target: Holoscape
     settings:
-      SWIFT_VERSION: "6.0"
+      SWIFT_VERSION: "5.0"
       GENERATE_INFOPLIST_FILE: YES
