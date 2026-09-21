@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 /// Bare-bones Markdown document reader used by Cmd-clicked `.md` file links.
 ///
@@ -17,6 +18,7 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
     private let fileURL: URL
     private var window: NSWindow?
     private weak var textView: NSTextView?
+    private var fileWatcher: DispatchSourceFileSystemObject?
     private var surfacedUnsupportedExtensions = false
 
     init(fileURL: URL) {
@@ -76,6 +78,7 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
         let window = buildWindow()
         self.window = window
         reloadDocument()
+        startWatchingFile()
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -127,11 +130,42 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
         guard let textView else { return }
         do {
             let markdown = try String(contentsOf: fileURL, encoding: .utf8)
-            textView.textStorage?.setAttributedString(Self.render(markdown: markdown))
+            textView.textStorage?.setAttributedString(Self.render(markdown: markdown, baseURL: fileURL.deletingLastPathComponent()))
             surfaceUnsupportedExtensionsIfNeeded(Self.detectUnsupportedExtensions(in: markdown))
         } catch {
             textView.string = "Unable to open \(fileURL.path):\n\n\(error.localizedDescription)"
         }
+    }
+
+    private func startWatchingFile() {
+        stopWatchingFile()
+
+        let descriptor = Darwin.open(fileURL.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .attrib, .rename, .delete],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.reloadDocument()
+            let event = source.data
+            if event.contains(.rename) || event.contains(.delete) {
+                self.stopWatchingFile()
+            }
+        }
+        source.setCancelHandler { [descriptor] in
+            Darwin.close(descriptor)
+        }
+        fileWatcher = source
+        source.resume()
+    }
+
+    private func stopWatchingFile() {
+        fileWatcher?.cancel()
+        fileWatcher = nil
     }
 
     private func surfaceUnsupportedExtensionsIfNeeded(_ extensions: [UnsupportedExtension]) {
@@ -170,6 +204,14 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
     }
 
     nonisolated static func render(markdown: String) -> NSAttributedString {
+        render(markdown: markdown, baseURL: nil)
+    }
+
+    nonisolated static func render(markdown: String, baseURL: URL?) -> NSAttributedString {
+        if let richBlocks = renderWithReaderBlocks(markdown: markdown, baseURL: baseURL) {
+            return richBlocks
+        }
+
         do {
             let attributed = try AttributedString(
                 markdown: markdown,
@@ -187,6 +229,161 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
             )
             return fallback
         }
+    }
+
+    private nonisolated static func renderWithReaderBlocks(markdown: String, baseURL: URL?) -> NSAttributedString? {
+        let lines = markdown.components(separatedBy: .newlines)
+        let output = NSMutableAttributedString()
+        var markdownBuffer: [String] = []
+        var usedReaderBlock = false
+
+        func flushMarkdownBuffer() {
+            guard !markdownBuffer.isEmpty else { return }
+            output.append(renderMarkdownOnly(markdownBuffer.joined(separator: "\n")))
+            output.append(NSAttributedString(string: "\n"))
+            markdownBuffer.removeAll()
+        }
+
+        var index = 0
+        while index < lines.count {
+            if let image = imageBlock(from: lines[index], baseURL: baseURL) {
+                flushMarkdownBuffer()
+                output.append(image)
+                output.append(NSAttributedString(string: "\n"))
+                usedReaderBlock = true
+                index += 1
+                continue
+            }
+
+            if index + 1 < lines.count,
+               isTableRow(lines[index]),
+               isTableSeparator(lines[index + 1]) {
+                flushMarkdownBuffer()
+                var tableLines = [lines[index]]
+                index += 2
+                while index < lines.count, isTableRow(lines[index]) {
+                    tableLines.append(lines[index])
+                    index += 1
+                }
+                output.append(tableBlock(from: tableLines))
+                output.append(NSAttributedString(string: "\n"))
+                usedReaderBlock = true
+                continue
+            }
+
+            markdownBuffer.append(lines[index])
+            index += 1
+        }
+        flushMarkdownBuffer()
+
+        return usedReaderBlock ? output : nil
+    }
+
+    private nonisolated static func renderMarkdownOnly(_ markdown: String) -> NSAttributedString {
+        do {
+            let attributed = try AttributedString(
+                markdown: markdown,
+                options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+            )
+            return NSAttributedString(attributed)
+        } catch {
+            return NSAttributedString(
+                string: markdown,
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular),
+                    .foregroundColor: NSColor.textColor
+                ]
+            )
+        }
+    }
+
+    private nonisolated static func imageBlock(from line: String, baseURL: URL?) -> NSAttributedString? {
+        let pattern = #"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)),
+              let altRange = Range(match.range(at: 1), in: line),
+              let pathRange = Range(match.range(at: 2), in: line) else {
+            return nil
+        }
+
+        let alt = String(line[altRange])
+        let rawPath = String(line[pathRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageURL: URL
+        if let url = URL(string: rawPath), url.scheme != nil {
+            guard url.isFileURL else { return nil }
+            imageURL = url
+        } else if rawPath.hasPrefix("/") || rawPath.hasPrefix("~") {
+            imageURL = URL(fileURLWithPath: NSString(string: rawPath).expandingTildeInPath)
+        } else if let baseURL {
+            imageURL = baseURL.appendingPathComponent(rawPath)
+        } else {
+            return nil
+        }
+
+        let result = NSMutableAttributedString()
+        if let image = NSImage(contentsOf: imageURL) {
+            let attachment = NSTextAttachment()
+            attachment.image = scaledImage(image, maximumWidth: 720)
+            result.append(NSAttributedString(attachment: attachment))
+        } else {
+            result.append(NSAttributedString(string: "[Missing image: \(rawPath)]"))
+        }
+        if !alt.isEmpty {
+            result.append(NSAttributedString(
+                string: "\n\(alt)",
+                attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]
+            ))
+        }
+        return result
+    }
+
+    private nonisolated static func scaledImage(_ image: NSImage, maximumWidth: CGFloat) -> NSImage {
+        guard image.size.width > maximumWidth, image.size.width > 0 else { return image }
+        let scale = maximumWidth / image.size.width
+        let copy = NSImage(size: NSSize(width: maximumWidth, height: image.size.height * scale))
+        copy.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: copy.size))
+        copy.unlockFocus()
+        return copy
+    }
+
+    private nonisolated static func isTableRow(_ line: String) -> Bool {
+        line.contains("|") && line.split(separator: "|", omittingEmptySubsequences: false).count >= 3
+    }
+
+    private nonisolated static func isTableSeparator(_ line: String) -> Bool {
+        let cells = line.split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !cells.isEmpty else { return false }
+        return cells.allSatisfy { cell in
+            cell.range(of: #"^:?-{3,}:?$"#, options: .regularExpression) != nil
+        }
+    }
+
+    private nonisolated static func tableBlock(from lines: [String]) -> NSAttributedString {
+        let rows = lines.map { line in
+            line.split(separator: "|", omittingEmptySubsequences: false)
+                .drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .reversed()
+                .drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .reversed()
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        let columnCount = rows.map(\.count).max() ?? 0
+        let widths = (0..<columnCount).map { column in
+            rows.map { row in column < row.count ? row[column].count : 0 }.max() ?? 0
+        }
+        let renderedRows = rows.map { row in
+            (0..<columnCount).map { column -> String in
+                let value = column < row.count ? row[column] : ""
+                return value.padding(toLength: widths[column], withPad: " ", startingAt: 0)
+            }.joined(separator: "  ")
+        }.joined(separator: "\n")
+        return NSAttributedString(
+            string: renderedRows,
+            attributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), .foregroundColor: NSColor.textColor]
+        )
     }
 
     nonisolated static func detectUnsupportedExtensions(in markdown: String) -> [UnsupportedExtension] {
@@ -233,6 +430,7 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
     }
 
     func windowWillClose(_ notification: Notification) {
+        stopWatchingFile()
         MarkdownDocumentReaderController.openReaders[fileURL.standardizedFileURL] = nil
     }
 

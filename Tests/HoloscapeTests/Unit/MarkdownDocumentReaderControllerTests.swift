@@ -81,6 +81,52 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
         XCTAssertTrue(foundLink)
     }
 
+    func testRenderMarkdownEmbedsLocalImages() throws {
+        let imageURL = tempDir.appendingPathComponent("pixel.png")
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        guard let png = bitmap?.representation(using: .png, properties: [:]) else {
+            XCTFail("test image should have PNG data")
+            return
+        }
+        try png.write(to: imageURL)
+
+        let rendered = MarkdownDocumentReaderController.render(
+            markdown: "# Screenshot\n\n![Tiny](pixel.png)",
+            baseURL: tempDir
+        )
+
+        XCTAssertTrue(rendered.string.contains("Screenshot"))
+        XCTAssertTrue(rendered.string.contains("Tiny"))
+        XCTAssertTrue(containsAttachment(in: rendered), "local markdown image should render as an attachment")
+    }
+
+    func testRenderMarkdownFormatsPipeTables() {
+        let rendered = MarkdownDocumentReaderController.render(
+            markdown: """
+            | Command | Status |
+            | --- | --- |
+            | build | green |
+            | test | green |
+            """
+        )
+
+        XCTAssertTrue(rendered.string.contains("Command"))
+        XCTAssertTrue(rendered.string.contains("build"))
+        XCTAssertTrue(rendered.string.contains("Status"))
+        XCTAssertFalse(rendered.string.contains("---"), "table separator rows should not be shown as content")
+    }
+
     func testDetectUnsupportedExtensionsFindsMermaidMathAndGraphicalHTML() {
         let markdown = """
         # Diagram
@@ -116,5 +162,16 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
         let url = tempDir.appendingPathComponent(name)
         try "# Title\n\nBody".write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    private func containsAttachment(in attributedString: NSAttributedString) -> Bool {
+        var found = false
+        attributedString.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributedString.length)) { value, _, stop in
+            if value is NSTextAttachment {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
     }
 }
