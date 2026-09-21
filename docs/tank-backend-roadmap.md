@@ -47,7 +47,7 @@ Definition of done:
 Purpose: Holoscape must be a reliable terminal before it becomes a clever agent cockpit.
 
 New cards:
-- #7166 — terminal correctness audit against iTerm daily-driver behavior
+- #7166 — terminal correctness audit against iTerm daily-driver behavior. Audit: `docs/terminal-correctness-iterm-audit.md`.
 - #7167 — choose session survival substrate: native PTY manager vs tmux/dtach/abduco. Decision: Holoscape-owned native session broker; see `docs/session-survival-substrate.md`.
 - #7168 — implement process/session survival across app quit and crash; blocked by #7167
 
