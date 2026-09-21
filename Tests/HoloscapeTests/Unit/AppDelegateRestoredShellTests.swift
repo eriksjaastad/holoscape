@@ -288,4 +288,45 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertNil(restored.label)
         XCTAssertEqual(restored.workingDirectory, "/Users/test/projects/holoscape")
     }
+
+    func testRestoredShellOnNetworkVolumeDoesNotAutoActivateWithoutBrokerSession() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .shell,
+            role: "Network Project",
+            workingDirectory: "/Volumes/TeamShare/project"
+        )
+
+        XCTAssertFalse(
+            AppDelegate.shouldAutoActivateRestoredChannel(metadata),
+            "Restoring an old local tab on /Volumes must not launch a new process at app startup, because setting that directory as cwd re-triggers macOS network-volume TCC prompts every launch."
+        )
+    }
+
+    func testRestoredAgentOnNetworkVolumeDoesNotAutoActivateWithoutBrokerSession() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentDirect,
+            role: "Claude-TeamShare",
+            workingDirectory: "file:///Volumes/TeamShare/project",
+            command: "claude"
+        )
+
+        XCTAssertFalse(AppDelegate.shouldAutoActivateRestoredChannel(metadata))
+    }
+
+    func testRestoredNetworkVolumeTabWithBrokerSessionCanReattach() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .shell,
+            role: "Network Project",
+            workingDirectory: "/Volumes/TeamShare/project",
+            brokerSessionID: BrokerSessionID(rawValue: "network-volume-survivor")
+        )
+
+        XCTAssertTrue(
+            AppDelegate.shouldAutoActivateRestoredChannel(metadata),
+            "A broker-backed survivor should still reattach; the prompt loop risk is launching a new process with /Volumes as cwd."
+        )
+    }
 }

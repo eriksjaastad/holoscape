@@ -237,10 +237,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // The same activation ordering comment from applicationDidFinishLaunching
         // applies here: delegate first, then activate, so state-change callbacks
         // are not dropped on restore.
-        if metadata.type != .agentAPI, controller.state != .stale {
+        if Self.shouldAutoActivateRestoredChannel(metadata), controller.state != .stale {
             controller.activate()
         }
         return controller
+    }
+
+    static func shouldAutoActivateRestoredChannel(_ metadata: ChannelMetadata) -> Bool {
+        guard metadata.type != .agentAPI else { return false }
+        guard metadata.staleBrokerSessionID == nil else { return false }
+
+        switch metadata.type {
+        case .shell, .agentDirect:
+            guard metadata.brokerSessionID == nil else { return true }
+            guard let workingDirectory = metadata.workingDirectory else { return true }
+            return !isNetworkVolumePath(workingDirectory)
+        case .agentAPI:
+            return false
+        case .ssh, .mcp, .groupChat, .bridge:
+            return true
+        }
+    }
+
+    private static func isNetworkVolumePath(_ path: String) -> Bool {
+        let plainPath: String
+        if let url = URL(string: path), url.scheme == "file" {
+            plainPath = url.path
+        } else {
+            plainPath = (path as NSString).expandingTildeInPath
+        }
+        return plainPath == "/Volumes" || plainPath.hasPrefix("/Volumes/")
     }
 
     @discardableResult
