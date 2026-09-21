@@ -6,7 +6,7 @@ import AppKit
 /// document window with no toolbar/sidebar/tabs and no terminal skin surfaces so
 /// Markdown stays legible even when the terminal chrome is heavily themed.
 @MainActor
-final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
+final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private static var openReaders: [URL: MarkdownDocumentReaderController] = [:]
 
     struct UnsupportedExtension: Equatable {
@@ -111,6 +111,11 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
         textView.backgroundColor = .textBackgroundColor
         textView.textColor = .textColor
         textView.font = .systemFont(ofSize: 15)
+        textView.delegate = self
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
 
         scrollView.documentView = textView
         window.contentView = scrollView
@@ -229,5 +234,24 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         MarkdownDocumentReaderController.openReaders[fileURL.standardizedFileURL] = nil
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if let url = link as? URL {
+            return openReaderLink(url.absoluteString)
+        }
+        if let string = link as? String {
+            return openReaderLink(string)
+        }
+        return false
+    }
+
+    private func openReaderLink(_ link: String) -> Bool {
+        if Self.openIfMarkdown(link: link) {
+            return true
+        }
+        guard let url = URL(string: link) else { return false }
+        NSWorkspace.shared.open(url)
+        return true
     }
 }

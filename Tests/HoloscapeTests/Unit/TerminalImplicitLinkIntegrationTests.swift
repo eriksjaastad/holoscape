@@ -1,5 +1,6 @@
 import XCTest
 import SwiftTerm
+@testable import Holoscape
 
 final class TerminalImplicitLinkIntegrationTests: XCTestCase {
     func testHTTPURLIsDetectedForCmdClickLinkHandling() {
@@ -40,6 +41,30 @@ final class TerminalImplicitLinkIntegrationTests: XCTestCase {
             terminal.link(at: .screen(Position(col: 8, row: 0)), mode: .explicitAndImplicit),
             "~/projects/holoscape-agent/README.md"
         )
+    }
+
+    @MainActor
+    func testMarkdownContextMenuLinkResolvesOnlyLocalMarkdownTargets() throws {
+        let tempDir = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("holo-md-menu-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let markdown = tempDir.appendingPathComponent("README.md")
+        let text = tempDir.appendingPathComponent("notes.txt")
+        try "# Title".write(to: markdown, atomically: true, encoding: .utf8)
+        try "Plain".write(to: text, atomically: true, encoding: .utf8)
+
+        let view = HoloscapeTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 1000, height: 100),
+            options: TerminalOptions(cols: 120, rows: 5, scrollback: 100)
+        )
+        view.feed(text: "read \(markdown.path) and \(text.path)\r\n")
+
+        XCTAssertEqual(
+            view.markdownLinkForContextMenu(atBufferPosition: Position(col: 8, row: 0)),
+            markdown.path
+        )
+        XCTAssertNil(view.markdownLinkForContextMenu(atBufferPosition: Position(col: markdown.path.count + 14, row: 0)))
     }
 
     private func makeTerminal() -> Terminal {

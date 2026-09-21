@@ -21,6 +21,12 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
         configureAccessibility()
     }
 
+    init(frame: CGRect, options: TerminalOptions) {
+        super.init(frame: frame, options: options)
+        notifyUpdateChanges = true
+        configureAccessibility()
+    }
+
     public required init?(coder: NSCoder) {
         super.init(coder: coder)
         notifyUpdateChanges = true
@@ -53,6 +59,50 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
             return
         }
         super.requestOpenLink(source: source, link: link, params: params)
+    }
+
+    open override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard let markdownLink = markdownLinkForContextMenu(event: event) else {
+            return menu.items.isEmpty ? nil : menu
+        }
+
+        if !menu.items.isEmpty {
+            menu.addItem(.separator())
+        }
+        let item = NSMenuItem(
+            title: "Open in Holoscape Reader",
+            action: #selector(openMarkdownLinkFromContextMenu(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = markdownLink
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func openMarkdownLinkFromContextMenu(_ sender: NSMenuItem) {
+        guard let link = sender.representedObject as? String else { return }
+        _ = MarkdownDocumentReaderController.openIfMarkdown(link: link)
+    }
+
+    func markdownLinkForContextMenu(atBufferPosition position: Position) -> String? {
+        guard let link = terminal.link(at: .buffer(position), mode: .explicitAndImplicit),
+              MarkdownDocumentReaderController.markdownFileURL(from: link) != nil else {
+            return nil
+        }
+        return link
+    }
+
+    private func markdownLinkForContextMenu(event: NSEvent) -> String? {
+        guard terminal.cols > 0, terminal.rows > 0, bounds.width > 0, bounds.height > 0 else {
+            return nil
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let col = min(max(0, Int(point.x / (bounds.width / CGFloat(terminal.cols)))), terminal.cols - 1)
+        let visibleRow = min(max(0, Int((bounds.height - point.y) / (bounds.height / CGFloat(terminal.rows)))), terminal.rows - 1)
+        let bufferRow = visibleRow + terminal.buffer.yDisp
+        return markdownLinkForContextMenu(atBufferPosition: Position(col: col, row: bufferRow))
     }
 
     func setOutputHandler(_ handler: (() -> Void)?) {

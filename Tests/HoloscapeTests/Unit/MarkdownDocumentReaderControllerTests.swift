@@ -67,6 +67,20 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
         XCTAssertTrue(rendered.string.contains("One"))
     }
 
+    func testRenderMarkdownPreservesClickableLinks() {
+        let rendered = MarkdownDocumentReaderController.render(markdown: "[Guide](https://example.com/guide)")
+        var foundLink = false
+
+        rendered.enumerateAttribute(.link, in: NSRange(location: 0, length: rendered.length)) { value, _, stop in
+            if let url = value as? URL, url.absoluteString == "https://example.com/guide" {
+                foundLink = true
+                stop.pointee = true
+            }
+        }
+
+        XCTAssertTrue(foundLink)
+    }
+
     func testDetectUnsupportedExtensionsFindsMermaidMathAndGraphicalHTML() {
         let markdown = """
         # Diagram
