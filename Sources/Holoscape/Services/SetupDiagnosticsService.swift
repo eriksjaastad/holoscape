@@ -14,6 +14,21 @@ struct SetupDiagnosticItem: Equatable, Sendable {
     let severity: Severity
     let detail: String
     let recovery: String?
+    let settingsURL: URL?
+
+    init(
+        title: String,
+        severity: Severity,
+        detail: String,
+        recovery: String?,
+        settingsURL: URL? = nil
+    ) {
+        self.title = title
+        self.severity = severity
+        self.detail = detail
+        self.recovery = recovery
+        self.settingsURL = settingsURL
+    }
 }
 
 struct SetupDiagnosticsSnapshot: Equatable, Sendable {
@@ -166,21 +181,24 @@ final class SetupDiagnosticsService {
                 title: "Notifications",
                 severity: .warning,
                 detail: "macOS notification authorization is denied.",
-                recovery: "Open System Settings > Notifications > Holoscape and enable notifications if you want off-screen channel alerts."
+                recovery: "Open System Settings > Notifications > Holoscape and enable notifications if you want off-screen channel alerts.",
+                settingsURL: SystemSettingsURL.notifications
             )
         case .notDetermined:
             return SetupDiagnosticItem(
                 title: "Notifications",
                 severity: .warning,
                 detail: "macOS notification authorization has not been requested yet. Holoscape defers this prompt until the first eligible background notification.",
-                recovery: "No action is required unless you want to pre-grant notifications in System Settings > Notifications."
+                recovery: "No action is required unless you want to pre-grant notifications in System Settings > Notifications.",
+                settingsURL: SystemSettingsURL.notifications
             )
         @unknown default:
             return SetupDiagnosticItem(
                 title: "Notifications",
                 severity: .warning,
                 detail: "macOS returned an unknown notification authorization state.",
-                recovery: "Check System Settings > Notifications > Holoscape."
+                recovery: "Check System Settings > Notifications > Holoscape.",
+                settingsURL: SystemSettingsURL.notifications
             )
         }
     }
@@ -198,7 +216,8 @@ final class SetupDiagnosticsService {
             title: "Accessibility",
             severity: .warning,
             detail: "Holoscape is not currently trusted for Accessibility automation.",
-            recovery: "If agent or setup workflows need UI control, enable Holoscape in System Settings > Privacy & Security > Accessibility."
+            recovery: "If agent or setup workflows need UI control, enable Holoscape in System Settings > Privacy & Security > Accessibility.",
+            settingsURL: SystemSettingsURL.accessibility
         )
     }
 
@@ -207,7 +226,8 @@ final class SetupDiagnosticsService {
             title: "Automation",
             severity: .warning,
             detail: "macOS tracks Automation permission per target app and may prompt when Holoscape first controls System Events or another app.",
-            recovery: "Review System Settings > Privacy & Security > Automation after first use; enable the specific target apps Holoscape is allowed to control."
+            recovery: "Review System Settings > Privacy & Security > Automation after first use; enable the specific target apps Holoscape is allowed to control.",
+            settingsURL: SystemSettingsURL.automation
         )
     }
 
@@ -224,7 +244,8 @@ final class SetupDiagnosticsService {
             title: "Crash diagnostics",
             severity: .warning,
             detail: "Holoscape cannot read ~/Library/Logs/DiagnosticReports, so recent-crash detection may miss reports.",
-            recovery: "Do not grant broad Full Disk Access by default. If crash detection matters on this machine, open System Settings > Privacy & Security > Full Disk Access and enable Holoscape intentionally."
+            recovery: "Do not grant broad Full Disk Access by default. If crash detection matters on this machine, open System Settings > Privacy & Security > Full Disk Access and enable Holoscape intentionally.",
+            settingsURL: SystemSettingsURL.fullDiskAccess
         )
     }
 
@@ -238,4 +259,11 @@ final class SetupDiagnosticsService {
         @unknown default: return "unknown"
         }
     }
+}
+
+enum SystemSettingsURL {
+    static let notifications = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+    static let accessibility = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    static let automation = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+    static let fullDiskAccess = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
 }
