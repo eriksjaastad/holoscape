@@ -1,6 +1,6 @@
 # Removable plugin architecture for external integrations
 
-Status: Phase 5 architecture definition for Kanban card #7173.
+Status: Phase 5 architecture definition for Kanban card #7173, with initial manifest/registry substrate for #7174.
 
 ## Goal
 
@@ -157,6 +157,16 @@ When this architecture moves from document to code, add deterministic tests for:
 5. Plugin runtime crash leaves shell/agent/broker sessions running.
 6. Project Tracker plugin unavailable state does not affect core terminal readiness.
 7. Plugin status updates cannot overwrite higher-priority core error/stale channel state.
+
+## Code substrate
+
+The first implementation slice lives in:
+
+- `Sources/Holoscape/Services/PluginManifest.swift` — closed capability/permission enums, manifest decoding, and deterministic validation before plugin start.
+- `Sources/Holoscape/Services/ProjectTrackerPlugin.swift` — bundled first-party Project Tracker plugin descriptor. It declares optional channel, command, and status-adapter capabilities plus only `network:localhost` and plugin-storage permissions.
+- `Tests/HoloscapeTests/Unit/PluginManifestTests.swift` — regression coverage that core can run with zero plugins, rejects unknown manifest fields before start, prevents core storage namespace collisions, and validates the bundled Project Tracker descriptor.
+
+This slice intentionally does not start a Project Tracker client, query PT from app startup, or make any plugin required for terminal/channel launch.
 
 ## Board outcome
 
