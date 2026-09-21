@@ -38,7 +38,10 @@ Regression coverage: `NotificationServiceTests` verifies each of those paths wit
 
 ## Remaining #7172 slices
 
-1. Audit config/bootstrap failure behavior: `ConfigService.load()` currently falls back to defaults after load errors and attempts to save defaults. Decide which errors should fail loudly vs. recover.
+1. Config/bootstrap failure behavior is now partially hardened:
+   - malformed config still starts with defaults, but the corrupt file is not overwritten;
+   - config directory path conflicts record a load/save diagnostic instead of silently poisoning the in-memory cache with unsaved settings;
+   - `ConfigService.lastDiagnostic` exposes the failing operation/path/message for the setup diagnostics surface.
 2. Add a visible setup/diagnostics surface for missing/unwritable config, broker host launch failures, and notification permission state.
 3. Review macOS privacy surfaces beyond notifications: shell/agent process launch environment, crash-report storage, and any future Automation/Accessibility/Full Disk Access claims.
 4. Keep Project Tracker absent from setup: core first launch must work as a standalone terminal.
