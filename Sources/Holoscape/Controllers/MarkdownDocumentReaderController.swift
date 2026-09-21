@@ -9,9 +9,15 @@ import AppKit
 final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
     private static var openReaders: [URL: MarkdownDocumentReaderController] = [:]
 
+    struct UnsupportedExtension: Equatable {
+        let name: String
+        let reason: String
+    }
+
     private let fileURL: URL
     private var window: NSWindow?
     private weak var textView: NSTextView?
+    private var surfacedUnsupportedExtensions = false
 
     init(fileURL: URL) {
         self.fileURL = fileURL.standardizedFileURL
@@ -117,8 +123,44 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
         do {
             let markdown = try String(contentsOf: fileURL, encoding: .utf8)
             textView.textStorage?.setAttributedString(Self.render(markdown: markdown))
+            surfaceUnsupportedExtensionsIfNeeded(Self.detectUnsupportedExtensions(in: markdown))
         } catch {
             textView.string = "Unable to open \(fileURL.path):\n\n\(error.localizedDescription)"
+        }
+    }
+
+    private func surfaceUnsupportedExtensionsIfNeeded(_ extensions: [UnsupportedExtension]) {
+        guard !extensions.isEmpty, !surfacedUnsupportedExtensions else { return }
+        surfacedUnsupportedExtensions = true
+
+        let alert = NSAlert()
+        alert.messageText = "This Markdown file uses unsupported extensions"
+        alert.informativeText = extensions
+            .map { "• \($0.name): \($0.reason)" }
+            .joined(separator: "\n")
+        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Install When Available")
+
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertSecondButtonReturn {
+                    Self.surfacePluginInstallUnavailable(for: extensions, attachedTo: window)
+                }
+            }
+        } else if alert.runModal() == .alertSecondButtonReturn {
+            Self.surfacePluginInstallUnavailable(for: extensions, attachedTo: nil)
+        }
+    }
+
+    private static func surfacePluginInstallUnavailable(for extensions: [UnsupportedExtension], attachedTo window: NSWindow?) {
+        let alert = NSAlert()
+        alert.messageText = "Markdown plugins are not installed yet"
+        alert.informativeText = "Holoscape detected \(extensions.map(\.name).joined(separator: ", ")), but plugin installation is not available in this build."
+        alert.addButton(withTitle: "OK")
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
         }
     }
 
@@ -139,6 +181,49 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate {
                 range: NSRange(location: 0, length: fallback.length)
             )
             return fallback
+        }
+    }
+
+    nonisolated static func detectUnsupportedExtensions(in markdown: String) -> [UnsupportedExtension] {
+        var found: [String: UnsupportedExtension] = [:]
+
+        for language in fencedCodeLanguages(in: markdown) {
+            switch language.lowercased() {
+            case "mermaid":
+                found["mermaid"] = UnsupportedExtension(
+                    name: "Mermaid diagrams",
+                    reason: "diagram rendering requires a Markdown plugin"
+                )
+            case "math", "tex", "latex", "katex":
+                found["math"] = UnsupportedExtension(
+                    name: "Math / LaTeX",
+                    reason: "math rendering requires a Markdown plugin"
+                )
+            default:
+                continue
+            }
+        }
+
+        if markdown.range(of: #"(?is)<(iframe|script|canvas|svg)\b"#, options: .regularExpression) != nil {
+            found["embed"] = UnsupportedExtension(
+                name: "Embedded or graphical HTML",
+                reason: "interactive or graphical embeds require a Markdown plugin"
+            )
+        }
+
+        return found.values.sorted { $0.name < $1.name }
+    }
+
+    private nonisolated static func fencedCodeLanguages(in markdown: String) -> [String] {
+        let pattern = #"(?m)^\s*`{3,}\s*([A-Za-z0-9_+.-]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsRange = NSRange(markdown.startIndex..<markdown.endIndex, in: markdown)
+        return regex.matches(in: markdown, range: nsRange).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: markdown) else {
+                return nil
+            }
+            return String(markdown[range])
         }
     }
 
