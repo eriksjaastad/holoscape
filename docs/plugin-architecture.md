@@ -163,10 +163,10 @@ When this architecture moves from document to code, add deterministic tests for:
 The first implementation slice lives in:
 
 - `Sources/Holoscape/Services/PluginManifest.swift` — closed capability/permission enums, manifest decoding, and deterministic validation before plugin start.
-- `Sources/Holoscape/Services/ProjectTrackerPlugin.swift` — bundled first-party Project Tracker plugin descriptor. It declares optional channel, command, and status-adapter capabilities plus only `network:localhost` and plugin-storage permissions.
-- `Tests/HoloscapeTests/Unit/PluginManifestTests.swift` — regression coverage that core can run with zero plugins, rejects unknown manifest fields before start, prevents core storage namespace collisions, and validates the bundled Project Tracker descriptor.
+- `Sources/Holoscape/Services/ProjectTrackerPlugin.swift` — bundled first-party Project Tracker plugin descriptor plus a side-effect-free start-plan gate. It declares optional channel, command, and status-adapter capabilities plus only `network:localhost` and plugin-storage permissions; non-local endpoints require an explicit `network:host:<hostname>` manifest permission before any future client can start.
+- `Tests/HoloscapeTests/Unit/PluginManifestTests.swift` — regression coverage that core can run with zero plugins, rejects unknown manifest fields before start, prevents core storage namespace collisions, validates the bundled Project Tracker descriptor, and rejects invalid or undeclared Project Tracker endpoints without falling back to localhost.
 
-This slice intentionally does not start a Project Tracker client, query PT from app startup, or make any plugin required for terminal/channel launch.
+This slice intentionally does not start a Project Tracker client, query PT from app startup, or make any plugin required for terminal/channel launch. It only prepares an explicit runtime plan that later plugin-manager code can consume after manifest validation and user configuration.
 
 ## Board outcome
 

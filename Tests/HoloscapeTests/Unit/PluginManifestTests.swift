@@ -92,6 +92,94 @@ final class PluginManifestTests: XCTestCase {
         }
     }
 
+    func testProjectTrackerPluginCanPrepareDefaultLocalhostStartPlan() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+
+        let plan = try ProjectTrackerPlugin().prepareStart(manifest: manifest)
+
+        XCTAssertEqual(
+            plan,
+            .ready(
+                ProjectTrackerPluginRuntimePlan(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    displayName: "Project Tracker",
+                    endpoint: try XCTUnwrap(URL(string: "http://localhost:8000")),
+                    storageNamespace: "project-tracker",
+                    capabilities: [.channelProvider, .commandProvider, .statusAdapter]
+                )
+            )
+        )
+    }
+
+    func testDisabledProjectTrackerPluginDoesNotPrepareEndpointOrFallback() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let configuration = ProjectTrackerPluginConfiguration(
+            enabled: false,
+            endpoint: "not a url"
+        )
+
+        let plan = try ProjectTrackerPlugin().prepareStart(manifest: manifest, configuration: configuration)
+
+        XCTAssertEqual(plan, .disabled(pluginID: ProjectTrackerPlugin.pluginID))
+    }
+
+    func testProjectTrackerPluginRejectsRemoteEndpointWithoutDeclaredHostPermission() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let configuration = ProjectTrackerPluginConfiguration(endpoint: "http://macbook-pro:8000")
+
+        XCTAssertThrowsError(try ProjectTrackerPlugin().prepareStart(manifest: manifest, configuration: configuration)) { error in
+            XCTAssertEqual(
+                error as? ProjectTrackerPluginStartError,
+                .permissionMissing(
+                    ProjectTrackerPlugin.pluginID,
+                    "http://macbook-pro:8000",
+                    .networkHost("macbook-pro")
+                )
+            )
+        }
+    }
+
+    func testProjectTrackerPluginAllowsRemoteEndpointOnlyWithDeclaredHostPermission() throws {
+        let manifest = ProjectTrackerPlugin.manifest.withPermissions([
+            .networkLocalhost,
+            .networkHost("macbook-pro"),
+            .filesystemPluginStorage,
+        ])
+        let validated = try PluginManifestValidator().validate(manifest)
+        let configuration = ProjectTrackerPluginConfiguration(endpoint: "http://macbook-pro:8000")
+
+        let plan = try ProjectTrackerPlugin().prepareStart(manifest: validated, configuration: configuration)
+
+        guard case .ready(let runtimePlan) = plan else {
+            return XCTFail("Expected ready Project Tracker start plan")
+        }
+        XCTAssertEqual(runtimePlan.endpoint, URL(string: "http://macbook-pro:8000"))
+    }
+
+    func testProjectTrackerPluginRejectsInvalidEndpointInsteadOfFallingBackToLocalhost() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let configuration = ProjectTrackerPluginConfiguration(endpoint: "project-tracker.local")
+
+        XCTAssertThrowsError(try ProjectTrackerPlugin().prepareStart(manifest: manifest, configuration: configuration)) { error in
+            XCTAssertEqual(
+                error as? ProjectTrackerPluginStartError,
+                .invalidEndpoint("project-tracker.local")
+            )
+        }
+    }
+
+    func testProjectTrackerPluginRejectsUnsupportedEndpointScheme() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let configuration = ProjectTrackerPluginConfiguration(endpoint: "file:///tmp/project-tracker.sock")
+
+        XCTAssertThrowsError(try ProjectTrackerPlugin().prepareStart(manifest: manifest, configuration: configuration)) { error in
+            XCTAssertEqual(
+                error as? ProjectTrackerPluginStartError,
+                .unsupportedScheme("file")
+            )
+        }
+    }
+
     private func decodeManifest(_ json: String) throws -> PluginManifest {
         try JSONDecoder().decode(PluginManifest.self, from: Data(json.utf8))
     }
@@ -130,6 +218,21 @@ final class PluginManifestTests: XCTestCase {
             permissions: permissions,
             storageNamespace: storageNamespace,
             entrypoint: PluginEntrypoint(kind: .bundledSwift, bundleIdentifier: nil)
+        )
+    }
+}
+
+private extension PluginManifest {
+    func withPermissions(_ permissions: [PluginPermission]) -> PluginManifest {
+        PluginManifest(
+            id: id,
+            displayName: displayName,
+            version: version,
+            minimumHoloscapeVersion: minimumHoloscapeVersion,
+            capabilities: capabilities,
+            permissions: permissions,
+            storageNamespace: storageNamespace,
+            entrypoint: entrypoint
         )
     }
 }
