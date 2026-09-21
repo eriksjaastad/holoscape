@@ -1,11 +1,23 @@
 import Foundation
 
+struct ConfigServiceDiagnostic: Equatable, Sendable {
+    enum Operation: String, Sendable {
+        case load
+        case save
+    }
+
+    let operation: Operation
+    let configPath: String
+    let message: String
+}
+
 class ConfigService {
     private let configDir: URL
     private let configURL: URL
 
     /// In-memory cache — avoids disk reads on every load().
     private var cachedConfig: HoloscapeConfig?
+    private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
     init() {
         // Allow UI tests to isolate config in a per-test directory by setting
@@ -47,17 +59,15 @@ class ConfigService {
             decoder.dateDecodingStrategy = .iso8601
             let config = try decoder.decode(HoloscapeConfig.self, from: data)
             cachedConfig = config
+            lastDiagnostic = nil
             return config
         } catch {
-            NSLog("ConfigService: Failed to load config (\(error)). Using defaults.")
-            let defaultConfig = HoloscapeConfig.default
-            save(defaultConfig)
-            return defaultConfig
+            recordDiagnostic(operation: .load, error: error)
+            return HoloscapeConfig.default
         }
     }
 
     func save(_ config: HoloscapeConfig) {
-        cachedConfig = config
         do {
             try ensureDirectoryExists()
             let encoder = JSONEncoder()
@@ -65,17 +75,34 @@ class ConfigService {
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(config)
             try data.write(to: configURL, options: .atomic)
+            cachedConfig = config
+            lastDiagnostic = nil
         } catch {
-            NSLog("ConfigService: Failed to save config: \(error)")
+            recordDiagnostic(operation: .save, error: error)
         }
     }
 
     private func ensureDirectoryExists() throws {
-        if !FileManager.default.fileExists(atPath: configDir.path) {
-            try FileManager.default.createDirectory(
-                at: configDir,
-                withIntermediateDirectories: true
-            )
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: configDir.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
+            }
+            return
         }
+        try FileManager.default.createDirectory(
+            at: configDir,
+            withIntermediateDirectories: true
+        )
+    }
+
+    private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, error: Error) {
+        let diagnostic = ConfigServiceDiagnostic(
+            operation: operation,
+            configPath: configURL.path,
+            message: error.localizedDescription
+        )
+        lastDiagnostic = diagnostic
+        NSLog("ConfigService: \(operation.rawValue) failed for \(diagnostic.configPath): \(diagnostic.message)")
     }
 }

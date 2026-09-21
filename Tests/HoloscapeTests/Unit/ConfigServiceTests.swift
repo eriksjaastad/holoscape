@@ -47,4 +47,42 @@ final class ConfigServiceTests: XCTestCase {
         let result = try? decoder.decode(HoloscapeConfig.self, from: malformed)
         XCTAssertNil(result, "Malformed JSON should not decode successfully")
     }
+
+    func testMalformedConfigRecordsDiagnosticWithoutOverwritingFile() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        let malformed = "{ not valid json !!!"
+        try malformed.write(to: configURL, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+
+        let loaded = service.load()
+
+        XCTAssertEqual(loaded, HoloscapeConfig.default)
+        XCTAssertEqual(service.lastDiagnostic?.operation, .load)
+        XCTAssertEqual(service.lastDiagnostic?.configPath, configURL.path)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), malformed)
+    }
+
+    func testFailedSaveDoesNotPoisonLoadCacheWithUnsavedConfig() throws {
+        let tempRoot = temporaryConfigDir()
+        let configDir = tempRoot.appendingPathComponent("not-a-directory")
+        try "blocking file".write(to: configDir, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.appearance.fontFamily = "Unsaved Font"
+
+        service.save(config)
+        let loaded = service.load()
+
+        XCTAssertEqual(service.lastDiagnostic?.operation, .load)
+        XCTAssertEqual(loaded.appearance.fontFamily, HoloscapeConfig.default.appearance.fontFamily)
+    }
+
+    private func temporaryConfigDir() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ConfigServiceTests")
+            .appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
 }
