@@ -246,6 +246,75 @@ final class PluginManifestTests: XCTestCase {
         )
     }
 
+    func testPluginManagerCanStartCoreWithNoPlugins() {
+        let manager = PluginManager(registry: PluginRegistry(bundledManifests: []))
+
+        let snapshot = manager.prepareStartup()
+
+        XCTAssertEqual(snapshot.states, [])
+        XCTAssertEqual(snapshot.contributions, .empty)
+        XCTAssertEqual(snapshot.failures, [])
+    }
+
+    func testPluginManagerDisablingProjectTrackerRemovesAllContributions() {
+        let manager = PluginManager(
+            projectTrackerConfiguration: .init(enabled: false, endpoint: "not a url")
+        )
+
+        let snapshot = manager.prepareStartup()
+
+        XCTAssertEqual(snapshot.states.count, 1)
+        guard case .disabled(let disabled) = snapshot.states[0] else {
+            return XCTFail("Expected disabled Project Tracker plugin")
+        }
+        XCTAssertEqual(disabled.pluginID, ProjectTrackerPlugin.pluginID)
+        XCTAssertEqual(disabled.removedContributions, .empty)
+        XCTAssertEqual(snapshot.contributions, .empty)
+        XCTAssertEqual(snapshot.failures, [])
+    }
+
+    func testPluginManagerKeepsProjectTrackerConfigurationFailurePluginScoped() {
+        let manager = PluginManager(
+            projectTrackerConfiguration: .init(endpoint: "project-tracker.local")
+        )
+
+        let snapshot = manager.prepareStartup()
+
+        XCTAssertEqual(snapshot.contributions, .empty)
+        XCTAssertEqual(snapshot.failures.count, 1)
+        XCTAssertEqual(snapshot.failures[0].pluginID, ProjectTrackerPlugin.pluginID)
+        XCTAssertTrue(snapshot.failures[0].message.contains("endpoint is invalid"))
+    }
+
+    func testPluginManagerPublishesProjectTrackerContributionsOnlyWhenReady() throws {
+        let manager = PluginManager()
+
+        let snapshot = manager.prepareStartup()
+
+        XCTAssertEqual(snapshot.failures, [])
+        XCTAssertEqual(snapshot.contributions.launcherProfiles, [
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: "project-tracker-message-board",
+                displayName: "Project Tracker Message Board"
+            ),
+        ])
+        XCTAssertEqual(snapshot.contributions.commandDescriptors, [
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: "project-tracker-open-board",
+                displayName: "Open Project Tracker Board"
+            ),
+        ])
+        XCTAssertEqual(snapshot.contributions.statusAdapters, [
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: "project-tracker-task-status",
+                displayName: "Project Tracker Task Status"
+            ),
+        ])
+    }
+
     private func decodeManifest(_ json: String) throws -> PluginManifest {
         try JSONDecoder().decode(PluginManifest.self, from: Data(json.utf8))
     }
