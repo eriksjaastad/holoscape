@@ -114,11 +114,22 @@ final class SetupDiagnosticsWindowController: NSWindowController {
         recovery.textColor = .secondaryLabelColor
         recovery.isHidden = item.recovery == nil
 
+        let settingsButton: NSButton? = item.settingsURL.map { url in
+            let button = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettingsPane(_:)))
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.bezelStyle = .rounded
+            button.toolTip = url.absoluteString
+            return button
+        }
+
         view.addSubview(title)
         view.addSubview(detail)
         view.addSubview(recovery)
+        if let settingsButton {
+            view.addSubview(settingsButton)
+        }
 
-        NSLayoutConstraint.activate([
+        var constraints = [
             title.topAnchor.constraint(equalTo: view.topAnchor),
             title.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             title.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -130,13 +141,32 @@ final class SetupDiagnosticsWindowController: NSWindowController {
             recovery.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 4),
             recovery.leadingAnchor.constraint(equalTo: detail.leadingAnchor),
             recovery.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            recovery.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        ]
+
+        if let settingsButton {
+            constraints.append(contentsOf: [
+                settingsButton.topAnchor.constraint(equalTo: recovery.bottomAnchor, constant: 8),
+                settingsButton.leadingAnchor.constraint(equalTo: recovery.leadingAnchor),
+                settingsButton.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        } else {
+            constraints.append(recovery.bottomAnchor.constraint(equalTo: view.bottomAnchor))
+        }
+
+        NSLayoutConstraint.activate(constraints)
         return view
     }
 
     @objc private func refreshButtonPressed() {
         refresh()
+    }
+
+    @objc private func openSystemSettingsPane(_ sender: NSButton) {
+        guard let urlString = sender.toolTip, let url = URL(string: urlString) else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     private func icon(for severity: SetupDiagnosticItem.Severity) -> String {

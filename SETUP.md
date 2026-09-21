@@ -2,7 +2,7 @@
 
 Holoscape should start as a normal terminal before it asks for any macOS trust. Use this guide when installing on a fresh Mac or when Setup Diagnostics reports a warning.
 
-Open **Holoscape > Setup Diagnostics…** first. It checks config/bootstrap errors, broker-host launch failures, notification authorization, Accessibility trust, Automation guidance, and crash diagnostics readability without forcing broad permission prompts.
+Open **Holoscape > Setup Diagnostics…** first. It checks config/bootstrap errors, broker-host launch failures, notification authorization, Accessibility trust, Automation guidance, and crash diagnostics readability without forcing broad permission prompts. Actionable permission rows include an **Open System Settings** button for the matching macOS pane.
 
 ## Recommended first run
 

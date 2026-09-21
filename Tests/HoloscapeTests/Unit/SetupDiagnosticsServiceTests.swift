@@ -33,11 +33,13 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
             item.title == "Notifications"
                 && item.severity == .warning
                 && item.detail.contains("denied")
+                && item.settingsURL == SystemSettingsURL.notifications
         })
         XCTAssertTrue(snapshot.items.contains { item in
             item.title == "Accessibility"
                 && item.severity == .warning
                 && item.recovery?.contains("Privacy & Security > Accessibility") == true
+                && item.settingsURL == SystemSettingsURL.accessibility
         })
     }
 
@@ -98,6 +100,32 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
                 && item.severity == .warning
                 && item.detail.contains("DiagnosticReports")
                 && item.recovery?.contains("Full Disk Access") == true
+                && item.settingsURL == SystemSettingsURL.fullDiskAccess
+        })
+    }
+
+    func testSnapshotIncludesSystemSettingsLinksForActionablePermissionRows() {
+        let configService = ConfigService(configDir: temporaryConfigDir())
+        let service = SetupDiagnosticsService(
+            configService: configService,
+            accessibilityTrustProvider: { false },
+            diagnosticsDirectoryReadableProvider: { false },
+            brokerFailureProvider: { nil }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: .notDetermined)
+
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Notifications" && item.settingsURL == SystemSettingsURL.notifications
+        })
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Accessibility" && item.settingsURL == SystemSettingsURL.accessibility
+        })
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Automation" && item.settingsURL == SystemSettingsURL.automation
+        })
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Crash diagnostics" && item.settingsURL == SystemSettingsURL.fullDiskAccess
         })
     }
 
