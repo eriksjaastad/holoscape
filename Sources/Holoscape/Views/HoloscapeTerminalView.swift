@@ -48,6 +48,13 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
         super.send(source: source, data: data)
     }
 
+    open override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        if MarkdownDocumentReaderController.openIfMarkdown(link: link) {
+            return
+        }
+        super.requestOpenLink(source: source, link: link, params: params)
+    }
+
     func setOutputHandler(_ handler: (() -> Void)?) {
         onOutput = handler
     }

@@ -228,6 +228,9 @@
 		9A4E2739E4A0F2248AAAD1C0 /* BrokerSessionHostProcessTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D95C1CA298D00679F1E5F9C /* BrokerSessionHostProcessTransport.swift */; };
 		9AF6CDB446EF898C9309EB01 /* FailingBrokerSessionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9B689A9388B799F13629FF6 /* FailingBrokerSessionRuntime.swift */; };
 		9B56CDB0DEFD6870CABE38E0 /* ReaderModeSkinningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00CA83AB9B5E4718B1344C6B /* ReaderModeSkinningTests.swift */; };
+		9C4D1A2B3E5F67890ABCDEF1 /* MarkdownDocumentReaderController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1B3C4D5E6F7890ABCDEF12 /* MarkdownDocumentReaderController.swift */; };
+		9C4D1A2B3E5F67890ABCDEF2 /* MarkdownDocumentReaderControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1B3C4D5E6F7890ABCDEF13 /* MarkdownDocumentReaderControllerTests.swift */; };
+		9C4D1A2B3E5F67890ABCDEF3 /* TerminalImplicitLinkIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1B3C4D5E6F7890ABCDEF14 /* TerminalImplicitLinkIntegrationTests.swift */; };
 		9B67B8BD88F25CBC282ADDCE /* SpvBuilder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CAECB886750F25287643D706 /* SpvBuilder.cpp */; };
 		9B9539C5DC9950DEC39CFCE1 /* ProjectDiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C798BE8C19ECFBB855C7238C /* ProjectDiscoveryService.swift */; };
 		9C0E5F23DBE8B98C41DAF409 /* ScreenVesselView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB53D08315B5A404D58B1706 /* ScreenVesselView.swift */; };
@@ -453,6 +456,9 @@
 /* Begin PBXFileReference section */
 		002AE5CE0EFAA69507CA621E /* ShaderCompilerBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShaderCompilerBridgeTests.swift; sourceTree = "<group>"; };
 		00CA83AB9B5E4718B1344C6B /* ReaderModeSkinningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModeSkinningTests.swift; sourceTree = "<group>"; };
+		2A1B3C4D5E6F7890ABCDEF12 /* MarkdownDocumentReaderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownDocumentReaderController.swift; sourceTree = "<group>"; };
+		2A1B3C4D5E6F7890ABCDEF13 /* MarkdownDocumentReaderControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownDocumentReaderControllerTests.swift; sourceTree = "<group>"; };
+		2A1B3C4D5E6F7890ABCDEF14 /* TerminalImplicitLinkIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalImplicitLinkIntegrationTests.swift; sourceTree = "<group>"; };
 		00D8B9690B7FF7E7288641B8 /* TabBarViewSkinContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarViewSkinContextTests.swift; sourceTree = "<group>"; };
 		0137B08B4FEA0EF5B1DE1EBF /* PluginCommandRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginCommandRouter.swift; sourceTree = "<group>"; };
 		01AD9E035A3029E342C898D3 /* HoloscapeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HoloscapeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -972,6 +978,7 @@
 				3361DB7C236D881B834951BF /* LEDArrayLayerRendererTests.swift */,
 				FD447F0149A59874876017C8 /* MainWindowControllerChromeBranchTests.swift */,
 				6ADB0D5324FBEF0A4D28C2C3 /* MainWindowControllerVesselLayoutTests.swift */,
+				2A1B3C4D5E6F7890ABCDEF13 /* MarkdownDocumentReaderControllerTests.swift */,
 				C015893B300EEBED289CD632 /* MCPChannelControllerTests.swift */,
 				E4FB92C061D0E992EECEB87F /* ModelCodableTests.swift */,
 				C63F1DE9FBEF4A9E3436F96D /* NativePTYBrokerSessionRuntimeTests.swift */,
@@ -1013,6 +1020,7 @@
 				20288CBBB1F01D28B2899E4D /* StaleBrokerRelaunchTests.swift */,
 				F683FBFB863CF539E20D02A5 /* SurfaceKeyTests.swift */,
 				00D8B9690B7FF7E7288641B8 /* TabBarViewSkinContextTests.swift */,
+				2A1B3C4D5E6F7890ABCDEF14 /* TerminalImplicitLinkIntegrationTests.swift */,
 				47CDAB7A9A758A7B659DF199 /* TopTabBarSidebarMutualExclusionTests.swift */,
 				23B3352076C297C759A35958 /* V2ModelTests.swift */,
 				9BAE344862C20BBFA89D2EB1 /* V2UtilityTests.swift */,
@@ -1312,6 +1320,7 @@
 				C123AA0EBEFD4A61BEC954A2 /* MainWindowController.swift */,
 				B297D1A513E44F127685608B /* MainWindowController+ChromeMode.swift */,
 				AE055B420E194CE8ED4F8FF0 /* MCPChannelController.swift */,
+				2A1B3C4D5E6F7890ABCDEF12 /* MarkdownDocumentReaderController.swift */,
 				B2D4682E27FDFE715E676E8A /* ReaderModeController.swift */,
 				94424B40B552602197CB2AE4 /* ShapedWindowController.swift */,
 				39FCCFC8FAFE86233981F3ED /* ShellChannelController.swift */,
@@ -1687,6 +1696,7 @@
 				05CCA2E811B00EFAC0E025D2 /* MCPChannelControllerTests.swift in Sources */,
 				521172A2D6B63CA93C076205 /* MainWindowControllerChromeBranchTests.swift in Sources */,
 				8EDB0DFCC370969499DED5DC /* MainWindowControllerVesselLayoutTests.swift in Sources */,
+				9C4D1A2B3E5F67890ABCDEF2 /* MarkdownDocumentReaderControllerTests.swift in Sources */,
 				46446E0CAADEFA12D6A98F3B /* MercuryDeckIntegrationTests.swift in Sources */,
 				79AB98FD0B75D80E5062EE72 /* MetalCompositorTests.swift in Sources */,
 				C49967C1540C241C2DAB517F /* MockChannelController.swift in Sources */,
@@ -1733,6 +1743,7 @@
 				74404A9E624EC1430E130A1F /* StaleBrokerRelaunchTests.swift in Sources */,
 				3481BF1C233F0CE3FC7AEE30 /* SurfaceKeyTests.swift in Sources */,
 				D78C1E70228171EFDEF80700 /* TabBarViewSkinContextTests.swift in Sources */,
+				9C4D1A2B3E5F67890ABCDEF3 /* TerminalImplicitLinkIntegrationTests.swift in Sources */,
 				36024E93C6A5216A48018905 /* TopTabBarSidebarMutualExclusionTests.swift in Sources */,
 				77F8E5A15945F5A6F752C8F9 /* V2ModelTests.swift in Sources */,
 				A7F7292E50D000DD8FE4E277 /* V2UtilityTests.swift in Sources */,
@@ -1909,6 +1920,7 @@
 				EB10131C24B3FC7ECB9DB37F /* MCPClient.swift in Sources */,
 				AEA8C94A4F2EAB769CB9A53C /* MainWindowController+ChromeMode.swift in Sources */,
 				7FC796516F03F48DD39FD8F1 /* MainWindowController.swift in Sources */,
+				9C4D1A2B3E5F67890ABCDEF1 /* MarkdownDocumentReaderController.swift in Sources */,
 				5AAC3EB4E333553E392FE286 /* MetalCompositor.swift in Sources */,
 				6CED863476C0417D96C286D3 /* NativePTYBrokerSessionRuntime.swift in Sources */,
 				6ED0BFF7EA866C4BFB5741D9 /* NinepatchSidecar.swift in Sources */,
