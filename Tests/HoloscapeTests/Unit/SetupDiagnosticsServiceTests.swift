@@ -14,6 +14,7 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         let service = SetupDiagnosticsService(
             configService: configService,
             accessibilityTrustProvider: { false },
+            diagnosticsDirectoryReadableProvider: { true },
             brokerFailureProvider: { nil },
             now: { Date(timeIntervalSince1970: 123) }
         )
@@ -51,6 +52,7 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         let service = SetupDiagnosticsService(
             configService: configService,
             accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { true },
             brokerFailureProvider: { brokerFailure }
         )
 
@@ -78,6 +80,25 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
 
         BrokerHostLaunchDiagnostics.clearLaunchFailure()
         XCTAssertNil(BrokerHostLaunchDiagnostics.lastLaunchFailure())
+    }
+
+    func testSnapshotWarnsWhenCrashDiagnosticsDirectoryIsUnreadable() {
+        let configService = ConfigService(configDir: temporaryConfigDir())
+        let service = SetupDiagnosticsService(
+            configService: configService,
+            accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { false },
+            brokerFailureProvider: { nil }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: .authorized)
+
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Crash diagnostics"
+                && item.severity == .warning
+                && item.detail.contains("DiagnosticReports")
+                && item.recovery?.contains("Full Disk Access") == true
+        })
     }
 
     private func temporaryConfigDir() -> URL {

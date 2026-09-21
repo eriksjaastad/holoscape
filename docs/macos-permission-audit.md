@@ -11,7 +11,7 @@ Scope: Holoscape launch and normal terminal use. This audit lists code paths tha
 | Network volume working directories | Confirmed TCC prompt | Restored `/Volumes/...` tabs no longer auto-launch fresh processes without a broker session | Keep explicit reconnect user-initiated; include in setup guide. |
 | Accessibility | Possible TCC prompt when workflows need UI control | Diagnostics read trust state with `AXIsProcessTrusted()` only | Keep as diagnostic/setup guidance until a feature actually needs it. |
 | Automation / Apple Events | Possible TCC prompt if Holoscape controls System Events or other apps | No direct Apple Event sender found in current source; diagnostics warn because planned workflows may need it | Do not request proactively; document per-target Automation grant flow. |
-| Crash logs | Possible Full Disk Access edge case, no prompt expected for own user logs | Reads `~/Library/Logs/DiagnosticReports` after launch to find Holoscape crashes | Fail silent today; setup diagnostics could surface unreadable diagnostics directory later. |
+| Crash logs | Possible Full Disk Access edge case, no prompt expected for own user logs | Reads `~/Library/Logs/DiagnosticReports` after launch to find Holoscape crashes | Setup Diagnostics now warns if the diagnostics directory is unreadable; Full Disk Access stays optional and explicit. |
 | Shell/agent subprocess cwd | Inherits file access risk of selected cwd | Local broker sets `Process.currentDirectoryURL` from saved/profile directory | Treat user-selected protected locations as user-initiated; avoid auto-starting risky saved paths. |
 | Project discovery SSH | No macOS privacy prompt expected | Runs `/usr/bin/ssh` to remote host and `ls` configured root | Network/auth failure only; no TCC hardening needed. |
 | Skin/config/scrollback storage | No prompt expected when under app-owned user paths | Reads/writes `~/.holoscape`, user caches, bundled resources | Keep user-installed skin paths under `~/.holoscape/skins`; avoid arbitrary recursive scans. |
@@ -118,8 +118,13 @@ Prompt risk:
 - Usually readable for the current user; may fail under stricter privacy settings.
 - Current scanner returns no crashes if the directory cannot be listed/read.
 
-Hardening candidate:
-- Add a Setup Diagnostics item if the diagnostics directory is unreadable, but do not request Full Disk Access by default.
+Current behavior:
+- Setup Diagnostics reports whether `~/Library/Logs/DiagnosticReports` is readable.
+- If unreadable, diagnostics warns that recent-crash detection may miss reports and points to Full Disk Access as an explicit opt-in only.
+
+Hardening stance:
+- Do not request Full Disk Access by default.
+- Keep Holoscape usable without crash-log access.
 
 ### Remote project discovery
 
@@ -146,7 +151,7 @@ The audit did not find current production use of:
 
 ## Follow-up recommendations
 
-1. Keep #5881 focused on a user-facing setup guide/wizard using this inventory.
+1. Keep #5881 focused on the user-facing setup guide/wizard using this inventory.
 2. Do not add broad permission prompts at launch. Prefer diagnostics plus user-initiated actions.
 3. If future features add Apple Events, file pickers, screen recording, or security-scoped bookmarks, update this audit in the same PR as the feature.
-4. Consider a small diagnostics addition for unreadable crash diagnostics only if crash-reporting dogfood shows silent misses.
+4. Add public-release screenshots to `SETUP.md` after the supported macOS version is fixed.

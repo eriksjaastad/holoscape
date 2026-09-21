@@ -36,12 +36,15 @@ This slice changes notification authorization to be lazy:
 
 Regression coverage: `NotificationServiceTests` verifies each of those paths with an injected notification-center client.
 
-## Remaining #7172 slices
+## #7172 close-out
 
-1. Config/bootstrap failure behavior is now partially hardened:
+The first-launch/setup slice now covers:
+
+1. Config/bootstrap failure behavior:
    - malformed config still starts with defaults, but the corrupt file is not overwritten;
    - config directory path conflicts record a load/save diagnostic instead of silently poisoning the in-memory cache with unsaved settings;
    - `ConfigService.lastDiagnostic` exposes the failing operation/path/message for the setup diagnostics surface.
-2. Add a visible setup/diagnostics surface for missing/unwritable config, broker host launch failures, and notification permission state.
-3. Review macOS privacy surfaces beyond notifications: shell/agent process launch environment, crash-report storage, and any future Automation/Accessibility/Full Disk Access claims.
-4. Keep Project Tracker absent from setup: core first launch must work as a standalone terminal.
+2. A visible **Holoscape > Setup Diagnostics…** surface for config failures, broker host launch failures, notification permission state, Accessibility trust, Automation guidance, and crash diagnostics readability.
+3. A macOS privacy audit at `docs/macos-permission-audit.md`, including shell/agent working directories, network volume restore behavior, crash-report storage, and current non-use of broader TCC APIs.
+4. A first-launch setup guide at `SETUP.md` with exact System Settings paths and the policy that broad permissions stay optional/user-initiated.
+5. Project Tracker remains absent from setup: core first launch works as a standalone terminal.
