@@ -1,0 +1,216 @@
+import AppKit
+import ApplicationServices
+import Foundation
+import UserNotifications
+
+struct SetupDiagnosticItem: Equatable, Sendable {
+    enum Severity: String, Sendable {
+        case ok
+        case warning
+        case failure
+    }
+
+    let title: String
+    let severity: Severity
+    let detail: String
+    let recovery: String?
+}
+
+struct SetupDiagnosticsSnapshot: Equatable, Sendable {
+    let capturedAt: Date
+    let items: [SetupDiagnosticItem]
+
+    var hasProblems: Bool {
+        items.contains { $0.severity != .ok }
+    }
+}
+
+final class BrokerHostLaunchDiagnosticStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failure: SetupDiagnosticItem?
+
+    func recordLaunchFailure(executablePath: String, message: String) {
+        let item = SetupDiagnosticItem(
+            title: "Broker host launch",
+            severity: .failure,
+            detail: "Could not launch broker host at \(executablePath): \(message)",
+            recovery: "Rebuild Holoscape and verify the app bundle contains the broker host helper. Broker-backed terminal sessions intentionally do not fall back in-process."
+        )
+        lock.lock()
+        failure = item
+        lock.unlock()
+    }
+
+    func clearLaunchFailure() {
+        lock.lock()
+        failure = nil
+        lock.unlock()
+    }
+
+    func lastLaunchFailure() -> SetupDiagnosticItem? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+}
+
+enum BrokerHostLaunchDiagnostics {
+    private static let store = BrokerHostLaunchDiagnosticStore()
+
+    static func recordLaunchFailure(executablePath: String, message: String) {
+        store.recordLaunchFailure(executablePath: executablePath, message: message)
+    }
+
+    static func clearLaunchFailure() {
+        store.clearLaunchFailure()
+    }
+
+    static func lastLaunchFailure() -> SetupDiagnosticItem? {
+        store.lastLaunchFailure()
+    }
+}
+
+typealias NotificationAuthorizationStatusProvider = (@escaping @Sendable (UNAuthorizationStatus) -> Void) -> Void
+
+@MainActor
+final class SetupDiagnosticsService {
+    private let configService: ConfigService
+    private let notificationSettingsProvider: NotificationAuthorizationStatusProvider
+    private let accessibilityTrustProvider: () -> Bool
+    private let brokerFailureProvider: () -> SetupDiagnosticItem?
+    private let now: () -> Date
+
+    init(
+        configService: ConfigService,
+        notificationSettingsProvider: @escaping NotificationAuthorizationStatusProvider = { completion in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                completion(settings.authorizationStatus)
+            }
+        },
+        accessibilityTrustProvider: @escaping () -> Bool = { AXIsProcessTrusted() },
+        brokerFailureProvider: @escaping () -> SetupDiagnosticItem? = { BrokerHostLaunchDiagnostics.lastLaunchFailure() },
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.configService = configService
+        self.notificationSettingsProvider = notificationSettingsProvider
+        self.accessibilityTrustProvider = accessibilityTrustProvider
+        self.brokerFailureProvider = brokerFailureProvider
+        self.now = now
+    }
+
+    func snapshot(completion: @escaping @Sendable (SetupDiagnosticsSnapshot) -> Void) {
+        notificationSettingsProvider { [weak self] notificationStatus in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                completion(self.makeSnapshot(notificationStatus: notificationStatus))
+            }
+        }
+    }
+
+    func makeSnapshot(notificationStatus: UNAuthorizationStatus) -> SetupDiagnosticsSnapshot {
+        var items: [SetupDiagnosticItem] = []
+        items.append(configDiagnosticItem())
+        if let brokerFailure = brokerFailureProvider() {
+            items.append(brokerFailure)
+        } else {
+            items.append(SetupDiagnosticItem(
+                title: "Broker host launch",
+                severity: .ok,
+                detail: "No broker host launch failure recorded in this run.",
+                recovery: nil
+            ))
+        }
+        items.append(notificationDiagnosticItem(status: notificationStatus))
+        items.append(accessibilityDiagnosticItem(isTrusted: accessibilityTrustProvider()))
+        items.append(automationDiagnosticItem())
+        return SetupDiagnosticsSnapshot(capturedAt: now(), items: items)
+    }
+
+    private func configDiagnosticItem() -> SetupDiagnosticItem {
+        guard let diagnostic = configService.lastDiagnostic else {
+            return SetupDiagnosticItem(
+                title: "Config file",
+                severity: .ok,
+                detail: "Config loaded/saved without recorded errors.",
+                recovery: nil
+            )
+        }
+        let verb = diagnostic.operation.rawValue
+        return SetupDiagnosticItem(
+            title: "Config file",
+            severity: .failure,
+            detail: "Config \(verb) failed at \(diagnostic.configPath): \(diagnostic.message)",
+            recovery: "Fix permissions or repair the JSON file. Holoscape is using safe defaults and does not overwrite malformed config automatically."
+        )
+    }
+
+    private func notificationDiagnosticItem(status: UNAuthorizationStatus) -> SetupDiagnosticItem {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            return SetupDiagnosticItem(
+                title: "Notifications",
+                severity: .ok,
+                detail: "macOS notification authorization is \(label(for: status)).",
+                recovery: nil
+            )
+        case .denied:
+            return SetupDiagnosticItem(
+                title: "Notifications",
+                severity: .warning,
+                detail: "macOS notification authorization is denied.",
+                recovery: "Open System Settings > Notifications > Holoscape and enable notifications if you want off-screen channel alerts."
+            )
+        case .notDetermined:
+            return SetupDiagnosticItem(
+                title: "Notifications",
+                severity: .warning,
+                detail: "macOS notification authorization has not been requested yet. Holoscape defers this prompt until the first eligible background notification.",
+                recovery: "No action is required unless you want to pre-grant notifications in System Settings > Notifications."
+            )
+        @unknown default:
+            return SetupDiagnosticItem(
+                title: "Notifications",
+                severity: .warning,
+                detail: "macOS returned an unknown notification authorization state.",
+                recovery: "Check System Settings > Notifications > Holoscape."
+            )
+        }
+    }
+
+    private func accessibilityDiagnosticItem(isTrusted: Bool) -> SetupDiagnosticItem {
+        if isTrusted {
+            return SetupDiagnosticItem(
+                title: "Accessibility",
+                severity: .ok,
+                detail: "Holoscape is trusted for Accessibility automation.",
+                recovery: nil
+            )
+        }
+        return SetupDiagnosticItem(
+            title: "Accessibility",
+            severity: .warning,
+            detail: "Holoscape is not currently trusted for Accessibility automation.",
+            recovery: "If agent or setup workflows need UI control, enable Holoscape in System Settings > Privacy & Security > Accessibility."
+        )
+    }
+
+    private func automationDiagnosticItem() -> SetupDiagnosticItem {
+        SetupDiagnosticItem(
+            title: "Automation",
+            severity: .warning,
+            detail: "macOS tracks Automation permission per target app and may prompt when Holoscape first controls System Events or another app.",
+            recovery: "Review System Settings > Privacy & Security > Automation after first use; enable the specific target apps Holoscape is allowed to control."
+        )
+    }
+
+    private func label(for status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "not determined"
+        case .denied: return "denied"
+        case .authorized: return "authorized"
+        case .provisional: return "provisional"
+        case .ephemeral: return "ephemeral"
+        @unknown default: return "unknown"
+        }
+    }
+}

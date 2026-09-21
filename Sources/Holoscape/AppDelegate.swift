@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var notificationService: NotificationService?
     var channelManagerRef: ChannelManager?
     private var settingsWindowController: AppearanceSettingsWindowController?
+    private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var apiServer: HoloscapeAPIServer?
 
     private var isUITesting: Bool {
@@ -194,6 +195,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     @objc func showBugReportDialog() {
         windowController?.showBugReportDialog()
+    }
+
+    @objc func showSetupDiagnostics() {
+        let controller = SetupDiagnosticsWindowController(
+            diagnosticsService: SetupDiagnosticsService(configService: configService)
+        )
+        controller.showWindow(nil)
+        controller.window?.center()
+        setupDiagnosticsWindowController = controller
     }
 
     // MARK: - Private
@@ -452,6 +462,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         appMenu.addItem(settingsItem)
+        let diagnosticsItem = NSMenuItem(title: "Setup Diagnostics…", action: #selector(showSetupDiagnostics), keyEquivalent: "")
+        diagnosticsItem.target = self
+        appMenu.addItem(diagnosticsItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Holoscape", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
