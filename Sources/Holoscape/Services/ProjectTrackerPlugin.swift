@@ -23,6 +23,7 @@ struct ProjectTrackerPlugin: Sendable {
     static let pluginID = "com.holoscape.project-tracker"
     static let defaultEndpoint = "http://localhost:8000"
     static let openBoardCommandID = "project-tracker-open-board"
+    static let taskStatusAdapterID = "project-tracker-task-status"
 
     static let manifest = PluginManifest(
         id: pluginID,
@@ -285,6 +286,41 @@ struct ProjectTrackerPluginRuntime: Sendable {
             )
         }
     }
+
+    func statusAdapterSnapshot() async -> PluginSupplementalStatus {
+        switch await health() {
+        case .available(let available):
+            return PluginSupplementalStatus(
+                pluginID: available.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: "Project Tracker available",
+                detail: "Healthy at \(available.healthURL.absoluteString)",
+                severity: .info
+            )
+        case .unavailable(let unavailable):
+            return PluginSupplementalStatus(
+                pluginID: unavailable.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: "Project Tracker unavailable",
+                detail: unavailable.reason.statusDetail(healthURL: unavailable.healthURL),
+                severity: .warning
+            )
+        }
+    }
+}
+
+struct PluginSupplementalStatus: Equatable, Sendable {
+    let pluginID: String
+    let adapterID: String
+    let label: String
+    let detail: String
+    let severity: PluginSupplementalStatusSeverity
+}
+
+enum PluginSupplementalStatusSeverity: String, Equatable, Sendable {
+    case info
+    case warning
+    case error
 }
 
 enum ProjectTrackerPluginHealth: Equatable, Sendable {
@@ -308,6 +344,15 @@ struct ProjectTrackerPluginUnavailableHealth: Equatable, Sendable {
 enum ProjectTrackerPluginUnavailableReason: Equatable, Sendable {
     case httpStatus(Int)
     case transport(String)
+
+    func statusDetail(healthURL: URL) -> String {
+        switch self {
+        case .httpStatus(let statusCode):
+            return "HTTP \(statusCode) from \(healthURL.absoluteString)"
+        case .transport(let message):
+            return "Transport failure from \(healthURL.absoluteString): \(message)"
+        }
+    }
 }
 
 enum ProjectTrackerPluginRuntimeError: Error, Equatable, CustomStringConvertible {

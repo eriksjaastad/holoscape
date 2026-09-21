@@ -29,11 +29,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var persistentState: PersistentChannelState {
-        adapterPersistentState ?? PersistentChannelState.fromRuntimeState(
+        let runtimeState = PersistentChannelState.fromRuntimeState(
             state,
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
             recoveryAction: recoveryAction
         )
+        guard let adapterPersistentState else { return runtimeState }
+        return adapterPersistentState.kind.displayPriority >= runtimeState.kind.displayPriority
+            ? adapterPersistentState
+            : runtimeState
     }
 
     var notificationDirectoryPath: String? {
@@ -263,6 +267,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {
+        guard state.kind.displayPriority >= persistentState.kind.displayPriority else {
+            return
+        }
         adapterPersistentState = state
         delegate?.channelStateDidChange(self, to: self.state)
     }

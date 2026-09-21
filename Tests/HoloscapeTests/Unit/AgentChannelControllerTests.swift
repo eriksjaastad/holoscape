@@ -171,6 +171,39 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertNotEqual(controller.persistentState.source, .agentAdapter)
     }
 
+    func testPluginStatusCannotOverwriteHigherPriorityAgentAdapterState() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        let awaitingApproval = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            reason: "codex awaiting approval"
+        )
+        controller.applyPersistentState(awaitingApproval)
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .ready,
+                source: .plugin,
+                reason: "Project Tracker healthy"
+            )
+        )
+
+        XCTAssertEqual(
+            controller.persistentState,
+            awaitingApproval,
+            "Plugin status is supplemental and must not hide higher-priority agent/operator states"
+        )
+    }
+
     func testAgentActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentChannelControllerTests-")

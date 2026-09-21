@@ -177,7 +177,7 @@ struct PluginContributions: Equatable, Sendable {
         statusAdapters = [
             .init(
                 pluginID: plan.pluginID,
-                id: "project-tracker-task-status",
+                id: ProjectTrackerPlugin.taskStatusAdapterID,
                 displayName: "Project Tracker Task Status"
             ),
         ]
