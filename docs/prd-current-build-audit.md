@@ -1,6 +1,6 @@
 # PRD vs Current Build Audit
 
-Card: #5866 — Re-audit PRD vs. current Holoscape build: what got lost in Mac Mini development
+Cards: #5866 — Re-audit PRD vs. current Holoscape build; #5876 — reconcile undocumented shipped features from the April audit.
 
 ## Summary
 
@@ -153,12 +153,17 @@ Gaps to keep visible in PRD or cards:
 
 ## Card recommendations
 
-Document in PRD now:
+Documented in PRD by this audit stream:
 - Session broker substrate.
 - Persistent tab state/source priority.
 - Disk-backed scrollback persistence.
 - Setup diagnostics and permissions policy.
 - Local HTTP API and HoloscapeMCP tool server.
+- Local `/notify` hook behavior for agent event notifications.
+- `holoscape://` URL-scheme channel opener.
+- Native Edit menu behavior.
+- Font settings and appearance persistence.
+- Directory persistence/restoration expectations.
 - Removable plugin seam and optional Project Tracker plugin.
 
 Create or keep separate cards:

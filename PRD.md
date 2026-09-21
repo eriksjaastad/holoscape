@@ -100,6 +100,11 @@ Known correctness gaps remain tracked separately against iTerm-quality behavior:
 - Enter to send/execute
 - Up/Down arrow for command history (per channel)
 
+### Standard macOS Menus
+- Holoscape exposes native macOS app, file, edit, view, window, and help menus rather than relying only on custom chrome
+- The Edit menu routes Cut/Copy/Paste/Select All through the AppKit responder chain so focused text controls behave like normal macOS fields
+- Settings and Setup Diagnostics are app-menu surfaces; bug reporting lives under Help with a keyboard shortcut
+
 ### Agent Integration
 - Spawn `claude` CLI process in a PTY with environment isolation
 - Detect role from CLAUDE.md in working directory OR user-assigned label
@@ -147,6 +152,8 @@ Claude Code
 
 **Notification hook events:** `permission_prompt`, `idle_prompt`, `auth_success`, and `elicitation_dialog`.
 
+**Remote notification hook behavior:** `POST /notify` is the local hook endpoint used by agent/CLI integrations. It matches incoming `cwd` values to shell or agent channels, maps supported events into persistent tab state through agent status adapters, refreshes tab/sidebar state, and may create a macOS notification for permission/idle events. This hook is local automation glue; it is not a cloud notification service.
+
 **Testing role:** UI tests should prefer this API for channel setup, switching, output inspection, and notification-state setup when direct XCUI typing into terminal controls would be brittle. XCUI should still verify visible UI behavior; the API is the reliable harness for setup and assertions.
 
 Keep this separate from future MCP-client channels: HoloscapeMCP is external-tool control of Holoscape; CEO/MCP channels are Holoscape connecting to another MCP endpoint.
@@ -156,6 +163,12 @@ Keep this separate from future MCP-client channels: HoloscapeMCP is external-too
 - Diagnostics cover config load/save failures, broker host launch failures, notification authorization, Accessibility trust, Automation guidance, crash-log readability, and plugin startup health
 - Notification authorization is deferred until the first eligible background notification rather than requested unconditionally on first launch
 - System Settings deep links are provided where macOS exposes stable panes; Holoscape should diagnose clearly when macOS requires manual user action
+
+### holoscape:// URL Scheme
+- Holoscape accepts URL-scheme requests to open shell or agent channels from outside the app
+- Supported request fields map to channel type, directory, label, and optional command text
+- Shell commands supplied by URL are submitted explicitly with a trailing newline after the shell initializes
+- Unknown channel types are rejected with logging; URL handling must not silently create a different channel type
 
 ### Plugin Architecture
 - Core terminal behavior must not depend on plugins being present
@@ -248,6 +261,8 @@ A session profile defines everything needed to open a connection in one click:
 | user | SSH username — only for SSH connections |
 | directory | Working directory on the target machine |
 | command | What to run: `claude` or `/bin/zsh` |
+
+Open channel metadata persists the working directory for shell/agent/session-profile-backed channels. Restored tabs should preserve directory-derived labels and working-directory truth where the broker/session record can verify the process; unverifiable or unsafe restore targets are marked stale or require explicit reconnect rather than being relaunched silently.
 
 **Preconfigured sessions (from config):**
 
@@ -540,6 +555,7 @@ Fully customizable window chrome and UI elements via skin packages.
 - Crash detection and one-click reporting on launch
 - Background color, transparency, font settings
 - Channel state persistence across restarts
+- Native Edit menu for standard Cut/Copy/Paste/Select All behavior
 
 **V1.5 — SHIPPED:**
 - Session launcher with profile-driven combobox opener
@@ -564,6 +580,8 @@ Fully customizable window chrome and UI elements via skin packages.
 - Disk-backed scrollback replay with bounded retention for broker sessions
 - Setup Diagnostics window for config, broker host, notification, Accessibility, Automation, crash-log, and plugin startup health
 - Local HTTP API server on port `7865` and `HoloscapeMCP` stdio tool server for Claude Code automation/test harnesses
+- Local `/notify` hook for agent events that maps permission/idle/auth/dialog notifications into tab state and optional desktop notifications
+- `holoscape://` URL-scheme channel opener for explicit shell/agent launch requests
 - Removable plugin seam with closed manifests, permissions, namespaced storage, command routing, and optional first-party Project Tracker plugin
 - Split panes and tab pinning are implemented surfaces, not future-only roadmap items
 
