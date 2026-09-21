@@ -246,6 +246,23 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
 
         var index = 0
         while index < lines.count {
+            if let language = codeFenceLanguage(from: lines[index]) {
+                flushMarkdownBuffer()
+                var codeLines: [String] = []
+                index += 1
+                while index < lines.count, !isCodeFenceClose(lines[index]) {
+                    codeLines.append(lines[index])
+                    index += 1
+                }
+                if index < lines.count {
+                    index += 1
+                }
+                output.append(codeBlock(from: codeLines.joined(separator: "\n"), language: language))
+                output.append(NSAttributedString(string: "\n"))
+                usedReaderBlock = true
+                continue
+            }
+
             if let image = imageBlock(from: lines[index], baseURL: baseURL) {
                 flushMarkdownBuffer()
                 output.append(image)
@@ -345,6 +362,68 @@ final class MarkdownDocumentReaderController: NSObject, NSWindowDelegate, NSText
         image.draw(in: NSRect(origin: .zero, size: copy.size))
         copy.unlockFocus()
         return copy
+    }
+
+    private nonisolated static func codeFenceLanguage(from line: String) -> String? {
+        let pattern = #"^\s*`{3,}\s*([A-Za-z0-9_+.-]*)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)),
+              let range = Range(match.range(at: 1), in: line) else {
+            return nil
+        }
+        return String(line[range]).lowercased()
+    }
+
+    private nonisolated static func isCodeFenceClose(_ line: String) -> Bool {
+        line.range(of: #"^\s*`{3,}\s*$"#, options: .regularExpression) != nil
+    }
+
+    private nonisolated static func codeBlock(from code: String, language: String) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(
+            string: code,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: NSColor.textColor,
+                .backgroundColor: NSColor.textBackgroundColor
+            ]
+        )
+        applySyntaxHighlighting(to: attributed, language: language)
+        return attributed
+    }
+
+    private nonisolated static func applySyntaxHighlighting(to attributed: NSMutableAttributedString, language: String) {
+        let keywordPattern: String?
+        switch language {
+        case "swift":
+            keywordPattern = #"\b(actor|as|associatedtype|await|break|case|catch|class|continue|default|defer|do|else|enum|extension|false|for|func|guard|if|import|in|init|let|nil|protocol|return|self|static|struct|switch|throw|throws|true|try|var|while)\b"#
+        case "js", "javascript", "ts", "typescript":
+            keywordPattern = #"\b(async|await|break|case|catch|class|const|continue|default|else|export|false|for|from|function|if|import|let|null|return|switch|throw|true|try|var|while)\b"#
+        case "py", "python":
+            keywordPattern = #"\b(and|as|async|await|break|class|continue|def|elif|else|except|False|finally|for|from|if|import|in|is|lambda|None|not|or|pass|raise|return|True|try|while|with|yield)\b"#
+        case "sh", "bash", "zsh", "shell":
+            keywordPattern = #"\b(case|do|done|elif|else|esac|fi|for|function|if|in|then|while)\b"#
+        case "json", "jsonc":
+            keywordPattern = #"\b(true|false|null)\b"#
+        default:
+            keywordPattern = nil
+        }
+
+        let fullRange = NSRange(location: 0, length: attributed.length)
+        if let keywordPattern, let regex = try? NSRegularExpression(pattern: keywordPattern) {
+            for match in regex.matches(in: attributed.string, range: fullRange) {
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: match.range)
+            }
+        }
+        if let stringRegex = try? NSRegularExpression(pattern: #"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'"#) {
+            for match in stringRegex.matches(in: attributed.string, range: fullRange) {
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: match.range)
+            }
+        }
+        if let commentRegex = try? NSRegularExpression(pattern: #"(?m)(//.*$|#.*$)"#) {
+            for match in commentRegex.matches(in: attributed.string, range: fullRange) {
+                attributed.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: match.range)
+            }
+        }
     }
 
     private nonisolated static func isTableRow(_ line: String) -> Bool {
