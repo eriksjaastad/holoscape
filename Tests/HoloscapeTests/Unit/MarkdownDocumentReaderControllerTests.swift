@@ -127,6 +127,20 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
         XCTAssertFalse(rendered.string.contains("---"), "table separator rows should not be shown as content")
     }
 
+    func testRenderMarkdownHighlightsFencedCodeBlocks() {
+        let rendered = MarkdownDocumentReaderController.render(
+            markdown: """
+            ```swift
+            let answer = try compute()
+            ```
+            """
+        )
+
+        XCTAssertTrue(rendered.string.contains("let answer"))
+        XCTAssertTrue(hasForegroundColor(on: "let", in: rendered), "Swift keywords should receive syntax color")
+        XCTAssertFalse(rendered.string.contains("```"), "code fences should not be shown as content")
+    }
+
     func testDetectUnsupportedExtensionsFindsMermaidMathAndGraphicalHTML() {
         let markdown = """
         # Diagram
@@ -173,5 +187,11 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
             }
         }
         return found
+    }
+
+    private func hasForegroundColor(on needle: String, in attributedString: NSAttributedString) -> Bool {
+        let range = (attributedString.string as NSString).range(of: needle)
+        guard range.location != NSNotFound else { return false }
+        return attributedString.attribute(.foregroundColor, at: range.location, effectiveRange: nil) is NSColor
     }
 }
