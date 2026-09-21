@@ -254,6 +254,65 @@ final class PluginManifestTests: XCTestCase {
         ])
     }
 
+    func testPluginCommandRouterOpensProjectTrackerBoardThroughInjectedURLOpener() throws {
+        let opener = RecordingPluginExternalURLOpener()
+        let router = PluginCommandRouter(
+            startupSnapshot: PluginManager().prepareStartup(),
+            externalURLOpener: opener
+        )
+
+        let result = try router.execute(
+            descriptorID: ProjectTrackerPlugin.openBoardCommandID,
+            arguments: ["projectSlug": "holoscape"]
+        )
+
+        let expectedURL = try XCTUnwrap(URL(string: "http://localhost:8000/kanban/holoscape"))
+        XCTAssertEqual(result, .openedExternalURL(expectedURL))
+        XCTAssertEqual(opener.openedURLs, [expectedURL])
+    }
+
+    func testPluginCommandRouterRefusesDisabledPluginCommandsWithoutFallback() throws {
+        let opener = RecordingPluginExternalURLOpener()
+        let router = PluginCommandRouter(
+            startupSnapshot: PluginManager(projectTrackerConfiguration: .init(enabled: false)).prepareStartup(),
+            externalURLOpener: opener
+        )
+
+        XCTAssertThrowsError(
+            try router.execute(
+                descriptorID: ProjectTrackerPlugin.openBoardCommandID,
+                arguments: ["projectSlug": "holoscape"]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PluginCommandExecutionError,
+                .commandNotAdvertised(ProjectTrackerPlugin.openBoardCommandID)
+            )
+        }
+        XCTAssertEqual(opener.openedURLs, [])
+    }
+
+    func testPluginCommandRouterRejectsUnadvertisedCommandsBeforePluginRuntimeResolution() throws {
+        let opener = RecordingPluginExternalURLOpener()
+        let router = PluginCommandRouter(
+            startupSnapshot: PluginManager().prepareStartup(),
+            externalURLOpener: opener
+        )
+
+        XCTAssertThrowsError(
+            try router.execute(
+                descriptorID: "project-tracker-sync-all",
+                arguments: ["projectSlug": "holoscape"]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? PluginCommandExecutionError,
+                .commandNotAdvertised("project-tracker-sync-all")
+            )
+        }
+        XCTAssertEqual(opener.openedURLs, [])
+    }
+
     func testProjectTrackerRuntimeHealthUsesConfiguredHealthURL() async throws {
         let plan = try projectTrackerRuntimePlan()
         let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 204, body: Data())))
@@ -475,6 +534,14 @@ private actor RecordingProjectTrackerTransport: ProjectTrackerPluginHTTPTranspor
     func get(_ url: URL) async throws -> ProjectTrackerPluginHTTPResponse {
         urls.append(url)
         return try result.get()
+    }
+}
+
+private final class RecordingPluginExternalURLOpener: PluginExternalURLOpening, @unchecked Sendable {
+    private(set) var openedURLs: [URL] = []
+
+    func openExternalURL(_ url: URL) {
+        openedURLs.append(url)
     }
 }
 
