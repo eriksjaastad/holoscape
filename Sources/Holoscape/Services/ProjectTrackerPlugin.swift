@@ -70,7 +70,8 @@ struct ProjectTrackerPlugin: Sendable {
                 endpoint: endpoint,
                 healthURL: healthURL,
                 storageNamespace: manifest.storageNamespace,
-                capabilities: manifest.capabilities
+                capabilities: manifest.capabilities,
+                permissions: manifest.permissions
             )
         )
     }
@@ -186,6 +187,7 @@ struct ProjectTrackerPluginRuntimePlan: Equatable, Sendable {
     let healthURL: URL
     let storageNamespace: String
     let capabilities: Set<PluginCapability>
+    let permissions: Set<PluginPermission>
 
     func projectBoardURL(projectSlug: String) throws -> URL {
         let slug = projectSlug.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -177,7 +177,8 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
                                 endpoint: URL(string: "http://localhost:8000")!,
                                 healthURL: URL(string: "http://localhost:8000/health")!,
                                 storageNamespace: "project-tracker",
-                                capabilities: [.channelProvider, .commandProvider, .statusAdapter]
+                                capabilities: [.channelProvider, .commandProvider, .statusAdapter],
+                                permissions: [.networkLocalhost, .filesystemPluginStorage]
                             ),
                             contributions: .empty
                         )
