@@ -104,6 +104,7 @@ final class PluginManifestTests: XCTestCase {
                     pluginID: ProjectTrackerPlugin.pluginID,
                     displayName: "Project Tracker",
                     endpoint: try XCTUnwrap(URL(string: "http://localhost:8000")),
+                    healthURL: try XCTUnwrap(URL(string: "http://localhost:8000/health")),
                     storageNamespace: "project-tracker",
                     capabilities: [.channelProvider, .commandProvider, .statusAdapter]
                 )
@@ -180,6 +181,71 @@ final class PluginManifestTests: XCTestCase {
         }
     }
 
+    func testProjectTrackerPluginRejectsInvalidHealthPathBeforeRuntimeStart() throws {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let configuration = ProjectTrackerPluginConfiguration(healthPath: "../health")
+
+        XCTAssertThrowsError(try ProjectTrackerPlugin().prepareStart(manifest: manifest, configuration: configuration)) { error in
+            XCTAssertEqual(
+                error as? ProjectTrackerPluginStartError,
+                .invalidHealthPath("../health")
+            )
+        }
+    }
+
+    func testProjectTrackerRuntimeBuildsExplicitBoardURLsWithoutCoreStateCoupling() throws {
+        let plan = try projectTrackerRuntimePlan()
+
+        XCTAssertEqual(
+            try plan.projectBoardURL(projectSlug: "holoscape"),
+            URL(string: "http://localhost:8000/kanban/holoscape")
+        )
+        XCTAssertThrowsError(try plan.projectBoardURL(projectSlug: "../holoscape")) { error in
+            XCTAssertEqual(error as? ProjectTrackerPluginRuntimeError, .invalidProjectSlug("../holoscape"))
+        }
+    }
+
+    func testProjectTrackerRuntimeHealthUsesConfiguredHealthURL() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 204, body: Data())))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let health = await runtime.health()
+
+        XCTAssertEqual(
+            health,
+            .available(
+                .init(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    endpoint: try XCTUnwrap(URL(string: "http://localhost:8000")),
+                    healthURL: try XCTUnwrap(URL(string: "http://localhost:8000/health"))
+                )
+            )
+        )
+        let requestedURLs = await transport.requestedURLs
+        XCTAssertEqual(requestedURLs, [try XCTUnwrap(URL(string: "http://localhost:8000/health"))])
+    }
+
+    func testProjectTrackerRuntimeHealthFailureStaysPluginScoped() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 503, body: Data())))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let health = await runtime.health()
+
+        XCTAssertEqual(
+            health,
+            .unavailable(
+                .init(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    endpoint: try XCTUnwrap(URL(string: "http://localhost:8000")),
+                    healthURL: try XCTUnwrap(URL(string: "http://localhost:8000/health")),
+                    reason: .httpStatus(503)
+                )
+            )
+        )
+    }
+
     private func decodeManifest(_ json: String) throws -> PluginManifest {
         try JSONDecoder().decode(PluginManifest.self, from: Data(json.utf8))
     }
@@ -219,6 +285,31 @@ final class PluginManifestTests: XCTestCase {
             storageNamespace: storageNamespace,
             entrypoint: PluginEntrypoint(kind: .bundledSwift, bundleIdentifier: nil)
         )
+    }
+
+    private func projectTrackerRuntimePlan() throws -> ProjectTrackerPluginRuntimePlan {
+        let manifest = try PluginManifestValidator().validate(ProjectTrackerPlugin.manifest)
+        let plan = try ProjectTrackerPlugin().prepareStart(manifest: manifest)
+        guard case .ready(let runtimePlan) = plan else {
+            throw XCTSkip("Expected ready Project Tracker plugin plan")
+        }
+        return runtimePlan
+    }
+}
+
+private actor RecordingProjectTrackerTransport: ProjectTrackerPluginHTTPTransport {
+    private let result: Result<ProjectTrackerPluginHTTPResponse, Error>
+    private var urls: [URL] = []
+
+    init(result: Result<ProjectTrackerPluginHTTPResponse, Error>) {
+        self.result = result
+    }
+
+    var requestedURLs: [URL] { urls }
+
+    func get(_ url: URL) async throws -> ProjectTrackerPluginHTTPResponse {
+        urls.append(url)
+        return try result.get()
     }
 }
 
