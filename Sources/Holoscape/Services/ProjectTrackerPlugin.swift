@@ -57,13 +57,16 @@ struct ProjectTrackerPlugin: Sendable {
         }
 
         let endpoint = try configuration.normalizedEndpoint()
+        let healthURL = try configuration.normalizedHealthURL(endpoint: endpoint)
         try enforceNetworkPermission(for: endpoint, manifest: manifest)
+        try enforceNetworkPermission(for: healthURL, manifest: manifest)
 
         return .ready(
             .init(
                 pluginID: manifest.id,
                 displayName: manifest.displayName,
                 endpoint: endpoint,
+                healthURL: healthURL,
                 storageNamespace: manifest.storageNamespace,
                 capabilities: manifest.capabilities
             )
@@ -109,26 +112,47 @@ struct ProjectTrackerPluginConfiguration: Equatable, Sendable {
 
     var enabled: Bool
     var endpoint: String
+    var healthPath: String
 
-    init(enabled: Bool = true, endpoint: String = ProjectTrackerPlugin.defaultEndpoint) {
+    init(
+        enabled: Bool = true,
+        endpoint: String = ProjectTrackerPlugin.defaultEndpoint,
+        healthPath: String = "/health"
+    ) {
         self.enabled = enabled
         self.endpoint = endpoint
+        self.healthPath = healthPath
     }
 
     func normalizedEndpoint() throws -> URL {
-        let rawEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        try normalizeEndpoint(endpoint)
+    }
+
+    func normalizedHealthURL(endpoint normalizedEndpoint: URL) throws -> URL {
+        let path = healthPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.hasPrefix("/"), !path.contains("..") else {
+            throw ProjectTrackerPluginStartError.invalidHealthPath(healthPath)
+        }
+        guard let url = normalizedEndpoint.appendingPathComponents(path) else {
+            throw ProjectTrackerPluginStartError.invalidHealthPath(healthPath)
+        }
+        return url
+    }
+
+    private func normalizeEndpoint(_ rawValue: String) throws -> URL {
+        let rawEndpoint = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: rawEndpoint) else {
-            throw ProjectTrackerPluginStartError.invalidEndpoint(endpoint)
+            throw ProjectTrackerPluginStartError.invalidEndpoint(rawValue)
         }
         guard let scheme = components.scheme?.lowercased() else {
-            throw ProjectTrackerPluginStartError.invalidEndpoint(endpoint)
+            throw ProjectTrackerPluginStartError.invalidEndpoint(rawValue)
         }
         guard scheme == "http" || scheme == "https" else {
             throw ProjectTrackerPluginStartError.unsupportedScheme(scheme)
         }
         guard let host = components.host,
               !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ProjectTrackerPluginStartError.invalidEndpoint(endpoint)
+            throw ProjectTrackerPluginStartError.invalidEndpoint(rawValue)
         }
 
         var normalized = components
@@ -142,7 +166,7 @@ struct ProjectTrackerPluginConfiguration: Equatable, Sendable {
         normalized.fragment = nil
 
         guard let url = normalized.url else {
-            throw ProjectTrackerPluginStartError.invalidEndpoint(endpoint)
+            throw ProjectTrackerPluginStartError.invalidEndpoint(rawValue)
         }
         return url
     }
@@ -157,8 +181,21 @@ struct ProjectTrackerPluginRuntimePlan: Equatable, Sendable {
     let pluginID: String
     let displayName: String
     let endpoint: URL
+    let healthURL: URL
     let storageNamespace: String
     let capabilities: Set<PluginCapability>
+
+    func projectBoardURL(projectSlug: String) throws -> URL {
+        let slug = projectSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty,
+              slug.range(of: #"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"#, options: .regularExpression) != nil else {
+            throw ProjectTrackerPluginRuntimeError.invalidProjectSlug(projectSlug)
+        }
+        guard let url = endpoint.appendingPathComponents("/kanban/\(slug)") else {
+            throw ProjectTrackerPluginRuntimeError.invalidProjectSlug(projectSlug)
+        }
+        return url
+    }
 }
 
 enum ProjectTrackerPluginStartError: Error, Equatable, CustomStringConvertible {
@@ -166,6 +203,7 @@ enum ProjectTrackerPluginStartError: Error, Equatable, CustomStringConvertible {
     case requiredCapabilitiesMissing(String)
     case invalidEndpoint(String)
     case unsupportedScheme(String)
+    case invalidHealthPath(String)
     case permissionMissing(String, String, PluginPermission)
 
     var description: String {
@@ -178,8 +216,132 @@ enum ProjectTrackerPluginStartError: Error, Equatable, CustomStringConvertible {
             return "Project Tracker plugin endpoint is invalid: \(endpoint)"
         case .unsupportedScheme(let scheme):
             return "Project Tracker plugin endpoint scheme is unsupported: \(scheme)"
+        case .invalidHealthPath(let path):
+            return "Project Tracker plugin health path is invalid: \(path)"
         case .permissionMissing(let id, let endpoint, let permission):
             return "Project Tracker plugin \(id) endpoint \(endpoint) requires undeclared permission \(permission.rawValue)"
         }
+    }
+}
+
+struct ProjectTrackerPluginRuntime: Sendable {
+    private let plan: ProjectTrackerPluginRuntimePlan
+    private let transport: ProjectTrackerPluginHTTPTransport
+
+    init(
+        plan: ProjectTrackerPluginRuntimePlan,
+        transport: ProjectTrackerPluginHTTPTransport = URLSessionProjectTrackerPluginHTTPTransport()
+    ) {
+        self.plan = plan
+        self.transport = transport
+    }
+
+    func health() async -> ProjectTrackerPluginHealth {
+        do {
+            let response = try await transport.get(plan.healthURL)
+            guard (200..<300).contains(response.statusCode) else {
+                return .unavailable(
+                    .init(
+                        pluginID: plan.pluginID,
+                        endpoint: plan.endpoint,
+                        healthURL: plan.healthURL,
+                        reason: .httpStatus(response.statusCode)
+                    )
+                )
+            }
+            return .available(
+                .init(
+                    pluginID: plan.pluginID,
+                    endpoint: plan.endpoint,
+                    healthURL: plan.healthURL
+                )
+            )
+        } catch {
+            return .unavailable(
+                .init(
+                    pluginID: plan.pluginID,
+                    endpoint: plan.endpoint,
+                    healthURL: plan.healthURL,
+                    reason: .transport(String(describing: error))
+                )
+            )
+        }
+    }
+}
+
+enum ProjectTrackerPluginHealth: Equatable, Sendable {
+    case available(ProjectTrackerPluginAvailableHealth)
+    case unavailable(ProjectTrackerPluginUnavailableHealth)
+}
+
+struct ProjectTrackerPluginAvailableHealth: Equatable, Sendable {
+    let pluginID: String
+    let endpoint: URL
+    let healthURL: URL
+}
+
+struct ProjectTrackerPluginUnavailableHealth: Equatable, Sendable {
+    let pluginID: String
+    let endpoint: URL
+    let healthURL: URL
+    let reason: ProjectTrackerPluginUnavailableReason
+}
+
+enum ProjectTrackerPluginUnavailableReason: Equatable, Sendable {
+    case httpStatus(Int)
+    case transport(String)
+}
+
+enum ProjectTrackerPluginRuntimeError: Error, Equatable, CustomStringConvertible {
+    case invalidProjectSlug(String)
+
+    var description: String {
+        switch self {
+        case .invalidProjectSlug(let slug):
+            return "Project Tracker project slug is invalid: \(slug)"
+        }
+    }
+}
+
+protocol ProjectTrackerPluginHTTPTransport: Sendable {
+    func get(_ url: URL) async throws -> ProjectTrackerPluginHTTPResponse
+}
+
+struct ProjectTrackerPluginHTTPResponse: Equatable, Sendable {
+    let statusCode: Int
+    let body: Data
+}
+
+final class URLSessionProjectTrackerPluginHTTPTransport: ProjectTrackerPluginHTTPTransport, @unchecked Sendable {
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func get(_ url: URL) async throws -> ProjectTrackerPluginHTTPResponse {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProjectTrackerPluginTransportError.nonHTTPResponse
+        }
+        return ProjectTrackerPluginHTTPResponse(statusCode: httpResponse.statusCode, body: data)
+    }
+}
+
+enum ProjectTrackerPluginTransportError: Error, Equatable {
+    case nonHTTPResponse
+}
+
+private extension URL {
+    func appendingPathComponents(_ rawPath: String) -> URL? {
+        let components = rawPath.split(separator: "/").map(String.init)
+        var url = self
+        for component in components where !component.isEmpty {
+            url.appendPathComponent(component)
+        }
+        return url
     }
 }
