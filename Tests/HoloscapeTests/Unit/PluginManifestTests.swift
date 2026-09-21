@@ -315,6 +315,52 @@ final class PluginManifestTests: XCTestCase {
         ])
     }
 
+    func testPluginManagerReadsOptionalProjectTrackerConfigFromHoloscapeConfig() throws {
+        var config = HoloscapeConfig.default
+        config.plugins = .init(
+            projectTracker: .init(
+                enabled: false,
+                endpoint: "not a url",
+                healthPath: "../health"
+            )
+        )
+
+        let manager = PluginManager(config: config)
+        let snapshot = manager.prepareStartup()
+
+        XCTAssertEqual(snapshot.states.count, 1)
+        guard case .disabled(let disabled) = snapshot.states[0] else {
+            return XCTFail("Expected config-disabled Project Tracker plugin")
+        }
+        XCTAssertEqual(disabled.pluginID, ProjectTrackerPlugin.pluginID)
+        XCTAssertEqual(disabled.removedContributions, .empty)
+        XCTAssertEqual(snapshot.contributions, .empty)
+        XCTAssertEqual(snapshot.failures, [])
+    }
+
+    func testProjectTrackerPluginConfigIsOptionalForBackwardCompatibility() throws {
+        let json = """
+        {
+          "appearance": {
+            "backgroundColor": "#1a1a2e",
+            "transparency": 1.0,
+            "fontFamily": "SF Mono",
+            "fontSize": 13.0
+          },
+          "channels": [],
+          "lastLaunchTimestamp": null
+        }
+        """
+
+        let config = try JSONDecoder().decode(HoloscapeConfig.self, from: Data(json.utf8))
+
+        XCTAssertNil(config.plugins)
+        XCTAssertEqual(
+            config.projectTrackerPluginConfiguration(),
+            ProjectTrackerPluginConfiguration.default
+        )
+    }
+
     private func decodeManifest(_ json: String) throws -> PluginManifest {
         try JSONDecoder().decode(PluginManifest.self, from: Data(json.utf8))
     }
