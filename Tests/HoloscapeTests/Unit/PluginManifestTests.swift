@@ -433,6 +433,94 @@ final class PluginManifestTests: XCTestCase {
         )
     }
 
+    func testProjectTrackerRuntimeFetchesTaskStatusThroughPluginAPIOnly() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let body = Data(#"{"tasks":[{"id":93191237440532480,"display_id":7174,"status":"In Progress","priority":"Medium","title":null,"text":"Phase 5: implement first-party Project Tracker plugin after plugin seam exists","project_id":"holoscape"}],"total":1}"#.utf8)
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 200, body: body)))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let status = await runtime.taskStatus(projectSlug: "holoscape", taskID: "7174")
+
+        XCTAssertEqual(
+            status,
+            .available(
+                ProjectTrackerPluginTaskStatusSnapshot(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    taskID: "7174",
+                    displayID: 7174,
+                    projectID: "holoscape",
+                    title: "Phase 5: implement first-party Project Tracker plugin after plugin seam exists",
+                    status: "In Progress",
+                    priority: "Medium"
+                )
+            )
+        )
+        let requestedURLs = await transport.requestedURLs
+        XCTAssertEqual(requestedURLs, [try XCTUnwrap(URL(string: "http://localhost:8000/api/tasks?project_id=holoscape&include_archived=true"))])
+    }
+
+    func testProjectTrackerTaskStatusAdapterSnapshotIsSupplementalMetadata() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let body = Data(#"{"tasks":[{"display_id":7174,"status":"In Progress","priority":"Medium","text":"Phase 5","project_id":"holoscape"}],"total":1}"#.utf8)
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 200, body: body)))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let status = await runtime.taskStatusAdapterSnapshot(projectSlug: "holoscape", taskID: "7174")
+
+        XCTAssertEqual(
+            status,
+            PluginSupplementalStatus(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: "Project Tracker #7174: In Progress",
+                detail: "holoscape · Medium · Phase 5",
+                severity: .info
+            )
+        )
+    }
+
+    func testProjectTrackerRuntimeTaskStatusFailuresStayPluginScoped() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 404, body: Data())))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let status = await runtime.taskStatus(projectSlug: "holoscape", taskID: "7174")
+
+        XCTAssertEqual(
+            status,
+            .unavailable(
+                ProjectTrackerPluginTaskStatusUnavailable(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    taskID: "7174",
+                    taskURL: try XCTUnwrap(URL(string: "http://localhost:8000/api/tasks?project_id=holoscape&include_archived=true")),
+                    reason: .httpStatus(404)
+                )
+            )
+        )
+    }
+
+    func testProjectTrackerRuntimeRejectsInvalidTaskStatusIDBeforeNetworkCall() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 200, body: Data())))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let status = await runtime.taskStatus(projectSlug: "holoscape", taskID: "../7174")
+
+        XCTAssertEqual(
+            status,
+            .unavailable(
+                ProjectTrackerPluginTaskStatusUnavailable(
+                    pluginID: ProjectTrackerPlugin.pluginID,
+                    taskID: "../7174",
+                    taskURL: nil,
+                    reason: .invalidTaskID("../7174")
+                )
+            )
+        )
+        let requestedURLs = await transport.requestedURLs
+        XCTAssertEqual(requestedURLs, [])
+    }
+
     func testPluginManagerCanStartCoreWithNoPlugins() {
         let manager = PluginManager(registry: PluginRegistry(bundledManifests: []))
 

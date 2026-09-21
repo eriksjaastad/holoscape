@@ -204,17 +204,46 @@ struct ProjectTrackerPluginRuntimePlan: Equatable, Sendable {
 
     func projectTaskURL(projectSlug: String, taskID: String) throws -> URL {
         let boardURL = try projectBoardURL(projectSlug: projectSlug)
-        let id = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty,
-              id.range(of: #"^[0-9]{1,18}$"#, options: .regularExpression) != nil else {
-            throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
-        }
+        let id = try normalizedTaskID(taskID)
         guard var components = URLComponents(url: boardURL, resolvingAgainstBaseURL: false) else {
             throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
         }
         components.queryItems = [URLQueryItem(name: "task", value: id)]
         guard let url = components.url else { throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID) }
         return url
+    }
+
+    func taskListAPIURL(projectSlug: String, taskID: String) throws -> URL {
+        let slug = try normalizedProjectSlug(projectSlug)
+        let id = try normalizedTaskID(taskID)
+        guard let listURL = endpoint.appendingPathComponents("/api/tasks"),
+              var components = URLComponents(url: listURL, resolvingAgainstBaseURL: false) else {
+            throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
+        }
+        components.queryItems = [
+            URLQueryItem(name: "project_id", value: slug),
+            URLQueryItem(name: "include_archived", value: "true"),
+        ]
+        guard let url = components.url else { throw ProjectTrackerPluginRuntimeError.invalidTaskID(id) }
+        return url
+    }
+
+    private func normalizedProjectSlug(_ projectSlug: String) throws -> String {
+        let slug = projectSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty,
+              slug.range(of: #"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"#, options: .regularExpression) != nil else {
+            throw ProjectTrackerPluginRuntimeError.invalidProjectSlug(projectSlug)
+        }
+        return slug
+    }
+
+    fileprivate func normalizedTaskID(_ taskID: String) throws -> String {
+        let id = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty,
+              id.range(of: #"^[0-9]{1,18}$"#, options: .regularExpression) != nil else {
+            throw ProjectTrackerPluginRuntimeError.invalidTaskID(taskID)
+        }
+        return id
     }
 
     func commandAction(
@@ -335,6 +364,110 @@ struct ProjectTrackerPluginRuntime: Sendable {
             )
         }
     }
+
+    func taskStatus(projectSlug: String, taskID: String) async -> ProjectTrackerPluginTaskStatusResult {
+        let taskURL: URL
+        let normalizedTaskID: String
+        do {
+            normalizedTaskID = try plan.normalizedTaskID(taskID)
+            taskURL = try plan.taskListAPIURL(projectSlug: projectSlug, taskID: taskID)
+        } catch let error as ProjectTrackerPluginRuntimeError {
+            return .unavailable(
+                .init(
+                    pluginID: plan.pluginID,
+                    taskID: taskID,
+                    taskURL: nil,
+                    reason: .init(runtime: error)
+                )
+            )
+        } catch {
+            return .unavailable(
+                .init(
+                    pluginID: plan.pluginID,
+                    taskID: taskID,
+                    taskURL: nil,
+                    reason: .transport(String(describing: error))
+                )
+            )
+        }
+
+        do {
+            let response = try await transport.get(taskURL)
+            guard (200..<300).contains(response.statusCode) else {
+                return .unavailable(
+                    .init(
+                        pluginID: plan.pluginID,
+                        taskID: taskID,
+                        taskURL: taskURL,
+                        reason: .httpStatus(response.statusCode)
+                    )
+                )
+            }
+            let payload = try JSONDecoder().decode(ProjectTrackerPluginTaskListPayload.self, from: response.body)
+            guard let task = payload.tasks.first(where: { candidate in
+                String(candidate.displayID ?? -1) == normalizedTaskID || String(candidate.id ?? -1) == normalizedTaskID
+            }) else {
+                return .unavailable(
+                    .init(
+                        pluginID: plan.pluginID,
+                        taskID: taskID,
+                        taskURL: taskURL,
+                        reason: .notFound(taskID)
+                    )
+                )
+            }
+            return .available(
+                .init(
+                    pluginID: plan.pluginID,
+                    taskID: taskID.trimmingCharacters(in: .whitespacesAndNewlines),
+                    displayID: task.displayID,
+                    projectID: task.projectID,
+                    title: task.title ?? task.text,
+                    status: task.status,
+                    priority: task.priority
+                )
+            )
+        } catch let error as DecodingError {
+            return .unavailable(
+                .init(
+                    pluginID: plan.pluginID,
+                    taskID: taskID,
+                    taskURL: taskURL,
+                    reason: .decoding(String(describing: error))
+                )
+            )
+        } catch {
+            return .unavailable(
+                .init(
+                    pluginID: plan.pluginID,
+                    taskID: taskID,
+                    taskURL: taskURL,
+                    reason: .transport(String(describing: error))
+                )
+            )
+        }
+    }
+
+    func taskStatusAdapterSnapshot(projectSlug: String, taskID: String) async -> PluginSupplementalStatus {
+        switch await taskStatus(projectSlug: projectSlug, taskID: taskID) {
+        case .available(let snapshot):
+            return PluginSupplementalStatus(
+                pluginID: snapshot.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: snapshot.statusLabel,
+                detail: snapshot.statusDetail,
+                severity: .info
+            )
+        case .unavailable(let unavailable):
+            return PluginSupplementalStatus(
+                pluginID: unavailable.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: "Project Tracker task unavailable",
+                detail: unavailable.reason.statusDetail(taskID: unavailable.taskID, taskURL: unavailable.taskURL),
+                severity: .warning
+            )
+        }
+    }
 }
 
 struct PluginSupplementalStatus: Equatable, Sendable {
@@ -380,6 +513,105 @@ enum ProjectTrackerPluginUnavailableReason: Equatable, Sendable {
         case .transport(let message):
             return "Transport failure from \(healthURL.absoluteString): \(message)"
         }
+    }
+}
+
+enum ProjectTrackerPluginTaskStatusResult: Equatable, Sendable {
+    case available(ProjectTrackerPluginTaskStatusSnapshot)
+    case unavailable(ProjectTrackerPluginTaskStatusUnavailable)
+}
+
+struct ProjectTrackerPluginTaskStatusSnapshot: Equatable, Sendable {
+    let pluginID: String
+    let taskID: String
+    let displayID: Int?
+    let projectID: String?
+    let title: String?
+    let status: String
+    let priority: String?
+
+    var statusLabel: String {
+        let id = displayID.map { "#\($0)" } ?? taskID
+        return "Project Tracker \(id): \(status)"
+    }
+
+    var statusDetail: String {
+        [projectID, priority, title]
+            .compactMap { value in
+                guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return value
+            }
+            .joined(separator: " · ")
+    }
+}
+
+struct ProjectTrackerPluginTaskStatusUnavailable: Equatable, Sendable {
+    let pluginID: String
+    let taskID: String
+    let taskURL: URL?
+    let reason: ProjectTrackerPluginTaskStatusUnavailableReason
+}
+
+enum ProjectTrackerPluginTaskStatusUnavailableReason: Equatable, Sendable {
+    case invalidTaskID(String)
+    case invalidProjectSlug(String)
+    case notFound(String)
+    case httpStatus(Int)
+    case transport(String)
+    case decoding(String)
+
+    init(runtime error: ProjectTrackerPluginRuntimeError) {
+        switch error {
+        case .invalidProjectSlug(let projectSlug):
+            self = .invalidProjectSlug(projectSlug)
+        case .invalidTaskID(let taskID):
+            self = .invalidTaskID(taskID)
+        default:
+            self = .transport(String(describing: error))
+        }
+    }
+
+    func statusDetail(taskID: String, taskURL: URL?) -> String {
+        switch self {
+        case .invalidTaskID(let invalidTaskID):
+            return "Invalid Project Tracker task id: \(invalidTaskID)"
+        case .invalidProjectSlug(let projectSlug):
+            return "Invalid Project Tracker project slug: \(projectSlug)"
+        case .notFound(let taskID):
+            return "Project Tracker task was not present in \(taskURL?.absoluteString ?? taskID)"
+        case .httpStatus(let statusCode):
+            return "HTTP \(statusCode) from \(taskURL?.absoluteString ?? taskID)"
+        case .transport(let message):
+            return "Transport failure from \(taskURL?.absoluteString ?? taskID): \(message)"
+        case .decoding(let message):
+            return "Could not decode Project Tracker task \(taskID): \(message)"
+        }
+    }
+}
+
+private struct ProjectTrackerPluginTaskListPayload: Decodable {
+    let tasks: [ProjectTrackerPluginTaskPayload]
+}
+
+private struct ProjectTrackerPluginTaskPayload: Decodable {
+    let id: Int?
+    let displayID: Int?
+    let projectID: String?
+    let title: String?
+    let text: String?
+    let status: String
+    let priority: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayID = "display_id"
+        case projectID = "project_id"
+        case title
+        case text
+        case status
+        case priority
     }
 }
 
