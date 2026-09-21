@@ -169,8 +169,9 @@ struct PluginContributions: Equatable, Sendable {
         commandDescriptors = [
             .init(
                 pluginID: plan.pluginID,
-                id: "project-tracker-open-board",
-                displayName: "Open Project Tracker Board"
+                id: ProjectTrackerPlugin.openBoardCommandID,
+                displayName: "Open Project Tracker Board",
+                requiredArguments: ["projectSlug"]
             ),
         ]
         statusAdapters = [
@@ -201,6 +202,19 @@ struct PluginCommandDescriptor: Equatable, Sendable {
     let pluginID: String
     let id: String
     let displayName: String
+    let requiredArguments: [String]
+
+    init(
+        pluginID: String,
+        id: String,
+        displayName: String,
+        requiredArguments: [String] = []
+    ) {
+        self.pluginID = pluginID
+        self.id = id
+        self.displayName = displayName
+        self.requiredArguments = requiredArguments
+    }
 }
 
 struct PluginStatusAdapterDescriptor: Equatable, Sendable {

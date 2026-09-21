@@ -205,6 +205,55 @@ final class PluginManifestTests: XCTestCase {
         }
     }
 
+    func testProjectTrackerCommandActionOpensOnlyExplicitBoardURL() throws {
+        let plan = try projectTrackerRuntimePlan()
+
+        XCTAssertEqual(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openBoardCommandID,
+                arguments: ["projectSlug": "holoscape"]
+            ),
+            .openExternalURL(try XCTUnwrap(URL(string: "http://localhost:8000/kanban/holoscape")))
+        )
+        XCTAssertThrowsError(
+            try plan.commandAction(
+                descriptorID: ProjectTrackerPlugin.openBoardCommandID,
+                arguments: [:]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ProjectTrackerPluginRuntimeError, .missingCommandArgument("projectSlug"))
+        }
+    }
+
+    func testProjectTrackerCommandRejectsUnknownDescriptorWithoutFallback() throws {
+        let plan = try projectTrackerRuntimePlan()
+
+        XCTAssertThrowsError(
+            try plan.commandAction(
+                descriptorID: "project-tracker-sync-all",
+                arguments: ["projectSlug": "holoscape"]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ProjectTrackerPluginRuntimeError,
+                .unknownCommand("project-tracker-sync-all")
+            )
+        }
+    }
+
+    func testProjectTrackerContributionDescriptorDeclaresRequiredCommandArgument() {
+        let snapshot = PluginManager().prepareStartup()
+
+        XCTAssertEqual(snapshot.contributions.commandDescriptors, [
+            .init(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                id: ProjectTrackerPlugin.openBoardCommandID,
+                displayName: "Open Project Tracker Board",
+                requiredArguments: ["projectSlug"]
+            ),
+        ])
+    }
+
     func testProjectTrackerRuntimeHealthUsesConfiguredHealthURL() async throws {
         let plan = try projectTrackerRuntimePlan()
         let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 204, body: Data())))
@@ -302,8 +351,9 @@ final class PluginManifestTests: XCTestCase {
         XCTAssertEqual(snapshot.contributions.commandDescriptors, [
             .init(
                 pluginID: ProjectTrackerPlugin.pluginID,
-                id: "project-tracker-open-board",
-                displayName: "Open Project Tracker Board"
+                id: ProjectTrackerPlugin.openBoardCommandID,
+                displayName: "Open Project Tracker Board",
+                requiredArguments: ["projectSlug"]
             ),
         ])
         XCTAssertEqual(snapshot.contributions.statusAdapters, [
