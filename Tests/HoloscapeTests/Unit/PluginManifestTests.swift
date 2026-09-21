@@ -106,7 +106,8 @@ final class PluginManifestTests: XCTestCase {
                     endpoint: try XCTUnwrap(URL(string: "http://localhost:8000")),
                     healthURL: try XCTUnwrap(URL(string: "http://localhost:8000/health")),
                     storageNamespace: "project-tracker",
-                    capabilities: [.channelProvider, .commandProvider, .statusAdapter]
+                    capabilities: [.channelProvider, .commandProvider, .statusAdapter],
+                    permissions: [.networkLocalhost, .filesystemPluginStorage]
                 )
             )
         )
@@ -489,6 +490,37 @@ final class PluginManifestTests: XCTestCase {
         )
     }
 
+    func testPluginStorageServiceCreatesOnlyPluginNamespaceUnderConfigRoot() throws {
+        let root = temporaryDirectory(named: "plugin-storage-root")
+        let service = PluginStorageService(rootDirectory: root)
+        let plan = try projectTrackerRuntimePlan()
+
+        let storageURL = try service.storageDirectory(for: plan, createIfNeeded: true)
+
+        XCTAssertEqual(
+            storageURL.standardizedFileURL,
+            root.appendingPathComponent("plugins/project-tracker", isDirectory: true).standardizedFileURL
+        )
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storageURL.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("sessions").path))
+    }
+
+    func testPluginStorageServiceRequiresDeclaredPluginStoragePermissionBeforeCreatingDirectory() throws {
+        let root = temporaryDirectory(named: "plugin-storage-no-permission")
+        let service = PluginStorageService(rootDirectory: root)
+        let plan = try projectTrackerRuntimePlan().withPermissions([])
+
+        XCTAssertThrowsError(try service.storageDirectory(for: plan, createIfNeeded: true)) { error in
+            XCTAssertEqual(
+                error as? PluginStorageError,
+                .permissionMissing(ProjectTrackerPlugin.pluginID, .filesystemPluginStorage)
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("plugins").path))
+    }
+
     private func decodeManifest(_ json: String) throws -> PluginManifest {
         try JSONDecoder().decode(PluginManifest.self, from: Data(json.utf8))
     }
@@ -538,6 +570,17 @@ final class PluginManifestTests: XCTestCase {
         }
         return runtimePlan
     }
+
+    private func temporaryDirectory(named name: String) -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PluginManifestTests")
+            .appendingPathComponent(name)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return url
+    }
 }
 
 private actor RecordingProjectTrackerTransport: ProjectTrackerPluginHTTPTransport {
@@ -561,6 +604,20 @@ private final class RecordingPluginExternalURLOpener: PluginExternalURLOpening, 
 
     func openExternalURL(_ url: URL) {
         openedURLs.append(url)
+    }
+}
+
+private extension ProjectTrackerPluginRuntimePlan {
+    func withPermissions(_ permissions: Set<PluginPermission>) -> ProjectTrackerPluginRuntimePlan {
+        ProjectTrackerPluginRuntimePlan(
+            pluginID: pluginID,
+            displayName: displayName,
+            endpoint: endpoint,
+            healthURL: healthURL,
+            storageNamespace: storageNamespace,
+            capabilities: capabilities,
+            permissions: permissions
+        )
     }
 }
 
