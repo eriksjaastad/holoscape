@@ -67,6 +67,37 @@ final class MarkdownDocumentReaderControllerTests: XCTestCase {
         XCTAssertTrue(rendered.string.contains("One"))
     }
 
+    func testDetectUnsupportedExtensionsFindsMermaidMathAndGraphicalHTML() {
+        let markdown = """
+        # Diagram
+
+        ```mermaid
+        graph TD;
+        ```
+
+        ```latex
+        E = mc^2
+        ```
+
+        <iframe src=\"https://example.com\"></iframe>
+        """
+
+        let detected = MarkdownDocumentReaderController.detectUnsupportedExtensions(in: markdown)
+            .map(\.name)
+
+        XCTAssertEqual(detected, ["Embedded or graphical HTML", "Math / LaTeX", "Mermaid diagrams"])
+    }
+
+    func testDetectUnsupportedExtensionsIgnoresStandardCodeBlocks() {
+        let markdown = """
+        ```swift
+        print(\"hello\")
+        ```
+        """
+
+        XCTAssertTrue(MarkdownDocumentReaderController.detectUnsupportedExtensions(in: markdown).isEmpty)
+    }
+
     private func writeMarkdown(named name: String) throws -> URL {
         let url = tempDir.appendingPathComponent(name)
         try "# Title\n\nBody".write(to: url, atomically: true, encoding: .utf8)
