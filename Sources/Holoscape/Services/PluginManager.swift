@@ -15,6 +15,18 @@ struct PluginManager: Sendable {
         self.projectTrackerConfiguration = projectTrackerConfiguration
     }
 
+    init(
+        registry: PluginRegistry = PluginRegistry(),
+        projectTrackerPlugin: ProjectTrackerPlugin = ProjectTrackerPlugin(),
+        config: HoloscapeConfig
+    ) {
+        self.init(
+            registry: registry,
+            projectTrackerPlugin: projectTrackerPlugin,
+            projectTrackerConfiguration: config.projectTrackerPluginConfiguration()
+        )
+    }
+
     func prepareStartup() -> PluginStartupSnapshot {
         do {
             let manifests = try registry.bundledPlugins()

@@ -22,6 +22,11 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
     // Chrome skinning fields (optional for backward compat)
     var chromeRegions: ChromeRegionState?
 
+    // Plugin settings are optional so core config remains backward-compatible
+    // and Holoscape can start as a standalone terminal without any external
+    // integration configured.
+    var plugins: PluginSettingsConfig?
+
     static let `default` = HoloscapeConfig(
         appearance: AppearanceConfig.default,
         channels: [],
@@ -32,6 +37,29 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
         sidebarExpanded: nil,
         recentSessions: nil
     )
+}
+
+struct PluginSettingsConfig: Codable, Equatable, Sendable {
+    var projectTracker: ProjectTrackerPluginSettingsConfig?
+}
+
+struct ProjectTrackerPluginSettingsConfig: Codable, Equatable, Sendable {
+    var enabled: Bool?
+    var endpoint: String?
+    var healthPath: String?
+}
+
+extension HoloscapeConfig {
+    func projectTrackerPluginConfiguration() -> ProjectTrackerPluginConfiguration {
+        guard let settings = plugins?.projectTracker else {
+            return .default
+        }
+        return ProjectTrackerPluginConfiguration(
+            enabled: settings.enabled ?? ProjectTrackerPluginConfiguration.default.enabled,
+            endpoint: settings.endpoint ?? ProjectTrackerPluginConfiguration.default.endpoint,
+            healthPath: settings.healthPath ?? ProjectTrackerPluginConfiguration.default.healthPath
+        )
+    }
 }
 
 struct AppearanceConfig: Codable, Equatable, Sendable {
