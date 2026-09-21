@@ -108,11 +108,48 @@ Known correctness gaps remain tracked separately against iTerm-quality behavior:
 - Map agent/tool events from supported CLIs into persistent tab state, including permission/approval prompts, running tool calls, idle/ready, and error states
 
 ### Local API and MCP Tool Server
-- Run an optional local HTTP API server on port `7865` by default for controlled automation and test harnesses
-- API surface includes channel list/create/switch/close, channel input/output, and notification events
-- Ship `HoloscapeMCP` as a stdio MCP tool server so Claude Code can control Holoscape through the local HTTP API
-- Keep this separate from future MCP-client channels: HoloscapeMCP is external-tool control of Holoscape; CEO/MCP channels are Holoscape connecting to another MCP endpoint
-- Notification hook events include `permission_prompt`, `idle_prompt`, `auth_success`, and `elicitation_dialog`
+
+The local API is a first-class integration surface for automation, tests, and Claude Code control. It is intentionally local and app-owned; it is not a cloud service and not a Project Tracker dependency.
+
+**Architecture flow:**
+
+```text
+Claude Code
+  -> MCP stdio
+  -> HoloscapeMCP binary
+  -> HTTP localhost:7865
+  -> Holoscape API server inside the app
+  -> ChannelManager / MainWindowController / channel views
+```
+
+**HTTP implementation:**
+- Default port is `7865`; tests and development may override it with `--api-port <port>`.
+- The server uses `Network.framework` sockets plus a small hand-rolled HTTP parser because the app only needs a narrow JSON-over-localhost harness and should not embed a web framework or web runtime.
+- The parser waits for the full `Content-Length` body before routing so fragmented local socket reads do not create partial JSON requests.
+- The API is best treated as localhost-only control for trusted local automation.
+
+**Current endpoints:**
+- `GET /channels` — list open channels, labels, types, transient state, persistent state/source, notification type, and active-channel flag.
+- `POST /channels` — open a shell/agent channel with optional `type`, `dir`, `label`, and `cmd` JSON fields.
+- `DELETE /channels/{id}` — close a channel by UUID or display label.
+- `POST /channels/{id}/switch` — switch the visible channel.
+- `POST /channels/{id}/input` — send JSON `{ "text": "..." }` as channel input.
+- `GET /channels/{id}/output?lines=N` — read the last N output lines.
+- `POST /notify` — ingest agent hook notifications and map them into tab state.
+
+**HoloscapeMCP tools:**
+- `holoscape_list_channels`
+- `holoscape_open_channel`
+- `holoscape_switch_channel`
+- `holoscape_close_channel`
+- `holoscape_send_input`
+- `holoscape_read_output`
+
+**Notification hook events:** `permission_prompt`, `idle_prompt`, `auth_success`, and `elicitation_dialog`.
+
+**Testing role:** UI tests should prefer this API for channel setup, switching, output inspection, and notification-state setup when direct XCUI typing into terminal controls would be brittle. XCUI should still verify visible UI behavior; the API is the reliable harness for setup and assertions.
+
+Keep this separate from future MCP-client channels: HoloscapeMCP is external-tool control of Holoscape; CEO/MCP channels are Holoscape connecting to another MCP endpoint.
 
 ### Setup Diagnostics and Permissions
 - `Holoscape > Setup Diagnostics…` displays setup health without forcing broad permissions on launch
