@@ -354,6 +354,25 @@ final class PluginManifestTests: XCTestCase {
         )
     }
 
+    func testProjectTrackerStatusAdapterProducesSupplementalStatusOnly() async throws {
+        let plan = try projectTrackerRuntimePlan()
+        let transport = RecordingProjectTrackerTransport(result: .success(.init(statusCode: 503, body: Data())))
+        let runtime = ProjectTrackerPluginRuntime(plan: plan, transport: transport)
+
+        let status = await runtime.statusAdapterSnapshot()
+
+        XCTAssertEqual(
+            status,
+            PluginSupplementalStatus(
+                pluginID: ProjectTrackerPlugin.pluginID,
+                adapterID: ProjectTrackerPlugin.taskStatusAdapterID,
+                label: "Project Tracker unavailable",
+                detail: "HTTP 503 from http://localhost:8000/health",
+                severity: .warning
+            )
+        )
+    }
+
     func testPluginManagerCanStartCoreWithNoPlugins() {
         let manager = PluginManager(registry: PluginRegistry(bundledManifests: []))
 
