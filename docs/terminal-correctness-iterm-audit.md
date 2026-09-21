@@ -186,3 +186,13 @@ Existing tests reviewed:
 ## Board outcome
 
 #7166 can be closed after this document is committed and the SwiftPM test suite still passes, because the card's deliverable is an audit with concrete gaps, reproductions, test targets, and implementation slices.
+
+## Verification
+
+Latest supervisor verification:
+
+```bash
+swift test --filter NativePTYBrokerSessionRuntimeTests
+```
+
+Result: 12 tests executed, 0 failures.
