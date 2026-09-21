@@ -129,6 +129,73 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         })
     }
 
+    func testSnapshotSurfacesProjectTrackerPluginConfigurationFailureWithoutBlockingCore() {
+        let configService = ConfigService(configDir: temporaryConfigDir())
+        let failure = PluginFailureState(
+            pluginID: ProjectTrackerPlugin.pluginID,
+            displayName: "Project Tracker",
+            message: "Project Tracker plugin endpoint is invalid: project-tracker.local"
+        )
+        let service = SetupDiagnosticsService(
+            configService: configService,
+            accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { true },
+            brokerFailureProvider: { nil },
+            pluginStartupSnapshotProvider: {
+                PluginStartupSnapshot(states: [.failed(failure)])
+            }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: .authorized)
+
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Plugins"
+                && item.severity == .failure
+                && item.detail.contains("Project Tracker")
+                && item.detail.contains("endpoint is invalid")
+                && item.recovery?.contains("terminal startup continues") == true
+        })
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Broker host launch" && item.severity == .ok
+        })
+    }
+
+    func testSnapshotReportsPluginsOkWhenPluginManagerHasNoFailures() {
+        let configService = ConfigService(configDir: temporaryConfigDir())
+        let service = SetupDiagnosticsService(
+            configService: configService,
+            accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { true },
+            brokerFailureProvider: { nil },
+            pluginStartupSnapshotProvider: {
+                PluginStartupSnapshot(states: [
+                    .ready(
+                        .init(
+                            plan: ProjectTrackerPluginRuntimePlan(
+                                pluginID: ProjectTrackerPlugin.pluginID,
+                                displayName: "Project Tracker",
+                                endpoint: URL(string: "http://localhost:8000")!,
+                                healthURL: URL(string: "http://localhost:8000/health")!,
+                                storageNamespace: "project-tracker",
+                                capabilities: [.channelProvider, .commandProvider, .statusAdapter]
+                            ),
+                            contributions: .empty
+                        )
+                    ),
+                ])
+            }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: .authorized)
+
+        XCTAssertTrue(snapshot.items.contains { item in
+            item.title == "Plugins"
+                && item.severity == .ok
+                && item.detail.contains("1 ready")
+                && item.recovery == nil
+        })
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("SetupDiagnosticsServiceTests")

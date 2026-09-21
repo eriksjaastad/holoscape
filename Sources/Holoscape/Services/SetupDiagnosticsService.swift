@@ -94,6 +94,7 @@ final class SetupDiagnosticsService {
     private let accessibilityTrustProvider: () -> Bool
     private let diagnosticsDirectoryReadableProvider: () -> Bool
     private let brokerFailureProvider: () -> SetupDiagnosticItem?
+    private let pluginStartupSnapshotProvider: () -> PluginStartupSnapshot
     private let now: () -> Date
 
     init(
@@ -110,6 +111,7 @@ final class SetupDiagnosticsService {
             return FileManager.default.isReadableFile(atPath: diagnosticsURL.path)
         },
         brokerFailureProvider: @escaping () -> SetupDiagnosticItem? = { BrokerHostLaunchDiagnostics.lastLaunchFailure() },
+        pluginStartupSnapshotProvider: (() -> PluginStartupSnapshot)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.configService = configService
@@ -117,6 +119,9 @@ final class SetupDiagnosticsService {
         self.accessibilityTrustProvider = accessibilityTrustProvider
         self.diagnosticsDirectoryReadableProvider = diagnosticsDirectoryReadableProvider
         self.brokerFailureProvider = brokerFailureProvider
+        self.pluginStartupSnapshotProvider = pluginStartupSnapshotProvider ?? {
+            PluginManager(config: configService.load()).prepareStartup()
+        }
         self.now = now
     }
 
@@ -146,6 +151,7 @@ final class SetupDiagnosticsService {
         items.append(accessibilityDiagnosticItem(isTrusted: accessibilityTrustProvider()))
         items.append(automationDiagnosticItem())
         items.append(crashDiagnosticsItem(isReadable: diagnosticsDirectoryReadableProvider()))
+        items.append(pluginDiagnosticItem(snapshot: pluginStartupSnapshotProvider()))
         return SetupDiagnosticsSnapshot(capturedAt: now(), items: items)
     }
 
@@ -246,6 +252,36 @@ final class SetupDiagnosticsService {
             detail: "Holoscape cannot read ~/Library/Logs/DiagnosticReports, so recent-crash detection may miss reports.",
             recovery: "Do not grant broad Full Disk Access by default. If crash detection matters on this machine, open System Settings > Privacy & Security > Full Disk Access and enable Holoscape intentionally.",
             settingsURL: SystemSettingsURL.fullDiskAccess
+        )
+    }
+
+    private func pluginDiagnosticItem(snapshot: PluginStartupSnapshot) -> SetupDiagnosticItem {
+        let failures = snapshot.failures
+        guard failures.isEmpty else {
+            let detail = failures.map { failure in
+                "\(failure.displayName) (\(failure.pluginID)): \(failure.message)"
+            }.joined(separator: "\n")
+            return SetupDiagnosticItem(
+                title: "Plugins",
+                severity: .failure,
+                detail: detail,
+                recovery: "Fix the plugin configuration or disable the affected plugin. Holoscape terminal startup continues without plugin contributions."
+            )
+        }
+
+        let readyCount = snapshot.states.filter { state in
+            if case .ready = state { return true }
+            return false
+        }.count
+        let disabledCount = snapshot.states.filter { state in
+            if case .disabled = state { return true }
+            return false
+        }.count
+        return SetupDiagnosticItem(
+            title: "Plugins",
+            severity: .ok,
+            detail: "Plugin startup prepared with \(readyCount) ready and \(disabledCount) disabled plugin(s).",
+            recovery: nil
         )
     }
 
