@@ -37,14 +37,23 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
         if let transport {
             activeTransport = transport
         } else {
-            let launched = try BrokerSessionHostProcessTransport(
-                executableURL: executableURL,
-                arguments: arguments,
-                environment: environment,
-                responseTimeoutSeconds: responseTimeoutSeconds
-            )
-            transport = launched
-            activeTransport = launched
+            do {
+                let launched = try BrokerSessionHostProcessTransport(
+                    executableURL: executableURL,
+                    arguments: arguments,
+                    environment: environment,
+                    responseTimeoutSeconds: responseTimeoutSeconds
+                )
+                BrokerHostLaunchDiagnostics.clearLaunchFailure()
+                transport = launched
+                activeTransport = launched
+            } catch {
+                BrokerHostLaunchDiagnostics.recordLaunchFailure(
+                    executablePath: executableURL.path,
+                    message: String(describing: error)
+                )
+                throw error
+            }
         }
         return try activeTransport.sendFrame(frame)
     }
