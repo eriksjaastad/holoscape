@@ -77,6 +77,7 @@ final class SetupDiagnosticsService {
     private let configService: ConfigService
     private let notificationSettingsProvider: NotificationAuthorizationStatusProvider
     private let accessibilityTrustProvider: () -> Bool
+    private let diagnosticsDirectoryReadableProvider: () -> Bool
     private let brokerFailureProvider: () -> SetupDiagnosticItem?
     private let now: () -> Date
 
@@ -88,12 +89,18 @@ final class SetupDiagnosticsService {
             }
         },
         accessibilityTrustProvider: @escaping () -> Bool = { AXIsProcessTrusted() },
+        diagnosticsDirectoryReadableProvider: @escaping () -> Bool = {
+            let diagnosticsURL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/DiagnosticReports")
+            return FileManager.default.isReadableFile(atPath: diagnosticsURL.path)
+        },
         brokerFailureProvider: @escaping () -> SetupDiagnosticItem? = { BrokerHostLaunchDiagnostics.lastLaunchFailure() },
         now: @escaping () -> Date = Date.init
     ) {
         self.configService = configService
         self.notificationSettingsProvider = notificationSettingsProvider
         self.accessibilityTrustProvider = accessibilityTrustProvider
+        self.diagnosticsDirectoryReadableProvider = diagnosticsDirectoryReadableProvider
         self.brokerFailureProvider = brokerFailureProvider
         self.now = now
     }
@@ -123,6 +130,7 @@ final class SetupDiagnosticsService {
         items.append(notificationDiagnosticItem(status: notificationStatus))
         items.append(accessibilityDiagnosticItem(isTrusted: accessibilityTrustProvider()))
         items.append(automationDiagnosticItem())
+        items.append(crashDiagnosticsItem(isReadable: diagnosticsDirectoryReadableProvider()))
         return SetupDiagnosticsSnapshot(capturedAt: now(), items: items)
     }
 
@@ -200,6 +208,23 @@ final class SetupDiagnosticsService {
             severity: .warning,
             detail: "macOS tracks Automation permission per target app and may prompt when Holoscape first controls System Events or another app.",
             recovery: "Review System Settings > Privacy & Security > Automation after first use; enable the specific target apps Holoscape is allowed to control."
+        )
+    }
+
+    private func crashDiagnosticsItem(isReadable: Bool) -> SetupDiagnosticItem {
+        if isReadable {
+            return SetupDiagnosticItem(
+                title: "Crash diagnostics",
+                severity: .ok,
+                detail: "Holoscape can read the current user's DiagnosticReports folder for recent Holoscape crash reports.",
+                recovery: nil
+            )
+        }
+        return SetupDiagnosticItem(
+            title: "Crash diagnostics",
+            severity: .warning,
+            detail: "Holoscape cannot read ~/Library/Logs/DiagnosticReports, so recent-crash detection may miss reports.",
+            recovery: "Do not grant broad Full Disk Access by default. If crash detection matters on this machine, open System Settings > Privacy & Security > Full Disk Access and enable Holoscape intentionally."
         )
     }
 
