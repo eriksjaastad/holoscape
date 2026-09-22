@@ -13,7 +13,7 @@ tools/router/processed_ids.json
 tools/router/router.log
 tools/router/router.lock
 
-# Local plan files from plan mode
-.claude/plans/
+# Local agent state
+.claude/
 .scratch/
 PROGRESS.md
