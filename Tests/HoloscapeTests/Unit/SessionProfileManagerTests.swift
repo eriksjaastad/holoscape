@@ -87,11 +87,26 @@ final class SessionProfileManagerTests: XCTestCase {
     @MainActor
     func testUnifiedLauncherMapsNewChannelItemsToDirectActions() {
         XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Shell"), .shell)
-        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (OAuth)"), .agentOAuth)
-        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (API Key)"), .agentAPIKey)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (OAuth)"), .agentOAuthDraft)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (API Key)"), .agentAPIKeyDraft)
         XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Group Chat"), .groupChat)
         XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Bridge"), .bridge)
         XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "holoscape"), .sessionProfile("holoscape"))
+    }
+
+    @MainActor
+    func testUnifiedLauncherMapsInlineAgentFieldsToCreateAction() {
+        let action = MainWindowController.unifiedLauncherAction(
+            for: "Agent (OAuth) /Users/erik/projects/holoscape as Holoscape Agent"
+        )
+
+        XCTAssertEqual(
+            action,
+            .agentOAuth(.init(
+                workingDirectory: URL(fileURLWithPath: "/Users/erik/projects/holoscape"),
+                label: "Holoscape Agent"
+            ))
+        )
     }
 
     @MainActor

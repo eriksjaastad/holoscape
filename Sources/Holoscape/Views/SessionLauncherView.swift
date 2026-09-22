@@ -243,6 +243,19 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.performClick(nil)
     }
 
+    /// Seed the editable launcher with the inline fields needed to create an
+    /// agent channel. This keeps Agent creation inside the keyboard-driven
+    /// picker instead of bouncing through a second NSAlert sheet.
+    func beginInlineAgentChannelDraft(kindLabel: String, directory: URL) {
+        let defaultLabel = directory.lastPathComponent.isEmpty ? "Agent" : directory.lastPathComponent
+        comboBox.stringValue = "\(kindLabel) \(directory.path) as \(defaultLabel)"
+        comboBox.placeholderString = "\(kindLabel) <directory> as <label>"
+        focus()
+        if let editor = window?.fieldEditor(true, for: comboBox) as? NSTextView {
+            editor.selectAll(nil)
+        }
+    }
+
     @objc private func refreshClicked() {
         launcherDelegate?.sessionLauncherDidRequestRefresh(self)
     }

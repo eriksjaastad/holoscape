@@ -37,4 +37,26 @@ final class AgentChannelPromptTests: XCTestCase {
         XCTAssertEqual(resolved.workingDirectory.path, NSHomeDirectory() + "/projects/auxesis")
         XCTAssertEqual(resolved.label, "Auxesis Agent")
     }
+
+    func testInlineAgentInputParsesDirectoryAndLabelFromLauncherText() {
+        let resolved = MainWindowController.agentChannelPromptResult(
+            fromInlineInput: "Agent (OAuth) /Users/erik/projects/holoscape as Holoscape Agent",
+            kindLabel: "Agent (OAuth)",
+            defaultDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        XCTAssertEqual(resolved?.workingDirectory.path, "/Users/erik/projects/holoscape")
+        XCTAssertEqual(resolved?.label, "Holoscape Agent")
+    }
+
+    func testInlineAgentInputWithoutFieldsUsesDefaultDirectoryAndBasename() {
+        let resolved = MainWindowController.agentChannelPromptResult(
+            fromInlineInput: "Agent (API Key)",
+            kindLabel: "Agent (API Key)",
+            defaultDirectory: URL(fileURLWithPath: "/Users/erik/projects")
+        )
+
+        XCTAssertEqual(resolved?.workingDirectory.path, "/Users/erik/projects")
+        XCTAssertEqual(resolved?.label, "projects")
+    }
 }

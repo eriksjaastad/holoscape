@@ -9,11 +9,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     enum UnifiedLauncherAction: Equatable {
         case shell
-        case agentOAuth
-        case agentAPIKey
+        case agentOAuthDraft
+        case agentAPIKeyDraft
+        case agentOAuth(AgentChannelPromptResult)
+        case agentAPIKey(AgentChannelPromptResult)
         case groupChat
         case bridge
         case sessionProfile(String)
+    }
+
+    struct AgentChannelPromptResult: Equatable {
+        let workingDirectory: URL
+        let label: String
     }
 
     /// Amplify Task 5.3 makes this reassignable so shaped-window
@@ -2174,11 +2181,6 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         alert.beginSheetModal(for: window)
     }
 
-    private struct AgentChannelPromptResult {
-        let workingDirectory: URL
-        let label: String
-    }
-
     static func resolvedAgentChannelPrompt(
         directoryInput: String,
         labelInput: String,
@@ -2192,48 +2194,31 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         return (workingDirectory, trimmedLabel.isEmpty ? defaultLabel : trimmedLabel)
     }
 
-    private func promptForAgentChannel(defaultDirectory: URL) -> AgentChannelPromptResult? {
-        let directoryField = NSTextField(string: defaultDirectory.path)
-        directoryField.identifier = NSUserInterfaceItemIdentifier("agent-channel-directory-field")
-        directoryField.placeholderString = defaultDirectory.path
-        directoryField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+    static func agentChannelPromptResult(fromInlineInput input: String, kindLabel: String, defaultDirectory: URL) -> AgentChannelPromptResult? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let normalizedKind = kindLabel.lowercased()
+        guard lower == normalizedKind || lower.hasPrefix(normalizedKind + " ") else { return nil }
 
-        let labelField = NSTextField(string: defaultDirectory.lastPathComponent)
-        labelField.identifier = NSUserInterfaceItemIdentifier("agent-channel-label-field")
-        labelField.placeholderString = "Optional label"
-        labelField.widthAnchor.constraint(equalToConstant: 360).isActive = true
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-
-        let directoryLabel = NSTextField(labelWithString: "Working directory")
-        let labelLabel = NSTextField(labelWithString: "Label")
-        stack.addArrangedSubview(directoryLabel)
-        stack.addArrangedSubview(directoryField)
-        stack.addArrangedSubview(labelLabel)
-        stack.addArrangedSubview(labelField)
-
-        let alert = NSAlert()
-        alert.messageText = "New Agent Channel"
-        alert.informativeText = "Choose where the OAuth agent should start. The label defaults to the directory name."
-        alert.accessoryView = stack
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let remainder = String(trimmed.dropFirst(kindLabel.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = remainder.components(separatedBy: " as ")
+        let directoryInput = parts.first ?? ""
+        let labelInput = parts.dropFirst().joined(separator: " as ")
         let resolved = Self.resolvedAgentChannelPrompt(
-            directoryInput: directoryField.stringValue,
-            labelInput: labelField.stringValue,
+            directoryInput: directoryInput,
+            labelInput: labelInput,
             defaultDirectory: defaultDirectory
         )
         return AgentChannelPromptResult(workingDirectory: resolved.workingDirectory, label: resolved.label)
     }
 
-    private func createAgentChannel(authType: AgentAuthType) {
-        let defaultDir = DefaultWorkingDirectory.preferredURL
-        guard let prompt = promptForAgentChannel(defaultDirectory: defaultDir) else { return }
+    private func defaultAgentChannelPrompt() -> AgentChannelPromptResult {
+        let directory = DefaultWorkingDirectory.preferredURL
+        let label = directory.lastPathComponent.isEmpty ? "Agent" : directory.lastPathComponent
+        return AgentChannelPromptResult(workingDirectory: directory, label: label)
+    }
+
+    private func createAgentChannel(authType: AgentAuthType, prompt: AgentChannelPromptResult) {
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
             role: prompt.label,
@@ -2465,9 +2450,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             case .shell:
                 createShellChannel()
             case .agentDirect:
-                createAgentChannel(authType: .oauth)
+                createAgentChannel(authType: .oauth, prompt: defaultAgentChannelPrompt())
             case .agentAPI:
-                createAgentChannel(authType: .apiKey(""))
+                createAgentChannel(authType: .apiKey(""), prompt: defaultAgentChannelPrompt())
             case .bridge:
                 createBridgeChannel()
             case .groupChat:
@@ -2532,13 +2517,21 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - SessionLauncherDelegate
 
     static func unifiedLauncherAction(for label: String) -> UnifiedLauncherAction {
-        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (OAuth)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+            return trimmed.caseInsensitiveCompare("Agent (OAuth)") == .orderedSame ? .agentOAuthDraft : .agentOAuth(prompt)
+        }
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (API Key)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+            return trimmed.caseInsensitiveCompare("Agent (API Key)") == .orderedSame ? .agentAPIKeyDraft : .agentAPIKey(prompt)
+        }
+
+        switch trimmed.lowercased() {
         case "shell":
             return .shell
-        case "agent (oauth)", "agent oauth", "oauth agent":
-            return .agentOAuth
-        case "agent (api key)", "agent api key", "api key agent":
-            return .agentAPIKey
+        case "agent oauth", "oauth agent":
+            return .agentOAuthDraft
+        case "agent api key", "api key agent":
+            return .agentAPIKeyDraft
         case "group chat", "chat":
             return .groupChat
         case "bridge":
@@ -2552,10 +2545,14 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         switch action {
         case .shell:
             createShellChannel()
-        case .agentOAuth:
-            createAgentChannel(authType: .oauth)
-        case .agentAPIKey:
-            createAgentChannel(authType: .apiKey(""))
+        case .agentOAuthDraft:
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (OAuth)", directory: DefaultWorkingDirectory.preferredURL)
+        case .agentAPIKeyDraft:
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (API Key)", directory: DefaultWorkingDirectory.preferredURL)
+        case .agentOAuth(let prompt):
+            createAgentChannel(authType: .oauth, prompt: prompt)
+        case .agentAPIKey(let prompt):
+            createAgentChannel(authType: .apiKey(""), prompt: prompt)
         case .groupChat:
             createGroupChatChannel()
         case .bridge:
