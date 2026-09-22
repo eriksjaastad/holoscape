@@ -63,6 +63,7 @@ extension MainWindowController {
             baseImage: baseImage,
             in: shapedContent
         )
+        installValidatedChromeAnimations(from: loaded, into: hostView)
         let interior = installInteriorView(
             interiorRect: chrome.interiorRect,
             interiorPath: chrome.interiorPath,
@@ -572,6 +573,7 @@ extension MainWindowController {
         let previousResponder = window.firstResponder
         chromeWindowControlButtons.removeAll()
         tearDownChromeDragHandles()
+        currentChromeHostView?.setDensityMode(.off)
         currentChromeHostView = nil
         currentChromeInteriorView = nil
 
@@ -656,12 +658,25 @@ extension MainWindowController {
         baseImage: CGImage,
         in container: NSView
     ) -> ChromeHostView {
-        let host = ChromeHostView(chrome: chrome, baseImage: baseImage, clock: nil)
+        let host = ChromeHostView(chrome: chrome, baseImage: baseImage, clock: chromeAnimationClock)
         host.frame = container.bounds
         host.autoresizingMask = [.width, .height]
         container.addSubview(host, positioned: .below, relativeTo: nil)
         currentChromeHostView = host
         return host
+    }
+
+    /// Install only animation descriptors accepted by the load-time
+    /// validator. Invalid descriptors are represented in the banner via
+    /// `LoadedSkin.validationBannerReason`; the renderer path should never
+    /// see them.
+    func installValidatedChromeAnimations(from loaded: LoadedSkin, into host: ChromeHostView) {
+        guard let animations = loaded.chrome?.animations, !animations.isEmpty else { return }
+        let disabled = loaded.chromeValidation?.disabledAnimationIDs ?? []
+        let accepted = animations.filter { !disabled.contains($0.id) }
+        guard !accepted.isEmpty else { return }
+        host.installAnimatedLayers(accepted)
+        chromeAnimationClock.start()
     }
 
     /// Install `InteriorView` pinned to `chrome.interiorRect`.
@@ -704,15 +719,17 @@ extension MainWindowController {
     /// sites in SettingsService can bind to the selector without
     /// waiting on PR #13's work.
     func updateDensityModeOnChrome(_ mode: DensityModeManager.Mode) {
-        // TODO PR #13 (Task 25.2): forward to ChromeHostView
-        // attached to the current window's contentView.
+        currentChromeHostView?.setDensityMode(mode)
     }
 
     /// Accessibility Reduce Motion change hook. PR #13 (task 25.3)
     /// wires NSWorkspace notifications to freeze/resume the
     /// animation clock through this method.
     func handleReduceMotionChange() {
-        // TODO PR #13 (Task 25.3): forward to
-        // ChromeHostView.freezeForReduceMotion / resume.
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            currentChromeHostView?.freezeForReduceMotion()
+        } else {
+            currentChromeHostView?.resumeFromReduceMotion()
+        }
     }
 }

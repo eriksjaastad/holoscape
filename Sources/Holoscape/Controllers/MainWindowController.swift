@@ -158,6 +158,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// suppression paths never fired in production.
     let animationEngine: AnimationEngine
 
+    /// Shared v4 chrome animation clock. Owned by the controller (not
+    /// `ChromeHostView`) so clock lifetime survives weak renderer
+    /// subscriptions and so density / Reduce Motion hooks have a single
+    /// runtime object to pause/resume.
+    let chromeAnimationClock = SharedAnimationClock()
+
     /// Reactive snapshot shared across chrome views so state-variant
     /// matches (hover, agentState, etc.) stay coherent during a layout
     /// pass. Owned here so MainWindowController can update it in response
