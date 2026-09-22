@@ -172,6 +172,34 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertTrue(delegate.stateChanges.contains(.active))
     }
 
+    func testCodexApprovalPromptInScrollbackMarksAgentNeedsApproval() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+
+        terminal.lines = [
+            "Codex wants to run a command:",
+            "$ git status --short",
+            "Allow command?",
+            "› 1. Yes",
+            "  2. Yes, and don't ask again for this command",
+            "  3. No"
+        ]
+        terminal.outputHandler?()
+
+        XCTAssertEqual(controller.persistentState.kind, .needsApproval)
+        XCTAssertEqual(controller.persistentState.source, .terminalOutput)
+        XCTAssertEqual(controller.persistentState.reason, "Codex awaiting approval")
+    }
+
     func testAgentUserInputClearsTerminalOutputApprovalState() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(

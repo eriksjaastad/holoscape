@@ -28,7 +28,8 @@ class HoloscapeAPIServer {
     private weak var windowController: MainWindowController?
     let port: UInt16
 
-    /// Notification state per channel: "permission_prompt", "idle_prompt", or nil (normal)
+    /// Notification state per channel: legacy Claude hook names or adapter-backed
+    /// events such as Codex `awaiting_approval` / `response_completed`.
     private(set) var channelNotifications: [UUID: String] = [:]
     private(set) var mutedNotificationChannelIds: Set<UUID> = []
     private let agentStatusAdapter = AgentStatusAdapter()
@@ -268,8 +269,8 @@ class HoloscapeAPIServer {
             windowController?.refreshAllTabs()
 
             // Send off-screen attention only for unmuted, inactive channels.
-            if shouldRequestOffscreenAttention(for: channel, type: type) {
-                requestOffscreenAttention(type: type, channel: channel)
+            if shouldRequestOffscreenAttention(for: channel, type: type, tool: tool) {
+                requestOffscreenAttention(type: type, tool: tool, channel: channel)
             }
         }
 
@@ -305,28 +306,41 @@ class HoloscapeAPIServer {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private func shouldRequestOffscreenAttention(for channel: any ChannelController, type: String) -> Bool {
-        guard type == "permission_prompt" || type == "idle_prompt" else { return false }
+    static func offscreenAttentionKind(type: String, tool: String?) -> PersistentChannelStateKind? {
+        guard let state = AgentStatusAdapter().persistentState(tool: tool, event: type) else {
+            return nil
+        }
+
+        switch state.kind {
+        case .needsApproval, .ready:
+            return state.kind
+        case .running, .error, .stale:
+            return nil
+        }
+    }
+
+    private func shouldRequestOffscreenAttention(for channel: any ChannelController, type: String, tool: String?) -> Bool {
+        guard Self.offscreenAttentionKind(type: type, tool: tool) != nil else { return false }
         guard !mutedNotificationChannelIds.contains(channel.channelId) else { return false }
         return windowController?.activeChannelId != channel.channelId
     }
 
-    private func requestOffscreenAttention(type: String, channel: any ChannelController) {
+    private func requestOffscreenAttention(type: String, tool: String?, channel: any ChannelController) {
         updateDockBadge()
         dockAttentionClient.requestUserAttention()
-        sendDesktopNotification(type: type, channel: channel)
+        sendDesktopNotification(type: type, tool: tool, channel: channel)
     }
 
-    private func sendDesktopNotification(type: String, channel: any ChannelController) {
+    private func sendDesktopNotification(type: String, tool: String?, channel: any ChannelController) {
         let content = UNMutableNotificationContent()
-        switch type {
-        case "permission_prompt":
+        switch Self.offscreenAttentionKind(type: type, tool: tool) {
+        case .needsApproval:
             content.title = "Permission Needed"
             content.body = "\(channel.displayLabel) is waiting for approval"
-        case "idle_prompt":
+        case .ready:
             content.title = "Task Complete"
             content.body = "\(channel.displayLabel) is ready for input"
-        default:
+        case .running, .error, .stale, .none:
             content.title = "Holoscape"
             content.body = "\(channel.displayLabel): \(type)"
         }
