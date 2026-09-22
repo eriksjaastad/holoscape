@@ -2084,12 +2084,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// snapshot drives active/global chrome surfaces such as the tab bar,
     /// input panel, vessel chrome, and future shader uniforms.
     private func publishActiveChannelStateToReactiveSnapshot(_ channel: any ChannelController) {
-        reactiveSnapshot.setChannelState(
-            channelId: Int32(truncatingIfNeeded: channel.channelId.hashValue),
-            isActive: 1,
-            unread: channel.hasUnread ? 1 : 0
+        reactiveSnapshot.applyChannelRenderSnapshot(
+            ChannelRenderSnapshot(channel: channel, isActive: true)
         )
-        reactiveSnapshot.applyPersistentChannelState(channel.persistentState)
     }
 
     func refreshLauncher() {
