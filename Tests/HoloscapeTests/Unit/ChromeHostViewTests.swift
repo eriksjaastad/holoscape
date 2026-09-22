@@ -201,6 +201,65 @@ final class ChromeHostViewTests: XCTestCase {
             ".full after .off must reinstall renderers from chrome.animations (Req 15.9)")
     }
 
+    // MARK: - Hot reload diff
+
+    func testDiffAnimatedLayersAddsUpdatesAndRemovesByStableID() {
+        var chrome = makeChrome()
+        chrome.animations = [
+            makeParticleDescriptor(id: "keep", birthRate: 10, z: 1),
+            makeParticleDescriptor(id: "remove", birthRate: 20, z: 2)
+        ]
+        let host = ChromeHostView(chrome: chrome, baseImage: makeFixtureImage(), clock: nil)
+        host.installAnimatedLayers(chrome.animations!)
+
+        host.diffAnimatedLayers([
+            makeParticleDescriptor(id: "keep", birthRate: 99, z: 1),
+            makeParticleDescriptor(id: "add", birthRate: 30, z: 3)
+        ])
+
+        XCTAssertEqual(host.renderers.map(\.id), ["keep", "add"],
+            "hot reload must preserve matching ids, install new ids, and uninstall missing ids")
+        XCTAssertEqual(host._testAnimatedLayersContainer.sublayers?.count, 2)
+
+        let keptLayer = host.renderers.first { $0.id == "keep" }!.layer as! CAEmitterLayer
+        XCTAssertEqual(keptLayer.emitterCells?.first?.birthRate, 99,
+            "matching ids must update renderer params in place")
+    }
+
+    func testDiffAnimatedLayersRefreshesChromeDescriptorForDensityReinstall() {
+        var chrome = makeChrome()
+        chrome.animations = [makeParticleDescriptor(id: "old", birthRate: 10)]
+        let host = ChromeHostView(chrome: chrome, baseImage: makeFixtureImage(), clock: nil)
+        host.installAnimatedLayers(chrome.animations!)
+
+        host.diffAnimatedLayers([makeParticleDescriptor(id: "new", birthRate: 30)])
+        host.setDensityMode(.off)
+        host.setDensityMode(.full)
+
+        XCTAssertEqual(host.renderers.map(\.id), ["new"],
+            ".full after .off must reinstall from the hot-reloaded descriptor, not stale init chrome")
+    }
+
+    func testDiffAnimatedLayersKeepsClockSubscriptionsExact() {
+        var chrome = makeChrome()
+        chrome.animations = [makeParticleDescriptor(id: "old")]
+        let clock = SharedAnimationClock()
+        let host = ChromeHostView(chrome: chrome, baseImage: makeFixtureImage(), clock: clock)
+        host.installAnimatedLayers(chrome.animations!)
+        XCTAssertEqual(clock._testLiveSubscriberCount, 1)
+
+        host.diffAnimatedLayers([
+            makeParticleDescriptor(id: "old", birthRate: 42),
+            makeParticleDescriptor(id: "new", birthRate: 11)
+        ])
+        XCTAssertEqual(clock._testLiveSubscriberCount, 2,
+            "new renderers must subscribe while preserved renderers must not double-subscribe")
+
+        host.diffAnimatedLayers([makeParticleDescriptor(id: "new", birthRate: 12)])
+        XCTAssertEqual(clock._testLiveSubscriberCount, 1,
+            "removed renderers must unsubscribe during hot reload")
+    }
+
     // MARK: - Mask
 
     func testContainerMaskInstalledAtInit() {
@@ -224,15 +283,19 @@ final class ChromeHostViewTests: XCTestCase {
 
     // MARK: - Test helpers
 
-    private func makeParticleDescriptor(id: String) -> ChromeAnimationLayer {
+    private func makeParticleDescriptor(
+        id: String,
+        birthRate: Double = 10,
+        z: Int = 1
+    ) -> ChromeAnimationLayer {
         ChromeAnimationLayer(
             id: id,
             kind: .particle,
             rect: SkinRect(x: 0, y: 0, width: 100, height: 100),
-            z: 1,
+            z: z,
             params: ChromeAnimationLayer.Params(
                 particle: ParticleParams(
-                    birthRate: 10, lifetime: 2,
+                    birthRate: birthRate, lifetime: 2,
                     velocity: 20, emissionAngle: 0, emissionRange: 0,
                     color: "#ffffff", scale: 0.5
                 )
