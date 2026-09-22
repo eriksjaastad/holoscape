@@ -18,7 +18,7 @@ final class CommandHistoryPropertyTests: XCTestCase {
             let next = history.next()
             // After previous() then next(), we should be past the end (nil)
             // or at the next entry
-            return prev == nonEmpty.last
+            return prev == nonEmpty.last && next == nil
         }
     }
 }

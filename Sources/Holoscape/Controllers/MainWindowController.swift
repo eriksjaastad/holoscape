@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
+class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
     SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate,
@@ -1915,20 +1915,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - NSSplitViewDelegate
 
-    nonisolated func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
         // Allow the sidebar (first subview at index 0) to collapse
         return splitView.subviews.first === subview
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         return 0  // allow full collapse; canCollapseSubview handles the rest
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         return 350  // maximum sidebar width
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
+    func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
         return splitView.subviews.first === subview
     }
 
