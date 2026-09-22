@@ -44,4 +44,19 @@ final class OffscreenNotificationUXTests: XCTestCase {
             "1"
         )
     }
+
+    func testCodexHookEventsAreEligibleForOffscreenAttention() {
+        XCTAssertEqual(
+            HoloscapeAPIServer.offscreenAttentionKind(type: "awaiting_approval", tool: "codex"),
+            .needsApproval
+        )
+        XCTAssertEqual(
+            HoloscapeAPIServer.offscreenAttentionKind(type: "response_completed", tool: "codex"),
+            .ready
+        )
+    }
+
+    func testUnknownHookEventsDoNotRequestOffscreenAttention() {
+        XCTAssertNil(HoloscapeAPIServer.offscreenAttentionKind(type: "token_delta", tool: "codex"))
+    }
 }
