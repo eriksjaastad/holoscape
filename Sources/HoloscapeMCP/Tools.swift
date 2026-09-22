@@ -69,6 +69,20 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "required": .array([.string("channel")]),
                 ])
             ),
+            Tool(
+                name: "holoscape_run_process",
+                description: "Run a local shell command via /bin/zsh -lc, capture stdout/stderr, honor workingDirectory/env/timeoutSeconds, and return exit status.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "command": .object(["type": .string("string"), "description": .string("Shell command to execute")]),
+                        "workingDirectory": .object(["type": .string("string"), "description": .string("Optional working directory")]),
+                        "env": .object(["type": .string("object"), "description": .string("Optional string environment variable overrides")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
+                    ]),
+                    "required": .array([.string("command")]),
+                ])
+            ),
         ])
     }
 
@@ -127,6 +141,14 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 let result = try await client.readOutput(id: channel, lines: lines)
                 let output = (result["lines"] as? [String])?.joined(separator: "\n") ?? ""
                 return CallTool.Result(content: [.text(text: output.isEmpty ? "(no output)" : output, annotations: nil, _meta: nil)])
+
+            case "holoscape_run_process":
+                let request = try processToolRequest(from: args)
+                let result = try await runProcessTool(request)
+                return CallTool.Result(
+                    content: [.text(text: formatProcessToolResult(result), annotations: nil, _meta: nil)],
+                    isError: result.timedOut || (result.exitCode ?? 0) != 0
+                )
 
             default:
                 return CallTool.Result(content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)], isError: true)
