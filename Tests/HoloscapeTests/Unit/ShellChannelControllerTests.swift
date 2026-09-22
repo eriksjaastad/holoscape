@@ -3,6 +3,19 @@ import XCTest
 
 @MainActor
 final class ShellChannelControllerTests: XCTestCase {
+    func testShellDisplayLabelIncludesGitBranchForWorkingDirectory() throws {
+        let repo = try makeGitRepository(branch: "feature/tab-branch")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: repo.path,
+            terminal: MockTerminalProcess()
+        )
+
+        XCTAssertEqual(controller.displayLabel, "\(repo.lastPathComponent) · feature/tab-branch")
+    }
+
     func testActivateUsesInjectedTerminalProcess() {
         let terminal = MockTerminalProcess()
         let controller = ShellChannelController(
@@ -391,6 +404,16 @@ final class ShellChannelControllerTests: XCTestCase {
         )
 
         XCTAssertEqual(controller.displayLabel, "logs")
+    }
+
+    private func makeGitRepository(branch: String) throws -> URL {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ShellChannelControllerTests-")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let git = repo.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+        try "ref: refs/heads/\(branch)\n".write(to: git.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        return repo
     }
 }
 

@@ -45,7 +45,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         } else {
             base = "Shell"
         }
-        return base
+        return ChannelGitBranchLabel.decorate(base, workingDirectory: workingDirectory)
     }
 
     var displayLabel: String {
