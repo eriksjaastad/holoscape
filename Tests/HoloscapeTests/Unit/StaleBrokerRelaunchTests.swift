@@ -343,6 +343,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         // keystroke is what notices it.
         runtime.isHostAvailable = false
         tab.sendInput("echo host-lost")
+        try waitUntil { tab.state == .stale }
 
         XCTAssertEqual(tab.state, .stale)
         XCTAssertEqual(tab.recoveryAction, .retryBrokerHost)
@@ -391,6 +392,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         let sessionID = try XCTUnwrap(tab.brokerSessionID)
         runtime.isHostAvailable = false
         tab.sendInput("echo host-lost")
+        try waitUntil { tab.recoveryAction == .retryBrokerHost }
         XCTAssertEqual(tab.recoveryAction, .retryBrokerHost)
 
         // Host comes back and the user retries the tab.
@@ -463,6 +465,20 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         XCTAssertEqual(restoredTab.brokerSessionID, Self.lostSessionID)
         XCTAssertTrue(runtime.attachedIDs.contains(Self.lostSessionID), "The original session must still be reattachable")
         XCTAssertNil(relaunched.manager.brokerRegistryReadFailure)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3,
+        condition: () throws -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if try condition() { return }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        XCTFail("Timed out waiting for condition", file: file, line: line)
     }
 
     // MARK: - Regression guards for the neighbouring restore paths

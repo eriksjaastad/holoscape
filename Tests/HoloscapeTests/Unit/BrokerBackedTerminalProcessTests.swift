@@ -86,6 +86,42 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class BlockingInputRuntime: BrokerSessionRuntime, @unchecked Sendable {
+        private let lock = NSLock()
+        private let entered = DispatchSemaphore(value: 0)
+        private let release = DispatchSemaphore(value: 0)
+        private var _sentInputs: [[UInt8]] = []
+
+        var sentInputs: [[UInt8]] {
+            lock.withLock { _sentInputs }
+        }
+
+        func waitForFirstWrite(timeout: TimeInterval = 1) -> Bool {
+            entered.wait(timeout: .now() + timeout) == .success
+        }
+
+        func unblockWrites() {
+            release.signal()
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { [] }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
+            entered.signal()
+            _ = release.wait(timeout: .now() + 2)
+            lock.withLock { _sentInputs.append(bytes) }
+        }
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     /// Models a broker host that accepts a session and then disappears: every
     /// follow-up operation on the live session reports transport failure until
     /// `isHostAvailable` is restored (the host coming back).
@@ -237,10 +273,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         runtime.isHostAvailable = false
         fixture.terminal.send(Array("hello\n".utf8))
+        try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable])
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
         XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+    }
+
+    func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {
+        let runtime = BlockingInputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008016")
+        defer { fixture.cleanup() }
+
+        let started = Date()
+        fixture.terminal.send(Array("slow-write\n".utf8))
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertLessThan(elapsed, 0.05, "Broker-backed typing must enqueue input without waiting for socket/PTY writes")
+        XCTAssertTrue(runtime.waitForFirstWrite(), "The queued write should still reach the broker lane")
+        runtime.unblockWrites()
+        try waitUntil { runtime.sentInputs.count == 1 }
+        XCTAssertEqual(String(decoding: runtime.sentInputs[0], as: UTF8.self), "slow-write\n")
+    }
+
+    func testBrokerInputWriteLanePreservesPerSessionInputOrder() throws {
+        let runtime = BlockingInputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008017")
+        defer { fixture.cleanup() }
+
+        fixture.terminal.send(Array("first\n".utf8))
+        fixture.terminal.send(Array("second\n".utf8))
+
+        XCTAssertTrue(runtime.waitForFirstWrite(), "Expected the first queued write to enter the lane")
+        runtime.unblockWrites()
+        try waitUntil { runtime.sentInputs.count == 1 }
+        runtime.unblockWrites()
+        try waitUntil { runtime.sentInputs.count == 2 }
+
+        XCTAssertEqual(runtime.sentInputs.map { String(decoding: $0, as: UTF8.self) }, ["first\n", "second\n"])
     }
 
     func testResizeAfterBrokerHostLossReportsHostFailureInsteadOfTrapping() throws {
@@ -848,6 +918,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let output = String(decoding: collected, as: UTF8.self)
         XCTFail("Timed out waiting for broker output containing \(expected). Saw: \(output)", file: file, line: line)
         return output
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
 
