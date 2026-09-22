@@ -45,6 +45,10 @@ final class SharedAnimationClock {
         self.fps = fps
     }
 
+    deinit {
+        tickTimer?.cancel()
+    }
+
     // MARK: - Phase
 
     /// Phase seconds — monotonic, matches `CACurrentMediaTime()` so

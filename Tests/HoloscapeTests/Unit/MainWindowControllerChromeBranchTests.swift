@@ -121,6 +121,8 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
                         "Titled reconstruction must restore standard traffic lights")
         XCTAssertNil(controller.chromeWindowControlButton(.zoomButton),
                      "Detached chrome controls must be removed after chrome teardown")
+        XCTAssertFalse(controller.chromeAnimationClock._testIsRunning,
+                       "Leaving chrome mode must stop the v4 animation clock")
     }
 
     func testCoreLayoutTreeSurvivesChromeReconstruction() throws {
@@ -362,6 +364,41 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertGreaterThan(overlay.frame.width, 0)
         XCTAssertGreaterThan(overlay.frame.height, 0)
         XCTAssertTrue(controller.window.contentView?.subviews.contains(overlay) ?? false)
+    }
+
+    func testChromeBranchInstallsValidatedAnimationLayers() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        let host = try XCTUnwrap(controller.currentChromeHostView)
+        XCTAssertEqual(host.renderers.map(\.id).sorted(), [
+            "bottom-glow",
+            "lcd-marquee",
+            "porthole-sparks",
+            "status-leds",
+        ])
+    }
+
+    func testDensityAndReduceMotionHooksForwardToChromeHost() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        let host = try XCTUnwrap(controller.currentChromeHostView)
+        XCTAssertFalse(host.renderers.isEmpty)
+
+        controller.updateDensityModeOnChrome(.off)
+        XCTAssertTrue(host.renderers.isEmpty)
+        XCTAssertFalse(controller.chromeAnimationClock._testIsRunning)
+
+        controller.updateDensityModeOnChrome(.full)
+        XCTAssertFalse(host.renderers.isEmpty)
+        XCTAssertTrue(controller.chromeAnimationClock._testIsRunning)
+
+        controller.updateDensityModeOnChrome(.minimal)
+        XCTAssertFalse(host.renderers.isEmpty)
+        XCTAssertTrue(controller.chromeAnimationClock._testIsPaused)
+
+        controller.handleReduceMotionChange()
     }
 
     func testTearDownCAMaskClearsMaskAndSampler() {
