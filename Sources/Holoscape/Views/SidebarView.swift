@@ -142,7 +142,7 @@ class SidebarView: NSView {
                     state: channel.state,
                     persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
-                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    elapsedTime: nil,
                     isPinned: isPinned,
                     notificationType: notificationType,
                     recoveryAction: channel.state == .stale ? channel.recoveryAction : nil
@@ -164,7 +164,7 @@ class SidebarView: NSView {
                     state: channel.state,
                     persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
-                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    elapsedTime: nil,
                     isPinned: isPinned,
                     notificationType: notificationType,
                     recoveryAction: channel.state == .stale ? channel.recoveryAction : nil
@@ -479,17 +479,19 @@ class SidebarTabEntry: NSButton {
         }
 
         // Status text is view-level content (not a color) — drive it here.
+        // Normal ready/running tabs intentionally stay textless; the color dot
+        // carries routine status without appending a noisy elapsed timer.
         if let persistentState {
             switch persistentState.kind {
-            case .ready: statusTextField.stringValue = "ready"
-            case .running: statusTextField.stringValue = elapsedTime ?? "running"
+            case .ready: statusTextField.stringValue = ""
+            case .running: statusTextField.stringValue = ""
             case .needsApproval: statusTextField.stringValue = "needs approval"
             case .error: statusTextField.stringValue = persistentState.reason ?? "error"
             case .stale: statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? persistentState.reason ?? "stale"
             }
         } else {
             switch state {
-            case .active:       statusTextField.stringValue = elapsedTime ?? ""
+            case .active:       statusTextField.stringValue = ""
             case .connecting:   statusTextField.stringValue = "connecting..."
             case .disconnected: statusTextField.stringValue = "disconnected"
             case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
@@ -498,7 +500,7 @@ class SidebarTabEntry: NSButton {
         if persistentState == nil, notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"
         } else if persistentState == nil, notificationType == "idle_prompt" {
-            statusTextField.stringValue = "ready"
+            statusTextField.stringValue = ""
         }
 
         // Row fill + text: when this tab is the focused one, paint

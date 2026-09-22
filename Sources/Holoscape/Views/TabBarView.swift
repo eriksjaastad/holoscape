@@ -222,9 +222,7 @@ class TabBarView: NSView {
 
     private func buildTabTitle(for channel: any ChannelController) -> String {
         var title = channel.displayLabel
-        if let elapsed = ElapsedTimeFormatter.format(since: channel.activatedAt) {
-            title += " (\(elapsed))"
-        } else if channel.state == .connecting {
+        if channel.state == .connecting {
             title += " ..."
         } else if channel.state == .stale, let recoveryAction = channel.recoveryAction {
             title += " — \(recoveryAction.surfaceStatusText)"
