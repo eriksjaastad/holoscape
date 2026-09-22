@@ -328,6 +328,13 @@ final class ShapedWindowController {
             backgroundColor = .windowBackgroundColor
         }
 
+        // XCTest and live shaped-window toggles both showed that AppKit can
+        // schedule legacy window/display animations that outlive the temporary
+        // window objects. Shape reconstruction is an implementation detail, not
+        // a user-facing window animation, so disable those implicit animations at
+        // the boundary before creating the replacement window.
+        currentWindow.animationBehavior = .none
+
         // `.borderless` windows cannot become key by default — see
         // `ShapedBorderlessWindow`. Use the subclass only when the
         // target is shaped so the rectangular path stays on the stock
@@ -354,6 +361,7 @@ final class ShapedWindowController {
         // applyWindowShape double-releases and a scheduled
         // _NSWindowTransformAnimation dealloc crashes on a zombie.
         newWindow.isReleasedWhenClosed = false
+        newWindow.animationBehavior = .none
         newWindow.titleVisibility = .hidden
         newWindow.titlebarAppearsTransparent = true
         newWindow.isOpaque = isOpaque

@@ -332,7 +332,14 @@ final class AnimationEngine {
             token: token,
             delegate: delegate
         )
-        layer.add(animation, forKey: id.property.rawValue)
+        // Headless XCTest runs do not have a stable AppKit compositor boundary;
+        // adding real CAAnimations to unattached layers has caused delayed
+        // NSAnimationManager SIGSEGVs when later tests pump the main run loop.
+        // Keep the deterministic tracking state without registering with Core
+        // Animation until the engine has a host view.
+        if hostView != nil {
+            layer.add(animation, forKey: id.property.rawValue)
+        }
     }
 
     /// Drain the tracking entry for `id` only if it still holds `token`.
