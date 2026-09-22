@@ -7,8 +7,10 @@ class MockChannelController: NSObject, ChannelController {
     let channelType: ChannelType
     var hasUnread: Bool = false
     private(set) var state: ChannelState
-    let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
+    let commandHistory = CommandHistory()
+    var displayBaseLabelOverride: String?
+    var displayBaseLabel: String { displayBaseLabelOverride ?? displayLabel }
     var displayLabel: String
     var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
     var recoveryActionOverride: ChannelRecoveryAction?

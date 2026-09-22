@@ -219,6 +219,29 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(button.accessibilityValue() as? String, "stale: retry broker")
         XCTAssertTrue(button.toolTip?.contains("Broker host is unavailable") == true, button.toolTip ?? "nil")
     }
+
+    func testTabCollisionSuffixClearsWhenOnlySiblingRemains() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let first = MockChannelController(type: .shell, label: "work")
+        let second = MockChannelController(type: .shell, label: "work 2")
+        second.displayBaseLabelOverride = "work"
+
+        view.updateTabs(channels: [first, second], activeId: first.channelId)
+        XCTAssertEqual(try buttonTitle(for: second.channelId, in: view), "work 2")
+
+        view.updateTabs(channels: [second], activeId: second.channelId)
+        XCTAssertEqual(try buttonTitle(for: second.channelId, in: view), "work")
+    }
+
+    private func buttonTitle(for channelId: UUID, in view: TabBarView) throws -> String {
+        let buttons = view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+        let button = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
+        return button.title
+    }
 }
 
 // MARK: - Testing hook
