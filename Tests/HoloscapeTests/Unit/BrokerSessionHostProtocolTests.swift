@@ -590,6 +590,107 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testUnixSocketServerDoesNotBlockUnrelatedSessionBehindSlowRequest() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        runtime.isRunning = true
+        let slowID = BrokerSessionID(rawValue: "slow-unrelated-session")
+        let fastID = BrokerSessionID(rawValue: "fast-unrelated-session")
+        runtime.delayReadOutput(for: slowID, seconds: 0.35)
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-concurrent-unrelated-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(socketPath: socketPath, host: host)
+        let serverFinished = expectation(description: "concurrent socket broker served slow and fast requests")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 2)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let slowStarted = runtime.expectReadStarted(for: slowID)
+        let slowFinished = expectation(description: "slow output request finished")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                _ = try client.readAvailableOutput(id: slowID)
+            } catch {
+                serverError.set(error)
+            }
+            slowFinished.fulfill()
+        }
+        wait(for: [slowStarted], timeout: 1)
+
+        let fastStartedAt = Date()
+        let fastTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let fastClient = BrokerSessionHostClientRuntime { frame in try fastTransport.sendFrame(frame) }
+        XCTAssertTrue(try fastClient.isRunning(id: fastID))
+        XCTAssertLessThan(Date().timeIntervalSince(fastStartedAt), 0.2)
+
+        wait(for: [slowFinished, serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events.filter { $0.contains("unrelated-session") }.count, 2)
+    }
+
+    func testHostPreservesSameSessionOrderingAcrossConcurrentSocketRequests() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        let sessionID = BrokerSessionID(rawValue: "same-session-ordering")
+        runtime.delaySendInput(containing: "first", seconds: 0.25)
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-same-session-ordering-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(socketPath: socketPath, host: host)
+        let serverFinished = expectation(description: "concurrent socket broker served ordered writes")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 2)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let firstStarted = runtime.expectSendStarted(containing: "first")
+        let firstFinished = expectation(description: "first send finished")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                try client.sendInput(id: sessionID, bytes: Array("first\n".utf8))
+            } catch {
+                serverError.set(error)
+            }
+            firstFinished.fulfill()
+        }
+        wait(for: [firstStarted], timeout: 1)
+
+        let secondFinished = expectation(description: "second send finished")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                try client.sendInput(id: sessionID, bytes: Array("second\n".utf8))
+            } catch {
+                serverError.set(error)
+            }
+            secondFinished.fulfill()
+        }
+
+        wait(for: [firstFinished, secondFinished, serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "sendInput same-session-ordering first\\n",
+            "sendInput same-session-ordering second\\n",
+        ])
+    }
+
     @MainActor
     func testBrokerBackedShellTabRestoresThroughUnixSocketHostRuntimeAcrossAppRelaunch() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
@@ -895,6 +996,142 @@ private final class LockedErrorBox: @unchecked Sendable {
     func set(_ error: Error) {
         lock.lock()
         storedError = error
+        lock.unlock()
+    }
+}
+
+private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Sendable {
+    private let lock = NSLock()
+    private var readDelays: [BrokerSessionID: TimeInterval] = [:]
+    private var sendDelays: [(needle: String, seconds: TimeInterval)] = []
+    private var readStartedExpectations: [BrokerSessionID: XCTestExpectation] = [:]
+    private var sendStartedExpectations: [(needle: String, expectation: XCTestExpectation)] = []
+    private var storedEvents: [String] = []
+    var isRunning = false
+
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedEvents
+    }
+
+    func delayReadOutput(for id: BrokerSessionID, seconds: TimeInterval) {
+        lock.lock()
+        readDelays[id] = seconds
+        lock.unlock()
+    }
+
+    func delaySendInput(containing needle: String, seconds: TimeInterval) {
+        lock.lock()
+        sendDelays.append((needle, seconds))
+        lock.unlock()
+    }
+
+    func expectReadStarted(for id: BrokerSessionID) -> XCTestExpectation {
+        let expectation = XCTestExpectation(description: "read started for \(id.rawValue)")
+        lock.lock()
+        readStartedExpectations[id] = expectation
+        lock.unlock()
+        return expectation
+    }
+
+    func expectSendStarted(containing needle: String) -> XCTestExpectation {
+        let expectation = XCTestExpectation(description: "send started containing \(needle)")
+        lock.lock()
+        sendStartedExpectations.append((needle, expectation))
+        lock.unlock()
+        return expectation
+    }
+
+    func listSessions() throws -> [BrokerSessionID] { [] }
+
+    func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+        appendEvent("create \(id.rawValue)")
+    }
+
+    func detachSession(id: BrokerSessionID) throws {
+        appendEvent("detach \(id.rawValue)")
+    }
+
+    func attachSession(id: BrokerSessionID, channelID: UUID) throws {
+        appendEvent("attach \(id.rawValue)")
+    }
+
+    func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
+        appendEvent("terminate \(id.rawValue)")
+    }
+
+    func markSessionErrored(id: BrokerSessionID) throws {
+        appendEvent("markErrored \(id.rawValue)")
+    }
+
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
+        let text = String(decoding: bytes, as: UTF8.self)
+        let delay = sendDelay(for: text)
+        fulfillSendStarted(for: text)
+        if delay > 0 {
+            Thread.sleep(forTimeInterval: delay)
+        }
+        appendEvent("sendInput \(id.rawValue) \(text.replacingOccurrences(of: "\n", with: "\\n"))")
+    }
+
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+        let delay = readDelay(for: id)
+        fulfillReadStarted(for: id)
+        if delay > 0 {
+            Thread.sleep(forTimeInterval: delay)
+        }
+        appendEvent("readAvailableOutput \(id.rawValue)")
+        return Data("delayed-output".utf8)
+    }
+
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        appendEvent("readScrollbackTail \(id.rawValue)")
+        return Data()
+    }
+
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
+        appendEvent("resize \(id.rawValue)")
+    }
+
+    func isRunning(id: BrokerSessionID) throws -> Bool {
+        appendEvent("isRunning \(id.rawValue)")
+        return isRunning
+    }
+
+    func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+
+    private func readDelay(for id: BrokerSessionID) -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return readDelays[id] ?? 0
+    }
+
+    private func sendDelay(for text: String) -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return sendDelays.first { text.contains($0.needle) }?.seconds ?? 0
+    }
+
+    private func fulfillReadStarted(for id: BrokerSessionID) {
+        lock.lock()
+        let expectation = readStartedExpectations[id]
+        lock.unlock()
+        expectation?.fulfill()
+    }
+
+    private func fulfillSendStarted(for text: String) {
+        lock.lock()
+        let expectations = sendStartedExpectations.filter { text.contains($0.needle) }.map(\.expectation)
+        lock.unlock()
+        for expectation in expectations {
+            expectation.fulfill()
+        }
+    }
+
+    private func appendEvent(_ event: String) {
+        lock.lock()
+        storedEvents.append(event)
         lock.unlock()
     }
 }
