@@ -235,6 +235,42 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
                         "Sibling images must still load when one is corrupt")
     }
 
+    func testLoadImagesLoadsChromeSpriteAnimationSheets() throws {
+        let sheetPath = "assets/sprite-sheet.png"
+        try writePNG(relPath: sheetPath)
+
+        var skin = SkinDefinition()
+        skin.chrome = ChromeDescriptor(
+            mode: .baked,
+            image: "chrome.png",
+            width: 1000,
+            height: 700,
+            interiorRect: SkinRect(x: 40, y: 60, width: 920, height: 580),
+            animations: [
+                ChromeAnimationLayer(
+                    id: "sprite",
+                    kind: .spriteAnim,
+                    rect: SkinRect(x: 0, y: 0, width: 64, height: 64),
+                    z: 1,
+                    params: ChromeAnimationLayer.Params(
+                        spriteAnim: SpriteAnimParams(
+                            sheet: sheetPath,
+                            gridRows: 2,
+                            gridCols: 2,
+                            frameCount: 4,
+                            fps: 8,
+                            loop: .loop
+                        )
+                    )
+                )
+            ]
+        )
+
+        let images = try engine.loadImages(from: tempSkinDir, manifest: skin)
+        XCTAssertNotNil(images[sheetPath],
+            "sprite animation sheets must be loaded into the same sandboxed image cache passed to ChromeHostView")
+    }
+
     // MARK: - Helpers
 
     /// Write a trivial 1x1 PNG to `tempSkinDir/relPath`. Creates any

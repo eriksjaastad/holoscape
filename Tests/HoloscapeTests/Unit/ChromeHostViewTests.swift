@@ -62,6 +62,10 @@ final class ChromeHostViewTests: XCTestCase {
         )
     }
 
+    private func makeFixtureNSImage() -> NSImage {
+        NSImage(cgImage: makeFixtureImage(), size: NSSize(width: 16, height: 16))
+    }
+
     // MARK: - Base layer
 
     func testBaseLayerContentsEqualsPassedImage() {
@@ -123,6 +127,25 @@ final class ChromeHostViewTests: XCTestCase {
         let host = ChromeHostView(chrome: makeChrome(), baseImage: makeFixtureImage(), clock: nil)
         XCTAssertTrue(host.renderers.isEmpty,
             "renderers starts empty until PR #10 installs the first conforming type")
+    }
+
+    func testSpriteAnimationRendererReceivesLoadedSheetImage() {
+        let sheet = makeFixtureNSImage()
+        var chrome = makeChrome()
+        chrome.animations = [makeSpriteDescriptor(id: "sprite", sheet: "assets/sprite-sheet.png")]
+        let host = ChromeHostView(
+            chrome: chrome,
+            baseImage: makeFixtureImage(),
+            clock: nil,
+            animationImages: ["assets/sprite-sheet.png": sheet]
+        )
+
+        host.installAnimatedLayers(chrome.animations!)
+
+        let renderer = host.renderers.first as? SpriteAnimLayerRenderer
+        XCTAssertNotNil(renderer, "sprite descriptors should install a sprite renderer")
+        XCTAssertNotNil(renderer?.layer.contents,
+            "sprite animation renderer must receive the already-loaded sheet image instead of installing an empty layer")
     }
 
     // MARK: - NSView overrides
@@ -298,6 +321,29 @@ final class ChromeHostViewTests: XCTestCase {
                     birthRate: birthRate, lifetime: 2,
                     velocity: 20, emissionAngle: 0, emissionRange: 0,
                     color: "#ffffff", scale: 0.5
+                )
+            )
+        )
+    }
+
+    private func makeSpriteDescriptor(
+        id: String,
+        sheet: String,
+        z: Int = 1
+    ) -> ChromeAnimationLayer {
+        ChromeAnimationLayer(
+            id: id,
+            kind: .spriteAnim,
+            rect: SkinRect(x: 0, y: 0, width: 100, height: 100),
+            z: z,
+            params: ChromeAnimationLayer.Params(
+                spriteAnim: SpriteAnimParams(
+                    sheet: sheet,
+                    gridRows: 2,
+                    gridCols: 2,
+                    frameCount: 4,
+                    fps: 8,
+                    loop: .loop
                 )
             )
         )
