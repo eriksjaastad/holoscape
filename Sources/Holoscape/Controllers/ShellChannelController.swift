@@ -28,7 +28,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         workingDirectory
     }
 
-    var displayLabel: String {
+    var displayBaseLabel: String {
         let base: String
         if let dir = workingDirectory {
             let directoryLabel = URL(fileURLWithPath: dir).lastPathComponent
@@ -44,6 +44,11 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         } else {
             base = "Shell"
         }
+        return base
+    }
+
+    var displayLabel: String {
+        let base = displayBaseLabel
         if let n = instanceNumber {
             return "\(base) \(n)"
         }

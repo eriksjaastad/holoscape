@@ -5,6 +5,7 @@ import Foundation
 protocol ChannelController: AnyObject {
     var channelId: UUID { get }
     var channelType: ChannelType { get }
+    var displayBaseLabel: String { get }
     var displayLabel: String { get }
     var hasUnread: Bool { get set }
     var state: ChannelState { get }
@@ -25,6 +26,8 @@ protocol ChannelController: AnyObject {
 }
 
 extension ChannelController {
+    var displayBaseLabel: String { displayLabel }
+
     var activatedAt: Date? { nil }
     var persistentState: PersistentChannelState {
         PersistentChannelState.fromRuntimeState(state, recoveryAction: recoveryAction)
