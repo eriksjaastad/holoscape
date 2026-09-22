@@ -27,6 +27,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
     private(set) var adapterPersistentState: PersistentChannelState?
+    private(set) var terminalOutputPersistentState: PersistentChannelState?
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var persistentState: PersistentChannelState {
@@ -35,10 +36,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
             recoveryAction: recoveryAction
         )
-        guard let adapterPersistentState else { return runtimeState }
-        return adapterPersistentState.kind.displayPriority >= runtimeState.kind.displayPriority
-            ? adapterPersistentState
-            : runtimeState
+        return [runtimeState, adapterPersistentState, terminalOutputPersistentState]
+            .compactMap { $0 }
+            .max { lhs, rhs in lhs.kind.displayPriority < rhs.kind.displayPriority }
+            ?? runtimeState
     }
 
     var notificationDirectoryPath: String? {
@@ -182,7 +183,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             terminalView.processDelegate = self
         }
         self.terminal.setUserInputHandler { [weak self] _ in
-            self?.recordUserInteraction()
+            guard let self else { return }
+            self.recordUserInteraction()
+            self.clearTerminalOutputPersistentState()
         }
         self.terminal.setSessionFailureHandler { [weak self] failure in
             self?.handleSessionFailure(failure)
@@ -235,6 +238,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
         terminal.setOutputHandler { [weak self] in
             guard let self else { return }
+            self.refreshTerminalOutputPersistentState()
             self.delegate?.channelDidReceiveOutput(self)
         }
 
@@ -278,6 +282,19 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func recordUserInteraction(at date: Date = Date()) {
         lastInteractionAt = date
+    }
+
+    private func refreshTerminalOutputPersistentState() {
+        let detected = TerminalOutputStatusDetector.persistentState(fromLastLines: terminal.lastLines(40))
+        guard detected != terminalOutputPersistentState else { return }
+        terminalOutputPersistentState = detected
+        delegate?.channelStateDidChange(self, to: state)
+    }
+
+    private func clearTerminalOutputPersistentState() {
+        guard terminalOutputPersistentState != nil else { return }
+        terminalOutputPersistentState = nil
+        delegate?.channelStateDidChange(self, to: state)
     }
 
     func deactivate() {
@@ -337,6 +354,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func applyBrokerFailure(kind: TerminalStartFailureKind?) -> ChannelState {
         lastStartFailureKind = kind
         adapterPersistentState = nil
+        terminalOutputPersistentState = nil
         switch kind {
         case .brokerHostUnavailable:
             // Outage is retryable: keep the handle so retry reattaches the same

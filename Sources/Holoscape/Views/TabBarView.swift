@@ -35,6 +35,7 @@ class TabBarView: NSView {
     private var tabTrackingAreas: [UUID: NSTrackingArea] = [:]
     private var activeChannelId: UUID?
     private var notifications: [UUID: String] = [:]
+    private var tabNotificationTypes: [UUID: String] = [:]
     private var staleInteractionIds: Set<UUID> = []
 
     // MARK: - Amplify Task 11.3 sprite state tracking
@@ -198,6 +199,12 @@ class TabBarView: NSView {
     ) {
         activeChannelId = activeId
         self.notifications = notifications
+        self.tabNotificationTypes = Dictionary(
+            uniqueKeysWithValues: channels.compactMap { channel in
+                let notificationType = effectiveNotificationType(for: channel, explicitNotifications: notifications)
+                return notificationType.map { (channel.channelId, $0) }
+            }
+        )
         self.staleInteractionIds = Set(
             channels
                 .filter { now.timeIntervalSince($0.lastInteractionAt) >= staleThreshold }
@@ -268,20 +275,37 @@ class TabBarView: NSView {
             button.setAccessibilityHelp(nil)
         }
 
-        if staleRecoveryAction == nil, let notificationType = notifications[channel.channelId] {
-            switch notificationType {
-            case "idle_prompt":
-                button.setAccessibilityValue("ready")
-            case "permission_prompt":
-                button.setAccessibilityValue("needs-approval")
-            default:
-                button.setAccessibilityValue(notificationType)
+        if staleRecoveryAction == nil {
+            let effectiveNotificationType = effectiveNotificationType(for: channel)
+            if let effectiveNotificationType {
+                switch effectiveNotificationType {
+                case "idle_prompt":
+                    button.setAccessibilityValue("ready")
+                case "permission_prompt":
+                    button.setAccessibilityValue("needs-approval")
+                default:
+                    button.setAccessibilityValue(effectiveNotificationType)
+                }
+            } else if staleInteractionIds.contains(channel.channelId) {
+                button.setAccessibilityValue("stale-interaction")
+            } else {
+                button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
             }
-        } else if staleRecoveryAction == nil, staleInteractionIds.contains(channel.channelId) {
-            button.setAccessibilityValue("stale-interaction")
-        } else if staleRecoveryAction == nil {
-            button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
         }
+    }
+
+    private func effectiveNotificationType(for channel: any ChannelController) -> String? {
+        effectiveNotificationType(for: channel, explicitNotifications: notifications)
+    }
+
+    private func effectiveNotificationType(
+        for channel: any ChannelController,
+        explicitNotifications: [UUID: String]
+    ) -> String? {
+        if channel.persistentState.kind == .needsApproval {
+            return "permission_prompt"
+        }
+        return explicitNotifications[channel.channelId]
     }
 
     /// Apply the correct background fill and text tint for a tab based
@@ -296,16 +320,17 @@ class TabBarView: NSView {
         // sprite descriptors pick the correct cell; surfaces without
         // render as before (spriteState parameter is ignored).
         let state = spriteState(forTab: channelId)
+        let notificationType = tabNotificationTypes[channelId]
         buttonLayer.opacity = 1.0
-        if channelId == activeChannelId {
-            button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabActive, to: buttonLayer,
-                      fallback: Self.activeTabBg, spriteState: state)
-        } else if notifications[channelId] == "permission_prompt" {
+        if notificationType == "permission_prompt" {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabPermission, to: buttonLayer,
                       fallback: Self.permissionBg, spriteState: state)
-        } else if notifications[channelId] == "idle_prompt" {
+        } else if channelId == activeChannelId {
+            button.contentTintColor = NSColor.white
+            applyFill(.tabBarTabActive, to: buttonLayer,
+                      fallback: Self.activeTabBg, spriteState: state)
+        } else if notificationType == "idle_prompt" {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabIdle, to: buttonLayer,
                       fallback: Self.idleBg, spriteState: state)

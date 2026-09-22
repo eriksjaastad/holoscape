@@ -138,7 +138,7 @@ class SidebarView: NSView {
         // Update existing entries in-place, create new ones as needed
         for (index, channel) in channels.enumerated() {
             let isPinned = pinnedIds.contains(channel.channelId)
-            let notificationType = notifications[channel.channelId]
+            let notificationType = effectiveNotificationType(for: channel, explicitNotifications: notifications)
             let hasStaleInteraction = now.timeIntervalSince(channel.lastInteractionAt) >= staleThreshold
 
             if let existing = tabEntries[channel.channelId] {
@@ -204,6 +204,16 @@ class SidebarView: NSView {
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
         guard let id = sender.channelId else { return }
         sidebarDelegate?.sidebarView(self, didSelectChannelWithId: id)
+    }
+
+    private func effectiveNotificationType(
+        for channel: any ChannelController,
+        explicitNotifications: [UUID: String]
+    ) -> String? {
+        if channel.persistentState.kind == .needsApproval {
+            return "permission_prompt"
+        }
+        return explicitNotifications[channel.channelId]
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
