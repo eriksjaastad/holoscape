@@ -40,7 +40,10 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
     func run(maxConnections: Int? = nil) throws {
         let serverFD = try makeListeningSocket()
+        let group = DispatchGroup()
+        let errorBox = BrokerSocketServerErrorBox()
         defer {
+            group.wait()
             Darwin.close(serverFD)
             unlink(socketPath)
         }
@@ -52,9 +55,20 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 throw ServerError.acceptFailed(String(cString: strerror(errno)))
             }
-            defer { }
-            try handleConnection(clientFD)
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try handleConnection(clientFD)
+                } catch {
+                    errorBox.setIfEmpty(error)
+                }
+                group.leave()
+            }
             handledConnections += 1
+        }
+        group.wait()
+        if let error = errorBox.value {
+            throw error
         }
     }
 
@@ -263,6 +277,25 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                 }
                 bytesWritten += result
             }
+        }
+    }
+}
+
+private final class BrokerSocketServerErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: Error?
+
+    var value: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedError
+    }
+
+    func setIfEmpty(_ error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        if storedError == nil {
+            storedError = error
         }
     }
 }

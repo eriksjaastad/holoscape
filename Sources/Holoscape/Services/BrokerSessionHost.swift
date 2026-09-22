@@ -10,17 +10,25 @@ import Foundation
 struct BrokerSessionHost {
     private let runtime: any BrokerSessionRuntime
     private let codec: BrokerSessionHostCodec
+    private let scheduler: BrokerSessionOperationScheduler
 
-    init(runtime: any BrokerSessionRuntime, codec: BrokerSessionHostCodec = BrokerSessionHostCodec()) {
+    init(
+        runtime: any BrokerSessionRuntime,
+        codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
+        scheduler: BrokerSessionOperationScheduler = BrokerSessionOperationScheduler()
+    ) {
         self.runtime = runtime
         self.codec = codec
+        self.scheduler = scheduler
     }
 
     func handle(_ frame: Data) throws -> Data {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
         do {
-            response = try dispatch(request)
+            response = try scheduler.perform(request) {
+                try dispatch(request)
+            }
         } catch {
             response = .failure(
                 BrokerSessionHostFailure(
@@ -73,5 +81,49 @@ struct BrokerSessionHost {
             return "missing-session"
         }
         return "runtime-error"
+    }
+}
+
+final class BrokerSessionOperationScheduler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lanes: [BrokerSessionID: DispatchQueue] = [:]
+
+    func perform<T>(_ request: BrokerSessionHostRequest, operation: () throws -> T) throws -> T {
+        guard let sessionID = request.sessionOrderingID else {
+            return try operation()
+        }
+        return try lane(for: sessionID).sync(execute: operation)
+    }
+
+    private func lane(for sessionID: BrokerSessionID) -> DispatchQueue {
+        lock.lock()
+        defer { lock.unlock() }
+        if let lane = lanes[sessionID] {
+            return lane
+        }
+        let lane = DispatchQueue(label: "holoscape.broker.session.\(sessionID.rawValue)")
+        lanes[sessionID] = lane
+        return lane
+    }
+}
+
+private extension BrokerSessionHostRequest {
+    var sessionOrderingID: BrokerSessionID? {
+        switch self {
+        case .listSessions:
+            return nil
+        case let .create(id, _),
+             let .detach(id),
+             let .attach(id, _),
+             let .terminate(id, _),
+             let .markErrored(id),
+             let .sendInput(id, _),
+             let .readAvailableOutput(id),
+             let .readScrollbackTail(id, _),
+             let .resize(id, _),
+             let .isRunning(id),
+             let .terminationStatus(id):
+            return id
+        }
     }
 }
