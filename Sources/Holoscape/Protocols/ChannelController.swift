@@ -12,6 +12,7 @@ protocol ChannelController: AnyObject {
     var persistentState: PersistentChannelState { get }
     var contentView: NSView { get }
     var recoveryAction: ChannelRecoveryAction? { get }
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? { get }
 
     func sendInput(_ text: String)
     func activate()
@@ -36,6 +37,7 @@ extension ChannelController {
     var persistentState: PersistentChannelState {
         PersistentChannelState.fromRuntimeState(state, recoveryAction: recoveryAction)
     }
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? { nil }
     var recoveryAction: ChannelRecoveryAction? {
         state == .disconnected ? .reconnect : nil
     }
