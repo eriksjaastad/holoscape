@@ -90,6 +90,40 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .active)
     }
 
+    func testAgentTabIdentityIndicatorFollowsLaunchCommand() {
+        let codex = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Review lane",
+            instanceNumber: nil,
+            command: "codex --model gpt-5.5",
+            terminal: MockTerminalProcess()
+        )
+        let gemini = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: nil,
+            instanceNumber: nil,
+            command: "gemini",
+            terminal: MockTerminalProcess()
+        )
+        let ollama = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: nil,
+            instanceNumber: nil,
+            command: "ollama run llama3.2",
+            terminal: MockTerminalProcess()
+        )
+
+        XCTAssertEqual(codex.tabIdentityIndicator, .codex)
+        XCTAssertEqual(gemini.tabIdentityIndicator, .gemini)
+        XCTAssertEqual(ollama.tabIdentityIndicator, .ollama)
+    }
+
     func testAgentOutputHandlerRoutesThroughTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         let delegate = MockChannelDelegate()

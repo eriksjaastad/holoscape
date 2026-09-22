@@ -242,6 +242,9 @@ class TabBarView: NSView {
 
     private func buildTabTitle(for channel: any ChannelController) -> String {
         var title = channel.displayLabel
+        if let indicator = channel.tabIdentityIndicator {
+            title = indicator.tabPrefix + title
+        }
         if channel.state == .connecting {
             title += " ..."
         } else if channel.state == .stale, let recoveryAction = channel.recoveryAction {
@@ -270,6 +273,9 @@ class TabBarView: NSView {
             button.toolTip = staleRecoveryAction.operatorGuidance
             button.setAccessibilityValue("stale: \(staleRecoveryAction.surfaceStatusText)")
             button.setAccessibilityHelp(staleRecoveryAction.operatorGuidance)
+        } else if let indicator = channel.tabIdentityIndicator {
+            button.toolTip = "\(indicator.accessibilityLabel) tab"
+            button.setAccessibilityHelp("\(indicator.accessibilityLabel) channel")
         } else {
             button.toolTip = nil
             button.setAccessibilityHelp(nil)

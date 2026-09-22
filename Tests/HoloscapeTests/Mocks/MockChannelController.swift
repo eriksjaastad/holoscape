@@ -10,12 +10,17 @@ class MockChannelController: NSObject, ChannelController {
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
     var displayLabel: String
+    var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
     private(set) var lastInteractionAt: Date = Date()
     private let _contentView = NSView()
 
     var contentView: NSView { _contentView }
+
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? {
+        tabIdentityIndicatorOverride
+    }
 
     var recoveryAction: ChannelRecoveryAction? {
         recoveryActionOverride ?? (state == .disconnected ? .reconnect : nil)

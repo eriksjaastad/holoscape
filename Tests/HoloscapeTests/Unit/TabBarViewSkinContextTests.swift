@@ -180,6 +180,45 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
         XCTAssertEqual(button.layer?.backgroundColor, NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0).cgColor)
     }
+
+    func testTabTitleIncludesAgentIdentityIndicatorPrefix() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .agentDirect, label: "Codex", state: .active)
+        channel.tabIdentityIndicatorOverride = .codex
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let button = try XCTUnwrap(view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+            .first)
+
+        XCTAssertEqual(button.title, "◈ Codex")
+        XCTAssertEqual(button.toolTip, "Codex tab")
+        XCTAssertEqual(button.accessibilityHelp(), "Codex channel")
+    }
+
+    func testSSHIdentityIndicatorDoesNotHideStaleRecoveryGuidance() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .ssh, label: "MacBook", state: .stale)
+        channel.tabIdentityIndicatorOverride = .ssh
+        channel.recoveryActionOverride = .retryBrokerHost
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let button = try XCTUnwrap(view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+            .first)
+
+        XCTAssertEqual(button.title, "⌁ MacBook — retry broker")
+        XCTAssertEqual(button.accessibilityValue() as? String, "stale: retry broker")
+        XCTAssertTrue(button.toolTip?.contains("Broker host is unavailable") == true, button.toolTip ?? "nil")
+    }
 }
 
 // MARK: - Testing hook

@@ -25,6 +25,8 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         return profile.label
     }
 
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? { .ssh }
+
     var contentView: NSView { terminal.terminalContentView }
 
     init(
