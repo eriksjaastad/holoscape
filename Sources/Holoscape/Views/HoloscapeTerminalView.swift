@@ -3,6 +3,12 @@ import SwiftTerm
 
 /// Subclass of LocalProcessTerminalView that preserves text selection during output
 /// and notifies when new output arrives (for unread tab indicators).
+///
+/// Input method editor (IME), dictation, and marked-text composition are intentionally
+/// inherited from SwiftTerm's `TerminalView`/`LocalProcessTerminalView` NSTextInputClient
+/// implementation. Keep terminal input flowing through SwiftTerm's AppKit text-input
+/// path (`interpretKeyEvents`, `insertText`, `setMarkedText`) so committed IME text is
+/// sent as typed input and broker-backed tabs do not bypass composition handling.
 @MainActor
 open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
 

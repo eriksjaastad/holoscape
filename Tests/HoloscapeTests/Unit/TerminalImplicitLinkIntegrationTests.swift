@@ -54,10 +54,7 @@ final class TerminalImplicitLinkIntegrationTests: XCTestCase {
         try "# Title".write(to: markdown, atomically: true, encoding: .utf8)
         try "Plain".write(to: text, atomically: true, encoding: .utf8)
 
-        let view = HoloscapeTerminalView(
-            frame: CGRect(x: 0, y: 0, width: 1000, height: 100),
-            options: TerminalOptions(cols: 120, rows: 5, scrollback: 100)
-        )
+        let view = makeHoloscapeTerminalView()
         view.feed(text: "read \(markdown.path) and \(text.path)\r\n")
 
         XCTAssertEqual(
@@ -67,10 +64,40 @@ final class TerminalImplicitLinkIntegrationTests: XCTestCase {
         XCTAssertNil(view.markdownLinkForContextMenu(atBufferPosition: Position(col: markdown.path.count + 14, row: 0)))
     }
 
+    @MainActor
+    func testHoloscapeTerminalViewKeepsSwiftTermTextInputClientPath() {
+        let view = makeHoloscapeTerminalView()
+        let textInputClient: NSTextInputClient = view
+
+        XCTAssertEqual(textInputClient.validAttributesForMarkedText(), view.validAttributesForMarkedText())
+    }
+
+    @MainActor
+    func testMarkedTextCompositionRemainsHandledByInheritedSwiftTermImplementation() {
+        let view = makeHoloscapeTerminalView()
+
+        XCTAssertFalse(view.hasMarkedText())
+        view.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        XCTAssertTrue(view.hasMarkedText())
+        XCTAssertNotEqual(view.markedRange().location, NSNotFound)
+
+        view.unmarkText()
+        XCTAssertFalse(view.hasMarkedText())
+    }
+
     private func makeTerminal() -> Terminal {
         Terminal(
             delegate: LinkTestTerminalDelegate(),
             options: TerminalOptions(cols: 100, rows: 5, scrollback: 100)
+        )
+    }
+
+    @MainActor
+    private func makeHoloscapeTerminalView() -> HoloscapeTerminalView {
+        HoloscapeTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 1000, height: 100),
+            options: TerminalOptions(cols: 120, rows: 5, scrollback: 100)
         )
     }
 }
