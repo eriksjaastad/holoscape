@@ -52,6 +52,21 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         command
     }
 
+    var displayBaseLabel: String {
+        if useRawLabel, let label = userLabel {
+            return label
+        }
+        if let role = detectedRole ?? userLabel {
+            let short = RoleDetector.shortLabel(for: role)
+            if role.lowercased().contains("floor manager"),
+               let dir = workingDirectory {
+                return "\(short)-\(dir.lastPathComponent)"
+            }
+            return short
+        }
+        return "Agent"
+    }
+
     var displayLabel: String {
         if useRawLabel, let label = userLabel {
             if let num = instanceNumber {

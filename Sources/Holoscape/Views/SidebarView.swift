@@ -119,6 +119,7 @@ class SidebarView: NSView {
         activeChannelId = activeId
 
         let currentIds = Set(channels.map { $0.channelId })
+        let resolvedLabels = ChannelDisplayLabelResolver.labels(for: channels)
 
         // Remove entries for channels that no longer exist
         for (id, entry) in tabEntries where !currentIds.contains(id) {
@@ -135,7 +136,7 @@ class SidebarView: NSView {
             if let existing = tabEntries[channel.channelId] {
                 // Update in place — no alloc, no constraint churn
                 existing.configure(
-                    label: channel.displayLabel,
+                    label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
@@ -157,7 +158,7 @@ class SidebarView: NSView {
                 let entry = SidebarTabEntry(frame: .zero)
                 entry.skinContext = skinContext
                 entry.configure(
-                    label: channel.displayLabel,
+                    label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
