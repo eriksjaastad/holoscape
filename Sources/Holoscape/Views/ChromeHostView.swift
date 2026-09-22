@@ -1,8 +1,8 @@
 import AppKit
 
 /// PNG-chrome compositing host. Installs the static Base_Layer
-/// (Component 1 of `claude-specs/chrome/design.md`) and — from PR #10
-/// onward — z-ordered animated sublayers in `animatedLayersContainer`.
+/// (Component 1 of `claude-specs/chrome/design.md`) and z-ordered
+/// animated sublayers in `animatedLayersContainer`.
 /// ChromeHostView is a sibling of `InteriorView` under
 /// `ShapedContentView`; it never receives events (`hitTest -> nil`) so
 /// click-through and hit-test routing continue to flow through
@@ -11,10 +11,9 @@ import AppKit
 /// `isFlipped = true` so sublayer positioning matches the top-left
 /// origin that chrome images and `SkinRect` coordinates use.
 ///
-/// Method bodies for `installAnimatedLayers`, `diffAnimatedLayers`,
-/// `setDensityMode`, `freezeForReduceMotion`, and `resumeFromReduceMotion`
-/// are stubbed in this PR; each is filled in by a later PR in the
-/// 20-PR rollout (see the per-method `TODO` comments).
+/// Animated-layer install/diff/density/reduce-motion hooks are implemented
+/// here so chrome visuals can be hot-reloaded or disabled without changing
+/// terminal/session behavior.
 @MainActor
 final class ChromeHostView: NSView {
 
@@ -25,41 +24,48 @@ final class ChromeHostView: NSView {
     /// so it composites above (Requirement 10.4).
     private let baseLayer: CALayer
 
-    /// Parent layer for animated sublayers. Empty in PR #3; PR #10
-    /// populates it through `installAnimatedLayers`. A `CAShapeLayer`
-    /// mask (derived from Base_Layer's non-zero-alpha pixels, Property 7)
-    /// is installed here in PR #13 so animations clip to the chrome
-    /// silhouette.
+    /// Parent layer for animated sublayers. Populated through
+    /// `installAnimatedLayers`. A mask derived from Base_Layer's
+    /// non-zero-alpha pixels clips animations to the chrome silhouette.
     private let animatedLayersContainer: CALayer
 
-    /// Active mask on `animatedLayersContainer`. Wired up in PR #13.
+    /// Active mask on `animatedLayersContainer` when the mask is a shape
+    /// layer. The bitmap-alpha mask path leaves this nil by design.
     private var containerMask: CAShapeLayer?
 
-    /// Live renderers. Populated by `installAnimatedLayers` (PR #10+).
-    /// Retained here so the host can drive lifecycle (pause / resume /
-    /// uninstall) on density + Reduce Motion transitions.
+    /// Live renderers. Retained here so the host can drive lifecycle
+    /// (pause / resume / uninstall) on density + Reduce Motion transitions.
     private(set) var renderers: [AnimatedLayerRenderer] = []
 
-    /// Phase clock every renderer subscribes to. Optional through
-    /// PRs #3–#9 because `SharedAnimationClock`'s body is not filled in
-    /// until PR #10 — passing `nil` during that window is the
-    /// documented contract (tasks.md Task 5.1).
+    /// Phase clock every renderer subscribes to. Optional for tests and
+    /// static chrome paths that do not need ticking animations.
     private weak var clock: SharedAnimationClock?
 
+    /// Already-decoded animation assets keyed by manifest-relative path.
+    /// SkinEngine validates and loads these from the skin sandbox; the host
+    /// only consumes the images and never re-resolves paths at render time.
+    private let animationImages: [String: NSImage]
+
     /// The `ChromeDescriptor` this host is rendering. Kept so hot
-    /// reload (PR #18) can diff against an incoming descriptor without
-    /// the caller passing the old + new pair.
+    /// reload can diff against an incoming descriptor without the caller
+    /// passing the old + new pair.
     private(set) var chrome: ChromeDescriptor
 
     // MARK: - Init
 
-    /// Production init (Component 1 interface). `clock` may be `nil` in
-    /// PRs #3–#9 — `SharedAnimationClock` is a stub until PR #10.
-    init(chrome: ChromeDescriptor, baseImage: CGImage, clock: SharedAnimationClock?) {
+    /// Production init (Component 1 interface). `clock` may be `nil` for
+    /// tests/static chrome; animated renderers subscribe only when present.
+    init(
+        chrome: ChromeDescriptor,
+        baseImage: CGImage,
+        clock: SharedAnimationClock?,
+        animationImages: [String: NSImage] = [:]
+    ) {
         self.chrome = chrome
         self.baseLayer = CALayer()
         self.animatedLayersContainer = CALayer()
         self.clock = clock
+        self.animationImages = animationImages
         super.init(frame: NSRect(x: 0, y: 0, width: chrome.width, height: chrome.height))
 
         wantsLayer = true
@@ -77,9 +83,8 @@ final class ChromeHostView: NSView {
         baseLayer.isOpaque = false
 
         // animatedLayersContainer sits above baseLayer so every animated
-        // sublayer composites on top (Requirement 10.4). The container
-        // is empty in PR #3 but installed now so PR #10 can drop layers
-        // into it without touching the view's layer structure.
+        // sublayer composites on top (Requirement 10.4) without touching
+        // the view's layer structure.
         animatedLayersContainer.frame = bounds
         animatedLayersContainer.backgroundColor = NSColor.clear.cgColor
         animatedLayersContainer.isOpaque = false
@@ -87,9 +92,9 @@ final class ChromeHostView: NSView {
         layer!.addSublayer(baseLayer)
         layer!.addSublayer(animatedLayersContainer)
 
-        // Install the single-container mask now so animated layers
-        // added later (PR #10+) clip to Base_Layer's alpha silhouette
-        // from the moment they install (Req 10.1 / 10.2 / Property 7).
+        // Install the single-container mask now so animated layers clip to
+        // Base_Layer's alpha silhouette from the moment they install
+        // (Req 10.1 / 10.2 / Property 7).
         rebuildContainerMask(from: baseImage)
     }
 
@@ -107,7 +112,7 @@ final class ChromeHostView: NSView {
 
     // MARK: - Public interface (Component 1)
 
-    /// Installs a set of animated sublayers (PR #10, Task 19.3).
+    /// Installs a set of animated sublayers.
     /// Instantiates one renderer per descriptor, installs its layer
     /// into `animatedLayersContainer` at the declared `z`-ordering,
     /// and subscribes each renderer to the shared clock if present.
@@ -115,9 +120,8 @@ final class ChromeHostView: NSView {
     /// must be filtered out BEFORE this call — the host trusts the
     /// descriptor list.
     ///
-    /// PR #11 adds `.ledArray` + `.spriteAnim` branches;
-    /// PR #12 adds `.shader`. Unknown kinds — if a future additive
-    /// case ships ahead of a renderer — log + skip.
+    /// Unknown kinds — if a future additive case ships ahead of a renderer
+    /// — log + skip.
     func installAnimatedLayers(_ descriptors: [ChromeAnimationLayer]) {
         // Sort by z so sublayer insertion order yields correct
         // compositing order (Req 10.4 — earlier in the array wins
@@ -149,8 +153,7 @@ final class ChromeHostView: NSView {
     }
 
     /// Factory for the per-kind renderers. `nil` return means the
-    /// descriptor's kind has no renderer in this PR yet (covered by
-    /// PR #11/#12); the caller filters nils silently.
+    /// descriptor's kind has no renderer; the caller filters nils silently.
     private func makeRenderer(for descriptor: ChromeAnimationLayer) -> AnimatedLayerRenderer? {
         switch descriptor.kind {
         case .particle:
@@ -180,11 +183,7 @@ final class ChromeHostView: NSView {
                 params: params,
                 phaseOffset: descriptor.phaseOffset ?? 0,
                 speedMultiplier: descriptor.speedMultiplier ?? 1,
-                sheet: nil  // PR #18 threads skin-dir through so this
-                            // can resolve the declared sheet path. For
-                            // now the layer installs with a nil
-                            // contents — visual will be empty until
-                            // the sheet wiring lands.
+                sheet: animationImages[params.sheet]
             )
         case .shader:
             guard let params = descriptor.params.shader else { return nil }
@@ -199,7 +198,7 @@ final class ChromeHostView: NSView {
         }
     }
 
-    /// Swap the Base_Layer image (hot reload of chrome PNG, PR #18).
+    /// Swap the Base_Layer image during chrome PNG hot reload.
     /// Rebuilds `containerMask` from the new alpha silhouette so
     /// animated layers continue to clip to the updated shape
     /// (Property 7 — no animated pixel where base alpha == 0).
@@ -232,7 +231,7 @@ final class ChromeHostView: NSView {
 
     /// Diff animated layers by `id` and swap params in place for
     /// anything that already exists; install new ids; remove missing
-    /// ones (PR #18 hot reload for `chrome.animations`).
+    /// ones during hot reload for `chrome.animations`.
     func diffAnimatedLayers(_ next: [ChromeAnimationLayer]) {
         chrome.animations = next
 
