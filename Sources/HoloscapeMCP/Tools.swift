@@ -145,6 +145,17 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "required": .array([.string("command")]),
                 ])
             ),
+            Tool(
+                name: "holoscape_run_applescript",
+                description: "Execute AppleScript source locally through NSAppleScript and return its result. This can control scriptable macOS apps and may trigger normal macOS Automation permission prompts.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source": .object(["type": .string("string"), "description": .string("AppleScript source to execute")]),
+                    ]),
+                    "required": .array([.string("source")]),
+                ])
+            ),
         ])
     }
 
@@ -225,6 +236,12 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 return CallTool.Result(
                     content: [.text(text: formatProcessToolResult(result), annotations: nil, _meta: nil)],
                     isError: result.timedOut || (result.exitCode ?? 0) != 0
+                )
+
+            case "holoscape_run_applescript":
+                let result = try runAppleScriptTool(args: args)
+                return CallTool.Result(
+                    content: [.text(text: formatAppleScriptToolResult(result), annotations: nil, _meta: nil)]
                 )
 
             default:
