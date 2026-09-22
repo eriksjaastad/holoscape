@@ -453,6 +453,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func setProfileManager(_ manager: SessionProfileManager) {
         self.profileManager = manager
         refreshLauncher()
+        Task { [weak self, manager] in
+            _ = await manager.refreshDiscoveredSessions()
+            self?.refreshLauncher()
+        }
     }
 
     private func setupLayout() {
@@ -2574,9 +2578,8 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
         Task {
-            if profileManager != nil {
-                let discoveryService = ProjectDiscoveryService(configService: configService)
-                _ = await discoveryService.refresh()
+            if let profileManager {
+                _ = await profileManager.refreshDiscoveredSessions()
                 refreshLauncher()
             }
         }
