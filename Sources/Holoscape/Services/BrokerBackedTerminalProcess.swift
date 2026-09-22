@@ -19,12 +19,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let label: String?
     private let environmentProfile: BrokerEnvironmentProfile
     private let coordinator: any BrokerSessionCoordinating
+    private let inputCoordinator: BrokerInputCoordinator
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
     private var outputTimer: Timer?
+    private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
     /// Identity of the broker session this terminal failed to reattach because
     /// the broker no longer owns it. Kept separate from `brokerSessionID` so a
@@ -60,6 +62,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.label = label
         self.environmentProfile = environmentProfile
         self.coordinator = coordinator
+        self.inputCoordinator = BrokerInputCoordinator(coordinator)
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -77,6 +80,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        inputWriteLane.closeAndDrain()
         startFailureDescription = nil
         startFailureKind = nil
         lastScrollbackReplay = nil
@@ -103,6 +107,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 attachedChannelID: channelID
             )
             brokerSessionID = record.id
+            inputWriteLane.open(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
             }
@@ -123,6 +128,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
+            inputWriteLane.open(for: record.id)
             restoreScrollbackReplay(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
@@ -204,12 +210,24 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // which is showing its recovery guidance; late keystrokes are inert.
             return
         }
-        do {
-            try coordinator.sendInput(brokerSessionID, bytes: bytes)
-            pollOutputOnce()
-        } catch {
-            reportSessionFailure(error)
-        }
+        inputWriteLane.enqueue(
+            sessionID: brokerSessionID,
+            bytes: bytes,
+            write: { [inputCoordinator] id, queuedBytes in
+                try inputCoordinator.sendInput(id, bytes: queuedBytes)
+            },
+            onSuccess: { [weak self] id in
+                Task { @MainActor [weak self] in
+                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
+                    self.pollOutputOnce()
+                }
+            },
+            onFailure: { [weak self] _, error in
+                Task { @MainActor [weak self] in
+                    self?.reportSessionFailure(error)
+                }
+            }
+        )
     }
 
     func setOutputHandler(_ handler: (() -> Void)?) {
@@ -240,6 +258,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func detachBrokerSession() {
         guard let brokerSessionID, !didNotifyTermination else { return }
         stopOutputPump()
+        inputWriteLane.closeAndDrain()
         do {
             _ = try coordinator.detach(brokerSessionID)
         } catch {
@@ -305,6 +324,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// a replacement.
     private func reportSessionFailure(_ error: Error) {
         let kind = classifyStartFailure(error)
+        inputWriteLane.close()
         switch kind {
         case .brokerHostUnavailable, .failed:
             // The host is unreachable (or the failure is unclassified) but the
@@ -367,5 +387,81 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return .brokerSessionStale
         }
         return .failed
+    }
+}
+
+private final class BrokerInputCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
+        try coordinator.sendInput(id, bytes: bytes)
+    }
+}
+
+private final class BrokerInputWriteLane: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "holoscape.broker.input.write-lane", qos: .userInteractive)
+    private let lock = NSLock()
+    private var openSessionID: BrokerSessionID?
+
+    func open(for sessionID: BrokerSessionID) {
+        lock.withLock {
+            openSessionID = sessionID
+        }
+    }
+
+    func close() {
+        lock.withLock {
+            openSessionID = nil
+        }
+    }
+
+    func closeAndDrain() {
+        close()
+        queue.sync {}
+    }
+
+    func enqueue(
+        sessionID: BrokerSessionID,
+        bytes: [UInt8],
+        write: @escaping @Sendable (BrokerSessionID, [UInt8]) throws -> Void,
+        onSuccess: @escaping @Sendable (BrokerSessionID) -> Void,
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+    ) {
+        guard isOpen(for: sessionID) else { return }
+        queue.async { [weak self] in
+            guard let self, self.isOpen(for: sessionID) else { return }
+            do {
+                try write(sessionID, bytes)
+                guard self.isOpen(for: sessionID) else { return }
+                onSuccess(sessionID)
+            } catch {
+                self.closeIfCurrent(sessionID)
+                onFailure(sessionID, error)
+            }
+        }
+    }
+
+    private func isOpen(for sessionID: BrokerSessionID) -> Bool {
+        lock.withLock { openSessionID == sessionID }
+    }
+
+    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+        lock.withLock {
+            if openSessionID == sessionID {
+                openSessionID = nil
+            }
+        }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
