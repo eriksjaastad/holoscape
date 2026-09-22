@@ -37,6 +37,7 @@ class TabBarView: NSView {
     private var notifications: [UUID: String] = [:]
     private var tabNotificationTypes: [UUID: String] = [:]
     private var staleInteractionIds: Set<UUID> = []
+    private var resolvedDisplayLabels: [UUID: String] = [:]
 
     // MARK: - Amplify Task 11.3 sprite state tracking
     //
@@ -198,6 +199,7 @@ class TabBarView: NSView {
         staleThreshold: TimeInterval = 45 * 60
     ) {
         activeChannelId = activeId
+        resolvedDisplayLabels = ChannelDisplayLabelResolver.labels(for: channels)
         self.notifications = notifications
         self.tabNotificationTypes = Dictionary(
             uniqueKeysWithValues: channels.compactMap { channel in
@@ -240,8 +242,12 @@ class TabBarView: NSView {
         contentView.frame = NSRect(x: 0, y: 0, width: max(xOffset, scrollView.contentView.bounds.width), height: tabHeight)
     }
 
+    private func displayLabel(for channel: any ChannelController) -> String {
+        resolvedDisplayLabels[channel.channelId] ?? channel.displayLabel
+    }
+
     private func buildTabTitle(for channel: any ChannelController) -> String {
-        var title = channel.displayLabel
+        var title = displayLabel(for: channel)
         if let indicator = channel.tabIdentityIndicator {
             title = indicator.tabPrefix + title
         }
@@ -267,7 +273,7 @@ class TabBarView: NSView {
         applyTabStyle(button, channelId: channel.channelId)
 
         button.setAccessibilityTitle(title)
-        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+        button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
         let staleRecoveryAction = channel.state == .stale ? channel.recoveryAction : nil
         if let staleRecoveryAction {
             button.toolTip = staleRecoveryAction.operatorGuidance
@@ -398,7 +404,7 @@ class TabBarView: NSView {
         button.setAccessibilityElement(true)
         button.setAccessibilityRole(.button)
         button.setAccessibilityTitle(title)
-        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+        button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
         updateTabButton(button, for: channel)
         return button
     }
