@@ -234,8 +234,72 @@ final class ChromeHostView: NSView {
     /// anything that already exists; install new ids; remove missing
     /// ones (PR #18 hot reload for `chrome.animations`).
     func diffAnimatedLayers(_ next: [ChromeAnimationLayer]) {
-        // TODO PR #18 (task group 35): id-keyed diff against current
-        // `renderers`.
+        chrome.animations = next
+
+        let existingByID = Dictionary(uniqueKeysWithValues: renderers.map { ($0.id, $0) })
+        var nextRenderers: [AnimatedLayerRenderer] = []
+        var retainedIDs = Set<String>()
+
+        for descriptor in sortedAnimationDescriptors(next) {
+            if let existing = existingByID[descriptor.id],
+               renderer(existing, canUpdateInPlaceFor: descriptor) {
+                existing.updateParams(descriptor.params)
+                nextRenderers.append(existing)
+                retainedIDs.insert(existing.id)
+            } else {
+                if let existing = existingByID[descriptor.id] {
+                    clock?.unsubscribe(existing)
+                    existing.uninstall()
+                }
+
+                guard let renderer = makeRenderer(for: descriptor) else { continue }
+                renderer.install(in: animatedLayersContainer)
+                clock?.subscribe(renderer)
+                nextRenderers.append(renderer)
+                retainedIDs.insert(renderer.id)
+            }
+        }
+
+        for renderer in renderers where !retainedIDs.contains(renderer.id) {
+            clock?.unsubscribe(renderer)
+            renderer.uninstall()
+        }
+
+        renderers = nextRenderers
+        restackAnimatedLayers()
+        animatedLayersContainer.setValue(true, forKey: "accessibilityElementsHidden")
+    }
+
+    private func sortedAnimationDescriptors(_ descriptors: [ChromeAnimationLayer]) -> [ChromeAnimationLayer] {
+        descriptors.sorted { lhs, rhs in
+            if lhs.z != rhs.z { return lhs.z < rhs.z }
+            return descriptors.firstIndex { $0.id == lhs.id }!
+                < descriptors.firstIndex { $0.id == rhs.id }!
+        }
+    }
+
+    private func renderer(
+        _ renderer: AnimatedLayerRenderer,
+        canUpdateInPlaceFor descriptor: ChromeAnimationLayer
+    ) -> Bool {
+        guard renderer.z == descriptor.z else { return false }
+        switch descriptor.kind {
+        case .particle:
+            return renderer is ParticleLayerRenderer && descriptor.params.particle != nil
+        case .ledArray:
+            return renderer is LEDArrayLayerRenderer && descriptor.params.ledArray != nil
+        case .spriteAnim:
+            return renderer is SpriteAnimLayerRenderer && descriptor.params.spriteAnim != nil
+        case .shader:
+            return renderer is ShaderPresetLayerRenderer && descriptor.params.shader != nil
+        }
+    }
+
+    private func restackAnimatedLayers() {
+        for renderer in renderers {
+            renderer.layer.removeFromSuperlayer()
+            animatedLayersContainer.addSublayer(renderer.layer)
+        }
     }
 
     /// Density mode hook (Req 15.4–15.9).
