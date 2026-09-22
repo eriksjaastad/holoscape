@@ -2411,6 +2411,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         pinItem.representedObject = channelId
         menu.addItem(pinItem)
 
+        let isMuted = apiServer?.isNotificationMuted(for: channelId) ?? false
+        let muteTitle = isMuted ? "Unmute Notifications" : "Mute Notifications"
+        let muteItem = NSMenuItem(title: muteTitle, action: #selector(contextMenuToggleNotificationMute(_:)), keyEquivalent: "")
+        muteItem.target = self
+        muteItem.representedObject = channelId
+        menu.addItem(muteItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let copyInfoItem = NSMenuItem(title: "Copy Session Info", action: #selector(contextMenuCopyInfo(_:)), keyEquivalent: "")
@@ -2482,6 +2489,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         channelManager.togglePin(id: id)
         refreshAllTabs()
         scheduleSaveState()
+    }
+
+    @objc private func contextMenuToggleNotificationMute(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        _ = apiServer?.toggleNotificationMuted(for: id)
+        refreshAllTabs()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
