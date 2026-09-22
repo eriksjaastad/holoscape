@@ -70,6 +70,68 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 ])
             ),
             Tool(
+                name: "holoscape_read_file",
+                description: "Read a UTF-8 text file from the local filesystem.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("File path")]),
+                        "maxBytes": .object(["type": .string("integer"), "description": .string("Maximum bytes to return; default 128000")]),
+                    ]),
+                    "required": .array([.string("path")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_write_file",
+                description: "Write UTF-8 text to a local file, creating parent directories as needed.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("File path")]),
+                        "content": .object(["type": .string("string"), "description": .string("File content")]),
+                    ]),
+                    "required": .array([.string("path"), .string("content")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_list_directory",
+                description: "List entries in a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum entries; default 200")]),
+                    ]),
+                    "required": .array([.string("path")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_search_files",
+                description: "Search file names by regular expression under a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against file names")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum matches; default 100")]),
+                    ]),
+                    "required": .array([.string("path"), .string("pattern")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_search_content",
+                description: "Search UTF-8 file contents by regular expression under a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against text lines")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum line matches; default 100")]),
+                    ]),
+                    "required": .array([.string("path"), .string("pattern")]),
+                ])
+            ),
+            Tool(
                 name: "holoscape_run_process",
                 description: "Run a local shell command via /bin/zsh -lc, capture stdout/stderr, honor workingDirectory/env/timeoutSeconds, and return exit status.",
                 inputSchema: .object([
@@ -141,6 +203,21 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 let result = try await client.readOutput(id: channel, lines: lines)
                 let output = (result["lines"] as? [String])?.joined(separator: "\n") ?? ""
                 return CallTool.Result(content: [.text(text: output.isEmpty ? "(no output)" : output, annotations: nil, _meta: nil)])
+
+            case "holoscape_read_file":
+                return CallTool.Result(content: [.text(text: try readFileTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_write_file":
+                return CallTool.Result(content: [.text(text: try writeFileTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_list_directory":
+                return CallTool.Result(content: [.text(text: try listDirectoryTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_search_files":
+                return CallTool.Result(content: [.text(text: try searchFilesTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_search_content":
+                return CallTool.Result(content: [.text(text: try searchContentTool(args: args), annotations: nil, _meta: nil)])
 
             case "holoscape_run_process":
                 let request = try processToolRequest(from: args)
