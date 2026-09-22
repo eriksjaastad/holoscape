@@ -2,7 +2,7 @@
 
 help:
 	@echo "Holoscape — common ops"
-	@echo "  make auth-check       verify Doppler project/config visibility"
+	@echo "  make auth-check       verify Doppler project/config visibility (DOPPLER_PROJECT_NAME/DOPPLER_CONFIG_NAME override)"
 	@echo "  make build            Debug SwiftPM build"
 	@echo "  make test             Unit + property tests"
 	@echo "  make test-unit        Unit tests only"
@@ -12,7 +12,7 @@ help:
 	@echo "  make setup            Install Claude Code MCP/hooks integration"
 
 auth-check:
-	doppler run --project holoscape --config dev -- printenv DOPPLER_PROJECT DOPPLER_CONFIG
+	@./scripts/doppler-auth-check.sh
 
 check-submodules:
 	@./scripts/check-submodules.sh
