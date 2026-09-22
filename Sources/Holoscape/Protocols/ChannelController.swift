@@ -23,12 +23,16 @@ protocol ChannelController: AnyObject {
     var commandHistory: CommandHistory { get }
     var delegate: ChannelControllerDelegate? { get set }
     var activatedAt: Date? { get }
+    var lastInteractionAt: Date { get }
+
+    func recordUserInteraction(at date: Date)
 }
 
 extension ChannelController {
     var displayBaseLabel: String { displayLabel }
 
     var activatedAt: Date? { nil }
+    var lastInteractionAt: Date { activatedAt ?? .distantPast }
     var persistentState: PersistentChannelState {
         PersistentChannelState.fromRuntimeState(state, recoveryAction: recoveryAction)
     }
@@ -37,6 +41,7 @@ extension ChannelController {
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {}
+    func recordUserInteraction(at date: Date) {}
 }
 
 enum ChannelRecoveryAction: Codable, Equatable, Sendable {

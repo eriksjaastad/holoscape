@@ -410,7 +410,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             self.updateTabBarLeading()
         }
 
-        // Refresh elapsed time on tabs every 60 seconds
+        // Refresh stale-tab badges when channels cross the interaction threshold.
         elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAllTabs() }
         }
@@ -760,7 +760,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     nonisolated(unsafe) private var keyMonitor: Any?
 
     private func setupChannelSwitchShortcuts() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in
+            if event.window === self?.window {
+                self?.recordActiveChannelInteraction()
+            }
+            guard event.type == .keyDown else { return event }
             guard let self, event.modifierFlags.contains(.command) else { return event }
 
             let hasShift = event.modifierFlags.contains(.shift)
@@ -795,6 +799,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
             return event
         }
+    }
+
+    private func recordActiveChannelInteraction() {
+        guard let activeChannelId,
+              let channel = channelManager.channel(for: activeChannelId) else { return }
+        channel.recordUserInteraction(at: Date())
     }
 
     @objc func toggleTimestamps() {
@@ -1980,6 +1990,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         activeChannelId = id
+        channel.recordUserInteraction(at: Date())
         channel.hasUnread = false
         apiServer?.clearNotification(for: id)
         publishActiveChannelStateToReactiveSnapshot(channel)
@@ -2045,8 +2056,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let sorted = pinned + unpinned
 
         let notifications = apiServer?.channelNotifications ?? [:]
-        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
-        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
+        let staleThreshold = (configService.load().tabStaleThresholdMinutes ?? 45) * 60
+        let now = Date()
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications, now: now, staleThreshold: staleThreshold)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications, now: now, staleThreshold: staleThreshold)
     }
 
     /// Publish the focused channel's durable state into the shared skin/shader

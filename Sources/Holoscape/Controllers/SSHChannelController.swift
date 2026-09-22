@@ -16,6 +16,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     let profile: SessionProfile
     private let instanceNumber: Int?
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -42,10 +43,14 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self
         }
+        self.terminal.setUserInputHandler { [weak self] _ in
+            self?.recordUserInteraction()
+        }
     }
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -88,8 +93,14 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             currentDirectory: nil
         )
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 
     func deactivate() {

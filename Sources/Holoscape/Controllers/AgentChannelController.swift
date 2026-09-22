@@ -25,6 +25,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let instanceNumber: Int?
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
     private(set) var adapterPersistentState: PersistentChannelState?
     private var lastStartFailureKind: TerminalStartFailureKind?
 
@@ -180,6 +181,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let terminalView = self.terminal as? LocalProcessTerminalView {
             terminalView.processDelegate = self
         }
+        self.terminal.setUserInputHandler { [weak self] _ in
+            self?.recordUserInteraction()
+        }
         self.terminal.setSessionFailureHandler { [weak self] failure in
             self?.handleSessionFailure(failure)
         }
@@ -210,6 +214,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -265,8 +270,14 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 
     func deactivate() {
