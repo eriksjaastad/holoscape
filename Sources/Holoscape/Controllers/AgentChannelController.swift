@@ -55,25 +55,23 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var displayBaseLabel: String {
-        if useRawLabel, let label = userLabel {
-            return label
-        }
-        if let role = detectedRole ?? userLabel {
-            let short = RoleDetector.shortLabel(for: role)
-            if role.lowercased().contains("floor manager"),
-               let dir = workingDirectory {
-                return "\(short)-\(dir.lastPathComponent)"
-            }
-            return short
-        }
-        return "Agent"
+        ChannelGitBranchLabel.decorate(undecoratedDisplayBaseLabel, workingDirectory: workingDirectory?.path)
     }
 
     var displayLabel: String {
-        if useRawLabel, let label = userLabel {
-            if let num = instanceNumber {
-                return "\(label) \(num)"
+        let base = displayBaseLabel
+        if let num = instanceNumber {
+            let undecorated = undecoratedDisplayBaseLabel
+            if useRawLabel {
+                return "\(base) \(num)"
             }
+            return base == undecorated ? "\(base)\(num)" : "\(base) \(num)"
+        }
+        return base
+    }
+
+    private var undecoratedDisplayBaseLabel: String {
+        if useRawLabel, let label = userLabel {
             return label
         }
         if let role = detectedRole ?? userLabel {
@@ -82,13 +80,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
                let dir = workingDirectory {
                 return "\(short)-\(dir.lastPathComponent)"
             }
-            if let num = instanceNumber {
-                return "\(short)\(num)"
-            }
             return short
-        }
-        if let num = instanceNumber {
-            return "Agent \(num)"
         }
         return "Agent"
     }
