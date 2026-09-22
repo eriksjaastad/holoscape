@@ -15,6 +15,7 @@ class BridgeChannelController: NSObject, ChannelController {
     private let instanceNumber: Int?
 
     private(set) var activatedAt: Date? = Date()
+    private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -53,6 +54,7 @@ class BridgeChannelController: NSObject, ChannelController {
 
     func sendInput(_ text: String) {
         guard !text.isEmpty else { return }
+        recordUserInteraction()
         commandHistory.add(text)
 
         let agents = channelManager.agentChannels()
@@ -71,8 +73,14 @@ class BridgeChannelController: NSObject, ChannelController {
 
     func activate() {
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 
     func deactivate() {

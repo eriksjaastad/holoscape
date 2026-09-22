@@ -12,6 +12,7 @@ class MockChannelController: NSObject, ChannelController {
     var displayLabel: String
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
+    private(set) var lastInteractionAt: Date = Date()
     private let _contentView = NSView()
 
     var contentView: NSView { _contentView }
@@ -66,5 +67,9 @@ class MockChannelController: NSObject, ChannelController {
 
     func lastLines(_ count: Int) -> [String] {
         return []
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 }

@@ -14,6 +14,9 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
 
     // V2 fields
     var showTimestamps: Bool?
+    /// Minutes of no user interaction before a tab gets the stale-interaction badge.
+    /// Optional for backward compatibility; nil resolves to 45 minutes.
+    var tabStaleThresholdMinutes: Double?
 
     // V3 fields
     var notifications: NotificationConfig?

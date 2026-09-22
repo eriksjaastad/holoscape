@@ -35,6 +35,7 @@ class TabBarView: NSView {
     private var tabTrackingAreas: [UUID: NSTrackingArea] = [:]
     private var activeChannelId: UUID?
     private var notifications: [UUID: String] = [:]
+    private var staleInteractionIds: Set<UUID> = []
 
     // MARK: - Amplify Task 11.3 sprite state tracking
     //
@@ -187,9 +188,21 @@ class TabBarView: NSView {
         return .normal
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
+    func updateTabs(
+        channels: [any ChannelController],
+        activeId: UUID?,
+        pinnedIds: Set<UUID> = [],
+        notifications: [UUID: String] = [:],
+        now: Date = Date(),
+        staleThreshold: TimeInterval = 45 * 60
+    ) {
         activeChannelId = activeId
         self.notifications = notifications
+        self.staleInteractionIds = Set(
+            channels
+                .filter { now.timeIntervalSince($0.lastInteractionAt) >= staleThreshold }
+                .map(\.channelId)
+        )
 
         let currentIds = Set(channels.map { $0.channelId })
 
@@ -229,6 +242,8 @@ class TabBarView: NSView {
         }
         if channel.hasUnread {
             title = "\u{25CF} " + title
+        } else if staleInteractionIds.contains(channel.channelId) {
+            title = "\u{25CC} " + title
         }
         return title
     }
@@ -262,6 +277,8 @@ class TabBarView: NSView {
             default:
                 button.setAccessibilityValue(notificationType)
             }
+        } else if staleRecoveryAction == nil, staleInteractionIds.contains(channel.channelId) {
+            button.setAccessibilityValue("stale-interaction")
         } else if staleRecoveryAction == nil {
             button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
         }
@@ -279,6 +296,7 @@ class TabBarView: NSView {
         // sprite descriptors pick the correct cell; surfaces without
         // render as before (spriteState parameter is ignored).
         let state = spriteState(forTab: channelId)
+        buttonLayer.opacity = 1.0
         if channelId == activeChannelId {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabActive, to: buttonLayer,
@@ -291,8 +309,13 @@ class TabBarView: NSView {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabIdle, to: buttonLayer,
                       fallback: Self.idleBg, spriteState: state)
+        } else if staleInteractionIds.contains(channelId) {
+            button.contentTintColor = NSColor.systemGray
+            applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
+            buttonLayer.opacity = 0.70
         } else {
             button.contentTintColor = NSColor.lightGray
+            buttonLayer.opacity = 1.0
             // `.tabBarTabNormal` default is transparent — nil
             // backgroundColor, no visible fill unless the skin overrides.
             applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)

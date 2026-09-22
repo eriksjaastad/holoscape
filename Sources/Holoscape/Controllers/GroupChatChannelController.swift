@@ -36,6 +36,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     }()
 
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -81,6 +82,7 @@ class GroupChatChannelController: NSObject, ChannelController {
 
     func sendInput(_ text: String) {
         guard !text.isEmpty else { return }
+        recordUserInteraction()
         commandHistory.add(text)
 
         let payload: [String: Any] = [
@@ -127,6 +129,10 @@ class GroupChatChannelController: NSObject, ChannelController {
 
     func retry() {
         activate()
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 
     func lastLines(_ count: Int) -> [String] {
@@ -189,7 +195,9 @@ class GroupChatChannelController: NSObject, ChannelController {
 
                 if self.state != .active {
                     self.state = .active
-                    self.activatedAt = Date()
+                    let now = Date()
+                    self.activatedAt = now
+                    self.recordUserInteraction(at: now)
                     self.delegate?.channelStateDidChange(self, to: .active)
                     self.reconnectDelay = 1.0
                 }

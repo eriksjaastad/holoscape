@@ -22,6 +22,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var notificationDirectoryPath: String? {
@@ -149,6 +150,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -203,7 +205,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
     }
 
@@ -252,8 +256,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private func handleUserInput(_ data: ArraySlice<UInt8>) {
+        recordUserInteraction()
         guard let nextDirectory = directoryTracker.consume(data: data) else { return }
         updateWorkingDirectory(nextDirectory)
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 
     private func channelState(for startFailureKind: TerminalStartFailureKind?) -> ChannelState {
