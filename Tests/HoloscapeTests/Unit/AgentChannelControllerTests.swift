@@ -109,6 +109,56 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.outputCount, 1)
     }
 
+    func testClaudeApprovalPromptInScrollbackMarksAgentNeedsApproval() {
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Claude",
+            instanceNumber: nil,
+            command: "claude",
+            terminal: terminal
+        )
+        controller.delegate = delegate
+        controller.activate()
+
+        terminal.lines = [
+            "Do you want to proceed?",
+            "1. Yes",
+            "2. Yes, and don't ask again",
+            "3. No"
+        ]
+        terminal.outputHandler?()
+
+        XCTAssertEqual(controller.persistentState.kind, .needsApproval)
+        XCTAssertEqual(controller.persistentState.source, .terminalOutput)
+        XCTAssertEqual(delegate.outputCount, 1)
+        XCTAssertTrue(delegate.stateChanges.contains(.active))
+    }
+
+    func testAgentUserInputClearsTerminalOutputApprovalState() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Claude",
+            instanceNumber: nil,
+            command: "claude",
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.lines = ["Do you want to allow this command?", "1. Yes", "2. Yes, and don't ask again", "3. No"]
+        terminal.outputHandler?()
+        XCTAssertEqual(controller.persistentState.kind, .needsApproval)
+
+        terminal.userInputHandler?(ArraySlice(Array("1".utf8)))
+
+        XCTAssertNotEqual(controller.persistentState.kind, .needsApproval)
+    }
+
     func testAgentLastLinesUsesTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         terminal.lines = ["alpha", "beta", "gamma"]

@@ -159,6 +159,27 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertNil(button.accessibilityHelp(), "Recovered tab must not keep stale recovery instructions: \(button.accessibilityHelp() ?? "nil")")
         XCTAssertEqual(button.accessibilityValue() as? String, "active")
     }
+
+    func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .agentDirect, label: "Claude", state: .active)
+        channel.persistentStateOverride = PersistentChannelState(
+            kind: .needsApproval,
+            source: .terminalOutput,
+            reason: "Claude Code awaiting approval"
+        )
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let button = try XCTUnwrap(view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+            .first)
+        XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
+        XCTAssertEqual(button.layer?.backgroundColor, NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0).cgColor)
+    }
 }
 
 // MARK: - Testing hook
