@@ -1,6 +1,34 @@
 import AppKit
 import Foundation
 
+private struct ChatTurnRole {
+    let displayLabel: String
+    let accentColor: NSColor
+    let textColor: NSColor
+    let backgroundColor: NSColor
+
+    init(sender: String) {
+        let normalized = sender.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "erik", "you", "user":
+            displayLabel = "YOU"
+            accentColor = NSColor(calibratedRed: 0.35, green: 0.82, blue: 1.0, alpha: 1.0)
+            textColor = NSColor(calibratedWhite: 0.96, alpha: 1.0)
+            backgroundColor = NSColor(calibratedRed: 0.05, green: 0.16, blue: 0.24, alpha: 1.0)
+        case "system", "error":
+            displayLabel = "SYSTEM"
+            accentColor = NSColor(calibratedRed: 1.0, green: 0.62, blue: 0.30, alpha: 1.0)
+            textColor = NSColor(calibratedWhite: 0.90, alpha: 1.0)
+            backgroundColor = NSColor(calibratedRed: 0.18, green: 0.10, blue: 0.08, alpha: 1.0)
+        default:
+            displayLabel = normalized.isEmpty ? "AGENT" : normalized.uppercased()
+            accentColor = NSColor(calibratedRed: 0.77, green: 0.45, blue: 1.0, alpha: 1.0)
+            textColor = NSColor(calibratedWhite: 0.94, alpha: 1.0)
+            backgroundColor = NSColor(calibratedRed: 0.12, green: 0.08, blue: 0.22, alpha: 1.0)
+        }
+    }
+}
+
 @MainActor
 class GroupChatChannelController: NSObject, ChannelController {
     let channelId: UUID
@@ -213,9 +241,7 @@ class GroupChatChannelController: NSObject, ChannelController {
                     self.lastTimestamp = ts
 
                     let date = Self.isoFormatter.date(from: ts) ?? Date()
-                    let timeString = Self.timeFormatter.string(from: date)
-
-                    self.appendMessage("[\(timeString)] \(msgSender): \(body)", autoScroll: isAtBottom)
+                    self.appendMessage(sender: msgSender, body: body, date: date, autoScroll: isAtBottom)
 
                     if self.hasUnread == false {
                         self.hasUnread = true
@@ -240,18 +266,48 @@ class GroupChatChannelController: NSObject, ChannelController {
         reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
     }
 
-    private func appendMessage(_ text: String, autoScroll: Bool = true) {
-        let attributed = NSAttributedString(
-            string: text + "\n",
+    static func attributedMessage(sender: String, body: String, date: Date) -> NSAttributedString {
+        let role = ChatTurnRole(sender: sender)
+        let timeString = timeFormatter.string(from: date)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacing = 8
+        paragraph.lineSpacing = 1.5
+        paragraph.headIndent = 16
+        paragraph.firstLineHeadIndent = 0
+
+        let message = NSMutableAttributedString()
+        let label = "▌ \(role.displayLabel)  \(timeString)\n"
+        message.append(NSAttributedString(
+            string: label,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: role.accentColor,
+                .backgroundColor: role.backgroundColor,
+                .paragraphStyle: paragraph,
+            ]
+        ))
+        message.append(NSAttributedString(
+            string: "  \(body)\n",
             attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-                .foregroundColor: NSColor.white,
+                .foregroundColor: role.textColor,
+                .backgroundColor: role.backgroundColor,
+                .paragraphStyle: paragraph,
             ]
-        )
+        ))
+        return message
+    }
+
+    private func appendMessage(sender: String, body: String, date: Date = Date(), autoScroll: Bool = true) {
+        let attributed = Self.attributedMessage(sender: sender, body: body, date: date)
         textView.textStorage?.append(attributed)
         if autoScroll {
             textView.scrollToEndOfDocument(nil)
         }
+    }
+
+    private func appendMessage(_ text: String, autoScroll: Bool = true) {
+        appendMessage(sender: "system", body: text, autoScroll: autoScroll)
     }
 
     private func isScrolledToBottom() -> Bool {
