@@ -9,11 +9,13 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "=== Holoscape Dev Setup ==="
 
-# 1. Build the MCP server binary
+# 1. Build the MCP server executable
+# Build the product, not only the target: target-only builds can compile sources
+# without relinking the runnable MCP binary used by Claude Code.
 echo "[1/4] Building HoloscapeMCP..."
 cd "$REPO_DIR"
-swift build --target HoloscapeMCP 2>&1 | tail -3
-MCP_BIN="$(swift build --target HoloscapeMCP --show-bin-path)/HoloscapeMCP"
+swift build --product HoloscapeMCP
+MCP_BIN="$(swift build --product HoloscapeMCP --show-bin-path)/HoloscapeMCP"
 echo "  Binary: $MCP_BIN"
 
 # 2. Install notification hook
