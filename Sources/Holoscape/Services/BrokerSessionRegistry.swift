@@ -52,6 +52,28 @@ struct BrokerSessionRegistry {
         try save(records)
     }
 
+    /// Removes records that are both terminal and older than the caller-owned cutoff.
+    ///
+    /// This is deliberately an explicit primitive, not a launch-time cleanup policy:
+    /// callers choose the retention window, and reattachable recovery records remain
+    /// durable regardless of age so Holoscape never silently loses resumable sessions.
+    @discardableResult
+    func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
+        let records = try load()
+        let removed = records.filter { record in
+            record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+        }
+        guard !removed.isEmpty else {
+            return []
+        }
+        let removedIDs = Set(removed.map(\.id))
+        let retained = records.filter { record in
+            !removedIDs.contains(record.id)
+        }
+        try save(retained)
+        return removed.sortedBySessionID()
+    }
+
     private func validate(_ records: [BrokerSessionRecord]) throws {
         for record in records {
             do {
@@ -69,6 +91,17 @@ struct BrokerSessionRegistry {
             .appendingPathComponent("Holoscape", isDirectory: true)
             .appendingPathComponent("BrokerSessions", isDirectory: true)
             .appendingPathComponent("sessions.json")
+    }
+}
+
+private extension BrokerSessionLifecycle {
+    var isFinalForPruning: Bool {
+        switch self {
+        case .exited, .errored:
+            return true
+        case .creating, .running, .detached, .reattaching, .stale, .terminating:
+            return false
+        }
     }
 }
 

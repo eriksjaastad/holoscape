@@ -70,6 +70,35 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertThrowsError(try registry.load())
     }
 
+    func testPruneFinalRecordsOlderThanCutoffRemovesOnlyExitedAndErroredSessions() throws {
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let oldExited = makeRecord(id: "old-exited", lifecycle: .exited, exitCode: 0, updatedAt: 10)
+        let oldErrored = makeRecord(id: "old-errored", lifecycle: .errored, updatedAt: 20)
+        let oldStale = makeRecord(id: "old-stale", lifecycle: .stale, updatedAt: 30)
+        let oldDetached = makeRecord(id: "old-detached", lifecycle: .detached, updatedAt: 40)
+        let recentExited = makeRecord(id: "recent-exited", lifecycle: .exited, exitCode: 0, updatedAt: 90)
+        try registry.save([recentExited, oldStale, oldExited, oldDetached, oldErrored])
+
+        let removed = try registry.pruneFinalRecords(updatedBefore: Date(timeIntervalSince1970: 50))
+
+        XCTAssertEqual(removed.map(\.id.rawValue).sorted(), ["old-errored", "old-exited"])
+        XCTAssertEqual(
+            try registry.load().map(\.id.rawValue),
+            ["old-detached", "old-stale", "recent-exited"]
+        )
+    }
+
+    func testPruneFinalRecordsValidatesBeforeWriting() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let invalid = makeRecord(id: "invalid-exited", lifecycle: .exited, exitCode: nil, updatedAt: 10)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([invalid]).write(to: registryURL)
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+
+        XCTAssertThrowsError(try registry.pruneFinalRecords(updatedBefore: Date(timeIntervalSince1970: 50)))
+    }
+
     private func makeRecord(
         id: String,
         lifecycle: BrokerSessionLifecycle,
