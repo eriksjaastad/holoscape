@@ -194,6 +194,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    /// Prune terminal lifecycle records after an explicit caller-owned retention decision.
+    ///
+    /// This intentionally does not run from coordinator init or app launch. Recovery
+    /// records that might still represent resumable user work stay durable; only
+    /// final `.exited` / `.errored` metadata older than the supplied cutoff is removed.
+    @discardableResult
+    func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
+        try registry.pruneFinalRecords(updatedBefore: cutoff)
+    }
+
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
         _ = try record(for: id)
         try runtime.sendInput(id: id, bytes: bytes)
