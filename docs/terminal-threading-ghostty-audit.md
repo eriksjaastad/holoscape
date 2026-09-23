@@ -151,7 +151,6 @@ Do harden toward Ghostty's shape in the remaining incremental steps:
 
 ## Proposed follow-up cards
 
-1. **Scale broker-backed terminal throughput/stall benchmarks.** Initial scaled coverage exists for eight output-heavy sessions plus active input probes; keep expanding it when lower-level lock/runtime changes are proposed.
-2. **Extend output availability signaling across the out-of-process broker protocol.** Native in-process broker output is signaled now; socket/process-host clients still need a protocol-level wake/stream mechanism before the polling fallback can be removed entirely.
-3. **Tighten per-session runtime locking if scaled benchmarks show contention.** Split output append/drain from PTY writes only with benchmark evidence.
-4. **Define terminal/channel render snapshots.** Freeze the state consumed by skins, shader uniforms, and tab truth so future render-thread work has a clean data boundary.
+1. **Keep broker-backed terminal throughput/stall benchmarks current.** Initial scaled coverage exists for eight output-heavy sessions plus active input probes; expand it when lower-level lock/runtime changes are proposed.
+2. **Tighten per-session runtime locking if scaled benchmarks show contention.** Split output append/drain from PTY writes only with benchmark evidence.
+3. **Define terminal/channel render snapshots.** Freeze the state consumed by skins, shader uniforms, and tab truth so future render-thread work has a clean data boundary.
