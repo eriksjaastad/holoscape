@@ -1,6 +1,6 @@
 # macOS Permission Prompt Audit
 
-Card: #5871  
+Card: #5871
 Scope: Holoscape launch and normal terminal use. This audit lists code paths that can cause macOS privacy, notification, or network-volume prompts and separates confirmed prompt sources from low-risk local app-storage access.
 
 ## Summary
