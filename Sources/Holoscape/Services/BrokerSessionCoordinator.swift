@@ -15,6 +15,11 @@ protocol BrokerSessionCoordinating {
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
+    func setOutputAvailabilityHandler(
+        _ id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws
+    func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
@@ -24,6 +29,13 @@ protocol BrokerSessionCoordinating {
 }
 
 extension BrokerSessionCoordinating {
+    func setOutputAvailabilityHandler(
+        _ id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws {}
+
+    func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool { false }
+
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         ScrollbackReplay(
             data: try readScrollbackTail(id, maxBytes: maxBytes),
@@ -212,6 +224,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
         _ = try record(for: id)
         return try runtime.readAvailableOutput(id: id)
+    }
+
+    func setOutputAvailabilityHandler(
+        _ id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws {
+        _ = try record(for: id)
+        guard let runtime = runtime as? BrokerOutputAvailabilityMonitoringRuntime else { return }
+        try runtime.setOutputAvailabilityHandler(id: id, handler: handler)
+    }
+
+    func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool {
+        _ = try record(for: id)
+        return runtime is BrokerOutputAvailabilityMonitoringRuntime
     }
 
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {

@@ -319,8 +319,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func startOutputPump() {
         guard let brokerSessionID else { return }
+        let supportsOutputAvailabilityMonitoring = (try? coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)) == true
         outputReadLane.start(
             sessionID: brokerSessionID,
+            mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
             read: { [outputCoordinator] id in
                 try outputCoordinator.readAvailableOutput(id)
             },
@@ -336,6 +338,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 }
             }
         )
+        do {
+            try coordinator.setOutputAvailabilityHandler(brokerSessionID) { [outputReadLane] id in
+                outputReadLane.wake(sessionID: id)
+            }
+        } catch {
+            reportSessionFailure(error)
+        }
     }
 
     private func handleOutputPumpSample(_ data: Data, for brokerSessionID: BrokerSessionID) {
@@ -352,6 +361,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func stopOutputPump() {
+        if let brokerSessionID {
+            try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
+        }
         outputReadLane.stop()
     }
 
@@ -483,55 +495,74 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
 }
 
 private final class BrokerOutputReadLane: @unchecked Sendable {
+    enum Mode {
+        case outputAvailabilitySignal
+        case periodicPolling
+    }
+
     private let queue = DispatchQueue(label: "holoscape.broker.output.read-lane", qos: .userInteractive)
-    private let interval: TimeInterval
+    private let signalTerminationCheckInterval: TimeInterval
+    private let pollingInterval: TimeInterval
     private let lock = NSLock()
     private var openSessionID: BrokerSessionID?
-    private var timer: DispatchSourceTimer?
+    private var semaphore: DispatchSemaphore?
 
-    init(interval: TimeInterval = 0.02) {
-        self.interval = interval
+    init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
+        self.signalTerminationCheckInterval = signalTerminationCheckInterval
+        self.pollingInterval = pollingInterval
     }
 
     func start(
         sessionID: BrokerSessionID,
+        mode: Mode,
         read: @escaping @Sendable (BrokerSessionID) throws -> Data,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         stop()
+        let semaphore = DispatchSemaphore(value: 0)
         lock.withLock {
             openSessionID = sessionID
+            self.semaphore = semaphore
         }
 
-        let source = DispatchSource.makeTimerSource(queue: queue)
-        source.schedule(deadline: .now() + interval, repeating: interval)
-        source.setEventHandler { [weak self] in
-            guard let self, self.isOpen(for: sessionID) else { return }
-            do {
-                let data = try read(sessionID)
+        queue.async { [weak self] in
+            semaphore.signal()
+            while true {
+                guard let self, self.isOpen(for: sessionID) else { return }
+                switch mode {
+                case .outputAvailabilitySignal:
+                    _ = semaphore.wait(timeout: .now() + self.signalTerminationCheckInterval)
+                case .periodicPolling:
+                    _ = semaphore.wait(timeout: .now() + self.pollingInterval)
+                }
                 guard self.isOpen(for: sessionID) else { return }
-                onSample(sessionID, data)
-            } catch {
-                self.closeIfCurrent(sessionID)
-                onFailure(sessionID, error)
+                do {
+                    let data = try read(sessionID)
+                    guard self.isOpen(for: sessionID) else { return }
+                    onSample(sessionID, data)
+                } catch {
+                    self.closeIfCurrent(sessionID)
+                    onFailure(sessionID, error)
+                    return
+                }
             }
         }
-        lock.withLock {
-            timer = source
-        }
-        source.resume()
+    }
+
+    func wake(sessionID: BrokerSessionID) {
+        guard isOpen(for: sessionID) else { return }
+        lock.withLock { semaphore }?.signal()
     }
 
     func stop() {
-        let source = lock.withLock { () -> DispatchSourceTimer? in
+        let semaphore = lock.withLock { () -> DispatchSemaphore? in
             openSessionID = nil
-            let source = timer
-            timer = nil
-            return source
+            let current = self.semaphore
+            self.semaphore = nil
+            return current
         }
-        source?.setEventHandler {}
-        source?.cancel()
+        semaphore?.signal()
     }
 
     private func isOpen(for sessionID: BrokerSessionID) -> Bool {
@@ -542,9 +573,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         lock.withLock {
             if openSessionID == sessionID {
                 openSessionID = nil
-                timer?.setEventHandler {}
-                timer?.cancel()
-                timer = nil
+                semaphore?.signal()
+                semaphore = nil
             }
         }
     }
