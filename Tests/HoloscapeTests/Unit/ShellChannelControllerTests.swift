@@ -62,6 +62,25 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.workingDirectory, "/tmp")
     }
 
+    func testShellHostCurrentDirectoryHandlerRoutesThroughTerminalProcessSeam() {
+        let terminal = MockTerminalProcess()
+        let delegate = MockChannelDelegate()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: NSHomeDirectory(),
+            terminal: terminal
+        )
+        controller.delegate = delegate
+
+        controller.activate()
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+
+        XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertEqual(controller.displayBaseLabel, "tmp")
+        XCTAssertTrue(delegate.stateChanges.contains(.active))
+    }
+
     func testShellLastLinesUsesTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         terminal.lines = ["one", "two", "three"]

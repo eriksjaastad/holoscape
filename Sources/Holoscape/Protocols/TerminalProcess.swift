@@ -19,6 +19,12 @@ protocol TerminalProcess: AnyObject {
 
     func send(_ bytes: [UInt8])
     func setOutputHandler(_ handler: (() -> Void)?)
+    /// Report host-provided current-directory updates such as OSC 7. Direct
+    /// SwiftTerm-backed terminals can still use `LocalProcessTerminalViewDelegate`;
+    /// broker-backed terminals expose their wrapped terminal view through this
+    /// seam so shell tabs keep authoritative cwd truth without depending on
+    /// typed-input heuristics.
+    func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?)
     /// Report a failure observed while operating an already-started session
     /// (broker host outage, broker that no longer owns the session). The owning
     /// tab downgrades its recovery state from this instead of guessing.
@@ -64,6 +70,7 @@ struct TerminalSessionFailure: Equatable, Sendable {
 }
 
 extension TerminalProcess {
+    func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func detachBrokerSession() {}

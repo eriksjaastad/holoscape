@@ -14,6 +14,7 @@ class MockTerminalProcess: TerminalProcess {
     var terminalContentView: NSView = NSView()
     var outputHandler: (() -> Void)?
     var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
+    var hostCurrentDirectoryHandler: ((String?) -> Void)?
     var lines: [String] = []
     var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
     var brokerOwnedSessionID: BrokerSessionID?
@@ -66,6 +67,10 @@ class MockTerminalProcess: TerminalProcess {
 
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
         userInputHandler = handler
+    }
+
+    func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {
+        hostCurrentDirectoryHandler = handler
     }
 
     func lastLines(_ count: Int) -> [String] {
