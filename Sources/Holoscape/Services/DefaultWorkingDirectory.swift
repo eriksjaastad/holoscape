@@ -20,6 +20,13 @@ enum DefaultWorkingDirectory {
         preferredURL.path
     }
 
+    static func launchURL(fromOptionalPath path: String?) -> URL {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return preferredURL
+        }
+        return expandedURL(from: path)
+    }
+
     static func expandedURL(from path: String) -> URL {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
             .standardizedFileURL

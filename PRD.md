@@ -38,15 +38,15 @@ The secondary problem: existing terminals are someone else's product. They can't
 
 ## Core Concept / Data Model
 
-**Channels** are the core abstraction. A channel is a named, typed connection to a backend:
+**Channels** are the core abstraction. A channel is a named, typed connection to a backend. PTY-backed local and agent channels are launched through Holoscape's session-broker substrate rather than being disposable views: the app keeps durable session IDs, can detach/reattach to broker-owned processes, marks unrecoverable sessions stale, and surfaces broker launch failures in setup diagnostics instead of silently falling back.
 
 | Channel Type | Backend | Protocol | Auth |
 |-------------|---------|----------|------|
-| Shell | Local zsh | PTY (SwiftTerm) | User's default env |
-| Agent (direct) | Claude Code process | PTY (SwiftTerm) | OAuth (clean env, no API key) |
-| Agent (API) | Claude Code process | PTY (SwiftTerm) | API key injected |
+| Shell | Local zsh | Broker-owned PTY + SwiftTerm view | User's default env |
+| Agent (direct) | Claude Code process | Broker-owned PTY + SwiftTerm view | OAuth (clean env, no API key) |
+| Agent (API) | Claude Code process | Broker-owned PTY + SwiftTerm view | API key injected |
 | Agent (SSH) | Remote claude on Mac Mini | SSH PTY | SSH key + OAuth on Mini |
-| Group Chat | Agent Chat API (Cloud Run) | WebSocket/HTTP polling | X-API-Key header |
+| Group Chat | Agent Chat API (Cloud Run) | HTTP polling | X-API-Key header |
 
 **Channel identity** is derived from:
 - **Type** (shell, agent, group chat)
@@ -59,6 +59,12 @@ The secondary problem: existing terminals are someone else's product. They can't
 - OAuth channels: ANTHROPIC_API_KEY is explicitly UNSET
 - API channels: ANTHROPIC_API_KEY is injected from secure storage
 - Keys never leak between channels
+
+**Persistent channel state** is the tab-truth layer. Holoscape persists richer state than active/disconnected/connecting: ready, running, needs approval, error, and stale/offline. State comes from ordered sources such as broker registry, terminal lifecycle, agent status adapters, operator actions, and plugin metadata. Higher-priority agent/operator states must not be hidden by lower-priority plugin status.
+
+**Scrollback persistence** is bounded and local. Broker-backed sessions persist terminal output to a disk-backed FIFO store under the Holoscape config directory, replay a bounded tail on reattach, and treat anything printed to terminal output as restorable until retention evicts it. Sensitive data should not be printed to terminal output.
+
+**Optional integrations** live behind removable plugins. Holoscape core must start and function with zero plugins. Plugin capabilities and permissions are closed enums, plugin storage is namespaced under the Holoscape config directory, and plugin startup/config failures are plugin-scoped diagnostics, not core terminal failures. Project Tracker is a first-party optional plugin, not a core source of truth.
 
 **Bug reports** are a simple data object:
 - Channel name, channel type, last 20 lines of output, timestamp, macOS version, user description
@@ -79,9 +85,11 @@ The secondary problem: existing terminals are someone else's product. They can't
 
 ### Terminal Emulation
 - Full ANSI/VTE escape code support (via SwiftTerm)
-- Local shell via PTY (via SwiftTerm LocalProcessTerminalView)
-- Scrollback buffer (configurable depth)
+- Local shell via broker-owned PTY with SwiftTerm rendering
+- Scrollback buffer (configurable depth) plus bounded disk-backed replay for broker sessions
 - Standard terminal capabilities (cursor positioning, colors, alternate screen)
+
+Known correctness gaps remain tracked separately against iTerm-quality behavior: broker-backed resize propagation, current-working-directory truth through broker paths, shell environment guarantees such as `TERM=xterm-256color`, controlling-TTY semantics, and visible replay-tail limits versus persisted history limits.
 
 ### Text Input
 - NSTextView-based input at bottom of window
@@ -92,14 +100,85 @@ The secondary problem: existing terminals are someone else's product. They can't
 - Enter to send/execute
 - Up/Down arrow for command history (per channel)
 
+### Standard macOS Menus
+- Holoscape exposes native macOS app, file, edit, view, window, and help menus rather than relying only on custom chrome
+- The Edit menu routes Cut/Copy/Paste/Select All through the AppKit responder chain so focused text controls behave like normal macOS fields
+- Settings and Setup Diagnostics are app-menu surfaces; bug reporting lives under Help with a keyboard shortcut
+
 ### Agent Integration
 - Spawn `claude` CLI process in a PTY with environment isolation
 - Detect role from CLAUDE.md in working directory OR user-assigned label
 - Display role prominently on channel tab
 - Floor manager channels show project directory name
+- Map agent/tool events from supported CLIs into persistent tab state, including permission/approval prompts, running tool calls, idle/ready, and error states
+
+### Local API and MCP Tool Server
+
+The local API is a first-class integration surface for automation, tests, and Claude Code control. It is intentionally local and app-owned; it is not a cloud service and not a Project Tracker dependency.
+
+**Architecture flow:**
+
+```text
+Claude Code
+  -> MCP stdio
+  -> HoloscapeMCP binary
+  -> HTTP localhost:7865
+  -> Holoscape API server inside the app
+  -> ChannelManager / MainWindowController / channel views
+```
+
+**HTTP implementation:**
+- Default port is `7865`; tests and development may override it with `--api-port <port>`.
+- The server uses `Network.framework` sockets plus a small hand-rolled HTTP parser because the app only needs a narrow JSON-over-localhost harness and should not embed a web framework or web runtime.
+- The parser waits for the full `Content-Length` body before routing so fragmented local socket reads do not create partial JSON requests.
+- The API is best treated as localhost-only control for trusted local automation.
+
+**Current endpoints:**
+- `GET /channels` — list open channels, labels, types, transient state, persistent state/source, notification type, and active-channel flag.
+- `POST /channels` — open a shell/agent channel with optional `type`, `dir`, `label`, and `cmd` JSON fields.
+- `DELETE /channels/{id}` — close a channel by UUID or display label.
+- `POST /channels/{id}/switch` — switch the visible channel.
+- `POST /channels/{id}/input` — send JSON `{ "text": "..." }` as channel input.
+- `GET /channels/{id}/output?lines=N` — read the last N output lines.
+- `POST /notify` — ingest agent hook notifications and map them into tab state.
+
+**HoloscapeMCP tools:**
+- `holoscape_list_channels`
+- `holoscape_open_channel`
+- `holoscape_switch_channel`
+- `holoscape_close_channel`
+- `holoscape_send_input`
+- `holoscape_read_output`
+
+**Notification hook events:** `permission_prompt`, `idle_prompt`, `auth_success`, and `elicitation_dialog`.
+
+**Remote notification hook behavior:** `POST /notify` is the local hook endpoint used by agent/CLI integrations. It matches incoming `cwd` values to shell or agent channels, maps supported events into persistent tab state through agent status adapters, refreshes tab/sidebar state, and may create a macOS notification for permission/idle events. This hook is local automation glue; it is not a cloud notification service.
+
+**Testing role:** UI tests should prefer this API for channel setup, switching, output inspection, and notification-state setup when direct XCUI typing into terminal controls would be brittle. XCUI should still verify visible UI behavior; the API is the reliable harness for setup and assertions.
+
+Keep this separate from future MCP-client channels: HoloscapeMCP is external-tool control of Holoscape; CEO/MCP channels are Holoscape connecting to another MCP endpoint.
+
+### Setup Diagnostics and Permissions
+- `Holoscape > Setup Diagnostics…` displays setup health without forcing broad permissions on launch
+- Diagnostics cover config load/save failures, broker host launch failures, notification authorization, Accessibility trust, Automation guidance, crash-log readability, and plugin startup health
+- Notification authorization is deferred until the first eligible background notification rather than requested unconditionally on first launch
+- System Settings deep links are provided where macOS exposes stable panes; Holoscape should diagnose clearly when macOS requires manual user action
+
+### holoscape:// URL Scheme
+- Holoscape accepts URL-scheme requests to open shell or agent channels from outside the app
+- Supported request fields map to channel type, directory, label, and optional command text
+- Shell commands supplied by URL are submitted explicitly with a trailing newline after the shell initializes
+- Unknown channel types are rejected with logging; URL handling must not silently create a different channel type
+
+### Plugin Architecture
+- Core terminal behavior must not depend on plugins being present
+- Plugin manifests declare closed capabilities and permissions before any runtime side effects
+- Plugin command execution is routed through advertised namespaced commands only
+- Plugin storage is isolated by namespace and requires explicit plugin-storage permission
+- Project Tracker plugin may expose board/task URL commands, localhost health checks, task status snapshots, and supplemental tab metadata, but its absence must not change core terminal correctness
 
 ### Group Chat
-- Connect to agent chat API (Cloud Run) via HTTP polling or WebSocket
+- Connect to agent chat API (Cloud Run) via HTTP polling
 - Display messages with sender labels and timestamps: `[8:15 PM] architect: message`
 - Send messages as "erik" sender
 - Show messages from all participants (erik, claude-architect, mini-claude, ceo)
@@ -119,15 +198,15 @@ The secondary problem: existing terminals are someone else's product. They can't
 - Transparency slider
 - Font family and size selector
 - ANSI color palette customization
-- Settings persist to ~/.holoscape/config.json
+- Settings persist to `~/.holoscape/config.json` by default, with `HOLOSCAPE_CONFIG_DIR` available for test/dev overrides
 
 ## Non-Functional Requirements
 
 - **Startup:** Under 2 seconds to usable window
 - **Channel switching:** Instant (no re-rendering delay)
 - **Terminal rendering:** Match or exceed iTerm performance (SwiftTerm handles this)
-- **Memory:** Each channel is an independent process — closing a channel frees its memory
-- **Crash resilience:** App crash doesn't kill running agent processes (they're separate PIDs)
+- **Memory:** Each channel backend is an independent broker/session process — closing or terminating a channel releases its resources
+- **Crash resilience:** App crash should not kill running broker-backed agent/shell processes; they can be restored, reattached, or marked stale with visible diagnostics
 - **No telemetry:** No analytics, no phone-home, no tracking. Erik's terminal, Erik's data.
 
 ## UX and UI Requirements
@@ -182,6 +261,8 @@ A session profile defines everything needed to open a connection in one click:
 | user | SSH username — only for SSH connections |
 | directory | Working directory on the target machine |
 | command | What to run: `claude` or `/bin/zsh` |
+
+Open channel metadata persists the working directory for shell/agent/session-profile-backed channels. Restored tabs should preserve directory-derived labels and working-directory truth where the broker/session record can verify the process; unverifiable or unsafe restore targets are marked stale or require explicit reconnect rather than being relaunched silently.
 
 **Preconfigured sessions (from config):**
 
@@ -305,15 +386,16 @@ Connect to the Agent Chat API (existing Flask app on Cloud Run) for multi-partic
 - Messages appended as they arrive, with scrollback buffer
 - Auto-scroll to bottom on new messages unless Erik has scrolled up
 
-### Running Process Indicator
+### Persistent Tab Truth
 
-Each tab shows whether its backend process is running, and for how long.
+Each tab shows durable backend/agent state without relying on a hidden timer as the main signal.
 
-- **Active channels** show a green dot + elapsed time since activation (e.g., "Shell (2h 15m)")
-- **Disconnected channels** show a red dot + "disconnected"
-- **Connecting channels** show a yellow dot + "connecting..."
-- Elapsed time updates every minute (not every second — avoid unnecessary redraws)
-- Displayed in both the sidebar tab entries and the horizontal tab bar
+- **Ready** channels are available for input
+- **Running** channels have active process/tool activity
+- **Needs approval** channels are blocked on Erik, such as Claude Code permission prompts
+- **Error** channels failed or exited unexpectedly
+- **Stale/offline** channels refer to persisted broker/session state that could not be reattached
+- Supplemental plugin metadata may be displayed, but must not mask higher-priority terminal/agent states
 
 ### Timestamps on Terminal Output
 
@@ -354,9 +436,9 @@ Quick-switch between the first 9 channels using Cmd+1 through Cmd+9.
 
 ## V3 Features
 
-### Desktop Notifications for Unread Channels
+### Desktop Notifications for Agent/Channel Events
 
-When Holoscape is not the frontmost app and a channel receives new content, show a macOS notification.
+When Holoscape is not the frontmost app and a channel receives eligible content or agent state events, show a macOS notification.
 
 **How it works:**
 - Uses `UNUserNotificationCenter` for native macOS notifications
@@ -364,8 +446,9 @@ When Holoscape is not the frontmost app and a channel receives new content, show
 - Clicking the notification brings Holoscape to front and switches to that channel
 - Notifications are only sent when Holoscape is NOT the active app (no notifications while focused)
 - Notification grouping: one notification per channel, updated on subsequent messages (not spammed)
-- Setting to enable/disable notifications per channel type (shell, agent, SSH, MCP, group chat)
+- Settings should eventually enable/disable notifications per channel type and event type
 - Global toggle: Settings > Notifications > Enable Desktop Notifications
+- Notification permission is lazy: do not request authorization at app launch just to prepare this feature
 
 **Config:**
 ```json
@@ -472,6 +555,7 @@ Fully customizable window chrome and UI elements via skin packages.
 - Crash detection and one-click reporting on launch
 - Background color, transparency, font settings
 - Channel state persistence across restarts
+- Native Edit menu for standard Cut/Copy/Paste/Select All behavior
 
 **V1.5 — SHIPPED:**
 - Session launcher with profile-driven combobox opener
@@ -490,16 +574,26 @@ Fully customizable window chrome and UI elements via skin packages.
 - Color theme presets (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) with override support
 - Cmd+1-9 keyboard shortcuts for channel switching via NSEvent local monitor
 
-**V3 — Next sprint:**
-- Desktop notifications for unread channels (macOS UNUserNotificationCenter)
-- Window splitting (side-by-side channels in the terminal area)
+**Current tank-backend and integration substrate — SHIPPED / IN PROGRESS:**
+- Broker-backed local shell and agent PTY sessions with durable session IDs, detach/reattach, stale-session state, and setup diagnostics for launch failures
+- Persistent tab truth: ready/running/needs-approval/error/stale with source priority across broker, terminal, agent adapter, operator, and plugin sources
+- Disk-backed scrollback replay with bounded retention for broker sessions
+- Setup Diagnostics window for config, broker host, notification, Accessibility, Automation, crash-log, and plugin startup health
+- Local HTTP API server on port `7865` and `HoloscapeMCP` stdio tool server for Claude Code automation/test harnesses
+- Local `/notify` hook for agent events that maps permission/idle/auth/dialog notifications into tab state and optional desktop notifications
+- `holoscape://` URL-scheme channel opener for explicit shell/agent launch requests
+- Removable plugin seam with closed manifests, permissions, namespaced storage, command routing, and optional first-party Project Tracker plugin
+- Split panes and tab pinning are implemented surfaces, not future-only roadmap items
+
+**V3 — Remaining product surface:**
+- Complete notification preferences and click-through focus behavior
+- Window splitting polish and persistence follow-up, if the current implementation lacks any intended UX behavior
 - Bridge channel (broadcast a message to all open agent channels simultaneously)
-- Tab pinning (pin important tabs so they don't reorder on unread)
 - Search across channel output (Cmd+F to search scrollback in active channel)
-- Full Winamp-style skin engine (custom window chrome, skinnable UI elements)
+- Skin/chrome polish on top of the existing shaped-window, Metal/shader, MercuryDeck, and reactive-uniform substrate
 
 **V4 — Someday:**
-- Plugin/extension model
+- Plugin marketplace and third-party extension distribution
 - Scriptable actions (AppleScript or custom scripting for automation)
 - Multi-window support (detach a channel into its own window)
 
@@ -522,10 +616,10 @@ Fully customizable window chrome and UI elements via skin packages.
 |------|-----------|--------|------------|
 | ~~SwiftTerm + group chat~~ | — | — | **RESOLVED (V2):** Group chat uses custom NSTextView, not SwiftTerm. Works cleanly. |
 | ~~SSH PTY latency~~ | — | — | **RESOLVED (V1.5):** SSH via system `ssh` binary + SwiftTerm PTY works well. |
-| UNUserNotificationCenter permission denied | Low | Medium | Request permission on first launch. Gracefully degrade if denied — no notifications, no crash. |
+| UNUserNotificationCenter permission denied | Low | Medium | Request permission lazily on first eligible background notification. Gracefully degrade if denied — no notifications, no crash. |
 | NSSplitView recursive splitting for window split | Medium | Medium | Test with 2-pane first. 4-pane (2x2) may need custom layout. Defer 4-pane to V3.1 if complex. |
 | Bridge channel message delivery order | Low | Medium | Send to all agents in tab order. No guarantee of simultaneous delivery — document this. |
-| Skin engine scope creep | High | High | Define a minimal skin spec first (colors + images only). No layout changes in V3. Full layout engine deferred to V4. |
+| Skin engine scope creep | High | High | Treat the existing shaped-window/Metal/MercuryDeck substrate as implementation evidence, but separately decide the public skin authoring contract before widening scope. |
 | Cmd+F search performance on large scrollback | Low | Medium | Limit search to last 10,000 lines. SwiftTerm buffer search may need custom implementation. |
 | Crash report API on SIL needs to be built | Low | Low | Simple REST endpoint — POST to receive, GET to list. Could be a single Cloud Run function. |
 
@@ -542,4 +636,5 @@ Fully customizable window chrome and UI elements via skin packages.
 9. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
 10. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
 11. **V3:** For the bridge channel, should responses from agents be echoed back into the bridge view, or only in individual channels?
-12. **V3:** For the skin engine, what's the minimum viable skin spec? Colors-only? Colors + images? Full layout?
+12. **V3:** For the skin engine, which parts of the existing shaped-window/Metal/MercuryDeck substrate should become public skin authoring contract versus Erik-only art direction?
+13. What is the current production status of the Synth Insight Labs bug-report endpoint, and should it remain in the PRD as a dependency?

@@ -118,15 +118,61 @@
     },
     "tabBar.tab.active": {
       "fill": { "kind": "color", "value": "#ffb347" },
-      "corner": 4
+      "corner": 4,
+      "states": [
+        {
+          "name": "error",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#d96f5f" }
+        },
+        {
+          "name": "stale",
+          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#a97ae6" }
+        }
+      ]
     },
     "tabBar.tab.normal": {
       "fill": { "kind": "color", "value": "#28333a" },
-      "corner": 4
+      "corner": 4,
+      "states": [
+        {
+          "name": "needs-approval",
+          "match": { "channelConnectionState": 1 },
+          "fill": { "kind": "color", "value": "#5b4630" }
+        },
+        {
+          "name": "error",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#5a3734" }
+        },
+        {
+          "name": "stale",
+          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#4a3f5f" }
+        }
+      ]
     },
     "tabBar.tab.idle": {
       "fill": { "kind": "color", "value": "#2d5461" },
-      "corner": 4
+      "corner": 4,
+      "states": [
+        {
+          "name": "needs-approval",
+          "match": { "channelConnectionState": 1 },
+          "fill": { "kind": "color", "value": "#5b4630" }
+        },
+        {
+          "name": "error",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#5a3734" }
+        },
+        {
+          "name": "stale",
+          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#4a3f5f" }
+        }
+      ]
     },
     "sidebar.container": {
       "fill": { "kind": "color", "value": "#171c20" }
@@ -146,6 +192,11 @@
           "name": "disconnected",
           "match": { "channelConnectionState": 2 },
           "fill": { "kind": "color", "value": "#d96f5f" }
+        },
+        {
+          "name": "stale",
+          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#a97ae6" }
         }
       ]
     },

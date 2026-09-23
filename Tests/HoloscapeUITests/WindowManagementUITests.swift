@@ -296,9 +296,10 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2), "New Channel menu item should exist")
         newChannelItem.click()
 
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3), "New Channel dialog should appear")
-        dialog.buttons["Cancel"].click()
+        let comboBox = app.comboBoxes["session-launcher-combo"]
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Unified New Channel launcher should appear")
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "New Channel should not open a separate modal picker")
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     func testFileMenuCloseChannel() throws {

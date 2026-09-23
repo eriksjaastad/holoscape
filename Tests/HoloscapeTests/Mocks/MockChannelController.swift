@@ -7,12 +7,33 @@ class MockChannelController: NSObject, ChannelController {
     let channelType: ChannelType
     var hasUnread: Bool = false
     private(set) var state: ChannelState
-    let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
+    let commandHistory = CommandHistory()
+    var displayBaseLabelOverride: String?
+    var displayBaseLabel: String { displayBaseLabelOverride ?? displayLabel }
     var displayLabel: String
+    var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
+    var recoveryActionOverride: ChannelRecoveryAction?
+    var persistentStateOverride: PersistentChannelState?
+    private(set) var lastInteractionAt: Date = Date()
     private let _contentView = NSView()
 
     var contentView: NSView { _contentView }
+
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? {
+        tabIdentityIndicatorOverride
+    }
+
+    var recoveryAction: ChannelRecoveryAction? {
+        recoveryActionOverride ?? (state == .disconnected ? .reconnect : nil)
+    }
+
+    var persistentState: PersistentChannelState {
+        persistentStateOverride ?? PersistentChannelState.fromRuntimeState(
+            state,
+            recoveryAction: recoveryAction
+        )
+    }
 
     var activateCallCount = 0
     var deactivateCallCount = 0
@@ -53,5 +74,9 @@ class MockChannelController: NSObject, ChannelController {
 
     func lastLines(_ count: Int) -> [String] {
         return []
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
     }
 }

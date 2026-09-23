@@ -43,10 +43,15 @@ final class AnimationEngine {
     /// callback could remove a successor's tracking entry and stop the
     /// display link while an animation is still visually running.
     struct AnimationState {
-        weak var layer: CALayer?
+        let layer: CALayer
         let startTime: CFTimeInterval
         let duration: CFTimeInterval
         let token: UInt64
+        /// `CAAnimation.delegate` is not a safe ownership boundary for tests or
+        /// production teardown. Keep the completion delegate alive for exactly as
+        /// long as Holoscape tracks the animation so a later run-loop/display-link
+        /// pass cannot message a deallocated delegate.
+        fileprivate let delegate: AnimationCompletionDelegate
     }
 
     // MARK: - Public state
@@ -80,6 +85,17 @@ final class AnimationEngine {
     init(hostView: NSView? = nil, densityModeManager: DensityModeManager? = nil) {
         self.hostView = hostView
         self.densityModeManager = densityModeManager
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            for (id, state) in activeAnimations {
+                state.layer.removeAnimation(forKey: id.property.rawValue)
+            }
+            activeAnimations.removeAll()
+            displayLink?.invalidate()
+            displayLink = nil
+        }
     }
 
     // MARK: - Public API
@@ -136,7 +152,7 @@ final class AnimationEngine {
     /// in Minimal and Off density modes.
     func suppressAll() {
         for (id, state) in activeAnimations {
-            state.layer?.removeAnimation(forKey: id.property.rawValue)
+            state.layer.removeAnimation(forKey: id.property.rawValue)
         }
         activeAnimations.removeAll()
         stopDisplayLinkIfIdle()
@@ -299,7 +315,11 @@ final class AnimationEngine {
         let token = tokenCounter
 
         let delegate = AnimationCompletionDelegate { [weak self] finished in
-            MainActor.assumeIsolated {
+            // CAAnimation does not retain its delegate. Defer draining the
+            // tracking entry until after Core Animation's delegate callback
+            // has unwound so removing the state cannot deallocate the delegate
+            // while AppKit/QuartzCore is still returning through it.
+            DispatchQueue.main.async { [weak self] in
                 self?.animationDidComplete(id: id, token: token, finished: finished)
             }
         }
@@ -309,9 +329,17 @@ final class AnimationEngine {
             layer: layer,
             startTime: CACurrentMediaTime(),
             duration: curve.duration,
-            token: token
+            token: token,
+            delegate: delegate
         )
-        layer.add(animation, forKey: id.property.rawValue)
+        // Headless XCTest runs do not have a stable AppKit compositor boundary;
+        // adding real CAAnimations to unattached layers has caused delayed
+        // NSAnimationManager SIGSEGVs when later tests pump the main run loop.
+        // Keep the deterministic tracking state without registering with Core
+        // Animation until the engine has a host view.
+        if hostView != nil {
+            layer.add(animation, forKey: id.property.rawValue)
+        }
     }
 
     /// Drain the tracking entry for `id` only if it still holds `token`.

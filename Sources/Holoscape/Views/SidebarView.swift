@@ -115,10 +115,18 @@ class SidebarView: NSView {
         ])
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
+    func updateTabs(
+        channels: [any ChannelController],
+        activeId: UUID?,
+        pinnedIds: Set<UUID> = [],
+        notifications: [UUID: String] = [:],
+        now: Date = Date(),
+        staleThreshold: TimeInterval = 45 * 60
+    ) {
         activeChannelId = activeId
 
         let currentIds = Set(channels.map { $0.channelId })
+        let resolvedLabels = ChannelDisplayLabelResolver.labels(for: channels)
 
         // Remove entries for channels that no longer exist
         for (id, entry) in tabEntries where !currentIds.contains(id) {
@@ -130,19 +138,23 @@ class SidebarView: NSView {
         // Update existing entries in-place, create new ones as needed
         for (index, channel) in channels.enumerated() {
             let isPinned = pinnedIds.contains(channel.channelId)
-            let notificationType = notifications[channel.channelId]
+            let notificationType = effectiveNotificationType(for: channel, explicitNotifications: notifications)
+            let hasStaleInteraction = now.timeIntervalSince(channel.lastInteractionAt) >= staleThreshold
 
             if let existing = tabEntries[channel.channelId] {
                 // Update in place — no alloc, no constraint churn
                 existing.configure(
-                    label: channel.displayLabel,
+                    label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
+                    persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
-                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    elapsedTime: nil,
                     isPinned: isPinned,
-                    notificationType: notificationType
+                    notificationType: notificationType,
+                    recoveryAction: channel.state == .stale ? channel.recoveryAction : nil,
+                    hasStaleInteraction: hasStaleInteraction
                 )
                 // Reorder if needed
                 let arrangedViews = stackView.arrangedSubviews
@@ -155,14 +167,17 @@ class SidebarView: NSView {
                 let entry = SidebarTabEntry(frame: .zero)
                 entry.skinContext = skinContext
                 entry.configure(
-                    label: channel.displayLabel,
+                    label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
+                    persistentState: channel.persistentState,
                     isActive: channel.channelId == activeId,
-                    elapsedTime: ElapsedTimeFormatter.format(since: channel.activatedAt),
+                    elapsedTime: nil,
                     isPinned: isPinned,
-                    notificationType: notificationType
+                    notificationType: notificationType,
+                    recoveryAction: channel.state == .stale ? channel.recoveryAction : nil,
+                    hasStaleInteraction: hasStaleInteraction
                 )
                 entry.channelId = channel.channelId
                 entry.target = self
@@ -189,6 +204,16 @@ class SidebarView: NSView {
     @objc private func entryClicked(_ sender: SidebarTabEntry) {
         guard let id = sender.channelId else { return }
         sidebarDelegate?.sidebarView(self, didSelectChannelWithId: id)
+    }
+
+    private func effectiveNotificationType(
+        for channel: any ChannelController,
+        explicitNotifications: [UUID: String]
+    ) -> String? {
+        if channel.persistentState.kind == .needsApproval {
+            return "permission_prompt"
+        }
+        return explicitNotifications[channel.channelId]
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -351,6 +376,7 @@ class SidebarTabEntry: NSButton {
         case .active:       return NSColor.systemGreen.cgColor
         case .connecting:   return NSColor.systemYellow.cgColor
         case .disconnected: return NSColor.systemRed.cgColor
+        case .stale:        return NSColor.systemOrange.cgColor
         }
     }
 
@@ -415,41 +441,52 @@ class SidebarTabEntry: NSButton {
         ])
     }
 
-    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil) {
+    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState? = nil, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil, hasStaleInteraction: Bool = false) {
         // Stash the call so a later skin swap can re-apply the same
         // state without the caller re-running updateTabs.
         lastConfigure = { [weak self] in
             self?.applyConfigure(
                 label: label, channelType: channelType, hasUnread: hasUnread,
-                state: state, isActive: isActive, elapsedTime: elapsedTime,
-                isPinned: isPinned, notificationType: notificationType
+                state: state, persistentState: persistentState, isActive: isActive, elapsedTime: elapsedTime,
+                isPinned: isPinned, notificationType: notificationType,
+                recoveryAction: recoveryAction,
+                hasStaleInteraction: hasStaleInteraction
             )
         }
         lastConfigure?()
     }
 
-    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?) {
+    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState?, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?, hasStaleInteraction: Bool) {
         self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
         unreadDot.isHidden = true  // No dots — use background colors
 
-        // Map the incoming view-level state into this row's snapshot
-        // so state-variant resolution picks the right fill + text.
-        //   notificationKind: 0 none, 1 idle_prompt, 2 permission_prompt
-        //   channelConnectionState: 0 active, 1 connecting, 2 disconnected
+        // Map durable persistent tab truth into this row's snapshot so
+        // state-variant resolution picks the right fill + text. Legacy
+        // notificationType is still accepted for old hook callers, but it
+        // no longer owns needs-approval/error/stale visual truth when a
+        // PersistentChannelState is available.
+        //   notificationKind: 0 none, 1 info, 2 warn/needs-approval, 3 error
+        //   channelConnectionState: 0 usable, 1 attention, 2 error/disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
         let notificationKind: Int32
-        switch notificationType {
-        case "idle_prompt":       notificationKind = 1
-        case "permission_prompt": notificationKind = 2
-        default:                  notificationKind = 0
-        }
         let connectionState: Int32
-        switch state {
-        case .active:       connectionState = 0
-        case .connecting:   connectionState = 1
-        case .disconnected: connectionState = 2
+        if let persistentState {
+            notificationKind = persistentState.kind.reactiveNotificationKindOrdinal
+            connectionState = persistentState.kind.reactiveChannelConnectionOrdinal
+        } else {
+            switch notificationType {
+            case "idle_prompt":       notificationKind = 1
+            case "permission_prompt": notificationKind = 2
+            default:                  notificationKind = 0
+            }
+            switch state {
+            case .active:       connectionState = 0
+            case .connecting:   connectionState = 1
+            case .disconnected: connectionState = 2
+            case .stale:        connectionState = 3
+            }
         }
         snapshot.setChannelState(
             channelId: channelId.map { Int32(truncatingIfNeeded: $0.hashValue) } ?? 0,
@@ -458,17 +495,35 @@ class SidebarTabEntry: NSButton {
         )
         snapshot.setChannelConnectionState(connectionState)
         snapshot.setNotificationKind(notificationKind)
+        if let persistentState {
+            snapshot.setAgentState(persistentState.kind.reactiveAgentStateOrdinal)
+        }
 
         // Status text is view-level content (not a color) — drive it here.
-        switch state {
-        case .active:       statusTextField.stringValue = elapsedTime ?? ""
-        case .connecting:   statusTextField.stringValue = "connecting..."
-        case .disconnected: statusTextField.stringValue = "disconnected"
+        // Normal ready/running tabs intentionally stay textless; the color dot
+        // carries routine status without appending a noisy elapsed timer.
+        if let persistentState {
+            switch persistentState.kind {
+            case .ready: statusTextField.stringValue = ""
+            case .running: statusTextField.stringValue = ""
+            case .needsApproval: statusTextField.stringValue = "needs approval"
+            case .error: statusTextField.stringValue = persistentState.reason ?? "error"
+            case .stale: statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? persistentState.reason ?? "stale"
+            }
+        } else {
+            switch state {
+            case .active:       statusTextField.stringValue = ""
+            case .connecting:   statusTextField.stringValue = "connecting..."
+            case .disconnected: statusTextField.stringValue = "disconnected"
+            case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
+            }
         }
-        if notificationType == "permission_prompt" {
+        if persistentState == nil, notificationType == "permission_prompt" {
             statusTextField.stringValue = "needs approval"
-        } else if notificationType == "idle_prompt" {
-            statusTextField.stringValue = "ready"
+        } else if persistentState == nil, notificationType == "idle_prompt" {
+            statusTextField.stringValue = ""
+        } else if recoveryAction == nil, notificationType == nil, hasStaleInteraction {
+            statusTextField.stringValue = "stale"
         }
 
         // Row fill + text: when this tab is the focused one, paint
@@ -478,6 +533,7 @@ class SidebarTabEntry: NSButton {
         // permission / idle via this entry's private snapshot.
         let rowKey: SurfaceKey = isActive ? .sidebarRowSelected : .sidebarRowNormal
         layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
+        layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
         labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)
 
         // Status indicator dot flows from `sidebarRowIndicator`'s
@@ -491,15 +547,27 @@ class SidebarTabEntry: NSButton {
         setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
         setAccessibilityIdentifier("sidebar-\(label)")
 
-        if let notificationType {
+        if let recoveryAction, state == .stale {
+            let guidance = recoveryAction.operatorGuidance
+            toolTip = guidance
+            setAccessibilityValue("stale: \(recoveryAction.surfaceStatusText)")
+            setAccessibilityHelp(guidance)
+        } else {
+            toolTip = nil
+            setAccessibilityHelp(nil)
+        }
+
+        if recoveryAction == nil, let notificationType {
             switch notificationType {
             case "idle_prompt": setAccessibilityValue("ready")
             case "permission_prompt": setAccessibilityValue("needs-approval")
             default: setAccessibilityValue(notificationType)
             }
-        } else if state == .disconnected {
+        } else if recoveryAction == nil, hasStaleInteraction {
+            setAccessibilityValue("stale-interaction")
+        } else if recoveryAction == nil, state == .disconnected {
             setAccessibilityValue("disconnected")
-        } else {
+        } else if recoveryAction == nil {
             setAccessibilityValue(isActive ? "active" : "normal")
         }
     }

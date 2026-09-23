@@ -14,6 +14,9 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
 
     // V2 fields
     var showTimestamps: Bool?
+    /// Minutes of no user interaction before a tab gets the stale-interaction badge.
+    /// Optional for backward compatibility; nil resolves to 45 minutes.
+    var tabStaleThresholdMinutes: Double?
 
     // V3 fields
     var notifications: NotificationConfig?
@@ -21,6 +24,11 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
 
     // Chrome skinning fields (optional for backward compat)
     var chromeRegions: ChromeRegionState?
+
+    // Plugin settings are optional so core config remains backward-compatible
+    // and Holoscape can start as a standalone terminal without any external
+    // integration configured.
+    var plugins: PluginSettingsConfig?
 
     static let `default` = HoloscapeConfig(
         appearance: AppearanceConfig.default,
@@ -32,6 +40,29 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
         sidebarExpanded: nil,
         recentSessions: nil
     )
+}
+
+struct PluginSettingsConfig: Codable, Equatable, Sendable {
+    var projectTracker: ProjectTrackerPluginSettingsConfig?
+}
+
+struct ProjectTrackerPluginSettingsConfig: Codable, Equatable, Sendable {
+    var enabled: Bool?
+    var endpoint: String?
+    var healthPath: String?
+}
+
+extension HoloscapeConfig {
+    func projectTrackerPluginConfiguration() -> ProjectTrackerPluginConfiguration {
+        guard let settings = plugins?.projectTracker else {
+            return .default
+        }
+        return ProjectTrackerPluginConfiguration(
+            enabled: settings.enabled ?? ProjectTrackerPluginConfiguration.default.enabled,
+            endpoint: settings.endpoint ?? ProjectTrackerPluginConfiguration.default.endpoint,
+            healthPath: settings.healthPath ?? ProjectTrackerPluginConfiguration.default.healthPath
+        )
+    }
 }
 
 struct AppearanceConfig: Codable, Equatable, Sendable {

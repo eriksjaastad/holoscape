@@ -135,7 +135,9 @@ final class SkinWarningBanner: NSView {
             ctx.duration = Self.fadeDuration
             animator().alphaValue = 0.0
         }, completionHandler: { [weak self] in
-            self?.removeFromSuperview()
+            DispatchQueue.main.async {
+                self?.removeFromSuperview()
+            }
         })
     }
 }

@@ -35,6 +35,9 @@ class TabBarView: NSView {
     private var tabTrackingAreas: [UUID: NSTrackingArea] = [:]
     private var activeChannelId: UUID?
     private var notifications: [UUID: String] = [:]
+    private var tabNotificationTypes: [UUID: String] = [:]
+    private var staleInteractionIds: Set<UUID> = []
+    private var resolvedDisplayLabels: [UUID: String] = [:]
 
     // MARK: - Amplify Task 11.3 sprite state tracking
     //
@@ -187,9 +190,28 @@ class TabBarView: NSView {
         return .normal
     }
 
-    func updateTabs(channels: [any ChannelController], activeId: UUID?, pinnedIds: Set<UUID> = [], notifications: [UUID: String] = [:]) {
+    func updateTabs(
+        channels: [any ChannelController],
+        activeId: UUID?,
+        pinnedIds: Set<UUID> = [],
+        notifications: [UUID: String] = [:],
+        now: Date = Date(),
+        staleThreshold: TimeInterval = 45 * 60
+    ) {
         activeChannelId = activeId
+        resolvedDisplayLabels = ChannelDisplayLabelResolver.labels(for: channels)
         self.notifications = notifications
+        self.tabNotificationTypes = Dictionary(
+            uniqueKeysWithValues: channels.compactMap { channel in
+                let notificationType = effectiveNotificationType(for: channel, explicitNotifications: notifications)
+                return notificationType.map { (channel.channelId, $0) }
+            }
+        )
+        self.staleInteractionIds = Set(
+            channels
+                .filter { now.timeIntervalSince($0.lastInteractionAt) >= staleThreshold }
+                .map(\.channelId)
+        )
 
         let currentIds = Set(channels.map { $0.channelId })
 
@@ -220,15 +242,24 @@ class TabBarView: NSView {
         contentView.frame = NSRect(x: 0, y: 0, width: max(xOffset, scrollView.contentView.bounds.width), height: tabHeight)
     }
 
+    private func displayLabel(for channel: any ChannelController) -> String {
+        resolvedDisplayLabels[channel.channelId] ?? channel.displayLabel
+    }
+
     private func buildTabTitle(for channel: any ChannelController) -> String {
-        var title = channel.displayLabel
-        if let elapsed = ElapsedTimeFormatter.format(since: channel.activatedAt) {
-            title += " (\(elapsed))"
-        } else if channel.state == .connecting {
+        var title = displayLabel(for: channel)
+        if let indicator = channel.tabIdentityIndicator {
+            title = indicator.tabPrefix + title
+        }
+        if channel.state == .connecting {
             title += " ..."
+        } else if channel.state == .stale, let recoveryAction = channel.recoveryAction {
+            title += " — \(recoveryAction.surfaceStatusText)"
         }
         if channel.hasUnread {
             title = "\u{25CF} " + title
+        } else if staleInteractionIds.contains(channel.channelId) {
+            title = "\u{25CC} " + title
         }
         return title
     }
@@ -242,19 +273,51 @@ class TabBarView: NSView {
         applyTabStyle(button, channelId: channel.channelId)
 
         button.setAccessibilityTitle(title)
-        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
-        if let notificationType = notifications[channel.channelId] {
-            switch notificationType {
-            case "idle_prompt":
-                button.setAccessibilityValue("ready")
-            case "permission_prompt":
-                button.setAccessibilityValue("needs-approval")
-            default:
-                button.setAccessibilityValue(notificationType)
-            }
+        button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
+        let staleRecoveryAction = channel.state == .stale ? channel.recoveryAction : nil
+        if let staleRecoveryAction {
+            button.toolTip = staleRecoveryAction.operatorGuidance
+            button.setAccessibilityValue("stale: \(staleRecoveryAction.surfaceStatusText)")
+            button.setAccessibilityHelp(staleRecoveryAction.operatorGuidance)
+        } else if let indicator = channel.tabIdentityIndicator {
+            button.toolTip = "\(indicator.accessibilityLabel) tab"
+            button.setAccessibilityHelp("\(indicator.accessibilityLabel) channel")
         } else {
-            button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
+            button.toolTip = nil
+            button.setAccessibilityHelp(nil)
         }
+
+        if staleRecoveryAction == nil {
+            let effectiveNotificationType = effectiveNotificationType(for: channel)
+            if let effectiveNotificationType {
+                switch effectiveNotificationType {
+                case "idle_prompt":
+                    button.setAccessibilityValue("ready")
+                case "permission_prompt":
+                    button.setAccessibilityValue("needs-approval")
+                default:
+                    button.setAccessibilityValue(effectiveNotificationType)
+                }
+            } else if staleInteractionIds.contains(channel.channelId) {
+                button.setAccessibilityValue("stale-interaction")
+            } else {
+                button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
+            }
+        }
+    }
+
+    private func effectiveNotificationType(for channel: any ChannelController) -> String? {
+        effectiveNotificationType(for: channel, explicitNotifications: notifications)
+    }
+
+    private func effectiveNotificationType(
+        for channel: any ChannelController,
+        explicitNotifications: [UUID: String]
+    ) -> String? {
+        if channel.persistentState.kind == .needsApproval {
+            return "permission_prompt"
+        }
+        return explicitNotifications[channel.channelId]
     }
 
     /// Apply the correct background fill and text tint for a tab based
@@ -269,20 +332,27 @@ class TabBarView: NSView {
         // sprite descriptors pick the correct cell; surfaces without
         // render as before (spriteState parameter is ignored).
         let state = spriteState(forTab: channelId)
-        if channelId == activeChannelId {
-            button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabActive, to: buttonLayer,
-                      fallback: Self.activeTabBg, spriteState: state)
-        } else if notifications[channelId] == "permission_prompt" {
+        let notificationType = tabNotificationTypes[channelId]
+        buttonLayer.opacity = 1.0
+        if notificationType == "permission_prompt" {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabPermission, to: buttonLayer,
                       fallback: Self.permissionBg, spriteState: state)
-        } else if notifications[channelId] == "idle_prompt" {
+        } else if channelId == activeChannelId {
+            button.contentTintColor = NSColor.white
+            applyFill(.tabBarTabActive, to: buttonLayer,
+                      fallback: Self.activeTabBg, spriteState: state)
+        } else if notificationType == "idle_prompt" {
             button.contentTintColor = NSColor.white
             applyFill(.tabBarTabIdle, to: buttonLayer,
                       fallback: Self.idleBg, spriteState: state)
+        } else if staleInteractionIds.contains(channelId) {
+            button.contentTintColor = NSColor.systemGray
+            applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
+            buttonLayer.opacity = 0.70
         } else {
             button.contentTintColor = NSColor.lightGray
+            buttonLayer.opacity = 1.0
             // `.tabBarTabNormal` default is transparent — nil
             // backgroundColor, no visible fill unless the skin overrides.
             applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
@@ -334,7 +404,7 @@ class TabBarView: NSView {
         button.setAccessibilityElement(true)
         button.setAccessibilityRole(.button)
         button.setAccessibilityTitle(title)
-        button.setAccessibilityIdentifier("tab-\(channel.displayLabel)")
+        button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
         updateTabButton(button, for: channel)
         return button
     }

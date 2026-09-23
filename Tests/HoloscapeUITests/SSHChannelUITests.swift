@@ -10,16 +10,13 @@ final class SSHChannelUITests: HoloscapeUITestCase {
 
     // MARK: - Channel Creation
 
-    func testSSHChannelNotInNewChannelDialog() throws {
-        // Verify SSH is NOT in the New Channel dialog (it's profile-based only)
+    func testNewChannelUsesUnifiedLauncherInsteadOfSeparateSSHDialog() throws {
+        // Verify File > New Channel opens the unified launcher. SSH remains
+        // typed/profile-driven rather than a separate modal button.
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-
-        let sshButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'SSH'")).firstMatch
-        XCTAssertFalse(sshButton.exists, "SSH should not be in New Channel dialog — it requires a session profile")
-        dialog.buttons["Cancel"].click()
+        XCTAssertTrue(app.comboBoxes["session-launcher-combo"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "New Channel should not open a separate SSH dialog")
     }
 
     // MARK: - Session Launcher SSH Path

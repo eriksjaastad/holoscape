@@ -1,6 +1,25 @@
+import AppKit
 import Foundation
 import Network
 import UserNotifications
+
+@MainActor
+protocol DockAttentionClient: AnyObject {
+    var badgeLabel: String? { get set }
+    func requestUserAttention()
+}
+
+@MainActor
+final class SystemDockAttentionClient: DockAttentionClient {
+    var badgeLabel: String? {
+        get { NSApp.dockTile.badgeLabel }
+        set { NSApp.dockTile.badgeLabel = newValue }
+    }
+
+    func requestUserAttention() {
+        NSApp.requestUserAttention(.informationalRequest)
+    }
+}
 
 @MainActor
 class HoloscapeAPIServer {
@@ -9,13 +28,23 @@ class HoloscapeAPIServer {
     private weak var windowController: MainWindowController?
     let port: UInt16
 
-    /// Notification state per channel: "permission_prompt", "idle_prompt", or nil (normal)
+    /// Notification state per channel: legacy Claude hook names or adapter-backed
+    /// events such as Codex `awaiting_approval` / `response_completed`.
     private(set) var channelNotifications: [UUID: String] = [:]
+    private(set) var mutedNotificationChannelIds: Set<UUID> = []
+    private let agentStatusAdapter = AgentStatusAdapter()
+    private let dockAttentionClient: DockAttentionClient
 
-    init(channelManager: ChannelManager, windowController: MainWindowController, port: UInt16 = 7865) {
+    init(
+        channelManager: ChannelManager,
+        windowController: MainWindowController,
+        port: UInt16 = 7865,
+        dockAttentionClient: DockAttentionClient = SystemDockAttentionClient()
+    ) {
         self.channelManager = channelManager
         self.windowController = windowController
         self.port = port
+        self.dockAttentionClient = dockAttentionClient
     }
 
     /// Suppress notifications for a grace period after launch (tabs start idle)
@@ -148,7 +177,10 @@ class HoloscapeAPIServer {
                 "label": channel.displayLabel,
                 "type": channel.channelType.rawValue,
                 "state": channel.state.rawValue,
+                "persistent_state": channel.persistentState.kind.rawValue,
+                "persistent_state_source": channel.persistentState.source.rawValue,
                 "notification_type": channelNotifications[channel.channelId] as Any,
+                "notifications_muted": mutedNotificationChannelIds.contains(channel.channelId),
                 "is_active": channel.channelId == activeId
             ]
         }
@@ -221,15 +253,24 @@ class HoloscapeAPIServer {
         }
 
         let cwd = json["cwd"] as? String
+        let tool = json["tool"] as? String ?? json["agent"] as? String
+        let reason = json["reason"] as? String
         // Match notification to a channel by working directory
         if let cwd, let channel = resolveChannelByCwd(cwd: cwd) {
             channelNotifications[channel.channelId] = type
+            if let persistentState = agentStatusAdapter.persistentState(
+                tool: tool,
+                event: type,
+                reason: reason
+            ) {
+                channel.applyPersistentState(persistentState)
+            }
             // Trigger tab refresh to update colors
             windowController?.refreshAllTabs()
 
-            // Send macOS notification for key events
-            if type == "permission_prompt" || type == "idle_prompt" {
-                sendDesktopNotification(type: type, channel: channel.displayLabel)
+            // Send off-screen attention only for unmuted, inactive channels.
+            if shouldRequestOffscreenAttention(for: channel, type: type, tool: tool) {
+                requestOffscreenAttention(type: type, tool: tool, channel: channel)
             }
         }
 
@@ -265,28 +306,94 @@ class HoloscapeAPIServer {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private func sendDesktopNotification(type: String, channel: String) {
+    static func offscreenAttentionKind(type: String, tool: String?) -> PersistentChannelStateKind? {
+        guard let state = AgentStatusAdapter().persistentState(tool: tool, event: type) else {
+            return nil
+        }
+
+        switch state.kind {
+        case .needsApproval, .ready:
+            return state.kind
+        case .running, .error, .stale:
+            return nil
+        }
+    }
+
+    private func shouldRequestOffscreenAttention(for channel: any ChannelController, type: String, tool: String?) -> Bool {
+        guard Self.offscreenAttentionKind(type: type, tool: tool) != nil else { return false }
+        guard !mutedNotificationChannelIds.contains(channel.channelId) else { return false }
+        return windowController?.activeChannelId != channel.channelId
+    }
+
+    private func requestOffscreenAttention(type: String, tool: String?, channel: any ChannelController) {
+        updateDockBadge()
+        dockAttentionClient.requestUserAttention()
+        sendDesktopNotification(type: type, tool: tool, channel: channel)
+    }
+
+    private func sendDesktopNotification(type: String, tool: String?, channel: any ChannelController) {
         let content = UNMutableNotificationContent()
-        switch type {
-        case "permission_prompt":
+        switch Self.offscreenAttentionKind(type: type, tool: tool) {
+        case .needsApproval:
             content.title = "Permission Needed"
-            content.body = "\(channel) is waiting for approval"
-        case "idle_prompt":
+            content.body = "\(channel.displayLabel) is waiting for approval"
+        case .ready:
             content.title = "Task Complete"
-            content.body = "\(channel) is ready for input"
-        default:
+            content.body = "\(channel.displayLabel) is ready for input"
+        case .running, .error, .stale, .none:
             content.title = "Holoscape"
-            content.body = "\(channel): \(type)"
+            content.body = "\(channel.displayLabel): \(type)"
         }
         content.sound = .default
+        content.threadIdentifier = channel.channelId.uuidString
+        content.userInfo = ["channelId": channel.channelId.uuidString]
 
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: channel.channelId.uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 
     /// Clear notification state when switching to a channel
     func clearNotification(for channelId: UUID) {
         channelNotifications.removeValue(forKey: channelId)
+        updateDockBadge()
+    }
+
+    func isNotificationMuted(for channelId: UUID) -> Bool {
+        mutedNotificationChannelIds.contains(channelId)
+    }
+
+    func setNotificationMuted(_ muted: Bool, for channelId: UUID) {
+        if muted {
+            mutedNotificationChannelIds.insert(channelId)
+        } else {
+            mutedNotificationChannelIds.remove(channelId)
+        }
+        updateDockBadge()
+    }
+
+    func toggleNotificationMuted(for channelId: UUID) -> Bool {
+        let newValue = !isNotificationMuted(for: channelId)
+        setNotificationMuted(newValue, for: channelId)
+        return newValue
+    }
+
+    static func dockBadgeLabel(
+        notificationChannelIds: some Collection<UUID>,
+        mutedChannelIds: Set<UUID>,
+        activeChannelId: UUID?
+    ) -> String? {
+        let count = notificationChannelIds.filter {
+            !mutedChannelIds.contains($0) && $0 != activeChannelId
+        }.count
+        return count > 0 ? "\(count)" : nil
+    }
+
+    private func updateDockBadge() {
+        dockAttentionClient.badgeLabel = Self.dockBadgeLabel(
+            notificationChannelIds: channelNotifications.keys,
+            mutedChannelIds: mutedNotificationChannelIds,
+            activeChannelId: windowController?.activeChannelId
+        )
     }
 
     // MARK: - Helpers

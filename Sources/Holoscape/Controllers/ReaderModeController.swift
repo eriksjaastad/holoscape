@@ -48,6 +48,16 @@ final class ReaderModeController: NSObject, NSWindowDelegate {
 
     var isActive: Bool { panel?.isVisible == true }
 
+    /// Enables the production parent-window dim/restore animation. Headless
+    /// XCTest can leave `NSAnimationContext` work queued in AppKit after the
+    /// test-owned window is torn down, so tests may disable this while still
+    /// verifying Reader Mode's state and skin application synchronously.
+    var animateParentWindowAlpha = true
+
+    /// Controls whether Reader Mode changes the parent window alpha at all.
+    /// Content/skin tests can disable it because they do not verify dimming.
+    var dimsParentWindow = true
+
     /// Accessibility override hook — overridable for tests. Production
     /// reads `NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast`;
     /// tests inject a fixed value without touching system prefs.
@@ -97,11 +107,17 @@ final class ReaderModeController: NSObject, NSWindowDelegate {
         // codebase's existing constraint-animation pattern — first time
         // we animate a window alphaValue in this project, but the API
         // surface is the same.
-        savedAlpha = parentWindow.alphaValue
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            parentWindow.animator().alphaValue = 0.4
+        if dimsParentWindow {
+            savedAlpha = parentWindow.alphaValue
+            if animateParentWindowAlpha {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.2
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    parentWindow.animator().alphaValue = 0.4
+                }
+            } else {
+                parentWindow.alphaValue = 0.4
+            }
         }
 
         // Pause any in-flight chrome animations. No "resume" call on
@@ -175,11 +191,15 @@ final class ReaderModeController: NSObject, NSWindowDelegate {
         guard let panel, panel.isVisible else { return }
         panel.orderOut(nil)
 
-        if let parentWindow {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                parentWindow.animator().alphaValue = savedAlpha
+        if dimsParentWindow, let parentWindow {
+            if animateParentWindowAlpha {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.2
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    parentWindow.animator().alphaValue = savedAlpha
+                }
+            } else {
+                parentWindow.alphaValue = savedAlpha
             }
         }
     }

@@ -28,9 +28,9 @@ final class ReaderModeSkinningTests: XCTestCase {
     // MARK: - Fixtures
 
     /// Minimal parent window so Reader Mode's frame-anchoring math
-    /// doesn't crash. Closed in tearDown so the AppKit event loop
-    /// doesn't retain it.
-    private var parentWindow: NSWindow!
+    /// doesn't crash. These windows are intentionally not closed inside the
+    /// headless test process: macOS 26 can crash xctest in AppKit teardown when
+    /// closing transient test-owned windows synchronously.
 
     /// Stub `ChannelController` implementation. Minimum surface for
     /// `ReaderModeController.activate(for:...)` — only `lastLines` is
@@ -53,22 +53,6 @@ final class ReaderModeSkinningTests: XCTestCase {
         func lastLines(_ count: Int) -> [String] { ["hello world"] }
     }
 
-    override func setUp() {
-        super.setUp()
-        parentWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-    }
-
-    override func tearDown() {
-        parentWindow?.close()
-        parentWindow = nil
-        super.tearDown()
-    }
-
     private func makeSurface(
         font: NSFont? = nil,
         fillColor: NSColor = .textBackgroundColor,
@@ -89,11 +73,10 @@ final class ReaderModeSkinningTests: XCTestCase {
 
     // MARK: - Font application (Task 17.3)
 
-    func testSkinFontAppliedWhenDeclared() {
+    func testSkinFontAppliedWhenDeclared() throws {
         // Skin declares a 20pt Menlo. ReaderMode text view must pick it up.
         guard let menlo = NSFont(name: "Menlo", size: 20) else {
-            XCTSkip("Menlo not available on this system")
-            return
+            throw XCTSkip("Menlo not available on this system")
         }
         let surface = makeSurface(font: menlo)
         let ctx = SkinContext(
@@ -101,9 +84,8 @@ final class ReaderModeSkinningTests: XCTestCase {
             reactive: ReactiveUniformSnapshot()
         )
 
-        let controller = ReaderModeController()
-        controller.skinContext = ctx
-        controller.increaseContrastEnabled = { false }
+        let parentWindow = makeParentWindow()
+        let controller = makeController(skinContext: ctx, increaseContrastEnabled: false)
         controller.activate(for: StubChannel(), parentWindow: parentWindow,
                             animationEngine: nil)
         defer { controller.dismiss() }
@@ -123,9 +105,8 @@ final class ReaderModeSkinningTests: XCTestCase {
         // init-time SF Mono 14pt must survive.
         let ctx = SkinContext(surfaces: [:], reactive: ReactiveUniformSnapshot())
 
-        let controller = ReaderModeController()
-        controller.skinContext = ctx
-        controller.increaseContrastEnabled = { false }
+        let parentWindow = makeParentWindow()
+        let controller = makeController(skinContext: ctx, increaseContrastEnabled: false)
         controller.activate(for: StubChannel(), parentWindow: parentWindow,
                             animationEngine: nil)
         defer { controller.dismiss() }
@@ -135,12 +116,11 @@ final class ReaderModeSkinningTests: XCTestCase {
                        "No surface → preserve pre-Amplify SF Mono 14pt")
     }
 
-    func testIncreaseContrastOverridesSkinFont() {
+    func testIncreaseContrastOverridesSkinFont() throws {
         // Req 8.6 — Increase Contrast pins SF Mono 14pt regardless
         // of manifest content.
         guard let menlo = NSFont(name: "Menlo", size: 24) else {
-            XCTSkip("Menlo not available on this system")
-            return
+            throw XCTSkip("Menlo not available on this system")
         }
         let surface = makeSurface(font: menlo)
         let ctx = SkinContext(
@@ -148,9 +128,8 @@ final class ReaderModeSkinningTests: XCTestCase {
             reactive: ReactiveUniformSnapshot()
         )
 
-        let controller = ReaderModeController()
-        controller.skinContext = ctx
-        controller.increaseContrastEnabled = { true }  // ← pinned
+        let parentWindow = makeParentWindow()
+        let controller = makeController(skinContext: ctx, increaseContrastEnabled: true)  // ← pinned
         controller.activate(for: StubChannel(), parentWindow: parentWindow,
                             animationEngine: nil)
         defer { controller.dismiss() }
@@ -172,9 +151,8 @@ final class ReaderModeSkinningTests: XCTestCase {
             reactive: ReactiveUniformSnapshot()
         )
 
-        let controller = ReaderModeController()
-        controller.skinContext = ctx
-        controller.increaseContrastEnabled = { false }
+        let parentWindow = makeParentWindow()
+        let controller = makeController(skinContext: ctx, increaseContrastEnabled: false)
         controller.activate(for: StubChannel(), parentWindow: parentWindow,
                             animationEngine: nil)
         defer { controller.dismiss() }
@@ -188,6 +166,27 @@ final class ReaderModeSkinningTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func makeParentWindow() -> NSWindow {
+        NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+    }
+
+    private func makeController(
+        skinContext: SkinContext,
+        increaseContrastEnabled: Bool
+    ) -> ReaderModeController {
+        let controller = ReaderModeController()
+        controller.skinContext = skinContext
+        controller.increaseContrastEnabled = { increaseContrastEnabled }
+        controller.animateParentWindowAlpha = false
+        controller.dimsParentWindow = false
+        return controller
+    }
 
     private func findTextView(in controller: ReaderModeController) -> NSTextView? {
         guard let panel = controller.panel,

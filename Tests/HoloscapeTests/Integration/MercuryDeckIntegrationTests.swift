@@ -68,6 +68,25 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         XCTAssertTrue(validation.disabledAnimationIDs.isEmpty)
     }
 
+    func testMercuryDeckSurfacesResolveDurableChannelStates() throws {
+        let engine = SkinEngine()
+        let loaded = try engine.loadComposite(named: "MercuryDeck")
+        let snap = ReactiveUniformSnapshot()
+        let context = MainWindowController.buildSkinContext(overriding: loaded.surfaces, reactive: snap)
+
+        snap.applyPersistentChannelState(.init(kind: .needsApproval, source: .agentAdapter))
+        assertColor(context.currentState(for: .sidebarRowIndicator), red: 1.0, green: 0.702, blue: 0.278)
+        assertColor(context.currentState(for: .tabBarTabActive), red: 1.0, green: 0.702, blue: 0.278)
+
+        snap.applyPersistentChannelState(.init(kind: .error, source: .agentAdapter))
+        assertColor(context.currentState(for: .sidebarRowIndicator), red: 0.851, green: 0.435, blue: 0.373)
+        assertColor(context.currentState(for: .tabBarTabActive), red: 0.851, green: 0.435, blue: 0.373)
+
+        snap.applyPersistentChannelState(.init(kind: .stale, source: .brokerRegistry))
+        assertColor(context.currentState(for: .sidebarRowIndicator), red: 0.663, green: 0.478, blue: 0.902)
+        assertColor(context.currentState(for: .tabBarTabActive), red: 0.663, green: 0.478, blue: 0.902)
+    }
+
     func testPersistedMercuryDeckLaunchBuildsFullControllerHierarchy() throws {
         let controller = try makeController(persistedSkin: "MercuryDeck")
         drainMainQueue()
@@ -161,5 +180,21 @@ final class MercuryDeckIntegrationTests: XCTestCase {
 
     private func drainMainQueue() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+
+    private func assertColor(
+        _ surface: SkinContext.ResolvedSurface,
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case .color(let color) = surface.fill else {
+            return XCTFail("Expected color fill", file: file, line: line)
+        }
+        XCTAssertEqual(color.redComponent, red, accuracy: 0.01, file: file, line: line)
+        XCTAssertEqual(color.greenComponent, green, accuracy: 0.01, file: file, line: line)
+        XCTAssertEqual(color.blueComponent, blue, accuracy: 0.01, file: file, line: line)
     }
 }

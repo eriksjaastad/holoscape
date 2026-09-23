@@ -237,7 +237,7 @@ final class MetalCompositorTests: XCTestCase {
         guard let inputTexture = device.makeTexture(descriptor: inputDesc) else {
             XCTFail("Could not create input texture"); return
         }
-        var whitePixels = [UInt8](repeating: 255, count: width * height * 4)
+        let whitePixels = [UInt8](repeating: 255, count: width * height * 4)
         inputTexture.replace(
             region: MTLRegion(origin: MTLOrigin(), size: MTLSize(width: width, height: height, depth: 1)),
             mipmapLevel: 0, withBytes: whitePixels, bytesPerRow: width * 4)

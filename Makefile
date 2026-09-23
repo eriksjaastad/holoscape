@@ -1,19 +1,36 @@
-.PHONY: build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup
+.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup check-submodules
+
+help:
+	@echo "Holoscape — common ops"
+	@echo "  make auth-check       verify Doppler project/config visibility (DOPPLER_PROJECT_NAME/DOPPLER_CONFIG_NAME override)"
+	@echo "  make build            Debug SwiftPM build"
+	@echo "  make test             Unit + property tests"
+	@echo "  make test-unit        Unit tests only"
+	@echo "  make test-property    Property tests only"
+	@echo "  make bundle           Build debug .app bundle"
+	@echo "  make run              Build and open debug .app bundle"
+	@echo "  make setup            Install Claude Code MCP/hooks integration"
+
+auth-check:
+	@./scripts/doppler-auth-check.sh
+
+check-submodules:
+	@./scripts/check-submodules.sh
 
 # Default: build debug
-build:
+build: check-submodules
 	swift build
 
 # Run all unit and property tests
-test:
+test: check-submodules
 	swift test
 
 # Run only unit tests
-test-unit:
+test-unit: check-submodules
 	swift test --filter HoloscapeTests
 
 # Run only property-based tests
-test-property:
+test-property: check-submodules
 	swift test --filter HoloscapePropertyTests
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
@@ -61,7 +78,7 @@ test-class:
 	swift test --filter $(CLASS)
 
 # Generate Xcode project and open it
-xcode:
+xcode: check-submodules
 	swift package generate-xcodeproj
 	@echo ""
 	@echo "Xcode project generated. Opening..."
@@ -73,7 +90,7 @@ xcode:
 	open Holoscape.xcodeproj
 
 # Build and assemble .app bundle
-bundle:
+bundle: check-submodules
 	./bundle.sh
 
 bundle-release:

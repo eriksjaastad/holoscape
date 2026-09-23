@@ -172,8 +172,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.dataSource = self
         comboBox.delegate = self
         comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        comboBox.placeholderString = "Project / Claude / ssh host..."
-        comboBox.toolTip = "Type a project folder, 'Claude project', or 'ssh host'. Saved sessions are also listed."
+        comboBox.placeholderString = "New Channel / project / Claude / ssh host..."
+        comboBox.toolTip = "Choose Shell, Agent, Group Chat, Bridge, a saved session, a project folder, or type 'ssh host'."
         comboBox.setAccessibilityIdentifier("session-launcher-combo")
         comboBox.translatesAutoresizingMaskIntoConstraints = false
 
@@ -210,21 +210,21 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         if !preconfigured.isEmpty {
             items.append(LauncherItem(label: "--- Sessions ---", isHeader: true))
             for profile in preconfigured {
-                items.append(LauncherItem(label: profile.label, isHeader: false))
+                items.append(LauncherItem(profile: profile, isHeader: false))
             }
         }
 
         if !discovered.isEmpty {
-            items.append(LauncherItem(label: "--- Projects ---", isHeader: true))
+            items.append(LauncherItem.header("Projects"))
             for profile in discovered {
-                items.append(LauncherItem(label: profile.label, isHeader: false))
+                items.append(LauncherItem(profile: profile, isHeader: false))
             }
         }
 
         if !recent.isEmpty {
-            items.append(LauncherItem(label: "--- Recent ---", isHeader: true))
+            items.append(LauncherItem.header("Recent"))
             for session in recent {
-                items.append(LauncherItem(label: session.label, isHeader: false))
+                items.append(LauncherItem(label: session.label, detail: "Reopen recent session", isHeader: false))
             }
         }
 
@@ -236,8 +236,36 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         window?.makeFirstResponder(comboBox)
     }
 
+    /// Focus the unified launcher and open its dropdown so File → New Channel
+    /// lands on the same keyboard-navigable entry point as the sidebar control.
+    func presentChoices() {
+        focus()
+        comboBox.performClick(nil)
+    }
+
+    /// Seed the editable launcher with the inline fields needed to create an
+    /// agent channel. This keeps Agent creation inside the keyboard-driven
+    /// picker instead of bouncing through a second NSAlert sheet.
+    func beginInlineAgentChannelDraft(kindLabel: String, directory: URL) {
+        let defaultLabel = directory.lastPathComponent.isEmpty ? "Agent" : directory.lastPathComponent
+        comboBox.stringValue = "\(kindLabel) \(directory.path) as \(defaultLabel)"
+        comboBox.placeholderString = "\(kindLabel) <directory> as <label>"
+        focus()
+        if let editor = window?.fieldEditor(true, for: comboBox) as? NSTextView {
+            editor.selectAll(nil)
+        }
+    }
+
     @objc private func refreshClicked() {
         launcherDelegate?.sessionLauncherDidRequestRefresh(self)
+    }
+
+    private func itemMatching(_ text: String) -> LauncherItem? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return items.first { item in
+            guard !item.isHeader else { return false }
+            return item.label.lowercased() == normalized || item.displayText.lowercased() == normalized
+        }
     }
 
     // MARK: - NSComboBoxDataSource
@@ -247,7 +275,7 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     }
 
     nonisolated func comboBox(_ comboBox: NSComboBox, objectValueForItemAt index: Int) -> Any? {
-        return MainActor.assumeIsolated { items[index].label }
+        return MainActor.assumeIsolated { items[index].displayText }
     }
 
     // MARK: - NSComboBoxDelegate
@@ -271,9 +299,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
                 guard !text.isEmpty else { return true }
 
                 // Check if it matches an existing item
-                let matchesExisting = items.contains { !$0.isHeader && $0.label.lowercased() == text.lowercased() }
-                if matchesExisting {
-                    launcherDelegate?.sessionLauncher(self, didSelectProfile: text)
+                if let existing = itemMatching(text) {
+                    launcherDelegate?.sessionLauncher(self, didSelectProfile: existing.label)
                 } else {
                     launcherDelegate?.sessionLauncher(self, didTypeNewName: text)
                 }
@@ -289,7 +316,63 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
 
 struct LauncherItem {
     let label: String
+    let detail: String?
     let isHeader: Bool
+
+    var displayText: String {
+        if isHeader { return label }
+        guard let detail, !detail.isEmpty else { return label }
+        return "\(label) — \(detail)"
+    }
+
+    static func header(_ title: String) -> LauncherItem {
+        LauncherItem(label: "--- \(title) ---", detail: nil, isHeader: true)
+    }
+
+    init(label: String, detail: String? = nil, isHeader: Bool) {
+        self.label = label
+        self.detail = detail
+        self.isHeader = isHeader
+    }
+
+    init(profile: SessionProfile, isHeader: Bool) {
+        self.label = profile.label
+        self.detail = Self.detail(for: profile)
+        self.isHeader = isHeader
+    }
+
+    private static func detail(for profile: SessionProfile) -> String {
+        switch profile.label.lowercased() {
+        case "shell":
+            return "Local zsh in your default project directory"
+        case "agent (oauth)":
+            return "Claude Code with browser login; choose directory and label next"
+        case "agent (api key)":
+            return "Claude Code with API key auth; choose directory and label next"
+        case "claude":
+            return "Claude Code in your default project directory"
+        case "group chat":
+            return "Shared agent chat channel"
+        case "bridge":
+            return "Holoscape bridge channel"
+        default:
+            switch profile.connection {
+            case .local:
+                return profile.directory.isEmpty ? "Local session" : "Local session in \(profile.directory)"
+            case .ssh:
+                if let host = profile.host, !host.isEmpty {
+                    return "SSH to \(host)"
+                }
+                return "SSH session"
+            case .agentChat:
+                return "Shared agent chat channel"
+            case .bridge:
+                return "Holoscape bridge channel"
+            case .mcp:
+                return "MCP-backed tool session"
+            }
+        }
+    }
 }
 
 // MARK: - LauncherButton (Amplify Task 11.5)

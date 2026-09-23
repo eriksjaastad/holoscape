@@ -10,13 +10,19 @@ class ProjectDiscoveryService {
         self.configService = configService
     }
 
-    /// Discover project directories on the remote host.
-    /// Returns cached results on SSH failure.
+    /// Discover project directories from the configured source.
+    /// Local discovery lists real directories under `projectDiscovery.root`.
+    /// SSH discovery returns cached results on network failure.
     func discover() async -> [SessionProfile] {
         let config = configService.load()
-        guard let discovery = config.projectDiscovery, discovery.enabled,
-              let defaults = config.sshDefaults,
-              !defaults.host.isEmpty, !defaults.user.isEmpty else {
+        guard let discovery = config.projectDiscovery, discovery.enabled else {
+            return cachedProjects
+        }
+
+        let defaults = config.sshDefaults ?? .default
+        if discovery.connection == "local" || defaults.host.isEmpty || defaults.user.isEmpty {
+            cachedProjects = profilesFromLocalProjectRoot(discovery)
+            lastRefresh = Date()
             return cachedProjects
         }
 
@@ -26,16 +32,7 @@ class ProjectDiscoveryService {
                 user: defaults.user,
                 root: discovery.root
             )
-            cachedProjects = dirs.map { dirName in
-                SessionProfile(
-                    label: dirName,
-                    connection: .ssh,
-                    command: discovery.command,
-                    directory: "\(discovery.root)/\(dirName)",
-                    host: defaults.host,
-                    user: defaults.user
-                )
-            }
+            cachedProjects = profilesFromDirectoryNames(dirs, discovery: discovery, defaults: defaults)
             lastRefresh = Date()
             return cachedProjects
         } catch {
@@ -68,6 +65,34 @@ class ProjectDiscoveryService {
                 user: defaults.user
             )
         }
+    }
+
+    func profilesFromLocalProjectRoot(_ discovery: ProjectDiscoveryConfig) -> [SessionProfile] {
+        let rootURL = URL(fileURLWithPath: (discovery.root as NSString).expandingTildeInPath, isDirectory: true)
+        let directoryNames = localDirectoryNames(in: rootURL)
+        return directoryNames.map { dirName in
+            SessionProfile(
+                label: dirName,
+                connection: .local,
+                command: "/bin/zsh",
+                directory: rootURL.appendingPathComponent(dirName, isDirectory: true).standardizedFileURL.path
+            )
+        }
+    }
+
+    private func localDirectoryNames(in rootURL: URL) -> [String] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return urls.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
+            return url.lastPathComponent
+        }.sorted()
     }
 
     private func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {

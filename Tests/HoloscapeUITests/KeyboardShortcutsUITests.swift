@@ -7,13 +7,24 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
     func testCmdN() throws {
         app.typeKey("n", modifierFlags: .command)
 
-        // Should show combo box or dialog for new session
-        let dialog = app.dialogs.firstMatch
+        // Should focus the unified new-channel launcher, not a separate picker.
         let comboBox = app.comboBoxes.firstMatch
-        let appeared = dialog.waitForExistence(timeout: 3) || comboBox.waitForExistence(timeout: 1)
-        XCTAssertTrue(appeared, "Cmd+N should show new session dialog or combo box")
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Cmd+N should show the unified new-channel launcher")
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "Cmd+N should not show a separate New Channel picker")
 
         app.typeKey(.escape, modifierFlags: [])
+    }
+
+    func testCmdShiftNCreatesLocalShellWithoutPicker() throws {
+        let countBefore = sidebarEntryCount()
+
+        app.typeKey("n", modifierFlags: [.command, .shift])
+
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "Cmd+Shift+N should not show the New Channel picker")
+        let shell = waitForNewSidebarEntry(expectedCount: countBefore + 1)
+        XCTAssertTrue(shell.waitForExistence(timeout: 3), "Cmd+Shift+N should create a new local shell channel")
+        shell.click()
+        assertActiveChannelResponsive(message: "Cmd+Shift+N shell channel should be responsive")
     }
 
     func testCmdW() throws {
@@ -155,8 +166,7 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
 
     func testNoShortcutConflicts() throws {
         // Run through all shortcuts in sequence
-        app.typeKey("n", modifierFlags: .command)
-        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey("n", modifierFlags: [.command, .shift])
 
         app.typeKey("t", modifierFlags: .command)
         app.typeKey("t", modifierFlags: .command)

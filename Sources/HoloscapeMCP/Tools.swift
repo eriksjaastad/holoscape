@@ -69,6 +69,94 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "required": .array([.string("channel")]),
                 ])
             ),
+            Tool(
+                name: "holoscape_read_file",
+                description: "Read a UTF-8 text file from the local filesystem.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("File path")]),
+                        "maxBytes": .object(["type": .string("integer"), "description": .string("Maximum bytes to return; default 128000")]),
+                    ]),
+                    "required": .array([.string("path")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_write_file",
+                description: "Write UTF-8 text to a local file, creating parent directories as needed.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("File path")]),
+                        "content": .object(["type": .string("string"), "description": .string("File content")]),
+                    ]),
+                    "required": .array([.string("path"), .string("content")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_list_directory",
+                description: "List entries in a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum entries; default 200")]),
+                    ]),
+                    "required": .array([.string("path")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_search_files",
+                description: "Search file names by regular expression under a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against file names")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum matches; default 100")]),
+                    ]),
+                    "required": .array([.string("path"), .string("pattern")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_search_content",
+                description: "Search UTF-8 file contents by regular expression under a local directory.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object(["type": .string("string"), "description": .string("Directory path")]),
+                        "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against text lines")]),
+                        "limit": .object(["type": .string("integer"), "description": .string("Maximum line matches; default 100")]),
+                    ]),
+                    "required": .array([.string("path"), .string("pattern")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_run_process",
+                description: "Run a local shell command via /bin/zsh -lc, capture stdout/stderr, honor workingDirectory/env/timeoutSeconds, and return exit status.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "command": .object(["type": .string("string"), "description": .string("Shell command to execute")]),
+                        "workingDirectory": .object(["type": .string("string"), "description": .string("Optional working directory")]),
+                        "env": .object(["type": .string("object"), "description": .string("Optional string environment variable overrides")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
+                    ]),
+                    "required": .array([.string("command")]),
+                ])
+            ),
+            Tool(
+                name: "holoscape_run_applescript",
+                description: "Execute AppleScript source locally through osascript with a timeout and return its result. This can control scriptable macOS apps and may trigger normal macOS Automation permission prompts.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source": .object(["type": .string("string"), "description": .string("AppleScript source to execute")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
+                    ]),
+                    "required": .array([.string("source")]),
+                ])
+            ),
         ])
     }
 
@@ -127,6 +215,39 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 let result = try await client.readOutput(id: channel, lines: lines)
                 let output = (result["lines"] as? [String])?.joined(separator: "\n") ?? ""
                 return CallTool.Result(content: [.text(text: output.isEmpty ? "(no output)" : output, annotations: nil, _meta: nil)])
+
+            case "holoscape_read_file":
+                return CallTool.Result(content: [.text(text: try readFileTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_write_file":
+                return CallTool.Result(content: [.text(text: try writeFileTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_list_directory":
+                return CallTool.Result(content: [.text(text: try listDirectoryTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_search_files":
+                return CallTool.Result(content: [.text(text: try searchFilesTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_search_content":
+                return CallTool.Result(content: [.text(text: try searchContentTool(args: args), annotations: nil, _meta: nil)])
+
+            case "holoscape_run_process":
+                let request = try processToolRequest(from: args)
+                let result = try await runProcessTool(request)
+                return CallTool.Result(
+                    content: [.text(text: formatProcessToolResult(result), annotations: nil, _meta: nil)],
+                    isError: result.timedOut || (result.exitCode ?? 0) != 0
+                )
+
+            case "holoscape_run_applescript":
+                do {
+                    let result = try await runAppleScriptTool(args: args)
+                    return CallTool.Result(
+                        content: [.text(text: formatAppleScriptToolResult(result), annotations: nil, _meta: nil)]
+                    )
+                } catch {
+                    return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)], isError: true)
+                }
 
             default:
                 return CallTool.Result(content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)], isError: true)

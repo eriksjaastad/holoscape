@@ -1,17 +1,6 @@
 import AppKit
 import SwiftTerm
 
-/// Protocol abstracting terminal process interaction for testability.
-protocol TerminalProcess: AnyObject {
-    @MainActor func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?)
-    @MainActor func send(_ bytes: [UInt8])
-    @MainActor var terminalContentView: NSView { get }
-}
-
-extension LocalProcessTerminalView: TerminalProcess {
-    @MainActor var terminalContentView: NSView { self }
-}
-
 @MainActor
 class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalViewDelegate {
     let channelId: UUID
@@ -22,9 +11,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
+    private(set) var brokerSessionID: BrokerSessionID?
     let profile: SessionProfile
     private let instanceNumber: Int?
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -33,21 +25,34 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         return profile.label
     }
 
+    var tabIdentityIndicator: ChannelTabIdentityIndicator? { .ssh }
+
     var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, profile: SessionProfile, instanceNumber: Int?, terminal: TerminalProcess? = nil) {
+    init(
+        id: UUID,
+        profile: SessionProfile,
+        instanceNumber: Int?,
+        terminal: TerminalProcess? = nil,
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+    ) {
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self
+        }
+        self.terminal.setUserInputHandler { [weak self] _ in
+            self?.recordUserInteraction()
         }
     }
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -67,9 +72,19 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let sshArgs = buildSSHArgs(host: host, user: user, directory: profile.directory, command: profile.command)
         let env = buildSSHEnvironment()
 
-        (terminal as? HoloscapeTerminalView)?.onOutput = { [weak self] in
+        terminal.setOutputHandler { [weak self] in
             guard let self else { return }
             self.delegate?.channelDidReceiveOutput(self)
+        }
+
+        guard recordBrokerStart(
+            arguments: sshArgs,
+            label: profile.label,
+            workingDirectory: profile.directory
+        ) else {
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
         }
 
         terminal.startProcess(
@@ -80,12 +95,19 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             currentDirectory: nil
         )
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
     }
 
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
+    }
+
     func deactivate() {
-        (terminal as? HoloscapeTerminalView)?.onOutput = nil
+        terminal.setOutputHandler(nil)
+        recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -95,31 +117,31 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let termView = terminal as? LocalProcessTerminalView,
-              let term = termView.terminal else { return [] }
-        // See ShellChannelController.lastLines for the long explanation.
-        // tl;dr: terminal.getText uses buffer-absolute row indexing, not
-        // viewport-relative, so we must offset by buffer.yDisp.
-        let yDisp = term.buffer.yDisp
-        let bottomRow = yDisp + term.rows - 1
-        let text = term.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: term.cols - 1, row: bottomRow)
-        )
-        let lines = text.components(separatedBy: "\n")
-        return Array(lines.suffix(count))
+        terminal.lastLines(count)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
 
-    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        Task { @MainActor [weak self] in
+            self?.terminal.resizeToCurrentGrid()
+        }
+    }
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self?.handleProcessTermination(exitCode: exitCode)
         }
+    }
+
+    /// Broker/state bookkeeping for a terminated ssh process.
+    ///
+    /// Extracted from the SwiftTerm delegate callback so the exit path has exactly
+    /// one implementation and can be exercised without an AppKit terminal view.
+    func handleProcessTermination(exitCode: Int32?) {
+        recordBrokerExit(exitCode: exitCode)
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
     }
 
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
@@ -160,5 +182,64 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         let suffix = String(trimmed.dropFirst(2))
         guard !suffix.isEmpty else { return nil }
         return "\"$HOME\"/\(shellEscape(suffix))"
+    }
+
+    private func recordBrokerStart(
+        arguments: [String],
+        label: String?,
+        workingDirectory: String?
+    ) -> Bool {
+        guard let brokerSessionCoordinator else { return true }
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/ssh",
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: .ssh,
+            initialSize: terminal.currentGridSize
+        )
+        do {
+            brokerSessionID = try brokerSessionCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelId
+            ).id
+            return true
+        } catch {
+            // SSH channels own their broker metadata directly, so a broker host
+            // outage is an expected runtime condition here. Report it and let
+            // activate() take its explicit disconnected/reconnect path instead of
+            // trapping the app.
+            NSLog("SSH broker session start failed: \(error)")
+            return false
+        }
+    }
+
+    private func recordBrokerDetach() {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            _ = try brokerSessionCoordinator.detach(brokerSessionID)
+        } catch {
+            // Detach runs on tab teardown and during app termination. If the
+            // broker host is unavailable, the durable record keeps its current
+            // lifecycle — still reattachable and reconciled on the next launch —
+            // so log loudly rather than trapping the app while it is closing.
+            NSLog("SSH broker session detach failed: \(error)")
+        }
+    }
+
+    private func recordBrokerExit(exitCode: Int32?) {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            if let exitCode {
+                _ = try brokerSessionCoordinator.exit(brokerSessionID, exitCode: exitCode)
+            } else {
+                _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
+            }
+        } catch {
+            // Same boundary as detach: an unavailable broker must not trap the app
+            // on process exit. The unrecorded transition stays reconcilable.
+            NSLog("SSH broker session exit failed: \(error)")
+        }
     }
 }
