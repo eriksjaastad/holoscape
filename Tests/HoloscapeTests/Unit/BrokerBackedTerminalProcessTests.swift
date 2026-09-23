@@ -122,6 +122,39 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class NonMainOutputReadRuntime: BrokerSessionRuntime, @unchecked Sendable {
+        private let lock = NSLock()
+        private var remainingPayloads: [Data]
+        private(set) var readThreads: [Bool] = []
+
+        init(payloads: [Data]) {
+            self.remainingPayloads = payloads
+        }
+
+        var didReadOnMainThread: Bool {
+            lock.withLock { readThreads.contains(true) }
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { [] }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            lock.withLock {
+                readThreads.append(Thread.isMainThread)
+                guard !remainingPayloads.isEmpty else { return Data() }
+                return remainingPayloads.removeFirst()
+            }
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     /// Models a broker host that accepts a session and then disappears: every
     /// follow-up operation on the live session reports transport failure until
     /// `isHostAvailable` is restored (the host coming back).
@@ -278,6 +311,25 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable])
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
         XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+    }
+
+    func testOutputPumpReadsBrokerOutputOffMainThread() throws {
+        let runtime = NonMainOutputReadRuntime(payloads: [Data("background-output\n".utf8)])
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008018")
+        defer {
+            fixture.terminal.detachBrokerSession()
+            fixture.cleanup()
+        }
+        let outputHandled = expectation(description: "output handler called from broker output pump")
+        outputHandled.expectedFulfillmentCount = 1
+        fixture.terminal.setOutputHandler {
+            XCTAssertTrue(Thread.isMainThread, "SwiftTerm feed/output handler must stay on the main thread")
+            outputHandled.fulfill()
+        }
+
+        wait(for: [outputHandled], timeout: 1)
+
+        XCTAssertFalse(runtime.didReadOnMainThread, "Broker output reads should run on the output read lane, not the main actor")
     }
 
     func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {

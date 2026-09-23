@@ -20,13 +20,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let environmentProfile: BrokerEnvironmentProfile
     private let coordinator: any BrokerSessionCoordinating
     private let inputCoordinator: BrokerInputCoordinator
+    private let outputCoordinator: BrokerOutputCoordinator
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var hostCurrentDirectoryHandler: ((String?) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
-    private var outputTimer: Timer?
+    private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
     /// Identity of the broker session this terminal failed to reattach because
@@ -65,6 +66,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.environmentProfile = environmentProfile
         self.coordinator = coordinator
         self.inputCoordinator = BrokerInputCoordinator(coordinator)
+        self.outputCoordinator = BrokerOutputCoordinator(coordinator)
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -316,17 +318,41 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func startOutputPump() {
-        outputTimer?.invalidate()
-        outputTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.pollOutputOnce()
+        guard let brokerSessionID else { return }
+        outputReadLane.start(
+            sessionID: brokerSessionID,
+            read: { [outputCoordinator] id in
+                try outputCoordinator.readAvailableOutput(id)
+            },
+            onSample: { [weak self] id, data in
+                Task { @MainActor [weak self] in
+                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
+                    self.handleOutputPumpSample(data, for: id)
+                }
+            },
+            onFailure: { [weak self] _, error in
+                Task { @MainActor [weak self] in
+                    self?.reportSessionFailure(error)
+                }
             }
+        )
+    }
+
+    private func handleOutputPumpSample(_ data: Data, for brokerSessionID: BrokerSessionID) {
+        if !data.isEmpty {
+            let bytes = Array(data)
+            terminalView.feed(byteArray: bytes[...])
+            outputHandler?()
+        }
+        do {
+            try notifyTerminationIfNeeded(for: brokerSessionID)
+        } catch {
+            reportSessionFailure(error)
         }
     }
 
     private func stopOutputPump() {
-        outputTimer?.invalidate()
-        outputTimer = nil
+        outputReadLane.stop()
     }
 
     /// Record a mid-session broker failure once, stop polling, and report it so
@@ -370,8 +396,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         guard try !coordinator.isRunning(brokerSessionID) else { return }
         let exitCode = try coordinator.terminationStatus(brokerSessionID)
         didNotifyTermination = true
-        outputTimer?.invalidate()
-        outputTimer = nil
+        outputReadLane.stop()
         if let exitCode {
             _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
         } else {
@@ -442,6 +467,86 @@ private final class BrokerInputCoordinator: @unchecked Sendable {
 
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
         try coordinator.sendInput(id, bytes: bytes)
+    }
+}
+
+private final class BrokerOutputCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
+        try coordinator.readAvailableOutput(id)
+    }
+}
+
+private final class BrokerOutputReadLane: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "holoscape.broker.output.read-lane", qos: .userInteractive)
+    private let interval: TimeInterval
+    private let lock = NSLock()
+    private var openSessionID: BrokerSessionID?
+    private var timer: DispatchSourceTimer?
+
+    init(interval: TimeInterval = 0.02) {
+        self.interval = interval
+    }
+
+    func start(
+        sessionID: BrokerSessionID,
+        read: @escaping @Sendable (BrokerSessionID) throws -> Data,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+    ) {
+        stop()
+        lock.withLock {
+            openSessionID = sessionID
+        }
+
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.schedule(deadline: .now() + interval, repeating: interval)
+        source.setEventHandler { [weak self] in
+            guard let self, self.isOpen(for: sessionID) else { return }
+            do {
+                let data = try read(sessionID)
+                guard self.isOpen(for: sessionID) else { return }
+                onSample(sessionID, data)
+            } catch {
+                self.closeIfCurrent(sessionID)
+                onFailure(sessionID, error)
+            }
+        }
+        lock.withLock {
+            timer = source
+        }
+        source.resume()
+    }
+
+    func stop() {
+        let source = lock.withLock { () -> DispatchSourceTimer? in
+            openSessionID = nil
+            let source = timer
+            timer = nil
+            return source
+        }
+        source?.setEventHandler {}
+        source?.cancel()
+    }
+
+    private func isOpen(for sessionID: BrokerSessionID) -> Bool {
+        lock.withLock { openSessionID == sessionID }
+    }
+
+    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+        lock.withLock {
+            if openSessionID == sessionID {
+                openSessionID = nil
+                timer?.setEventHandler {}
+                timer?.cancel()
+                timer = nil
+            }
+        }
     }
 }
 
