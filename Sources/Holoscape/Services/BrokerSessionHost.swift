@@ -64,6 +64,8 @@ struct BrokerSessionHost {
             return .ok
         case let .readAvailableOutput(id):
             return .output(try runtime.readAvailableOutput(id: id))
+        case let .waitForOutputAvailability(id, timeoutMilliseconds):
+            return .outputAvailable(try waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
         case let .readScrollbackTail(id, maxBytes):
             return .output(try runtime.readScrollbackTail(id: id, maxBytes: maxBytes))
         case let .resize(id, size):
@@ -74,6 +76,21 @@ struct BrokerSessionHost {
         case let .terminationStatus(id):
             return .terminationStatus(try runtime.terminationStatus(id: id))
         }
+    }
+
+    private func waitForOutputAvailability(id: BrokerSessionID, timeoutMilliseconds: Int) throws -> Bool {
+        guard let runtime = runtime as? BrokerOutputAvailabilityMonitoringRuntime else {
+            return false
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        try runtime.setOutputAvailabilityHandler(id: id) { signaledID in
+            guard signaledID == id else { return }
+            semaphore.signal()
+        }
+        defer { try? runtime.setOutputAvailabilityHandler(id: id, handler: nil) }
+
+        let boundedTimeout = max(0, min(timeoutMilliseconds, 5_000))
+        return semaphore.wait(timeout: .now() + .milliseconds(boundedTimeout)) == .success
     }
 
     private func failureCode(for error: Error) -> String {
@@ -119,6 +136,7 @@ private extension BrokerSessionHostRequest {
              let .markErrored(id),
              let .sendInput(id, _),
              let .readAvailableOutput(id),
+             let .waitForOutputAvailability(id, _),
              let .readScrollbackTail(id, _),
              let .resize(id, _),
              let .isRunning(id),

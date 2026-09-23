@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
@@ -18,12 +18,19 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
 
     private let codec: BrokerSessionHostCodec
     private let transport: Transport
+    let supportsOutputAvailabilityMonitoring: Bool
+    private let startsOutputAvailabilityMonitor: Bool
+    private let outputMonitor = BrokerSessionHostClientOutputMonitor()
 
     init(
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
+        supportsOutputAvailabilityMonitoring: Bool = true,
+        startsOutputAvailabilityMonitor: Bool = true,
         transport: @escaping Transport
     ) {
         self.codec = codec
+        self.supportsOutputAvailabilityMonitoring = supportsOutputAvailabilityMonitoring
+        self.startsOutputAvailabilityMonitor = startsOutputAvailabilityMonitor
         self.transport = transport
     }
 
@@ -108,6 +115,25 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
         return data
     }
 
+    func setOutputAvailabilityHandler(
+        id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws {
+        guard supportsOutputAvailabilityMonitoring, startsOutputAvailabilityMonitor else { return }
+        if let handler {
+            outputMonitor.start(
+                id: id,
+                wait: { [weak self] sessionID in
+                    guard let self else { return false }
+                    return try self.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 5_000)
+                },
+                handler: handler
+            )
+        } else {
+            outputMonitor.stop(id: id)
+        }
+    }
+
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
         let response = try response(for: .readScrollbackTail(id: id, maxBytes: maxBytes))
         guard case let .output(data) = response else {
@@ -143,6 +169,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
         }
     }
 
+    private func waitForOutputAvailability(id: BrokerSessionID, timeoutMilliseconds: Int) throws -> Bool {
+        let response = try response(for: .waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
+        guard case let .outputAvailable(isAvailable) = response else {
+            throw ClientError.unexpectedResponse(expected: "outputAvailable", actual: response)
+        }
+        return isAvailable
+    }
+
     private func response(for request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
         let requestFrame = try codec.encodeRequest(request)
         let responseFrame: Data
@@ -158,5 +192,69 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, @unchecked Sen
             throw ClientError.hostFailure(code: failure.code, message: failure.message)
         }
         return response
+    }
+}
+
+private final class BrokerSessionHostClientOutputMonitor: @unchecked Sendable {
+    private struct Monitor {
+        let generation: UUID
+        let queue: DispatchQueue
+    }
+
+    private let lock = NSLock()
+    private var monitors: [BrokerSessionID: Monitor] = [:]
+
+    func start(
+        id: BrokerSessionID,
+        wait: @escaping @Sendable (BrokerSessionID) throws -> Bool,
+        handler: @escaping @Sendable (BrokerSessionID) -> Void
+    ) {
+        stop(id: id)
+        let generation = UUID()
+        let queue = DispatchQueue(
+            label: "holoscape.broker.host-client.output-availability.\(id.rawValue)",
+            qos: .userInteractive
+        )
+        lock.withLock {
+            monitors[id] = Monitor(generation: generation, queue: queue)
+        }
+        queue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            while self?.isActive(id: id, generation: generation) == true {
+                do {
+                    if try wait(id), self?.isActive(id: id, generation: generation) == true {
+                        handler(id)
+                    }
+                } catch {
+                    self?.stopIfCurrent(id: id, generation: generation)
+                    return
+                }
+            }
+        }
+    }
+
+    func stop(id: BrokerSessionID) {
+        lock.withLock {
+            monitors[id] = nil
+        }
+    }
+
+    private func isActive(id: BrokerSessionID, generation: UUID) -> Bool {
+        lock.withLock { monitors[id]?.generation == generation }
+    }
+
+    private func stopIfCurrent(id: BrokerSessionID, generation: UUID) {
+        lock.withLock {
+            if monitors[id]?.generation == generation {
+                monitors[id] = nil
+            }
+        }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }

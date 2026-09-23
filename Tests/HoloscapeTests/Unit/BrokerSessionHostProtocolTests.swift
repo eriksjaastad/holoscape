@@ -25,6 +25,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
             .readAvailableOutput(id: sessionID),
+            .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
@@ -47,6 +48,8 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
                 BrokerSessionID(rawValue: "response-session-b"),
             ]),
             .output(Data([0x00, 0x01, 0x02, 0x0A, 0xFF])),
+            .outputAvailable(true),
+            .outputAvailable(false),
             .running(true),
             .running(false),
             .terminationStatus(nil),
@@ -117,6 +120,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))), try codec.encodeResponse(.output(Data("broker-output".utf8))))
+        XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.isRunning(id: sessionID))), try codec.encodeResponse(.running(true)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readScrollbackTail(id: sessionID, maxBytes: 64))), try codec.encodeResponse(.output(Data("scrollback-tail".utf8))))
@@ -220,6 +224,80 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             XCTAssertEqual(code, "missing-session")
             XCTAssertTrue(message.contains("missingSession"), message)
         }
+    }
+
+    func testHostWaitForOutputAvailabilityBlocksUntilRuntimeSignals() throws {
+        let runtime = SignalingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-output-availability")
+        let responseReady = expectation(description: "wait response returned after signal")
+        let responseBox = LockedBrokerResponseBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let frame = try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 1_000)))
+                responseBox.set(try codec.decodeResponse(frame))
+            } catch {
+                XCTFail("wait request failed: \(error)")
+            }
+            responseReady.fulfill()
+        }
+
+        XCTAssertTrue(runtime.waitUntilHandlerInstalled(timeout: 1))
+        runtime.signal(id: sessionID)
+        wait(for: [responseReady], timeout: 1)
+        XCTAssertEqual(responseBox.value, .outputAvailable(true))
+        XCTAssertFalse(runtime.handlerIsInstalled)
+    }
+
+    func testHostWaitForOutputAvailabilityReturnsFalseOnTimeout() throws {
+        let runtime = SignalingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-output-timeout")
+
+        let startedAt = Date()
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 10)))
+        )
+
+        XCTAssertEqual(response, .outputAvailable(false))
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
+        XCTAssertFalse(runtime.handlerIsInstalled)
+    }
+
+    func testClientRuntimeOutputAvailabilityHandlerWakesFromHostSignal() throws {
+        let runtime = SignalingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let client = BrokerSessionHostClientRuntime { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "client-output-availability")
+        let signaled = expectation(description: "client handler was signaled")
+
+        try client.setOutputAvailabilityHandler(id: sessionID) { id in
+            XCTAssertEqual(id, sessionID)
+            signaled.fulfill()
+        }
+        XCTAssertTrue(runtime.waitUntilHandlerInstalled(timeout: 2))
+        runtime.signal(id: sessionID)
+        wait(for: [signaled], timeout: 2)
+        try client.setOutputAvailabilityHandler(id: sessionID, handler: nil)
+    }
+
+    func testClientRuntimeOutputAvailabilityCanBeDisabledForFiniteSocketHarnesses() throws {
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { _ in
+            XCTFail("disabled output monitoring must not touch the transport")
+            return Data()
+        }
+        let sessionID = BrokerSessionID(rawValue: "disabled-client-output-availability")
+
+        XCTAssertTrue(client.supportsOutputAvailabilityMonitoring)
+        try client.setOutputAvailabilityHandler(id: sessionID) { _ in
+            XCTFail("disabled output monitoring must not install handlers")
+        }
+        try client.setOutputAvailabilityHandler(id: sessionID, handler: nil)
     }
 
     func testClientRuntimeFailsLoudlyWhenHostReturnsUnexpectedResponseShape() throws {
@@ -778,7 +856,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 9)
+                try server.run(maxConnections: 12)
             } catch {
                 serverError.set(error)
             }
@@ -791,7 +869,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
         let firstCoordinator = BrokerSessionCoordinator(
             registry: registry,
-            runtime: BrokerSessionHostClientRuntime { frame in try firstTransport.sendFrame(frame) },
+            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try firstTransport.sendFrame(frame) },
             now: { Date(timeIntervalSince1970: 9_200) }
         )
         let firstLaunchManager = ChannelManager(
@@ -822,7 +900,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
         let secondCoordinator = BrokerSessionCoordinator(
             registry: registry,
-            runtime: BrokerSessionHostClientRuntime { frame in try secondTransport.sendFrame(frame) },
+            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try secondTransport.sendFrame(frame) },
             now: { Date(timeIntervalSince1970: 9_201) }
         )
         let secondLaunchManager = ChannelManager(
@@ -893,7 +971,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
         let firstCoordinator = BrokerSessionCoordinator(
             registry: registry,
-            runtime: BrokerSessionHostClientRuntime { frame in try firstTransport.sendFrame(frame) },
+            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try firstTransport.sendFrame(frame) },
             now: { Date(timeIntervalSince1970: 9_100) }
         )
         let firstChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009101")!
@@ -917,7 +995,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
         let secondCoordinator = BrokerSessionCoordinator(
             registry: registry,
-            runtime: BrokerSessionHostClientRuntime { frame in try secondTransport.sendFrame(frame) },
+            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try secondTransport.sendFrame(frame) },
             now: { Date(timeIntervalSince1970: 9_101) }
         )
         let restoredChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009102")!
@@ -1067,6 +1145,69 @@ private final class LockedErrorBox: @unchecked Sendable {
         storedError = error
         lock.unlock()
     }
+}
+
+private final class LockedBrokerResponseBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedResponse: BrokerSessionHostResponse?
+
+    var value: BrokerSessionHostResponse? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedResponse
+    }
+
+    func set(_ response: BrokerSessionHostResponse) {
+        lock.lock()
+        storedResponse = response
+        lock.unlock()
+    }
+}
+
+private final class SignalingBrokerSessionRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (BrokerSessionID) -> Void)?
+
+    var handlerIsInstalled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return handler != nil
+    }
+
+    func waitUntilHandlerInstalled(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if handlerIsInstalled { return true }
+            usleep(1_000)
+        }
+        return handlerIsInstalled
+    }
+
+    func signal(id: BrokerSessionID) {
+        lock.lock()
+        let currentHandler = handler
+        lock.unlock()
+        currentHandler?(id)
+    }
+
+    func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
+        lock.lock()
+        self.handler = handler
+        lock.unlock()
+    }
+
+    func listSessions() throws -> [BrokerSessionID] { [] }
+    func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+    func detachSession(id: BrokerSessionID) throws {}
+    func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+    func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+    func markSessionErrored(id: BrokerSessionID) throws {}
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+    func isRunning(id: BrokerSessionID) throws -> Bool { true }
+    func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
 }
 
 private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Sendable {

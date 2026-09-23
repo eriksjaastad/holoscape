@@ -40,10 +40,16 @@ protocol ScrollbackReplayReportingRuntime {
 }
 
 protocol BrokerOutputAvailabilityMonitoringRuntime {
+    var supportsOutputAvailabilityMonitoring: Bool { get }
+
     func setOutputAvailabilityHandler(
         id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
     ) throws
+}
+
+extension BrokerOutputAvailabilityMonitoringRuntime {
+    var supportsOutputAvailabilityMonitoring: Bool { true }
 }
 
 /// Compatibility runtime used until the native broker process is introduced.
