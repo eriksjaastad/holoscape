@@ -23,25 +23,29 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     private let codec: BrokerSessionHostCodec
     private let backlog: Int32
     private let readChunkSize: Int
+    private let maxConcurrentHandlers: Int
 
     init(
         socketPath: String,
         host: BrokerSessionHost,
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
         backlog: Int32 = 16,
-        readChunkSize: Int = 4096
+        readChunkSize: Int = 4096,
+        maxConcurrentHandlers: Int = 8
     ) {
         self.socketPath = socketPath
         self.host = host
         self.codec = codec
         self.backlog = backlog
         self.readChunkSize = readChunkSize
+        self.maxConcurrentHandlers = max(1, maxConcurrentHandlers)
     }
 
     func run(maxConnections: Int? = nil) throws {
         let serverFD = try makeListeningSocket()
         let group = DispatchGroup()
         let errorBox = BrokerSocketServerErrorBox()
+        let handlerSlots = DispatchSemaphore(value: maxConcurrentHandlers)
         defer {
             group.wait()
             Darwin.close(serverFD)
@@ -55,14 +59,18 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 throw ServerError.acceptFailed(String(cString: strerror(errno)))
             }
+            handlerSlots.wait()
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
+                defer {
+                    handlerSlots.signal()
+                    group.leave()
+                }
                 do {
                     try handleConnection(clientFD)
                 } catch {
                     errorBox.setIfEmpty(error)
                 }
-                group.leave()
             }
             handledConnections += 1
         }
