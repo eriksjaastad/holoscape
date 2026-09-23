@@ -28,6 +28,50 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data("holoscape-native-pty".utf8)))
     }
 
+    func testPTYSessionReportsARealTTYInsteadOfAPlainPipe() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "tty-smoke-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-lc", "tty"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("/dev/tty"), output)
+        XCTAssertFalse(output.localizedCaseInsensitiveContains("not a tty"), output)
+    }
+
+    func testPTYSessionSttySizeReflectsInitialAndResizedGrid() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "stty-size-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-lc", "stty size; read _; stty size"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 81, rows: 22)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let initialOutput = try waitForOutput(from: runtime, id: id, containing: "22 81")
+        XCTAssertTrue(initialOutput.contains("22 81"), initialOutput)
+
+        try runtime.resizeSession(id: id, size: TerminalGridSize(columns: 132, rows: 43))
+        try runtime.sendInput(id: id, bytes: Array("continue\n".utf8))
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let resizedOutput = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(resizedOutput.contains("43 132"), resizedOutput)
+    }
+
     func testTerminatePreservesExitedSessionForScrollbackReads() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "terminated-scrollback-native-pty-runtime-test")
