@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import Holoscape
 
@@ -7,7 +8,8 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         let harness = BrokerThroughputStallHarness(
             outputSessionCount: 3,
             outputLinesPerSession: 80,
-            inputProbeCount: 8
+            inputProbeCount: 8,
+            durationBudget: 5.0
         )
 
         let report = try harness.run()
@@ -19,15 +21,20 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertLessThan(report.maxInputEchoLatency, 1.0, report.description)
         XCTAssertLessThan(report.maxRunLoopProbeGap, 0.35, report.description)
         XCTAssertLessThan(report.duration, 5.0, report.description)
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-000"), report.description)
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-007"), report.description)
+        for probeIndex in 0..<harness.inputProbeCount {
+            XCTAssertTrue(
+                report.echoedInputTokens.contains(String(format: "probe-%03d", probeIndex)),
+                report.description
+            )
+        }
     }
 
     func testBrokerThroughputHarnessScalesManyOutputSessionsWhileInputStaysResponsive() throws {
         let harness = BrokerThroughputStallHarness(
             outputSessionCount: 8,
             outputLinesPerSession: 220,
-            inputProbeCount: 24
+            inputProbeCount: 24,
+            durationBudget: 7.0
         )
 
         let report = try harness.run()
@@ -39,8 +46,12 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
         XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
         XCTAssertLessThan(report.duration, 7.0, report.description)
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-000"), report.description)
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-023"), report.description)
+        for probeIndex in 0..<harness.inputProbeCount {
+            XCTAssertTrue(
+                report.echoedInputTokens.contains(String(format: "probe-%03d", probeIndex)),
+                report.description
+            )
+        }
     }
 
     func testBrokerThroughputHarnessDrainsBurstyOutputFromEverySessionWhileInputStaysResponsive() throws {
@@ -48,6 +59,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             outputSessionCount: 6,
             outputLinesPerSession: 140,
             inputProbeCount: 18,
+            durationBudget: 7.0,
             outputPayloadBytes: 512
         )
 
@@ -62,12 +74,16 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertLessThan(report.duration, 7.0, report.description)
         for sessionIndex in 0..<harness.outputSessionCount {
             XCTAssertTrue(
-                report.outputCompletionTokens.contains(String(format: "session-%d-%04d", sessionIndex, harness.outputLinesPerSession - 1)),
+                report.outputCompletionTokens.contains(String(format: "session-%d-complete", sessionIndex)),
                 report.description
             )
         }
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-000"), report.description)
-        XCTAssertTrue(report.echoedInputTokens.contains("probe-017"), report.description)
+        for probeIndex in 0..<harness.inputProbeCount {
+            XCTAssertTrue(
+                report.echoedInputTokens.contains(String(format: "probe-%03d", probeIndex)),
+                report.description
+            )
+        }
     }
 }
 
@@ -75,13 +91,29 @@ private struct BrokerThroughputStallHarness {
     let outputSessionCount: Int
     let outputLinesPerSession: Int
     let inputProbeCount: Int
+    /// Upper bound for a single collection run, aligned with the test's
+    /// advertised duration assertion. The drain loop is allowed to run for the
+    /// full budget so a slow-but-accepted drain is never cut off by a shorter
+    /// per-session deadline.
+    let durationBudget: TimeInterval
     var outputPayloadBytes = 0
 
     func run() throws -> BrokerThroughputStallReport {
         let runtime = NativePTYBrokerSessionRuntime()
         let inputID = BrokerSessionID(rawValue: "throughput-input-\(UUID().uuidString)")
         var sessionIDs: [BrokerSessionID] = []
+        var barrierPaths: [String] = []
         let startedAt = Date()
+
+        let barrierDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-throughput-barrier-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: barrierDirectory, withIntermediateDirectories: true)
+        defer {
+            for id in sessionIDs {
+                try? runtime.markSessionErrored(id: id)
+            }
+            try? FileManager.default.removeItem(at: barrierDirectory)
+        }
 
         try runtime.createSession(id: inputID, request: BrokerSessionLaunchRequest(
             command: "/bin/cat",
@@ -92,20 +124,27 @@ private struct BrokerThroughputStallHarness {
         sessionIDs.append(inputID)
 
         for index in 0..<outputSessionCount {
+            let barrierPath = barrierDirectory.appendingPathComponent("start-\(index)").path
+            try makeFIFO(at: barrierPath)
+            barrierPaths.append(barrierPath)
+
             let id = BrokerSessionID(rawValue: "throughput-output-\(index)-\(UUID().uuidString)")
             try runtime.createSession(id: id, request: BrokerSessionLaunchRequest(
                 command: "/bin/sh",
-                arguments: ["-c", outputScript(sessionIndex: index)],
+                arguments: ["-c", outputScript(sessionIndex: index, barrierPath: barrierPath)],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
                 initialSize: TerminalGridSize(columns: 80, rows: 24)
             ))
             sessionIDs.append(id)
         }
-        defer {
-            for id in sessionIDs {
-                try? runtime.markSessionErrored(id: id)
-            }
+
+        // Release the producers once the harness is ready to probe. Opening a
+        // FIFO for writing blocks until that session's producer has opened it
+        // for reading, so every output session is guaranteed to observe its
+        // start byte before it begins emitting — no timing guesswork.
+        for barrierPath in barrierPaths {
+            try releaseFIFO(at: barrierPath)
         }
 
         var maxInputSendLatency: TimeInterval = 0
@@ -122,7 +161,8 @@ private struct BrokerThroughputStallHarness {
         var maxInputEchoLatency: TimeInterval = 0
         var maxRunLoopProbeGap: TimeInterval = 0
         var previousRunLoopProbe = Date()
-        let deadline = Date().addingTimeInterval(max(3, Double(outputSessionCount) * 0.5))
+
+        let deadline = startedAt.addingTimeInterval(durationBudget)
         while Date() < deadline {
             let now = Date()
             if unsentProbeIndex < inputProbeCount,
@@ -162,8 +202,7 @@ private struct BrokerThroughputStallHarness {
             if completedOutputSessions.count == outputSessionCount,
                outputBytesRead >= expectedMinimumOutputBytes,
                unsentProbeIndex == inputProbeCount,
-               echoedInputTokens.contains("probe-000"),
-               echoedInputTokens.contains(String(format: "probe-%03d", inputProbeCount - 1)) {
+               (0..<inputProbeCount).allSatisfy({ echoedInputTokens.contains(String(format: "probe-%03d", $0)) }) {
                 break
             }
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
@@ -194,8 +233,8 @@ private struct BrokerThroughputStallHarness {
     }
 
     private var minimumBytesPerOutputLine: Int {
-        // Matches the per-line shape emitted by outputScript(_:): the largest
-        // session index and line number bound the per-line byte count.
+        // Matches the per-line shape emitted by outputScript(_:barrierPath:):
+        // the largest session index and line number bound the per-line byte count.
         let payload = String(repeating: "x", count: outputPayloadBytes)
         let referenceLine = String(
             format: "session-%d-%04d \(payload) holoscape-throughput-baseline\n",
@@ -205,13 +244,43 @@ private struct BrokerThroughputStallHarness {
         return referenceLine.utf8.count
     }
 
+    /// Distinct token emitted by each output session only after its final
+    /// payload line, so seeing it proves that session's full output was drained.
     private func completionMarker(sessionIndex: Int) -> String {
-        String(format: "session-%d-%04d", sessionIndex, outputLinesPerSession - 1)
+        String(format: "session-%d-complete", sessionIndex)
     }
 
-    private func outputScript(sessionIndex: Int) -> String {
+    private func makeFIFO(at path: String) throws {
+        let result = path.withCString { mkfifo($0, mode_t(S_IRUSR | S_IWUSR)) }
+        guard result == 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "mkfifo failed: \(String(cString: strerror(errno)))"]
+            )
+        }
+    }
+
+    private func releaseFIFO(at path: String) throws {
+        let fd = path.withCString { open($0, O_WRONLY) }
+        guard fd >= 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "open fifo for writing failed: \(String(cString: strerror(errno)))"]
+            )
+        }
+        defer { close(fd) }
+        let byte: UInt8 = 0
+        _ = withUnsafePointer(to: byte) { ptr in
+            write(fd, ptr, 1)
+        }
+    }
+
+    private func outputScript(sessionIndex: Int, barrierPath: String) -> String {
         let payload = String(repeating: "x", count: outputPayloadBytes)
-        return "i=0; while [ $i -lt \(outputLinesPerSession) ]; do printf 'session-\(sessionIndex)-%04d \(payload) holoscape-throughput-baseline\\n' $i; i=$((i+1)); done; sleep 1"
+        let completion = completionMarker(sessionIndex: sessionIndex)
+        return "dd bs=1 count=1 < '\(barrierPath)' 2>/dev/null; i=0; while [ $i -lt \(outputLinesPerSession) ]; do printf 'session-\(sessionIndex)-%04d \(payload) holoscape-throughput-baseline\\n' $i; i=$((i+1)); done; printf '\(completion)\\n'; sleep 1"
     }
 }
 
