@@ -10,18 +10,26 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     let commandHistory = CommandHistory()
     weak var delegate: ChannelControllerDelegate?
 
-    private let terminalView: HoloscapeTerminalView
+    private let terminal: TerminalProcess
+    private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
+    private(set) var brokerSessionID: BrokerSessionID?
+    /// Broker session this tab could not reattach because the broker no longer
+    /// owns it. Retained (and persisted) while the tab is stale so the recreate
+    /// guidance and the tab/session association survive relaunch/restore.
+    private(set) var staleBrokerSessionID: BrokerSessionID?
     private let instanceNumber: Int?
     private let explicitLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
+    private var lastStartFailureKind: TerminalStartFailureKind?
 
     var notificationDirectoryPath: String? {
         workingDirectory
     }
 
-    var displayLabel: String {
+    var displayBaseLabel: String {
         let base: String
         if let dir = workingDirectory {
             let directoryLabel = URL(fileURLWithPath: dir).lastPathComponent
@@ -37,6 +45,11 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         } else {
             base = "Shell"
         }
+        return ChannelGitBranchLabel.decorate(base, workingDirectory: workingDirectory)
+    }
+
+    var displayLabel: String {
+        let base = displayBaseLabel
         if let n = instanceNumber {
             return "\(base) \(n)"
         }
@@ -47,29 +60,103 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Shell") == .orderedSame
     }
 
-    var contentView: NSView { terminalView }
+    var contentView: NSView { terminal.terminalContentView }
 
-    init(id: UUID, instanceNumber: Int?, label: String? = nil, workingDirectory: String? = nil) {
+    var recoveryAction: ChannelRecoveryAction? {
+        guard state == .disconnected || state == .stale else { return nil }
+        switch lastStartFailureKind {
+        case .brokerHostUnavailable:
+            return .retryBrokerHost
+        case .brokerSessionStale:
+            return .recreateBrokerSession
+        case .failed, .none:
+            return state == .disconnected ? .reconnect : nil
+        }
+    }
+
+    static func brokerBacked(
+        id: UUID,
+        instanceNumber: Int?,
+        label: String? = nil,
+        workingDirectory: String? = nil,
+        existingBrokerSessionID: BrokerSessionID? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
+        coordinator: (any BrokerSessionCoordinating)? = nil
+    ) -> ShellChannelController {
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: id,
+            channelType: .shell,
+            label: label,
+            environmentProfile: .shell,
+            existingBrokerSessionID: existingBrokerSessionID,
+            coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
+        )
+        return ShellChannelController(
+            id: id,
+            instanceNumber: instanceNumber,
+            label: label,
+            workingDirectory: workingDirectory,
+            terminal: terminal,
+            brokerSessionCoordinator: nil,
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID
+        )
+    }
+
+    init(
+        id: UUID,
+        instanceNumber: Int?,
+        label: String? = nil,
+        workingDirectory: String? = nil,
+        terminal: TerminalProcess? = nil,
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil
+    ) {
         self.channelId = id
         self.instanceNumber = instanceNumber
         self.explicitLabel = label
         self.workingDirectory = workingDirectory
         self.directoryTracker = ShellDirectoryTracker(currentDirectory: workingDirectory)
-        self.terminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
-        terminalView.processDelegate = self
-        terminalView.onUserInput = { [weak self] data in
+        if let terminalView = self.terminal as? LocalProcessTerminalView {
+            terminalView.processDelegate = self
+        }
+        self.terminal.setUserInputHandler { [weak self] data in
             self?.handleUserInput(data)
+        }
+        self.terminal.setHostCurrentDirectoryHandler { [weak self] directory in
+            self?.handleHostCurrentDirectoryUpdate(directory)
+        }
+        self.terminal.setSessionFailureHandler { [weak self] failure in
+            self?.handleSessionFailure(failure)
+        }
+        self.terminal.setTerminationHandler { [weak self] exitCode in
+            guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
+            self.state = .disconnected
+            self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
+
+        // A tab whose broker session the broker no longer owns comes back stale
+        // with the same recreate guidance it showed before the app quit. It does
+        // not activate: starting a replacement here would be a silent substitute
+        // for the recovery action the guidance promises.
+        if let restoredStaleBrokerSessionID {
+            self.staleBrokerSessionID = restoredStaleBrokerSessionID
+            self.lastStartFailureKind = .brokerSessionStale
+            self.state = .stale
+        }
     }
 
     func sendInput(_ text: String) {
         guard state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
-        terminalView.send(bytes)
+        terminal.send(bytes)
     }
 
     func activate() {
@@ -84,25 +171,53 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
         // Wire output notifications so channelDidReceiveOutput fires when the
         // shell produces output — this drives the hasUnread / bullet indicator.
-        terminalView.onOutput = { [weak self] in
+        terminal.setOutputHandler { [weak self] in
             guard let self else { return }
             self.delegate?.channelDidReceiveOutput(self)
         }
 
-        terminalView.startProcess(
+        guard recordBrokerStart(
+            command: shell,
+            arguments: ["-o", "nopromptsp", "--login"],
+            environmentProfile: .shell,
+            label: explicitLabel,
+            workingDirectory: workingDirectory
+        ) else {
+            state = .disconnected
+            delegate?.channelStateDidChange(self, to: .disconnected)
+            return
+        }
+
+        terminal.startProcess(
             executable: shell,
             args: ["-o", "nopromptsp", "--login"],
             environment: envPairs,
             execName: "zsh",
             currentDirectory: workingDirectory
         )
+        if let startFailure = terminal.startFailureDescription {
+            NSLog("Shell terminal start failed: \(startFailure)")
+            let failedState = applyBrokerFailure(kind: terminal.startFailureKind)
+            state = failedState
+            delegate?.channelStateDidChange(self, to: failedState)
+            return
+        }
+        if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+            brokerSessionID = terminalBrokerSessionID
+        }
+        lastStartFailureKind = nil
+        staleBrokerSessionID = nil
         state = .active
-        activatedAt = Date()
+        let now = Date()
+        activatedAt = now
+        recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
     }
 
     func deactivate() {
-        terminalView.onOutput = nil
+        terminal.setOutputHandler(nil)
+        terminal.detachBrokerSession()
+        recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
@@ -112,30 +227,21 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func lastLines(_ count: Int) -> [String] {
-        guard let terminal = terminalView.terminal else { return [] }
-        // SwiftTerm's getText(start:end:) uses buffer-absolute row indexing.
-        // Read from row 0 up to the bottom of the visible area — getText
-        // returns empty for rows beyond the cursor, so this is safe even when
-        // the buffer has fewer lines than `count`. We take the last `count`
-        // lines from the result via .suffix().
-        let bottomRow = terminal.buffer.yDisp + terminal.rows - 1
-        let text = terminal.getText(
-            start: Position(col: 0, row: 0),
-            end: Position(col: terminal.cols - 1, row: bottomRow)
-        )
-        let lines = text.components(separatedBy: "\n")
-        return Array(lines.suffix(count))
+        terminal.lastLines(count)
     }
 
     // MARK: - LocalProcessTerminalViewDelegate
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
-        // Terminal resized — SwiftTerm handles this internally
+        Task { @MainActor [weak self] in
+            self?.terminal.resizeToCurrentGrid()
+        }
     }
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.recordBrokerExit(exitCode: exitCode)
             self.state = .disconnected
             self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
@@ -147,21 +253,144 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            if let nextDirectory = self.directoryTracker.applyHostDirectoryUpdate(directory) {
-                self.updateWorkingDirectory(nextDirectory)
-            }
+            self?.handleHostCurrentDirectoryUpdate(directory)
         }
     }
 
+    private func handleHostCurrentDirectoryUpdate(_ directory: String?) {
+        guard let nextDirectory = directoryTracker.applyHostDirectoryUpdate(directory) else { return }
+        updateWorkingDirectory(nextDirectory)
+    }
+
     private func handleUserInput(_ data: ArraySlice<UInt8>) {
+        recordUserInteraction()
         guard let nextDirectory = directoryTracker.consume(data: data) else { return }
         updateWorkingDirectory(nextDirectory)
+    }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
+    }
+
+    private func channelState(for startFailureKind: TerminalStartFailureKind?) -> ChannelState {
+        switch startFailureKind {
+        case .brokerHostUnavailable, .brokerSessionStale:
+            return .stale
+        case .failed, .none:
+            return .disconnected
+        }
+    }
+
+    /// Apply a broker failure reported by the terminal — at start time or from a
+    /// live session that lost its broker — to the tab's recovery fields.
+    ///
+    /// Keeping this in one place is what makes the guidance a tab shows depend on
+    /// the failure kind rather than on when the failure was noticed: a broker host
+    /// outage keeps the handle and offers `retryBrokerHost`, a dropped session
+    /// keeps the dead identity and offers `recreateBrokerSession`.
+    private func applyBrokerFailure(kind: TerminalStartFailureKind?) -> ChannelState {
+        lastStartFailureKind = kind
+        switch kind {
+        case .brokerHostUnavailable:
+            // Outage is retryable: keep the handle so retry reattaches the same
+            // broker session instead of spawning a replacement.
+            if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
+            staleBrokerSessionID = nil
+        case .brokerSessionStale:
+            // The broker no longer owns the session. Retry must spawn a
+            // replacement, so drop the live handle, but keep the dead identity so
+            // guidance and tab metadata survive relaunch.
+            brokerSessionID = nil
+            staleBrokerSessionID = terminal.staleBrokerSessionID
+        case .failed, .none:
+            // Hard failures leave whatever durable identity the tab already had;
+            // only a successful attach clears it.
+            break
+        }
+        return channelState(for: kind)
+    }
+
+    /// Downgrade a live tab whose broker host or session disappeared underneath
+    /// it. Reported by the terminal process so the failure is explicit instead of
+    /// being swallowed or trapping in the middle of an output poll.
+    private func handleSessionFailure(_ failure: TerminalSessionFailure) {
+        let downgradedState = applyBrokerFailure(kind: failure.kind)
+        guard state != downgradedState else {
+            // Repeated reports (further keystrokes, a layout pass) must not churn
+            // the tab bar or rewrite persisted state.
+            return
+        }
+        state = downgradedState
+        delegate?.channelStateDidChange(self, to: downgradedState)
     }
 
     private func updateWorkingDirectory(_ nextDirectory: String) {
         guard nextDirectory != workingDirectory else { return }
         workingDirectory = nextDirectory
         delegate?.channelStateDidChange(self, to: state)
+    }
+
+    private func recordBrokerStart(
+        command: String,
+        arguments: [String],
+        environmentProfile: BrokerEnvironmentProfile,
+        label: String?,
+        workingDirectory: String?
+    ) -> Bool {
+        guard let brokerSessionCoordinator else { return true }
+        let request = BrokerSessionLaunchRequest(
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: environmentProfile,
+            initialSize: terminal.currentGridSize
+        )
+        do {
+            brokerSessionID = try brokerSessionCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelId
+            ).id
+            return true
+        } catch {
+            // An injected coordinator means this channel owns its broker metadata
+            // (test-injected shells today; production shells use the broker-backed
+            // terminal instead). A broker host outage here is an expected runtime
+            // condition, so report it and let the caller take its explicit
+            // disconnected/reconnect path instead of trapping.
+            NSLog("Shell broker session start failed: \(error)")
+            return false
+        }
+    }
+
+    private func recordBrokerDetach() {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            _ = try brokerSessionCoordinator.detach(brokerSessionID)
+        } catch {
+            // Detach runs on tab teardown and during app termination. If the
+            // broker host is unavailable, the durable record keeps its current
+            // lifecycle — still reattachable and reconciled on the next launch —
+            // so log loudly rather than trapping the app while it is closing.
+            NSLog("Shell broker session detach failed: \(error)")
+        }
+    }
+
+    private func recordBrokerExit(exitCode: Int32?) {
+        guard let brokerSessionCoordinator, let brokerSessionID else { return }
+        do {
+            if let exitCode {
+                _ = try brokerSessionCoordinator.exit(brokerSessionID, exitCode: exitCode)
+            } else {
+                _ = try brokerSessionCoordinator.markErrored(brokerSessionID)
+            }
+        } catch {
+            // Same boundary as detach: an unavailable broker must not trap the app
+            // on process exit. The unrecorded transition stays reconcilable.
+            NSLog("Shell broker session exit failed: \(error)")
+        }
     }
 }

@@ -82,7 +82,7 @@ final class FontFallbackPropertyTests: XCTestCase {
         XCTAssertNil(ctx.resolvedFont(for: .tabBarTabActive))
     }
 
-    func testResolvedFontUsesRegistryWhenKeyed() {
+    func testResolvedFontUsesRegistryWhenKeyed() throws {
         // When a PostScript name lookup hits the registry, the
         // resolved font must be the one built from the registry's
         // CGFont, not the name-based system lookup. We can't easily
@@ -94,8 +94,7 @@ final class FontFallbackPropertyTests: XCTestCase {
         // stand-in for a "skin-shipped" font in the registry.
         guard let menlo = NSFont(name: "Menlo", size: size),
               let cgFont = CTFontCopyGraphicsFont(menlo, nil) as CGFont? else {
-            XCTSkip("Menlo not available on this system")
-            return
+            throw XCTSkip("Menlo not available on this system")
         }
         // Build a surface whose FontDescriptor family equals Menlo's
         // PostScript name so resolvedFont's registry path trips.

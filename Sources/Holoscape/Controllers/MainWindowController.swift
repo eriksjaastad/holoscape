@@ -1,11 +1,27 @@
 import AppKit
 
 @MainActor
-class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
+class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
     InputBoxViewDelegate, ChannelControllerDelegate, NotificationChannelSwitchDelegate,
     SplitPaneManagerDelegate, ChromeRegionManagerDelegate, SkinEngineFileWatcherDelegate,
     InputResizeHandleViewDelegate {
+
+    enum UnifiedLauncherAction: Equatable {
+        case shell
+        case agentOAuthDraft
+        case agentAPIKeyDraft
+        case agentOAuth(AgentChannelPromptResult)
+        case agentAPIKey(AgentChannelPromptResult)
+        case groupChat
+        case bridge
+        case sessionProfile(String)
+    }
+
+    struct AgentChannelPromptResult: Equatable {
+        let workingDirectory: URL
+        let label: String
+    }
 
     /// Amplify Task 5.3 makes this reassignable so shaped-window
     /// transitions can swap the underlying `NSWindow` instance without
@@ -141,6 +157,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     /// prior to this, the engine was never constructed and the
     /// suppression paths never fired in production.
     let animationEngine: AnimationEngine
+
+    /// Shared v4 chrome animation clock. Owned by the controller (not
+    /// `ChromeHostView`) so clock lifetime survives weak renderer
+    /// subscriptions and so density / Reduce Motion hooks have a single
+    /// runtime object to pause/resume.
+    let chromeAnimationClock = SharedAnimationClock()
 
     /// Reactive snapshot shared across chrome views so state-variant
     /// matches (hover, agentState, etc.) stay coherent during a layout
@@ -401,7 +423,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             self.updateTabBarLeading()
         }
 
-        // Refresh elapsed time on tabs every 60 seconds
+        // Refresh stale-tab badges when channels cross the interaction threshold.
         elapsedTimeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshAllTabs() }
         }
@@ -437,6 +459,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     func setProfileManager(_ manager: SessionProfileManager) {
         self.profileManager = manager
         refreshLauncher()
+        Task { [weak self, manager] in
+            _ = await manager.refreshDiscoveredSessions()
+            self?.refreshLauncher()
+        }
     }
 
     private func setupLayout() {
@@ -640,11 +666,18 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let newItem = NSMenuItem(title: "New Session", action: #selector(handleNewSession), keyEquivalent: "n")
         newItem.target = self
 
-        let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(showChannelPicker), keyEquivalent: "")
+        let newShellChannelItem = NSMenuItem(title: "New Shell Channel", action: #selector(createShellChannel), keyEquivalent: "n")
+        newShellChannelItem.keyEquivalentModifierMask = [.command, .shift]
+        newShellChannelItem.target = self
+
+        let newChannelItem = NSMenuItem(title: "New Channel", action: #selector(presentUnifiedChannelLauncher), keyEquivalent: "")
         newChannelItem.target = self
 
         let closeItem = NSMenuItem(title: "Close Channel", action: #selector(closeActiveChannel), keyEquivalent: "w")
         closeItem.target = self
+
+        let pruneScrollbackItem = NSMenuItem(title: "Clear Active Channel Scrollback Tail", action: #selector(clearActiveChannelScrollbackTail), keyEquivalent: "")
+        pruneScrollbackItem.target = self
 
         let toggleSidebarItem = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "s")
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .shift]
@@ -652,8 +685,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         if let fileMenu = NSApp.mainMenu?.item(withTitle: "File")?.submenu {
             fileMenu.addItem(newItem)
+            fileMenu.addItem(newShellChannelItem)
             fileMenu.addItem(newChannelItem)
             fileMenu.addItem(closeItem)
+            fileMenu.addItem(pruneScrollbackItem)
             fileMenu.addItem(NSMenuItem.separator())
             fileMenu.addItem(toggleSidebarItem)
         }
@@ -742,7 +777,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     nonisolated(unsafe) private var keyMonitor: Any?
 
     private func setupChannelSwitchShortcuts() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in
+            if event.window === self?.window {
+                self?.recordActiveChannelInteraction()
+            }
+            guard event.type == .keyDown else { return event }
             guard let self, event.modifierFlags.contains(.command) else { return event }
 
             let hasShift = event.modifierFlags.contains(.shift)
@@ -777,6 +816,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             }
             return event
         }
+    }
+
+    private func recordActiveChannelInteraction() {
+        guard let activeChannelId,
+              let channel = channelManager.channel(for: activeChannelId) else { return }
+        channel.recordUserInteraction(at: Date())
     }
 
     @objc func toggleTimestamps() {
@@ -1870,30 +1915,35 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - NSSplitViewDelegate
 
-    nonisolated func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
         // Allow the sidebar (first subview at index 0) to collapse
         return splitView.subviews.first === subview
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         return 0  // allow full collapse; canCollapseSubview handles the rest
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
         return 350  // maximum sidebar width
     }
 
-    nonisolated func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
+    func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
         return splitView.subviews.first === subview
     }
 
     // MARK: - URL Scheme
 
     func openChannel(type: String, directory: String?, label: String?, command: String? = nil) {
-        let dir = directory.map { URL(fileURLWithPath: $0) }
+        let explicitDir = directory.flatMap { path -> URL? in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return DefaultWorkingDirectory.expandedURL(from: trimmed)
+        }
 
         switch type {
         case "shell":
+            let dir = explicitDir
             let dirName = dir?.lastPathComponent
             let effectiveLabel = label ?? dirName
             let channel = channelManager.createChannel(
@@ -1901,7 +1951,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: effectiveLabel ?? "Shell",
                 workingDirectory: dir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, label: effectiveLabel, workingDirectory: workDir?.path)
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    label: effectiveLabel,
+                    workingDirectory: workDir?.path,
+                    coordinator: self.channelManager.brokerBackedTerminalCoordinator
+                )
             }
             channel.delegate = self
             channel.activate()
@@ -1918,18 +1974,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             switchToChannel(channel.channelId)
 
         case "agent":
+            let dir = DefaultWorkingDirectory.launchURL(fromOptionalPath: directory)
             let channel = channelManager.createChannel(
                 type: .agentDirect,
                 role: label,
-                workingDirectory: dir ?? URL(fileURLWithPath: NSHomeDirectory())
+                workingDirectory: dir
             ) { id, _, _, instanceNum, workDir in
-                AgentChannelController(
+                AgentChannelController.brokerBacked(
                     id: id,
                     authType: .oauth,
                     workingDirectory: workDir,
                     userLabel: label,
                     instanceNumber: instanceNum,
-                    command: command ?? "claude"
+                    command: command ?? "claude",
+                    coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
             channel.delegate = self
@@ -1949,8 +2007,10 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         activeChannelId = id
+        channel.recordUserInteraction(at: Date())
         channel.hasUnread = false
         apiServer?.clearNotification(for: id)
+        publishActiveChannelStateToReactiveSnapshot(channel)
         splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
@@ -2013,8 +2073,20 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         let sorted = pinned + unpinned
 
         let notifications = apiServer?.channelNotifications ?? [:]
-        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
-        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications)
+        let staleThreshold = (configService.load().tabStaleThresholdMinutes ?? 45) * 60
+        let now = Date()
+        tabBar.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications, now: now, staleThreshold: staleThreshold)
+        sidebarView.updateTabs(channels: sorted, activeId: activeChannelId, pinnedIds: channelManager.pinnedChannelIds, notifications: notifications, now: now, staleThreshold: staleThreshold)
+    }
+
+    /// Publish the focused channel's durable state into the shared skin/shader
+    /// snapshot. Per-row sidebar entries keep private snapshots; this shared
+    /// snapshot drives active/global chrome surfaces such as the tab bar,
+    /// input panel, vessel chrome, and future shader uniforms.
+    private func publishActiveChannelStateToReactiveSnapshot(_ channel: any ChannelController) {
+        reactiveSnapshot.applyChannelRenderSnapshot(
+            ChannelRenderSnapshot(channel: channel, isActive: true)
+        )
     }
 
     func refreshLauncher() {
@@ -2024,69 +2096,162 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc func handleNewSession() {
-        if sidebarExpanded {
-            sessionLauncher.focus()
-        } else {
-            showChannelPicker()
+        presentUnifiedChannelLauncher()
+    }
+
+    @objc func presentUnifiedChannelLauncher() {
+        if !sidebarExpanded {
+            sidebarExpanded = true
+            applySidebarState(animated: true)
+
+            var config = configService.load()
+            config.sidebarExpanded = sidebarExpanded
+            configService.save(config)
         }
+
+        refreshLauncher()
+        sessionLauncher.presentChoices()
     }
 
     @objc func showChannelPicker() {
-        let alert = NSAlert()
-        alert.messageText = "New Channel"
-        alert.informativeText = "Select channel type:"
-        alert.addButton(withTitle: "Shell")
-        alert.addButton(withTitle: "Agent (OAuth)")
-        alert.addButton(withTitle: "Agent (API Key)")
-        alert.addButton(withTitle: "Group Chat")
-        alert.addButton(withTitle: "Bridge")
-        alert.addButton(withTitle: "Cancel")
-
-        let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn:                      // 1000 — Shell
-            createShellChannel()
-        case .alertSecondButtonReturn:                     // 1001 — Agent (OAuth)
-            createAgentChannel(authType: .oauth)
-        case .alertThirdButtonReturn:                      // 1002 — Agent (API Key)
-            createAgentChannel(authType: .apiKey(""))
-        case NSApplication.ModalResponse(rawValue: 1003):  // Group Chat
-            createGroupChatChannel()
-        case NSApplication.ModalResponse(rawValue: 1004):  // Bridge
-            createBridgeChannel()
-        default:
-            break
-        }
+        presentUnifiedChannelLauncher()
     }
 
-    private func createShellChannel() {
+    @objc func createShellChannel() {
         let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: .shell,
             role: nil,
             workingDirectory: defaultDir
         ) { id, _, _, instanceNum, workDir in
-            return ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+            return ShellChannelController.brokerBacked(
+                id: id,
+                instanceNumber: instanceNum,
+                workingDirectory: workDir?.path,
+                coordinator: self.channelManager.brokerBackedTerminalCoordinator
+            )
         }
         channel.delegate = self
         channel.activate()
         switchToChannel(channel.channelId)
     }
 
-    private func createAgentChannel(authType: AgentAuthType) {
-        let defaultDir = DefaultWorkingDirectory.preferredURL
+    @objc func clearActiveChannelScrollbackTail() {
+        guard let activeChannelId,
+              let channel = channelManager.channel(for: activeChannelId) else {
+            presentScrollbackMaintenanceResult(
+                title: "No Active Channel",
+                message: "Select a broker-backed shell or agent channel before clearing persisted scrollback."
+            )
+            return
+        }
+        guard let brokerSessionID = persistedScrollbackSessionID(for: channel) else {
+            presentScrollbackMaintenanceResult(
+                title: "No Persisted Scrollback Tail",
+                message: "The active channel is not backed by a persisted broker session."
+            )
+            return
+        }
+
+        let store = DiskBackedScrollbackStore(directory: ScrollbackPersistencePolicy.defaultDiskDirectory)
+        do {
+            let bytes = try store.storedByteCount(for: brokerSessionID)
+            try store.remove(for: brokerSessionID)
+            presentScrollbackMaintenanceResult(
+                title: "Scrollback Tail Cleared",
+                message: "Removed \(bytes) bytes of persisted disk scrollback for \(channel.displayLabel). The live terminal contents remain visible until overwritten or the tab is relaunched."
+            )
+        } catch {
+            presentScrollbackMaintenanceResult(
+                title: "Could Not Clear Scrollback Tail",
+                message: "Holoscape could not remove persisted scrollback for session \(brokerSessionID.rawValue): \(error)"
+            )
+            NSLog("MainWindowController: failed to clear scrollback tail for \(brokerSessionID.rawValue): \(error)")
+        }
+    }
+
+    private func persistedScrollbackSessionID(for channel: any ChannelController) -> BrokerSessionID? {
+        if let shell = channel as? ShellChannelController {
+            return shell.brokerSessionID ?? shell.staleBrokerSessionID
+        }
+        if let agent = channel as? AgentChannelController {
+            return agent.brokerSessionID ?? agent.staleBrokerSessionID
+        }
+        return nil
+    }
+
+    private func presentScrollbackMaintenanceResult(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+
+    static func resolvedAgentChannelPrompt(
+        directoryInput: String,
+        labelInput: String,
+        defaultDirectory: URL
+    ) -> (workingDirectory: URL, label: String) {
+        let trimmedDirectory = directoryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directoryPath = trimmedDirectory.isEmpty ? defaultDirectory.path : (trimmedDirectory as NSString).expandingTildeInPath
+        let workingDirectory = URL(fileURLWithPath: directoryPath)
+        let trimmedLabel = labelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultLabel = workingDirectory.lastPathComponent.isEmpty ? "Agent" : workingDirectory.lastPathComponent
+        return (workingDirectory, trimmedLabel.isEmpty ? defaultLabel : trimmedLabel)
+    }
+
+    static func agentChannelPromptResult(fromInlineInput input: String, kindLabel: String, defaultDirectory: URL) -> AgentChannelPromptResult? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let normalizedKind = kindLabel.lowercased()
+        guard lower == normalizedKind || lower.hasPrefix(normalizedKind + " ") else { return nil }
+
+        let remainder = String(trimmed.dropFirst(kindLabel.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = remainder.components(separatedBy: " as ")
+        let directoryInput = parts.first ?? ""
+        let labelInput = parts.dropFirst().joined(separator: " as ")
+        let resolved = Self.resolvedAgentChannelPrompt(
+            directoryInput: directoryInput,
+            labelInput: labelInput,
+            defaultDirectory: defaultDirectory
+        )
+        return AgentChannelPromptResult(workingDirectory: resolved.workingDirectory, label: resolved.label)
+    }
+
+    private func defaultAgentChannelPrompt() -> AgentChannelPromptResult {
+        let directory = DefaultWorkingDirectory.preferredURL
+        let label = directory.lastPathComponent.isEmpty ? "Agent" : directory.lastPathComponent
+        return AgentChannelPromptResult(workingDirectory: directory, label: label)
+    }
+
+    private func createAgentAPIKeyChannel(prompt: AgentChannelPromptResult) {
+        do {
+            try createAgentChannel(authType: AgentAPIKeyResolver().authType(), prompt: prompt)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Agent API Key Not Configured"
+            alert.informativeText = "Holoscape did not start an API-key agent because no Anthropic API key is stored in Keychain service ‘\(AgentAPIKeyStore.defaultService)’ account ‘\(AgentAPIKeyStore.defaultAccount)’. OAuth agent channels still work."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    private func createAgentChannel(authType: AgentAuthType, prompt: AgentChannelPromptResult) {
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
-            role: nil,
-            workingDirectory: defaultDir
+            role: prompt.label,
+            workingDirectory: prompt.workingDirectory
         ) { id, type, _, instanceNum, workDir in
-            AgentChannelController(
+            AgentChannelController.brokerBacked(
                 id: id,
                 authType: authType,
                 workingDirectory: workDir,
-                userLabel: nil,
+                userLabel: prompt.label,
                 instanceNumber: instanceNum,
-                command: "claude"
+                useRawLabel: true,
+                command: "claude",
+                coordinator: self.channelManager.brokerBackedTerminalCoordinator
             )
         }
         channel.delegate = self
@@ -2192,7 +2357,11 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
                 role: nil,
                 workingDirectory: defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    workingDirectory: workDir?.path
+                )
             }
             channel.delegate = self
             channel.activate()
@@ -2228,10 +2397,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
         menu.addItem(NSMenuItem.separator())
 
-        let reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(contextMenuReconnect(_:)), keyEquivalent: "")
+        let recoveryAction = channel.recoveryAction
+        let reconnectItem = NSMenuItem(title: recoveryAction?.menuTitle ?? "Reconnect", action: #selector(contextMenuReconnect(_:)), keyEquivalent: "")
         reconnectItem.target = self
         reconnectItem.representedObject = channelId
-        reconnectItem.isEnabled = channel.state == .disconnected
+        reconnectItem.isEnabled = recoveryAction != nil
+        reconnectItem.toolTip = recoveryAction?.operatorGuidance
         menu.addItem(reconnectItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -2243,6 +2414,13 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         pinItem.target = self
         pinItem.representedObject = channelId
         menu.addItem(pinItem)
+
+        let isMuted = apiServer?.isNotificationMuted(for: channelId) ?? false
+        let muteTitle = isMuted ? "Unmute Notifications" : "Mute Notifications"
+        let muteItem = NSMenuItem(title: muteTitle, action: #selector(contextMenuToggleNotificationMute(_:)), keyEquivalent: "")
+        muteItem.target = self
+        muteItem.representedObject = channelId
+        menu.addItem(muteItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -2291,9 +2469,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
             case .shell:
                 createShellChannel()
             case .agentDirect:
-                createAgentChannel(authType: .oauth)
+                createAgentChannel(authType: .oauth, prompt: defaultAgentChannelPrompt())
             case .agentAPI:
-                createAgentChannel(authType: .apiKey(""))
+                createAgentAPIKeyChannel(prompt: defaultAgentChannelPrompt())
             case .bridge:
                 createBridgeChannel()
             case .groupChat:
@@ -2305,9 +2483,9 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID,
-              let channel = channelManager.channel(for: id) else { return }
-        channel.retry()
+        guard let id = sender.representedObject as? UUID else { return }
+        guard channelManager.recoverChannel(id: id) != nil else { return }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
@@ -2315,6 +2493,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
         channelManager.togglePin(id: id)
         refreshAllTabs()
         scheduleSaveState()
+    }
+
+    @objc private func contextMenuToggleNotificationMute(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        _ = apiServer?.toggleNotificationMuted(for: id)
+        refreshAllTabs()
     }
 
     @objc private func contextMenuCopyInfo(_ sender: NSMenuItem) {
@@ -2351,23 +2535,66 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
 
     // MARK: - SessionLauncherDelegate
 
+    static func unifiedLauncherAction(for label: String) -> UnifiedLauncherAction {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (OAuth)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+            return trimmed.caseInsensitiveCompare("Agent (OAuth)") == .orderedSame ? .agentOAuthDraft : .agentOAuth(prompt)
+        }
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (API Key)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+            return trimmed.caseInsensitiveCompare("Agent (API Key)") == .orderedSame ? .agentAPIKeyDraft : .agentAPIKey(prompt)
+        }
+
+        switch trimmed.lowercased() {
+        case "shell":
+            return .shell
+        case "agent oauth", "oauth agent":
+            return .agentOAuthDraft
+        case "agent api key", "api key agent":
+            return .agentAPIKeyDraft
+        case "group chat", "chat":
+            return .groupChat
+        case "bridge":
+            return .bridge
+        default:
+            return .sessionProfile(label)
+        }
+    }
+
+    private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction) {
+        switch action {
+        case .shell:
+            createShellChannel()
+        case .agentOAuthDraft:
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (OAuth)", directory: DefaultWorkingDirectory.preferredURL)
+        case .agentAPIKeyDraft:
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (API Key)", directory: DefaultWorkingDirectory.preferredURL)
+        case .agentOAuth(let prompt):
+            createAgentChannel(authType: .oauth, prompt: prompt)
+        case .agentAPIKey(let prompt):
+            createAgentAPIKeyChannel(prompt: prompt)
+        case .groupChat:
+            createGroupChatChannel()
+        case .bridge:
+            createBridgeChannel()
+        case .sessionProfile(let label):
+            guard let profileManager else { return }
+            let profile = profileManager.resolve(label: label)
+            launchSession(from: profile)
+        }
+    }
+
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile label: String) {
-        guard let profileManager else { return }
-        let profile = profileManager.resolve(label: label)
-        launchSession(from: profile)
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
-        guard let profileManager else { return }
-        let profile = profileManager.resolve(label: name)
-        launchSession(from: profile)
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: name))
     }
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
         Task {
             if let profileManager {
-                let discoveryService = ProjectDiscoveryService(configService: configService)
-                _ = await discoveryService.refresh()
+                _ = await profileManager.refreshDiscoveredSessions()
                 refreshLauncher()
             }
         }
@@ -2428,6 +2655,7 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     // MARK: - ChannelControllerDelegate
 
     func channelDidReceiveOutput(_ channel: any ChannelController) {
+        reactiveSnapshot.recordOutputEvent()
         if channel.channelId != self.activeChannelId {
             channel.hasUnread = true
             // Tabs stay in place — no reordering on output
@@ -2439,6 +2667,12 @@ class MainWindowController: NSObject, NSWindowDelegate, NSSplitViewDelegate,
     }
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
+        if channel.channelId == activeChannelId {
+            publishActiveChannelStateToReactiveSnapshot(channel)
+            applyInputPanelChrome()
+            tabBar.skinContext = skinContext
+            splitPaneManager.skinContext = skinContext
+        }
         scheduleRefreshAllTabs()
         scheduleSaveState()
     }

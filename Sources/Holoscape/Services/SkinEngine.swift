@@ -545,27 +545,38 @@ class SkinEngine {
     }
 
     /// Walk every surface in the manifest (top-level fill plus every
-    /// state-variant fill), extract `.image` paths, validate each, and
-    /// load the PNG via `NSImage(contentsOfFile:)`. Returns a map keyed
-    /// by the manifest's relative path so callers can round-trip from a
-    /// descriptor back to the loaded image without re-resolving URLs.
+    /// state-variant fill) and every chrome sprite-animation sheet,
+    /// extract image paths, validate each, and load the PNG via
+    /// `NSImage(contentsOfFile:)`. Returns a map keyed by the manifest's
+    /// relative path so callers can round-trip from a descriptor back to
+    /// the loaded image without re-resolving URLs.
     ///
     /// Files that parse-validate but fail to decode are logged and
     /// skipped so one bad asset doesn't wipe out the whole skin. A path
     /// that fails `validateAssetPath` is a hard error and propagates.
     func loadImages(from skinDir: URL, manifest: SkinDefinition) throws -> [String: NSImage] {
-        guard let surfaces = manifest.surfaces else { return [:] }
-
         var paths: Set<String> = []
-        for (_, surface) in surfaces {
-            if let fill = surface.fill, case .image(let path, _, _) = fill {
-                paths.insert(path)
-            }
-            if let states = surface.states {
-                for state in states {
-                    if let fill = state.fill, case .image(let path, _, _) = fill {
-                        paths.insert(path)
+
+        if let surfaces = manifest.surfaces {
+            for (_, surface) in surfaces {
+                if let fill = surface.fill, case .image(let path, _, _) = fill {
+                    paths.insert(path)
+                }
+                if let states = surface.states {
+                    for state in states {
+                        if let fill = state.fill, case .image(let path, _, _) = fill {
+                            paths.insert(path)
+                        }
                     }
+                }
+            }
+        }
+
+        if let animations = manifest.chrome?.animations {
+            for animation in animations {
+                if animation.kind == .spriteAnim,
+                   let sheet = animation.params.spriteAnim?.sheet {
+                    paths.insert(sheet)
                 }
             }
         }

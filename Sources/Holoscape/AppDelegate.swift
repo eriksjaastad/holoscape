@@ -7,8 +7,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
-    private var channelManagerRef: ChannelManager?
+    var channelManagerRef: ChannelManager?
     private var settingsWindowController: AppearanceSettingsWindowController?
+    private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var apiServer: HoloscapeAPIServer?
 
     private var isUITesting: Bool {
@@ -37,13 +38,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let profileManager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
             windowController?.setProfileManager(profileManager)
 
-            // Set up notifications (deferred to avoid TCC prompt on startup)
+            // Set up notifications without triggering a macOS TCC prompt on
+            // first launch. Authorization is requested lazily when the first
+            // eligible background notification would actually be delivered.
             notificationService = NotificationService(configService: configService)
             notificationService?.channelSwitchDelegate = windowController
             windowController?.setNotificationService(notificationService!)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.notificationService?.requestAuthorization()
-            }
         }
 
         // Start API server for MCP integration
@@ -77,26 +77,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             // "restored shell's terminal buffer appears empty" bug reproduced
             // in DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory.
             // This mirrors the default-channel fix in PR #57.
-            channelManager.restoreState { [weak self] metadata in
-                guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
-                controller.delegate = self.windowController
-                // agentAPI deliberately waits for a valid key before activating.
-                if metadata.type != .agentAPI {
-                    controller.activate()
-                }
-                return controller
-            }
+            restoreSavedChannelsAndRecoveredBrokerSessions()
         }
 
         // If no channels restored, create a default shell
         if channelManager.count == 0 {
+            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
             let defaultDir = DefaultWorkingDirectory.preferredURL
             let channel = channelManager.createChannel(
                 type: .shell,
-                role: nil,
-                workingDirectory: defaultDir
+                role: existingBrokerSession?.label,
+                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
             ) { id, _, _, instanceNum, workDir in
-                ShellChannelController(id: id, instanceNumber: instanceNum, workingDirectory: workDir?.path)
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    label: existingBrokerSession?.label,
+                    workingDirectory: workDir?.path,
+                    existingBrokerSessionID: existingBrokerSession?.id
+                )
             }
             channel.delegate = windowController
             channel.activate()
@@ -159,6 +158,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldSave {
             windowController?.channelManager.saveState()
+            windowController?.channelManager.detachAllChannelsForAppTermination()
         }
         windowController?.historyBuffer.stopPeriodicFlush()
         windowController?.historyBuffer.flush()
@@ -197,9 +197,94 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         windowController?.showBugReportDialog()
     }
 
+    @objc func showSetupDiagnostics() {
+        let controller = SetupDiagnosticsWindowController(
+            diagnosticsService: SetupDiagnosticsService(configService: configService)
+        )
+        controller.showWindow(nil)
+        controller.window?.center()
+        setupDiagnosticsWindowController = controller
+    }
+
     // MARK: - Private
 
-    private func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
+    /// Restore the saved tab list, then surface broker sessions that survived a
+    /// hard crash without a saved tab entry.
+    ///
+    /// Split out of `applicationDidFinishLaunching` so relaunch/restore behavior
+    /// (including which tabs are allowed to activate) is directly testable.
+    func restoreSavedChannelsAndRecoveredBrokerSessions() {
+        guard let channelManager = channelManagerRef else { return }
+        channelManager.restoreState { [weak self] metadata in
+            self?.restoreChannel(from: metadata)
+        }
+        restoreUnmatchedBrokerBackedSessionsAsTabs()
+    }
+
+    /// Restore one saved tab: construct its controller, wire the delegate, and
+    /// activate it.
+    ///
+    /// Two restore paths deliberately skip activation:
+    /// - `agentAPI` waits for a valid key before starting a process.
+    /// - a tab restored into an already-stale broker state has no live broker
+    ///   session to attach; activating it would spawn a replacement the user did
+    ///   not ask for and would discard the stale recovery guidance. It waits for
+    ///   an explicit recovery action (`ChannelManager.recoverChannel`).
+    @discardableResult
+    func restoreChannel(from metadata: ChannelMetadata) -> (any ChannelController)? {
+        guard let controller = createChannelFromMetadata(metadata) else { return nil }
+        controller.delegate = windowController
+        // The same activation ordering comment from applicationDidFinishLaunching
+        // applies here: delegate first, then activate, so state-change callbacks
+        // are not dropped on restore.
+        if Self.shouldAutoActivateRestoredChannel(metadata), controller.state != .stale {
+            controller.activate()
+        }
+        return controller
+    }
+
+    static func shouldAutoActivateRestoredChannel(_ metadata: ChannelMetadata) -> Bool {
+        guard metadata.type != .agentAPI else { return false }
+        guard metadata.staleBrokerSessionID == nil else { return false }
+
+        switch metadata.type {
+        case .shell, .agentDirect:
+            guard metadata.brokerSessionID == nil else { return true }
+            guard let workingDirectory = metadata.workingDirectory else { return true }
+            return !isNetworkVolumePath(workingDirectory)
+        case .agentAPI:
+            return false
+        case .ssh, .mcp, .groupChat, .bridge:
+            return true
+        }
+    }
+
+    private static func isNetworkVolumePath(_ path: String) -> Bool {
+        let plainPath: String
+        if let url = URL(string: path), url.scheme == "file" {
+            plainPath = url.path
+        } else {
+            plainPath = (path as NSString).expandingTildeInPath
+        }
+        return plainPath == "/Volumes" || plainPath.hasPrefix("/Volumes/")
+    }
+
+    @discardableResult
+    func restoreUnmatchedBrokerBackedSessionsAsTabs() -> Int {
+        // A hard crash can leave the broker registry with live sessions that
+        // never made it into the saved tab list. Surface those survivors as
+        // durable tabs instead of forcing the user to rediscover or leak the
+        // broker-owned process.
+        guard let channelManager = channelManagerRef else { return 0 }
+        return channelManager.restoreUnmatchedBrokerBackedSessions { [weak self] metadata in
+            guard let self, let controller = self.createChannelFromMetadata(metadata) else { return nil }
+            controller.delegate = self.windowController
+            controller.activate()
+            return controller
+        }
+    }
+
+    func createChannelFromMetadata(_ metadata: ChannelMetadata) -> (any ChannelController)? {
         // NOTE: This method only CONSTRUCTS controllers. Activation is the
         // caller's responsibility — the restore callback in
         // `applicationDidFinishLaunching` calls `activate()` after setting
@@ -208,31 +293,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         switch metadata.type {
         case .shell:
             let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
-            let controller = ShellChannelController(
+            let brokerSession = channelManagerRef?.brokerBackedShellSessionToRestore(
+                for: metadata.id,
+                brokerSessionID: metadata.brokerSessionID
+            )
+            let controller = ShellChannelController.brokerBacked(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
-                workingDirectory: restoredShell.workingDirectory
+                workingDirectory: restoredShell.workingDirectory,
+                existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
         case .agentDirect:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
-            let controller = AgentChannelController(
+            let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
+                for: metadata.id,
+                channelType: .agentDirect,
+                brokerSessionID: metadata.brokerSessionID
+            )
+            let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
                 authType: .oauth,
                 workingDirectory: dir,
                 userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber
+                instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
+                existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
         case .agentAPI:
             let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
-            let controller = AgentChannelController(
+            let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
+                for: metadata.id,
+                channelType: .agentAPI,
+                brokerSessionID: metadata.brokerSessionID
+            )
+            let authType: AgentAuthType
+            do {
+                authType = try AgentAPIKeyResolver().authType()
+            } catch {
+                NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
+                return nil
+            }
+            let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
-                authType: .apiKey(""),  // TODO: retrieve from secure storage
+                authType: authType,
                 workingDirectory: dir,
                 userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber
+                instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
+                existingBrokerSessionID: brokerSession?.id,
+                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.
@@ -258,7 +375,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
             let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
-            let controller = SSHChannelController(id: metadata.id, profile: profile, instanceNumber: metadata.instanceNumber)
+            let controller = SSHChannelController(
+                id: metadata.id,
+                profile: profile,
+                instanceNumber: metadata.instanceNumber,
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+            )
             return controller
         case .mcp:
             guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
@@ -373,6 +495,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         appMenu.addItem(settingsItem)
+        let diagnosticsItem = NSMenuItem(title: "Setup Diagnostics…", action: #selector(showSetupDiagnostics), keyEquivalent: "")
+        diagnosticsItem.target = self
+        appMenu.addItem(diagnosticsItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Holoscape", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -439,7 +564,8 @@ extension AppDelegate {
         sysctlbyname("hw.model", nil, &size, nil, 0)
         var model = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &model, &size, nil, 0)
-        return String(cString: model)
+        let bytes = model.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 

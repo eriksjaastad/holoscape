@@ -1,0 +1,3 @@
+setup:
+  project: holoscape
+  config: dev

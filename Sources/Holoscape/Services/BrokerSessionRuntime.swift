@@ -1,0 +1,78 @@
+import Foundation
+
+/// Runtime boundary for broker-owned terminal sessions.
+///
+/// `BrokerSessionCoordinator` owns durable metadata transitions; this protocol is
+/// the launch/attach/process side of the same contract. The current app still
+/// uses SwiftTerm's local-process path through channel controllers, so the
+/// default implementation records metadata only. The native out-of-process
+/// broker will replace that implementation without changing controller calls.
+protocol BrokerSessionRuntime {
+    func listSessions() throws -> [BrokerSessionID]
+    func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws
+    func detachSession(id: BrokerSessionID) throws
+    func attachSession(id: BrokerSessionID, channelID: UUID) throws
+    func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws
+    func markSessionErrored(id: BrokerSessionID) throws
+
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws
+    func isRunning(id: BrokerSessionID) throws -> Bool
+    func terminationStatus(id: BrokerSessionID) throws -> Int32?
+}
+
+enum ScrollbackReplaySource: Equatable, Sendable {
+    case liveBrokerMemory
+    case persistedDiskTail
+    case unknown
+}
+
+struct ScrollbackReplay: Equatable, Sendable {
+    let data: Data
+    let source: ScrollbackReplaySource
+    let maxBytes: Int
+}
+
+protocol ScrollbackReplayReportingRuntime {
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
+}
+
+protocol BrokerOutputAvailabilityMonitoringRuntime {
+    var supportsOutputAvailabilityMonitoring: Bool { get }
+
+    func setOutputAvailabilityHandler(
+        id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws
+}
+
+extension BrokerOutputAvailabilityMonitoringRuntime {
+    var supportsOutputAvailabilityMonitoring: Bool { true }
+}
+
+/// Compatibility runtime used until the native broker process is introduced.
+///
+/// It intentionally does not launch a hidden fallback broker. Controllers still
+/// start their existing SwiftTerm local process explicitly, while the
+/// coordinator exercises the same runtime call sites that the durable broker
+/// will implement.
+struct MetadataOnlyBrokerSessionRuntime: BrokerSessionRuntime {
+    enum RuntimeError: Error, Equatable {
+        case unsupportedPTYOperation
+    }
+
+    func listSessions() throws -> [BrokerSessionID] { [] }
+    func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {}
+    func detachSession(id: BrokerSessionID) throws {}
+    func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+    func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+    func markSessionErrored(id: BrokerSessionID) throws {}
+    func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws { throw RuntimeError.unsupportedPTYOperation }
+    func readAvailableOutput(id: BrokerSessionID) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
+    func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { throw RuntimeError.unsupportedPTYOperation }
+    func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws { throw RuntimeError.unsupportedPTYOperation }
+    func isRunning(id: BrokerSessionID) throws -> Bool { throw RuntimeError.unsupportedPTYOperation }
+    func terminationStatus(id: BrokerSessionID) throws -> Int32? { throw RuntimeError.unsupportedPTYOperation }
+}

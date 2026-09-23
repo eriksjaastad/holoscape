@@ -50,19 +50,14 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testSelectingSSHProfileCreatesSSHChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
+        let comboBox = app.comboBoxes["session-launcher-combo"]
+        XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
+        comboBox.typeText("ssh localhost")
+        comboBox.typeKey(.return, modifierFlags: [])
 
-        let sshButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'SSH'")).firstMatch
-        if sshButton.exists {
-            sshButton.click()
-            let entry = sidebarEntry("SSH")
-            XCTAssertTrue(entry.waitForExistence(timeout: 3), "SSH channel should appear in sidebar after selection")
-            XCTAssertTrue(entry.isHittable, "SSH sidebar entry should be hittable")
-        } else {
-            dialog.buttons["Cancel"].click()
-            throw XCTSkip("No SSH profile available in channel picker")
-        }
+        let entry = sidebarEntry("localhost")
+        XCTAssertTrue(entry.waitForExistence(timeout: 3), "SSH channel should appear in sidebar after launcher selection")
+        XCTAssertTrue(entry.isHittable, "SSH sidebar entry should be hittable")
     }
 
     func testSelectingAgentProfileCreatesAgentChannel() throws {
@@ -76,19 +71,9 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testSelectingMCPProfileCreatesMCPChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        let dialog = app.dialogs.firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 2))
-
-        let mcpButton = dialog.buttons.matching(NSPredicate(format: "title CONTAINS[c] 'MCP'")).firstMatch
-        if mcpButton.exists {
-            mcpButton.click()
-            let entry = sidebarEntry("MCP")
-            XCTAssertTrue(entry.waitForExistence(timeout: 3), "MCP channel should appear in sidebar after selection")
-            XCTAssertTrue(entry.isHittable, "MCP sidebar entry should be hittable")
-        } else {
-            dialog.buttons["Cancel"].click()
-            throw XCTSkip("No MCP option available in channel picker")
-        }
+        XCTAssertTrue(app.comboBoxes["session-launcher-combo"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "MCP should no longer be offered through a separate New Channel picker")
+        throw XCTSkip("MCP has no unified launcher profile unless a saved session is configured")
     }
 
     func testSelectingGroupChatProfileCreatesGroupChatChannel() throws {

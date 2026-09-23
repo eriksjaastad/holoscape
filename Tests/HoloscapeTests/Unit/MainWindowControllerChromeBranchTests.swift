@@ -21,6 +21,66 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
 
     // MARK: - Controller transitions
 
+    func testSwitchToChannelPublishesDurableActiveStateToSharedReactiveSnapshot() throws {
+        let controller = try makeController()
+        let channel = controller.channelManager.createChannel(
+            type: .agentDirect,
+            role: "Claude",
+            workingDirectory: nil
+        ) { id, type, label, _, _ in
+            let mock = MockChannelController(id: id, type: type, label: label, state: .active)
+            mock.hasUnread = true
+            mock.persistentStateOverride = PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+            return mock
+        }
+
+        controller.switchToChannel(channel.channelId)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelIsActive"), 1)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelUnread"), 0,
+                       "Switching to a channel clears unread before publishing skin state")
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "agentState"), 2)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 1)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "notificationKind"), 2)
+    }
+
+    func testActiveChannelStateChangeUpdatesSharedReactiveSnapshot() throws {
+        let controller = try makeController()
+        let channel = controller.channelManager.createChannel(
+            type: .shell,
+            role: "Shell",
+            workingDirectory: nil
+        ) { id, type, label, _, _ in
+            MockChannelController(id: id, type: type, label: label, state: .active)
+        }
+
+        controller.switchToChannel(channel.channelId)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 0)
+
+        let mock = try XCTUnwrap(channel as? MockChannelController)
+        mock.persistentStateOverride = PersistentChannelState(
+            kind: .stale,
+            source: .brokerRegistry,
+            recoveryAction: .retryBrokerHost
+        )
+        controller.channelStateDidChange(mock, to: .stale)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "agentState"), 3)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "channelConnectionState"), 3)
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "notificationKind"), 3)
+    }
+
+    func testChannelOutputPublishesGlobalOutputEventForSkinTimers() throws {
+        let controller = try makeController()
+        let channel = MockChannelController(state: .active)
+        let before = controller.reactiveSnapshot.intValue(forMatchKey: "outputEventCount")
+
+        controller.channelDidReceiveOutput(channel)
+
+        XCTAssertEqual(controller.reactiveSnapshot.intValue(forMatchKey: "outputEventCount"), (before ?? 0) &+ 1)
+        XCTAssertGreaterThan(controller.reactiveSnapshot.timestamp(named: "iTimeLastOutput") ?? 0, 0)
+    }
+
     func testPersistedV4SkinLaunchAttachesStableHostInsideInteriorView() throws {
         let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
         drainMainQueue()
@@ -61,6 +121,8 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
                         "Titled reconstruction must restore standard traffic lights")
         XCTAssertNil(controller.chromeWindowControlButton(.zoomButton),
                      "Detached chrome controls must be removed after chrome teardown")
+        XCTAssertFalse(controller.chromeAnimationClock._testIsRunning,
+                       "Leaving chrome mode must stop the v4 animation clock")
     }
 
     func testCoreLayoutTreeSurvivesChromeReconstruction() throws {
@@ -302,6 +364,41 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertGreaterThan(overlay.frame.width, 0)
         XCTAssertGreaterThan(overlay.frame.height, 0)
         XCTAssertTrue(controller.window.contentView?.subviews.contains(overlay) ?? false)
+    }
+
+    func testChromeBranchInstallsValidatedAnimationLayers() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        let host = try XCTUnwrap(controller.currentChromeHostView)
+        XCTAssertEqual(host.renderers.map(\.id).sorted(), [
+            "bottom-glow",
+            "lcd-marquee",
+            "porthole-sparks",
+            "status-leds",
+        ])
+    }
+
+    func testDensityAndReduceMotionHooksForwardToChromeHost() throws {
+        let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
+        drainMainQueue()
+
+        let host = try XCTUnwrap(controller.currentChromeHostView)
+        XCTAssertFalse(host.renderers.isEmpty)
+
+        controller.updateDensityModeOnChrome(.off)
+        XCTAssertTrue(host.renderers.isEmpty)
+        XCTAssertFalse(controller.chromeAnimationClock._testIsRunning)
+
+        controller.updateDensityModeOnChrome(.full)
+        XCTAssertFalse(host.renderers.isEmpty)
+        XCTAssertTrue(controller.chromeAnimationClock._testIsRunning)
+
+        controller.updateDensityModeOnChrome(.minimal)
+        XCTAssertFalse(host.renderers.isEmpty)
+        XCTAssertTrue(controller.chromeAnimationClock._testIsPaused)
+
+        controller.handleReduceMotionChange()
     }
 
     func testTearDownCAMaskClearsMaskAndSampler() {

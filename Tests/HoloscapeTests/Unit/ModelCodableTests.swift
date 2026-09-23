@@ -52,6 +52,36 @@ final class ModelCodableTests: XCTestCase {
         XCTAssertNil(decoded.workingDirectory)
     }
 
+    func testChannelMetadataRoundTripsStaleBrokerIdentity() throws {
+        let original = ChannelMetadata(
+            id: UUID(),
+            type: .shell,
+            role: "holoscape",
+            workingDirectory: "/tmp/stale-identity",
+            staleBrokerSessionID: BrokerSessionID(rawValue: "stale-identity-session")
+        )
+
+        let data = try encoder.encode(original)
+        let decoded = try decoder.decode(ChannelMetadata.self, from: data)
+
+        XCTAssertEqual(original, decoded)
+        XCTAssertNil(decoded.brokerSessionID)
+        XCTAssertEqual(decoded.staleBrokerSessionID, BrokerSessionID(rawValue: "stale-identity-session"))
+    }
+
+    func testChannelMetadataDecodesPreStaleIdentityConfig() throws {
+        // Configs written before the stale-broker identity existed must keep
+        // decoding: the key is optional and absent, not null.
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000002","type":"shell","role":"Shell","brokerSessionID":"legacy-broker-session"}
+        """.data(using: .utf8)!
+
+        let decoded = try decoder.decode(ChannelMetadata.self, from: json)
+
+        XCTAssertEqual(decoded.brokerSessionID, BrokerSessionID(rawValue: "legacy-broker-session"))
+        XCTAssertNil(decoded.staleBrokerSessionID)
+    }
+
     func testChannelMetadataAllChannelTypes() throws {
         let types: [ChannelType] = [.shell, .agentDirect, .agentAPI, .groupChat]
 

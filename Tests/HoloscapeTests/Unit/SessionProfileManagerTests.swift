@@ -37,6 +37,50 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertTrue(profiles.isEmpty)
     }
 
+    @MainActor
+    func testLocalProjectDiscoveryListsOnlyDirectories() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-discovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("auxesis", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("holoscape", isDirectory: true), withIntermediateDirectories: true)
+        try "not a project".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let discovery = ProjectDiscoveryService(configService: ConfigService())
+        let profiles = discovery.profilesFromLocalProjectRoot(
+            ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        )
+
+        XCTAssertEqual(profiles.map(\.label), ["auxesis", "holoscape"])
+        XCTAssertEqual(profiles.map(\.connection), [.local, .local])
+        XCTAssertEqual(profiles.map(\.command), ["/bin/zsh", "/bin/zsh"])
+        XCTAssertEqual(profiles[0].directory, root.appendingPathComponent("auxesis", isDirectory: true).standardizedFileURL.path)
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsPopulatesLauncherProjectCache() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("holoscape", isDirectory: true), withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+        _ = await manager.refreshDiscoveredSessions()
+
+        XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
+    }
+
     // MARK: - Resolve
 
     @MainActor
@@ -71,6 +115,42 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(resolved.connection, .local)
         XCTAssertEqual(resolved.command, "claude")
         XCTAssertEqual(resolved.directory, DefaultWorkingDirectory.preferredPath)
+    }
+
+    @MainActor
+    func testBuiltInProfilesExposeAllNewChannelTypesInLauncher() {
+        let labels = SessionProfileManager.builtInProfiles.map(\.label)
+
+        XCTAssertTrue(labels.contains("Shell"))
+        XCTAssertTrue(labels.contains("Agent (OAuth)"))
+        XCTAssertTrue(labels.contains("Agent (API Key)"))
+        XCTAssertTrue(labels.contains("Group Chat"))
+        XCTAssertTrue(labels.contains("Bridge"))
+    }
+
+    @MainActor
+    func testUnifiedLauncherMapsNewChannelItemsToDirectActions() {
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Shell"), .shell)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (OAuth)"), .agentOAuthDraft)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Agent (API Key)"), .agentAPIKeyDraft)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Group Chat"), .groupChat)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "Bridge"), .bridge)
+        XCTAssertEqual(MainWindowController.unifiedLauncherAction(for: "holoscape"), .sessionProfile("holoscape"))
+    }
+
+    @MainActor
+    func testUnifiedLauncherMapsInlineAgentFieldsToCreateAction() {
+        let action = MainWindowController.unifiedLauncherAction(
+            for: "Agent (OAuth) /Users/erik/projects/holoscape as Holoscape Agent"
+        )
+
+        XCTAssertEqual(
+            action,
+            .agentOAuth(.init(
+                workingDirectory: URL(fileURLWithPath: "/Users/erik/projects/holoscape"),
+                label: "Holoscape Agent"
+            ))
+        )
     }
 
     @MainActor

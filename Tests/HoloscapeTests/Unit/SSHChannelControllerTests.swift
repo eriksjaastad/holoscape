@@ -6,28 +6,92 @@ import AppKit
 class MockTerminalProcess: TerminalProcess {
     var startProcessCalled = false
     var lastArgs: [String] = []
+    var lastExecutable: String?
+    var lastExecName: String?
+    var lastCurrentDirectory: String?
     var lastEnvironment: [String] = []
     var sentBytes: [[UInt8]] = []
     var terminalContentView: NSView = NSView()
+    var outputHandler: (() -> Void)?
+    var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
+    var hostCurrentDirectoryHandler: ((String?) -> Void)?
+    var lines: [String] = []
+    var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
+    var brokerOwnedSessionID: BrokerSessionID?
+    var staleBrokerSessionID: BrokerSessionID?
+    var sessionFailure: TerminalSessionFailure?
+    var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
+    var terminationHandler: ((Int32?) -> Void)?
+    var startFailureDescription: String?
+    var startFailureKind: TerminalStartFailureKind?
+    var resizeToCurrentGridCallCount = 0
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true
+        lastExecutable = executable
         lastArgs = args
         lastEnvironment = environment ?? []
+        lastExecName = execName
+        lastCurrentDirectory = currentDirectory
     }
 
     func send(_ bytes: [UInt8]) {
         sentBytes.append(bytes)
+    }
+
+    func setOutputHandler(_ handler: (() -> Void)?) {
+        outputHandler = handler
+    }
+
+    func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
+        sessionFailureHandler = handler
+    }
+
+    func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {
+        terminationHandler = handler
+    }
+
+    /// Deliver a process termination the way a real terminal process does, so
+    /// controller exit bookkeeping runs.
+    func reportTermination(exitCode: Int32?) {
+        terminationHandler?(exitCode)
+    }
+
+    /// Drive the mid-session failure boundary the way the broker-backed terminal
+    /// does when the host disappears under a live tab.
+    func reportSessionFailure(kind: TerminalStartFailureKind, description: String = "transportFailed(socketTimedOut)") {
+        let failure = TerminalSessionFailure(kind: kind, description: description)
+        sessionFailure = failure
+        sessionFailureHandler?(failure)
+    }
+
+    func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
+        userInputHandler = handler
+    }
+
+    func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {
+        hostCurrentDirectoryHandler = handler
+    }
+
+    func lastLines(_ count: Int) -> [String] {
+        Array(lines.suffix(count))
+    }
+
+    func resizeToCurrentGrid() {
+        resizeToCurrentGridCallCount += 1
     }
 }
 
 @MainActor
 class MockChannelDelegate: ChannelControllerDelegate {
     var stateChanges: [ChannelState] = []
+    var outputCount = 0
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
         stateChanges.append(state)
     }
-    func channelDidReceiveOutput(_ channel: any ChannelController) {}
+    func channelDidReceiveOutput(_ channel: any ChannelController) {
+        outputCount += 1
+    }
 }
 
 final class SSHChannelControllerTests: XCTestCase {
@@ -46,6 +110,18 @@ final class SSHChannelControllerTests: XCTestCase {
         let profile = SessionProfile(label: "mini-claude", connection: .ssh, command: "claude", directory: "~", host: "mac-mini.local", user: "erik")
         let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: 2)
         XCTAssertEqual(controller.displayLabel, "mini-claude 2")
+    }
+
+    @MainActor
+    func testSSHSizeChangedForwardsResizeThroughTerminalProcessSeam() async {
+        let terminal = MockTerminalProcess()
+        let profile = SessionProfile(label: "mini", connection: .ssh, command: "zsh", directory: "~", host: "mac-mini.local", user: "erik")
+        let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: terminal)
+
+        controller.sizeChanged(source: HoloscapeTerminalView(frame: .zero), newCols: 132, newRows: 43)
+        await Task.yield()
+
+        XCTAssertEqual(terminal.resizeToCurrentGridCallCount, 1)
     }
 
     @MainActor
@@ -374,6 +450,129 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertNotNil(c.activatedAt, "activatedAt should be set after successful activate")
     }
 
+    @MainActor func testSSHActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SSHChannelControllerTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(registry: registry, now: { Date(timeIntervalSince1970: 500) })
+        let terminal = MockTerminalProcess()
+        terminal.currentGridSize = TerminalGridSize(columns: 119, rows: 41)
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000918")!
+        let profile = SessionProfile(
+            label: "macbook-agent",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/projects/holoscape-agent",
+            host: "macbook-pro",
+            user: "erik"
+        )
+        let controller = SSHChannelController(
+            id: channelID,
+            profile: profile,
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: coordinator
+        )
+
+        controller.activate()
+
+        let running = try registry.load().sshSingle()
+        XCTAssertEqual(running.id, controller.brokerSessionID)
+        XCTAssertEqual(running.channelType, .ssh)
+        XCTAssertEqual(running.label, "macbook-agent")
+        XCTAssertEqual(running.command, "/usr/bin/ssh")
+        XCTAssertEqual(running.arguments.first, "-t")
+        XCTAssertEqual(running.arguments[1], "erik@macbook-pro")
+        XCTAssertTrue(running.arguments[2].contains("cd \"$HOME\"/'projects/holoscape-agent'"))
+        XCTAssertEqual(running.workingDirectory, "~/projects/holoscape-agent")
+        XCTAssertEqual(running.environmentProfile, .ssh)
+        XCTAssertEqual(running.lifecycle, .running)
+        XCTAssertEqual(running.lastAttachedChannelID, channelID)
+
+        controller.deactivate()
+
+        let detached = try registry.load().sshSingle()
+        XCTAssertEqual(detached.id, running.id)
+        XCTAssertEqual(detached.lifecycle, .detached)
+        XCTAssertNil(detached.lastAttachedChannelID)
+    }
+
+    // MARK: - #7375 coordinator broker-record failures
+
+    private static func macbookProfile() -> SessionProfile {
+        SessionProfile(
+            label: "macbook-agent",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/projects/holoscape-agent",
+            host: "macbook-pro",
+            user: "erik"
+        )
+    }
+
+    /// #7375 — an SSH tab whose broker host disappears must not trap while
+    /// recording detach metadata, and the durable record must stay reattachable.
+    @MainActor func testSSHDeactivateWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = SSHChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000741")!,
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.deactivate()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.recoveryAction, .reconnect)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed detach must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID], "The detach attempt must still reach the coordinator")
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded detach must leave the durable record reattachable for the next launch"
+        )
+    }
+
+    /// The process-exit path is the other place SSH tabs record broker metadata,
+    /// and it also runs from a delegate callback rather than a user action.
+    @MainActor func testSSHProcessTerminationWithBrokerHostOutageKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = MockTerminalProcess()
+        let controller = SSHChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000742")!,
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: terminal,
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        controller.handleProcessTermination(exitCode: 7)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed exit must keep the handle for reattach")
+        XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .running,
+            "An unrecorded exit must not fabricate an exited lifecycle"
+        )
+    }
+
     @MainActor func testDelegateNotifiedThroughFullLifecycle() {
         let mock = MockTerminalProcess()
         let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
@@ -383,5 +582,12 @@ final class SSHChannelControllerTests: XCTestCase {
         c.activate()
         c.deactivate()
         XCTAssertEqual(delegate.stateChanges, [.connecting, .active, .disconnected])
+    }
+}
+
+private extension Array {
+    func sshSingle(file: StaticString = #filePath, line: UInt = #line) throws -> Element {
+        XCTAssertEqual(count, 1, file: file, line: line)
+        return self[0]
     }
 }

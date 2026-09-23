@@ -14,7 +14,10 @@ class SessionProfileManager {
     /// Built-in profiles always available.
     static let builtInProfiles: [SessionProfile] = [
         SessionProfile(label: "Shell", connection: .local, command: "/bin/zsh", directory: DefaultWorkingDirectory.preferredPath),
+        SessionProfile(label: "Agent (OAuth)", connection: .local, command: "claude", directory: DefaultWorkingDirectory.preferredPath),
+        SessionProfile(label: "Agent (API Key)", connection: .local, command: "claude", directory: DefaultWorkingDirectory.preferredPath),
         SessionProfile(label: "Claude", connection: .local, command: "claude", directory: DefaultWorkingDirectory.preferredPath),
+        SessionProfile(label: "Group Chat", connection: .agentChat, command: "", directory: ""),
         SessionProfile(label: "Bridge", connection: .bridge, command: "", directory: ""),
     ]
 
@@ -25,6 +28,10 @@ class SessionProfileManager {
         let discovered = discoveryService.cached()
         let recent = config.recentSessions ?? []
         return (preconfigured, discovered, recent)
+    }
+
+    func refreshDiscoveredSessions() async -> [SessionProfile] {
+        await discoveryService.refresh()
     }
 
     /// Resolve a label to a SessionProfile.

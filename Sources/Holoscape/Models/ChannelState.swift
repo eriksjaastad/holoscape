@@ -4,4 +4,5 @@ enum ChannelState: String, Codable, Sendable {
     case active
     case disconnected
     case connecting
+    case stale
 }

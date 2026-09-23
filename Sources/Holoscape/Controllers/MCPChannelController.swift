@@ -16,6 +16,7 @@ class MCPChannelController: NSObject, ChannelController {
     private let instanceNumber: Int?
 
     private(set) var activatedAt: Date?
+    private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
         if let num = instanceNumber {
@@ -64,7 +65,9 @@ class MCPChannelController: NSObject, ChannelController {
             do {
                 try await self.mcpClient.initialize()
                 self.state = .active
-                self.activatedAt = Date()
+                let now = Date()
+                self.activatedAt = now
+                self.recordUserInteraction(at: now)
                 self.delegate?.channelStateDidChange(self, to: .active)
                 self.appendMessage("[System] Connected to MCP endpoint.")
             } catch {
@@ -77,6 +80,7 @@ class MCPChannelController: NSObject, ChannelController {
 
     func sendInput(_ text: String) {
         guard !text.isEmpty, state == .active else { return }
+        recordUserInteraction()
         commandHistory.add(text)
 
         let timeString = formatTime(Date())
@@ -102,6 +106,10 @@ class MCPChannelController: NSObject, ChannelController {
     }
 
     func retry() { activate() }
+
+    func recordUserInteraction(at date: Date = Date()) {
+        lastInteractionAt = date
+    }
 
     func lastLines(_ count: Int) -> [String] {
         let content = textView.string

@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
@@ -41,5 +42,23 @@ final class GroupChatV2Tests: XCTestCase {
         XCTAssertEqual(controller.apiURL, "https://chat.example.com")  // trailing slash stripped
         XCTAssertEqual(controller.apiKey, "my-key")
         XCTAssertEqual(controller.apiKeyEnv, "MY_KEY_ENV")
+    }
+
+    @MainActor
+    func testMessageStylingDistinguishesUserFromAgentTurns() {
+        let date = Date(timeIntervalSince1970: 0)
+        let user = GroupChatChannelController.attributedMessage(sender: "erik", body: "Open the log", date: date)
+        let agent = GroupChatChannelController.attributedMessage(sender: "claude", body: "Reading it now", date: date)
+
+        XCTAssertTrue(user.string.contains("YOU"))
+        XCTAssertTrue(agent.string.contains("CLAUDE"))
+
+        let userAccent = user.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        let agentAccent = agent.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        XCTAssertNotEqual(userAccent, agentAccent)
+
+        let userBackground = user.attribute(.backgroundColor, at: 0, effectiveRange: nil) as? NSColor
+        let agentBackground = agent.attribute(.backgroundColor, at: 0, effectiveRange: nil) as? NSColor
+        XCTAssertNotEqual(userBackground, agentBackground)
     }
 }
