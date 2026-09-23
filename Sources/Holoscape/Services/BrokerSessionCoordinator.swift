@@ -237,7 +237,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool {
         _ = try record(for: id)
-        return runtime is BrokerOutputAvailabilityMonitoringRuntime
+        return (runtime as? BrokerOutputAvailabilityMonitoringRuntime)?.supportsOutputAvailabilityMonitoring == true
     }
 
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
