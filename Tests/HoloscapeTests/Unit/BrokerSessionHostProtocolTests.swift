@@ -637,6 +637,75 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(runtime.events.filter { $0.contains("unrelated-session") }.count, 2)
     }
 
+    func testUnixSocketServerBoundsConcurrentRequestHandlers() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        let firstID = BrokerSessionID(rawValue: "bounded-first-session")
+        let secondID = BrokerSessionID(rawValue: "bounded-second-session")
+        runtime.delayReadOutput(for: firstID, seconds: 0.25)
+        runtime.delayReadOutput(for: secondID, seconds: 0.25)
+        let host = BrokerSessionHost(runtime: runtime)
+        let socketPath = "/tmp/hs-bounded-handlers-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: host,
+            maxConcurrentHandlers: 1
+        )
+        let serverFinished = expectation(description: "bounded socket broker served both requests")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 2)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let firstStarted = runtime.expectReadStarted(for: firstID)
+        let secondStarted = runtime.expectReadStarted(for: secondID)
+        let firstFinished = expectation(description: "first bounded request finished")
+        let secondFinished = expectation(description: "second bounded request finished")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                _ = try client.readAvailableOutput(id: firstID)
+            } catch {
+                serverError.set(error)
+            }
+            firstFinished.fulfill()
+        }
+        wait(for: [firstStarted], timeout: 1)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                _ = try client.readAvailableOutput(id: secondID)
+            } catch {
+                serverError.set(error)
+            }
+            secondFinished.fulfill()
+        }
+
+        Thread.sleep(forTimeInterval: 0.08)
+        XCTAssertFalse(
+            runtime.events.contains { $0.contains(secondID.rawValue) },
+            "The second request must not enter runtime handling while the single handler slot is occupied"
+        )
+
+        wait(for: [firstFinished], timeout: 1)
+        wait(for: [secondStarted, secondFinished, serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "readAvailableOutput bounded-first-session",
+            "readAvailableOutput bounded-second-session",
+        ])
+    }
+
     func testHostPreservesSameSessionOrderingAcrossConcurrentSocketRequests() throws {
         let runtime = DelayedBrokerSessionRuntime()
         let sessionID = BrokerSessionID(rawValue: "same-session-ordering")
