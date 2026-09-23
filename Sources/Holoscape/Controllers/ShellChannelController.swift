@@ -230,7 +230,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     // MARK: - LocalProcessTerminalViewDelegate
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
-        // Terminal resized — SwiftTerm handles this internally
+        Task { @MainActor [weak self] in
+            self?.terminal.resizeToCurrentGrid()
+        }
     }
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {

@@ -27,6 +27,11 @@ protocol TerminalProcess: AnyObject {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
     func detachBrokerSession()
+    /// Forward the terminal view's current grid size to the underlying process
+    /// owner. Direct SwiftTerm-backed terminals already resize their child PTY
+    /// internally; broker-backed terminals must explicitly resize the broker
+    /// session because SwiftTerm no longer owns the child process.
+    func resizeToCurrentGrid()
 
     var terminalContentView: NSView { get }
     var currentGridSize: TerminalGridSize { get }
@@ -62,6 +67,7 @@ extension TerminalProcess {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func detachBrokerSession() {}
+    func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
     var sessionFailure: TerminalSessionFailure? { nil }
     var staleBrokerSessionID: BrokerSessionID? { nil }

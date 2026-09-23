@@ -23,6 +23,7 @@ class MockTerminalProcess: TerminalProcess {
     var terminationHandler: ((Int32?) -> Void)?
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
+    var resizeToCurrentGridCallCount = 0
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true
@@ -70,6 +71,10 @@ class MockTerminalProcess: TerminalProcess {
     func lastLines(_ count: Int) -> [String] {
         Array(lines.suffix(count))
     }
+
+    func resizeToCurrentGrid() {
+        resizeToCurrentGridCallCount += 1
+    }
 }
 
 @MainActor
@@ -100,6 +105,18 @@ final class SSHChannelControllerTests: XCTestCase {
         let profile = SessionProfile(label: "mini-claude", connection: .ssh, command: "claude", directory: "~", host: "mac-mini.local", user: "erik")
         let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: 2)
         XCTAssertEqual(controller.displayLabel, "mini-claude 2")
+    }
+
+    @MainActor
+    func testSSHSizeChangedForwardsResizeThroughTerminalProcessSeam() async {
+        let terminal = MockTerminalProcess()
+        let profile = SessionProfile(label: "mini", connection: .ssh, command: "zsh", directory: "~", host: "mac-mini.local", user: "erik")
+        let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil, terminal: terminal)
+
+        controller.sizeChanged(source: HoloscapeTerminalView(frame: .zero), newCols: 132, newRows: 43)
+        await Task.yield()
+
+        XCTAssertEqual(terminal.resizeToCurrentGridCallCount, 1)
     }
 
     @MainActor
