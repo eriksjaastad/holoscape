@@ -2225,6 +2225,18 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         return AgentChannelPromptResult(workingDirectory: directory, label: label)
     }
 
+    private func createAgentAPIKeyChannel(prompt: AgentChannelPromptResult) {
+        do {
+            try createAgentChannel(authType: AgentAPIKeyResolver().authType(), prompt: prompt)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Agent API Key Not Configured"
+            alert.informativeText = "Holoscape did not start an API-key agent because no Anthropic API key is stored in Keychain service ‘\(AgentAPIKeyStore.defaultService)’ account ‘\(AgentAPIKeyStore.defaultAccount)’. OAuth agent channels still work."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
     private func createAgentChannel(authType: AgentAuthType, prompt: AgentChannelPromptResult) {
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
@@ -2459,7 +2471,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             case .agentDirect:
                 createAgentChannel(authType: .oauth, prompt: defaultAgentChannelPrompt())
             case .agentAPI:
-                createAgentChannel(authType: .apiKey(""), prompt: defaultAgentChannelPrompt())
+                createAgentAPIKeyChannel(prompt: defaultAgentChannelPrompt())
             case .bridge:
                 createBridgeChannel()
             case .groupChat:
@@ -2559,7 +2571,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         case .agentOAuth(let prompt):
             createAgentChannel(authType: .oauth, prompt: prompt)
         case .agentAPIKey(let prompt):
-            createAgentChannel(authType: .apiKey(""), prompt: prompt)
+            createAgentAPIKeyChannel(prompt: prompt)
         case .groupChat:
             createGroupChatChannel()
         case .bridge:
