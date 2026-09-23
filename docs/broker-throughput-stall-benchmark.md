@@ -4,7 +4,7 @@ Status: implementation note for card #7436.
 
 ## Purpose
 
-The #5935 threading audit found that broker-backed terminal input still crosses the broker synchronously from the main actor, and broker output drains through polling. Before changing broker threading, Holoscape needs a repeatable baseline that measures the specific risk: background output load plus foreground typing latency.
+The #5935 threading audit found that broker-backed terminal input and output needed executable latency coverage while Holoscape incrementally moves broker I/O off the main actor. Broker-backed input now queues through a per-terminal write lane, and output drains through a per-terminal background read lane before feeding SwiftTerm on the main actor. Before changing lower-level broker locking or delivery semantics, Holoscape needs a repeatable baseline that measures the remaining risk: background output load plus foreground typing latency.
 
 ## Harness
 
