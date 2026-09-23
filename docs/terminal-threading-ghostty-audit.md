@@ -56,12 +56,12 @@ This is asynchronous enough to avoid blocking the PTY producer most of the time,
 For broker-backed sessions:
 
 1. AppKit/SwiftTerm input reaches `HoloscapeTerminalView.send(...)` on the main actor.
-2. `BrokerBackedTerminalProcess` forwards bytes with `coordinator.sendInput(...)`.
-3. The app performs a synchronous Unix-socket request to the broker.
+2. `BrokerBackedTerminalProcess.send` enqueues bytes onto `BrokerInputWriteLane`, a per-terminal serial `DispatchQueue`.
+3. The queue performs `coordinator.sendInput(...)` and the Unix-socket request off the main actor.
 4. `NativePTYBrokerSessionRuntime.Session.writeInput` writes to the PTY master while holding the same per-session lock used for output-buffer mutation.
-5. `BrokerBackedTerminalProcess.send` immediately calls `pollOutputOnce()` after the write.
+5. On success, the lane schedules a main-actor `pollOutputOnce()` for prompt echo/output refresh; on failure, it reports through the same terminal session-failure boundary as polling and resize failures.
 
-Holoscape does not currently have a dedicated per-terminal write thread or queue. Writes are serialized by the broker request path and session lock, but the initiating call is synchronous from the main actor. A slow broker transport or blocked PTY write can stall UI input handling.
+This closes the largest typing-path risk identified by the first audit slice: slow broker transport or a blocked PTY write no longer holds AppKit input handling hostage. Holoscape still does not have Ghostty's dedicated per-terminal write thread, but it now has an ordered per-terminal write lane with explicit failure reporting and tests for non-blocking sends plus input ordering.
 
 ### Render path
 
@@ -87,11 +87,11 @@ This keeps state derivation simple, but it means agent-status sampling is downst
 | Concern | Ghostty target from audit input | Holoscape current state | Risk |
 |---|---|---|---|
 | PTY read | Dedicated read thread per terminal | FileHandle readability handler buffers bytes; app drains via main-actor timer | Medium: bursty output can lag behind UI/main-actor load |
-| PTY write | Dedicated write thread per terminal | Main-actor input calls synchronous broker request and PTY write | Medium/high: slow broker or PTY write can make typing feel sticky |
+| PTY write | Dedicated write thread per terminal | Main-actor input enqueues to a per-terminal serial write lane; broker/PTY write happens off-main | Lower: typing path is no longer synchronously blocked by broker transport, but PTY lock contention still needs measurement |
 | Render | Dedicated render thread per terminal | SwiftTerm/AppKit rendering fed on main actor; chrome/skin mostly main actor | Medium now, high once shader work is heavier |
 | Terminal state ownership | Terminal core owns parser/state boundaries | SwiftTerm owns buffer; Holoscape wraps lifecycle and feeds bytes | Acceptable short-term; limits snapshot control |
 | Agent/channel state | Needs thread-safe snapshots for renderer uniforms | Controller-derived main-actor state; no renderer snapshot API yet | Medium before skin state integration |
-| Session survival | Terminal process not owned by UI lifecycle | Broker seam exists; Unix-socket host can outlive one request, but server loop is single-connection-at-a-time | Good direction, but not a complete high-throughput terminal scheduler |
+| Session survival | Terminal process not owned by UI lifecycle | Broker seam exists; Unix-socket host can outlive one request; socket handlers are bounded-concurrent | Good direction, but not a complete high-throughput terminal scheduler |
 
 ## Findings
 
@@ -107,17 +107,17 @@ Do not revert to SwiftTerm-owned process lifecycle for convenience. Continue pus
 
 This is probably fine for ordinary shell usage, but it is weaker than Ghostty's per-terminal read/render pipeline under heavy output, many active tabs, or GPU skin load.
 
-### 3. Input writes are the biggest responsiveness risk
+### 3. Input writes now have a per-terminal async lane
 
-User input currently crosses the broker synchronously from the main actor. The Unix-socket client is one request per call, and `sendInput` can then trigger an immediate output poll. This is simple and testable, but it puts broker availability and write latency directly in the typing path.
+User input no longer crosses the broker synchronously from the main actor. `BrokerBackedTerminalProcess` enqueues input onto `BrokerInputWriteLane`, preserving per-session order while moving socket/PTY writes off AppKit's input path.
 
-Before Holoscape is used as the daily terminal for long agent sessions, input should move behind a per-session serial write queue or async actor boundary that preserves order without blocking AppKit input handling.
+This is the right incremental move toward Ghostty's dedicated write thread without rewriting SwiftTerm ownership. The remaining risk is lower-level contention: broker transport and `NativePTYBrokerSessionRuntime.Session` still serialize PTY writes with output-buffer mutation under the per-session lock.
 
-### 4. The broker host serializes all client requests today
+### 4. The broker host is bounded-concurrent at the connection boundary
 
-`BrokerSessionHostUnixSocketServer.run` accepts one connection, handles it fully, then accepts the next. That keeps correctness easy, but it means one slow operation can block read/write/status requests for every session.
+`BrokerSessionHostUnixSocketServer.run` now keeps accepting connections while dispatching handlers onto a bounded global queue. That prevents one slow request from blocking accept of unrelated broker requests as completely as the original single-request loop.
 
-This is not a per-terminal thread split. It is a single broker request loop protecting a runtime with locks.
+This is still not a per-terminal thread split. It is a concurrent request boundary protecting a runtime that still relies on global and per-session locks.
 
 ### 5. Per-session locking is conservative but coarse
 
@@ -135,10 +135,10 @@ The correct seam is a small immutable `ChannelRenderSnapshot` / `TerminalRenderS
 
 Do not try to clone Ghostty's thread model immediately. Holoscape is still using SwiftTerm for the terminal surface, and replacing that with a full per-terminal parser/render scheduler would be a large rewrite.
 
-Do harden toward Ghostty's shape in three incremental steps:
+Do harden toward Ghostty's shape in the remaining incremental steps:
 
-1. **Introduce per-session async lanes in the broker client path.** Input writes and output reads should be ordered per session without synchronous main-actor socket calls in the keystroke path.
-2. **Make the broker host concurrent at the connection boundary.** Accept connections continuously and handle each request on a bounded queue, while preserving per-session ordering for mutating operations.
+1. **Keep measuring broker-backed throughput under output pressure.** The executable baseline exists; scale it before making lower-level lock/runtime changes.
+2. **Reduce read-path dependence on main-actor polling.** Output accumulation is off-main, but draining/parsing/rendering still depends on a main-run-loop timer.
 3. **Define immutable render/state snapshots before shader-state coupling.** Skins and shader uniforms should read snapshots, not live controller or SwiftTerm internals.
 
 ## Acceptance impact for roadmap
@@ -150,7 +150,7 @@ Do harden toward Ghostty's shape in three incremental steps:
 
 ## Proposed follow-up cards
 
-1. **Add broker-backed terminal throughput/stall benchmarks.** Exercise many sessions producing output while typing into one active tab; capture main-thread stall budget and output latency.
-2. **Move broker input writes off the main actor.** Preserve per-session ordering and explicit failure reporting while avoiding synchronous socket work in the AppKit input path.
-3. **Add concurrent broker request handling with per-session ordering.** Keep the runtime safe, but prevent one slow session request from blocking unrelated sessions.
+1. **Scale broker-backed terminal throughput/stall benchmarks.** Exercise many sessions producing output while typing into one active tab; capture main-thread stall budget and output latency beyond the small unit-test baseline.
+2. **Move output draining away from main-actor polling.** Preserve SwiftTerm's main-actor surface mutation, but make broker output availability event/async-driven instead of timer-only.
+3. **Tighten per-session runtime locking if scaled benchmarks show contention.** Split output append/drain from PTY writes only with benchmark evidence.
 4. **Define terminal/channel render snapshots.** Freeze the state consumed by skins, shader uniforms, and tab truth so future render-thread work has a clean data boundary.
