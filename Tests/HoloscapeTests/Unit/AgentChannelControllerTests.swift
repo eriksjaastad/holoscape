@@ -236,6 +236,23 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.lastLines(2), ["beta", "gamma"])
     }
 
+    func testAgentSizeChangedForwardsResizeThroughTerminalProcessSeam() async {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: nil,
+            instanceNumber: nil,
+            terminal: terminal
+        )
+
+        controller.sizeChanged(source: HoloscapeTerminalView(frame: .zero), newCols: 132, newRows: 43)
+        await Task.yield()
+
+        XCTAssertEqual(terminal.resizeToCurrentGridCallCount, 1)
+    }
+
     func testAgentAdapterStateOverridesRuntimeStateForPersistence() {
         let controller = AgentChannelController(
             id: UUID(),

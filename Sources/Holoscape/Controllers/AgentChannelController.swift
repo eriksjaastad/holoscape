@@ -393,7 +393,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     // MARK: - LocalProcessTerminalViewDelegate
 
-    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        Task { @MainActor [weak self] in
+            self?.terminal.resizeToCurrentGrid()
+        }
+    }
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         Task { @MainActor [weak self] in

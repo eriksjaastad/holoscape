@@ -70,6 +70,16 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.lastLines(2), ["two", "three"])
     }
 
+    func testShellSizeChangedForwardsResizeThroughTerminalProcessSeam() async {
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(id: UUID(), instanceNumber: nil, terminal: terminal)
+
+        controller.sizeChanged(source: HoloscapeTerminalView(frame: .zero), newCols: 132, newRows: 43)
+        await Task.yield()
+
+        XCTAssertEqual(terminal.resizeToCurrentGridCallCount, 1)
+    }
+
     func testShellActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ShellChannelControllerTests-")
