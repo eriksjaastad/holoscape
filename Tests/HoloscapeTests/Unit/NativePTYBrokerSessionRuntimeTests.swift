@@ -201,8 +201,12 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertFalse(try runtime.isRunning(id: id))
     }
 
-    func testShellProfilePreservesAppleTerminalDirectoryUpdateCompatibility() throws {
-        let runtime = NativePTYBrokerSessionRuntime()
+    func testShellProfileSetsDeterministicTerminalEnvironmentFromSparseGUIEnvironment() throws {
+        let runtime = NativePTYBrokerSessionRuntime(processEnvironment: [
+            "HOME": NSHomeDirectory(),
+            "PATH": "/usr/bin:/bin",
+            "SHELL": "/bin/zsh"
+        ])
         let id = BrokerSessionID(rawValue: "shell-environment-native-pty-runtime-test")
         let request = BrokerSessionLaunchRequest(
             command: "/usr/bin/env",
@@ -216,7 +220,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         _ = try waitForTerminationStatus(from: runtime, id: id)
         let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("TERM=xterm-256color"), output)
+        XCTAssertTrue(output.contains("LANG=en_US.UTF-8"), output)
         XCTAssertTrue(output.contains("TERM_PROGRAM=Apple_Terminal"), output)
+    }
+
+    func testShellProfilePreservesExistingUTF8Locale() throws {
+        let runtime = NativePTYBrokerSessionRuntime(processEnvironment: [
+            "HOME": NSHomeDirectory(),
+            "PATH": "/usr/bin:/bin",
+            "SHELL": "/bin/zsh",
+            "LANG": "C.UTF-8"
+        ])
+        let id = BrokerSessionID(rawValue: "shell-locale-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("LANG=C.UTF-8"), output)
+        XCTAssertTrue(output.contains("TERM=xterm-256color"), output)
     }
 
     func testAgentOAuthProfileUsesCleanEnvironmentWithoutAPIKeyLeakage() throws {
