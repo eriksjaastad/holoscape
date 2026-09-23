@@ -137,12 +137,13 @@ Existing tests reviewed:
 
 **Next slice:** set explicit terminal identity for shell profiles while preserving OSC 7 compatibility.
 
-### 5. PTY controlling-terminal semantics are not directly proven
+### 5. PTY interactive smoke coverage is partially proven
 
 **Current behavior from code:**
 
 - `NativePTYBrokerSessionRuntime` uses `openpty`, wires the slave file handle to `Process.standardInput/Output/Error`, and launches the process.
-- Existing tests prove echo/output/resize works, but they do not prove commands see a fully interactive controlling TTY.
+- Runtime tests now prove broker-owned sessions are not plain pipes: `tty` reports a `/dev/tty*` device and does not report `not a tty`.
+- Runtime tests also prove `stty size` sees both the initial requested grid and a later broker resize.
 
 **Why iTerm users notice:** job control, signals, full-screen programs, password prompts, shells with `set -m`, and tools like `vim`, `less`, `ssh`, `sudo`, and agent CLIs depend on real terminal semantics beyond byte echo.
 
@@ -151,9 +152,9 @@ Existing tests reviewed:
 1. In Holoscape, run `tty`, `stty -a`, `vim`, `less`, `ssh`, and a Ctrl-C/Ctrl-Z job-control sequence.
 2. Compare behavior with iTerm.
 
-**Test target:** add PTY runtime tests for `/usr/bin/tty`, `stty size`, and signal/job-control behavior where stable under CI. At minimum, prove `tty` does not report `not a tty`.
+**Remaining test target:** add signal/job-control coverage only when it is deterministic under headless XCTest. The stable smoke layer now covers TTY identity and grid sizing.
 
-**Next slice:** add interactive PTY smoke tests before changing session runtime internals further.
+**Next slice:** keep signal/job-control and full-screen TUI behavior as a manual/app-hosted smoke target unless a stable unit harness emerges.
 
 ### 6. Scrollback recovery is capped at audit-only levels, not daily-driver levels
 
@@ -180,7 +181,7 @@ Existing tests reviewed:
 2. **Resize propagation** — add the missing channel/controller resize seam and regression tests so broker-backed shells behave like iTerm under window and split-pane changes.
 3. **Cwd truth seam** — wire OSC 7/host directory updates through broker-backed terminal processes; keep typed-input tracking only as fallback.
 4. **Shell environment baseline** — explicitly set `TERM`, `LANG`, and `TERM_PROGRAM` for shell sessions and test them under `NativePTYBrokerSessionRuntime`.
-5. **Interactive PTY smoke tests** — add tests for `tty`, `stty size`, and basic signal/job-control behavior where stable.
+5. **Interactive PTY smoke tests** — stable runtime coverage now proves `tty` reports a real `/dev/tty*` and `stty size` tracks initial plus resized broker grids; keep signal/job-control/full-screen TUI behavior for manual/app-hosted smoke unless a deterministic headless unit harness emerges.
 6. **Scrollback/history policy** — handle under #7171/#5884 after correctness slices, because storage/privacy policy is broader than #7166.
 
 ## Board outcome
