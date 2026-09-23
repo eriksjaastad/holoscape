@@ -42,12 +42,40 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertTrue(report.echoedInputTokens.contains("probe-000"), report.description)
         XCTAssertTrue(report.echoedInputTokens.contains("probe-023"), report.description)
     }
+
+    func testBrokerThroughputHarnessDrainsBurstyOutputFromEverySessionWhileInputStaysResponsive() throws {
+        let harness = BrokerThroughputStallHarness(
+            outputSessionCount: 6,
+            outputLinesPerSession: 140,
+            inputProbeCount: 18,
+            outputPayloadBytes: 512
+        )
+
+        let report = try harness.run()
+
+        XCTAssertEqual(report.outputSessionCount, 6)
+        XCTAssertEqual(report.inputProbeCount, 18)
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, 6 * 140 * 500, report.description)
+        XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
+        XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
+        XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
+        XCTAssertLessThan(report.duration, 7.0, report.description)
+        for sessionIndex in 0..<6 {
+            XCTAssertTrue(
+                report.outputCompletionTokens.contains(String(format: "session-%d-%04d", sessionIndex, 139)),
+                report.description
+            )
+        }
+        XCTAssertTrue(report.echoedInputTokens.contains("probe-000"), report.description)
+        XCTAssertTrue(report.echoedInputTokens.contains("probe-017"), report.description)
+    }
 }
 
 private struct BrokerThroughputStallHarness {
     let outputSessionCount: Int
     let outputLinesPerSession: Int
     let inputProbeCount: Int
+    var outputPayloadBytes = 0
 
     func run() throws -> BrokerThroughputStallReport {
         let runtime = NativePTYBrokerSessionRuntime()
@@ -87,6 +115,7 @@ private struct BrokerThroughputStallHarness {
         let firstProbeDueAt = Date()
 
         var outputBytesRead = 0
+        var outputTextBySession: [BrokerSessionID: String] = [:]
         var echoedInput = ""
         var echoedInputTokens = Set<String>()
         var maxInputEchoLatency: TimeInterval = 0
@@ -117,7 +146,11 @@ private struct BrokerThroughputStallHarness {
             }
 
             for id in sessionIDs where id != inputID {
-                outputBytesRead += try runtime.readAvailableOutput(id: id).count
+                let output = try runtime.readAvailableOutput(id: id)
+                outputBytesRead += output.count
+                if !output.isEmpty {
+                    outputTextBySession[id, default: ""] += String(decoding: output, as: UTF8.self)
+                }
             }
 
             if outputBytesRead >= expectedMinimumOutputBytes,
@@ -141,7 +174,10 @@ private struct BrokerThroughputStallHarness {
             maxInputEchoLatency: maxInputEchoLatency,
             maxRunLoopProbeGap: maxRunLoopProbeGap,
             duration: Date().timeIntervalSince(startedAt),
-            echoedInputTokens: Set(echoedInput.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+            echoedInputTokens: Set(echoedInput.split(whereSeparator: { $0.isWhitespace }).map(String.init)),
+            outputCompletionTokens: Set(outputTextBySession.values.flatMap { outputText in
+                outputText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            })
         )
     }
 
@@ -150,7 +186,8 @@ private struct BrokerThroughputStallHarness {
     }
 
     private func outputScript(sessionIndex: Int) -> String {
-        "i=0; while [ $i -lt \(outputLinesPerSession) ]; do printf 'session-\(sessionIndex)-%04d holoscape-throughput-baseline\\n' $i; i=$((i+1)); done; sleep 1"
+        let payload = String(repeating: "x", count: outputPayloadBytes)
+        return "i=0; while [ $i -lt \(outputLinesPerSession) ]; do printf 'session-\(sessionIndex)-%04d \(payload) holoscape-throughput-baseline\\n' $i; i=$((i+1)); done; sleep 1"
     }
 }
 
@@ -164,8 +201,9 @@ private struct BrokerThroughputStallReport: CustomStringConvertible {
     let maxRunLoopProbeGap: TimeInterval
     let duration: TimeInterval
     let echoedInputTokens: Set<String>
+    let outputCompletionTokens: Set<String>
 
     var description: String {
-        "BrokerThroughputStallReport(outputSessionCount: \(outputSessionCount), outputLinesPerSession: \(outputLinesPerSession), inputProbeCount: \(inputProbeCount), outputBytesRead: \(outputBytesRead), maxInputSendLatency: \(maxInputSendLatency), maxInputEchoLatency: \(maxInputEchoLatency), maxRunLoopProbeGap: \(maxRunLoopProbeGap), duration: \(duration), echoedInputTokens: \(echoedInputTokens.sorted()))"
+        "BrokerThroughputStallReport(outputSessionCount: \(outputSessionCount), outputLinesPerSession: \(outputLinesPerSession), inputProbeCount: \(inputProbeCount), outputBytesRead: \(outputBytesRead), maxInputSendLatency: \(maxInputSendLatency), maxInputEchoLatency: \(maxInputEchoLatency), maxRunLoopProbeGap: \(maxRunLoopProbeGap), duration: \(duration), echoedInputTokens: \(echoedInputTokens.sorted()), outputCompletionTokens: \(outputCompletionTokens.sorted()))"
     }
 }
