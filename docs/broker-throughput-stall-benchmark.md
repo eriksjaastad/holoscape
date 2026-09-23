@@ -26,12 +26,15 @@ The test records:
 - total harness duration;
 - echoed input tokens observed from the probe session.
 
-The baseline remains XCTest-sized and deterministic enough for normal unit-test runs. It now has two tiers:
+The baseline remains XCTest-sized and deterministic enough for normal unit-test runs. It now has three tiers:
 
 1. a small regression case that keeps the original measurement shape cheap;
-2. a scaled many-session case that exercises eight output-heavy broker sessions while active input is still being sent and echoed.
+2. a scaled many-session case that exercises eight output-heavy broker sessions while active input is still being sent and echoed;
+3. a bursty case that pushes larger per-line payloads through six sessions and verifies every session drains to its final completion marker.
 
-The scaled tier is not a final daily-driver stress test. It is the executable seed that future broker-threading cards can expand before changing lower-level runtime locking or transport behavior.
+The scaled and burst tiers are not final daily-driver stress tests. They are the executable seed that future broker-threading cards can expand before changing lower-level runtime locking or transport behavior.
+
+The harness run loop gates exit on per-session completion markers — the final `session-<i>-<last>` line from each output session — rather than a raw byte-count threshold, so the burst tier is not flake-prone under slow spawn or drain skew. The byte floor is derived from the emitted line shape (`outputPayloadBytes` plus the fixed header/footer overhead) instead of a hardcoded per-line constant.
 
 ## Run
 
@@ -44,7 +47,7 @@ Expected small baseline:
 - output sessions: 3;
 - output lines per session: 80;
 - input probes: 8;
-- output bytes: at least `3 * 80 * 20`;
+- output bytes: at least the payload-aware floor derived from the emitted line shape;
 - max synchronous input-send latency budget: `< 0.5s`;
 - max input echo latency budget: `< 1.0s`;
 - max run-loop probe gap budget: `< 0.35s`;
@@ -55,7 +58,20 @@ Expected scaled baseline:
 - output sessions: 8;
 - output lines per session: 220;
 - input probes: 24;
-- output bytes: at least `8 * 220 * 20`;
+- output bytes: at least the payload-aware floor derived from the emitted line shape;
+- max synchronous input-send latency budget: `< 0.5s`;
+- max input echo latency budget: `< 1.5s`;
+- max run-loop probe gap budget: `< 0.5s`;
+- total harness duration budget: `< 7s`.
+
+Expected burst baseline:
+
+- output sessions: 6;
+- output lines per session: 140;
+- input probes: 18;
+- payload per output line: 512 bytes;
+- output bytes: at least `6 * 140 * (512 + per-line overhead)` — derived from the emitted line shape, not a fixed constant;
+- per-session completion: every `session-<i>-0139` marker observed (explicit full drain);
 - max synchronous input-send latency budget: `< 0.5s`;
 - max input echo latency budget: `< 1.5s`;
 - max run-loop probe gap budget: `< 0.5s`;
