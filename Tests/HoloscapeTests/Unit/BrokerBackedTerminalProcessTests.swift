@@ -155,6 +155,46 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class SignaledOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+        private let lock = NSLock()
+        private var createdIDs: [BrokerSessionID] = []
+        private var output = Data()
+        private var handler: (@Sendable (BrokerSessionID) -> Void)?
+        private(set) var readCount = 0
+
+        func triggerOutput(_ text: String, for id: BrokerSessionID) {
+            let currentHandler: (@Sendable (BrokerSessionID) -> Void)?
+            lock.lock()
+            output.append(Data(text.utf8))
+            currentHandler = handler
+            lock.unlock()
+            currentHandler?(id)
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { lock.withLock { createdIDs } }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { lock.withLock { createdIDs.append(id) } }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            lock.withLock {
+                readCount += 1
+                let data = output
+                output.removeAll(keepingCapacity: true)
+                return data
+            }
+        }
+        func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
+            lock.withLock { self.handler = handler }
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     /// Models a broker host that accepts a session and then disappears: every
     /// follow-up operation on the live session reports transport failure until
     /// `isHostAvailable` is restored (the host coming back).
@@ -330,6 +370,32 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         wait(for: [outputHandled], timeout: 1)
 
         XCTAssertFalse(runtime.didReadOnMainThread, "Broker output reads should run on the output read lane, not the main actor")
+    }
+
+    func testOutputPumpWakesFromBrokerAvailabilitySignalInsteadOfFixedFastPolling() throws {
+        let runtime = SignaledOutputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008019")
+        defer {
+            fixture.terminal.detachBrokerSession()
+            fixture.cleanup()
+        }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var outputNotifications = 0
+        fixture.terminal.setOutputHandler { outputNotifications += 1 }
+
+        try waitUntil { runtime.readCount >= 1 }
+        let readsAfterInitialWake = runtime.readCount
+        Thread.sleep(forTimeInterval: 0.15)
+        XCTAssertEqual(
+            runtime.readCount,
+            readsAfterInitialWake,
+            "The output lane should stay idle without a fixed 20 ms polling timer"
+        )
+
+        runtime.triggerOutput("signaled-output\n", for: sessionID)
+
+        try waitUntil { outputNotifications == 1 }
+        XCTAssertGreaterThan(runtime.readCount, readsAfterInitialWake)
     }
 
     func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {

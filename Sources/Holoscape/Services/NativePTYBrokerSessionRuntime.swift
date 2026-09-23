@@ -7,7 +7,7 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -27,6 +27,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         var output = Data()
         var scrollback = Data()
         var terminationStatus: Int32?
+        var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
 
         init(id: BrokerSessionID, process: Process, masterHandle: FileHandle, scrollbackStore: DiskBackedScrollbackStore?) {
@@ -37,13 +38,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         }
 
         func appendOutput(_ data: Data) {
+            let handler: (@Sendable (BrokerSessionID) -> Void)?
             lock.lock()
             output.append(data)
             scrollback.append(data)
             if scrollback.count > maxScrollbackBytes {
                 scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
             }
+            handler = outputAvailabilityHandler
             lock.unlock()
+            handler?(id)
             do {
                 try scrollbackStore?.append(data, for: id)
             } catch {
@@ -84,6 +88,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             let status = terminationStatus
             lock.unlock()
             return status
+        }
+
+        func setOutputAvailabilityHandler(_ handler: (@Sendable (BrokerSessionID) -> Void)?) {
+            lock.lock()
+            outputAvailabilityHandler = handler
+            lock.unlock()
         }
     }
 
@@ -206,6 +216,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
         try session(for: id).readOutput()
+    }
+
+    func setOutputAvailabilityHandler(
+        id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws {
+        try session(for: id).setOutputAvailabilityHandler(handler)
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {

@@ -39,6 +39,13 @@ protocol ScrollbackReplayReportingRuntime {
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
 }
 
+protocol BrokerOutputAvailabilityMonitoringRuntime {
+    func setOutputAvailabilityHandler(
+        id: BrokerSessionID,
+        handler: (@Sendable (BrokerSessionID) -> Void)?
+    ) throws
+}
+
 /// Compatibility runtime used until the native broker process is introduced.
 ///
 /// It intentionally does not launch a hidden fallback broker. Controllers still
