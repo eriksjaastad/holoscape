@@ -459,6 +459,49 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertGreaterThan(outputNotifications, 0)
     }
 
+    func testHostCurrentDirectoryUpdatesFromWrappedTerminalViewReachHandler() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessDirectoryTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: NativePTYBrokerSessionRuntime(),
+            now: { Date(timeIntervalSince1970: 760) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008021")!,
+            channelType: .shell,
+            label: "broker-cwd",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        var observedDirectories: [String?] = []
+        terminal.setHostCurrentDirectoryHandler { observedDirectories.append($0) }
+        terminal.setOutputHandler {}
+
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "printf '\\033]7;file://localhost/tmp\\007'"],
+            environment: nil,
+            execName: "sh",
+            currentDirectory: "/tmp"
+        )
+        guard let brokerSessionID = terminal.brokerSessionID else {
+            return XCTFail("Broker-backed terminal did not expose a broker session id")
+        }
+        defer { _ = try? coordinator.markErrored(brokerSessionID) }
+        defer { terminal.setOutputHandler(nil) }
+
+        try waitUntil {
+            terminal.pollOutputOnce()
+            return observedDirectories.contains("file://localhost/tmp")
+        }
+    }
+
     func testProcessExitUpdatesBrokerRecordAndCallsTerminationHandler() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessExitTests-")

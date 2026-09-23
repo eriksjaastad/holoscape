@@ -24,6 +24,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
+    private var hostCurrentDirectoryHandler: ((String?) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
     private var outputTimer: Timer?
     private let inputWriteLane = BrokerInputWriteLane()
@@ -41,6 +42,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
     private(set) var lastScrollbackReplay: ScrollbackReplay?
+    private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
@@ -71,6 +73,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             self.userInputHandler?(data)
             self.send(Array(data))
         }
+        terminalView.processDelegate = terminalViewDelegate
     }
 
     func startProcess(
@@ -247,6 +250,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         userInputHandler = handler
     }
 
+    func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {
+        hostCurrentDirectoryHandler = handler
+    }
+
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {
         terminationHandler = handler
     }
@@ -298,6 +305,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } catch {
             reportSessionFailure(error)
         }
+    }
+
+    fileprivate func terminalViewDidResize() {
+        resizeToCurrentGrid()
+    }
+
+    fileprivate func terminalViewDidUpdateHostCurrentDirectory(_ directory: String?) {
+        hostCurrentDirectoryHandler?(directory)
     }
 
     private func startOutputPump() {
@@ -387,6 +402,34 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return .brokerSessionStale
         }
         return .failed
+    }
+}
+
+private final class BrokerBackedTerminalViewDelegate: NSObject, LocalProcessTerminalViewDelegate {
+    private weak var owner: BrokerBackedTerminalProcess?
+
+    init(owner: BrokerBackedTerminalProcess) {
+        self.owner = owner
+    }
+
+    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        Task { @MainActor [weak owner] in
+            owner?.terminalViewDidResize()
+        }
+    }
+
+    nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
+        // Broker-backed processes are owned by the broker runtime, not SwiftTerm's
+        // LocalProcessTerminalView. Termination is observed through the broker
+        // polling path so registry state stays authoritative.
+    }
+
+    nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
+
+    nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        Task { @MainActor [weak owner] in
+            owner?.terminalViewDidUpdateHostCurrentDirectory(directory)
+        }
     }
 }
 

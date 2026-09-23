@@ -125,6 +125,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setUserInputHandler { [weak self] data in
             self?.handleUserInput(data)
         }
+        self.terminal.setHostCurrentDirectoryHandler { [weak self] directory in
+            self?.handleHostCurrentDirectoryUpdate(directory)
+        }
         self.terminal.setSessionFailureHandler { [weak self] failure in
             self?.handleSessionFailure(failure)
         }
@@ -250,11 +253,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            if let nextDirectory = self.directoryTracker.applyHostDirectoryUpdate(directory) {
-                self.updateWorkingDirectory(nextDirectory)
-            }
+            self?.handleHostCurrentDirectoryUpdate(directory)
         }
+    }
+
+    private func handleHostCurrentDirectoryUpdate(_ directory: String?) {
+        guard let nextDirectory = directoryTracker.applyHostDirectoryUpdate(directory) else { return }
+        updateWorkingDirectory(nextDirectory)
     }
 
     private func handleUserInput(_ data: ArraySlice<UInt8>) {
