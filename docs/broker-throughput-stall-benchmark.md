@@ -10,7 +10,7 @@ The #5935 threading audit found that broker-backed terminal input and output nee
 
 `BrokerThroughputStallBenchmarkTests` creates:
 
-- one `/bin/cat` session used as the input probe;
+- one `/bin/cat` session used as the active input probe;
 - multiple `/bin/sh` output sessions that print deterministic line bursts;
 - repeated input sends into the active probe while output sessions are producing data.
 
@@ -21,10 +21,17 @@ The test records:
 - bytes drained from output sessions;
 - number of input probes;
 - max synchronous input-send latency;
+- max input echo latency;
+- max run-loop probe gap while the harness is draining output;
 - total harness duration;
 - echoed input tokens observed from the probe session.
 
-The default XCTest-sized baseline is intentionally small and stable enough to run with normal unit tests. It is not a final daily-driver stress test; it is the executable seed that future broker-threading cards can scale up without inventing a new measurement shape.
+The baseline remains XCTest-sized and deterministic enough for normal unit-test runs. It now has two tiers:
+
+1. a small regression case that keeps the original measurement shape cheap;
+2. a scaled many-session case that exercises eight output-heavy broker sessions while active input is still being sent and echoed.
+
+The scaled tier is not a final daily-driver stress test. It is the executable seed that future broker-threading cards can expand before changing lower-level runtime locking or transport behavior.
 
 ## Run
 
@@ -32,13 +39,26 @@ The default XCTest-sized baseline is intentionally small and stable enough to ru
 swift test --filter BrokerThroughputStallBenchmarkTests
 ```
 
-Expected local baseline from the initial implementation:
+Expected small baseline:
 
 - output sessions: 3;
 - output lines per session: 80;
 - input probes: 8;
 - output bytes: at least `3 * 80 * 20`;
 - max synchronous input-send latency budget: `< 0.5s`;
+- max input echo latency budget: `< 1.0s`;
+- max run-loop probe gap budget: `< 0.35s`;
 - total harness duration budget: `< 5s`.
 
-If this starts failing, do not loosen the numbers first. Inspect whether broker I/O, PTY locking, socket transport, or test-host load changed. The benchmark exists to catch main-thread/input-path regressions before async broker lanes and concurrent request handling are implemented.
+Expected scaled baseline:
+
+- output sessions: 8;
+- output lines per session: 220;
+- input probes: 24;
+- output bytes: at least `8 * 220 * 20`;
+- max synchronous input-send latency budget: `< 0.5s`;
+- max input echo latency budget: `< 1.5s`;
+- max run-loop probe gap budget: `< 0.5s`;
+- total harness duration budget: `< 7s`.
+
+If this starts failing, do not loosen the numbers first. Inspect whether broker I/O, PTY locking, socket transport, or test-host load changed. The benchmark exists to catch main-thread/input-path regressions before lower-level broker scheduling changes are made.
