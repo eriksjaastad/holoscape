@@ -90,13 +90,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
     private let scrollbackStore: DiskBackedScrollbackStore?
+    private let processEnvironment: [String: String]
 
-    init(scrollbackDirectory: URL? = nil) {
+    init(
+        scrollbackDirectory: URL? = nil,
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         if let scrollbackDirectory {
             self.scrollbackStore = DiskBackedScrollbackStore(directory: scrollbackDirectory)
         } else {
             self.scrollbackStore = nil
         }
+        self.processEnvironment = processEnvironment
     }
 
     func listSessions() throws -> [BrokerSessionID] {
@@ -287,7 +292,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     private func environment(for profile: BrokerEnvironmentProfile) throws -> [String: String] {
         switch profile {
         case .shell:
-            var environment = ProcessInfo.processInfo.environment
+            var environment = processEnvironment
+            environment["TERM"] = "xterm-256color"
+            if environment["LANG"]?.range(of: "utf", options: [.caseInsensitive]) == nil {
+                environment["LANG"] = "en_US.UTF-8"
+            }
             // Keep zsh's Apple Terminal-compatible OSC 7 directory updates working
             // while shell sessions are broker-owned instead of SwiftTerm-owned.
             environment["TERM_PROGRAM"] = "Apple_Terminal"
