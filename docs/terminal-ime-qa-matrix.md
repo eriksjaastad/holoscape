@@ -39,8 +39,18 @@ For each run, record:
 | Candidate window geometry | Any candidate-list IME | Trigger candidates near top, middle, and bottom of terminal | Candidate window tracks terminal cursor in screen coordinates | Pending | Pending | |
 | Skinned/overlay visibility | Any marked-text IME, skin/chrome enabled | Start composition with skin overlays visible | Marked/preedit overlay stays visible and is not covered by Metal/chrome layers | Pending | Pending | |
 
+## Automated guardrail
+
+`TerminalImplicitLinkIntegrationTests` now covers the non-manual protection this repo can enforce in headless CI:
+
+- `testHoloscapeTerminalViewKeepsSwiftTermTextInputClientPath` confirms `HoloscapeTerminalView` still conforms through SwiftTerm's `NSTextInputClient` path.
+- `testMarkedTextCompositionRemainsHandledByInheritedSwiftTermImplementation` exercises marked-text storage/unmarking through the inherited SwiftTerm implementation.
+- `testHoloscapeTerminalViewDoesNotOverrideSwiftTermIMEEntryPoints` fails if Holoscape starts overriding SwiftTerm/AppKit's critical IME entry points without an intentional replacement: `keyDown(with:)`, `insertText(_:replacementRange:)`, `setMarkedText`, `firstRect(forCharacterRange:actualRange:)`, and `doCommand(by:)`.
+
+Latest headless evidence: `swift test --filter TerminalImplicitLinkIntegrationTests/testHoloscapeTerminalViewDoesNotOverrideSwiftTermIMEEntryPoints --filter TerminalImplicitLinkIntegrationTests/testMarkedTextCompositionRemainsHandledByInheritedSwiftTermImplementation --filter TerminalImplicitLinkIntegrationTests/testHoloscapeTerminalViewKeepsSwiftTermTextInputClientPath` passed 3 tests on 2026-09-23.
+
 ## Pass criteria
 
-A case is pass only when the evidence names the exact input source and observed behavior. Do not mark speculative passes from source reading.
+A matrix case is pass only when the evidence names the exact input source and observed behavior. Do not mark speculative passes from source reading or automated selector checks.
 
 Create implementation cards only for observed failures. Do not port Ghostty's full `NSTextInputClient` implementation while SwiftTerm's inherited path is passing.
