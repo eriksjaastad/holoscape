@@ -1,5 +1,6 @@
 import XCTest
 import SwiftTerm
+import ObjectiveC.runtime
 @testable import Holoscape
 
 final class TerminalImplicitLinkIntegrationTests: XCTestCase {
@@ -86,6 +87,30 @@ final class TerminalImplicitLinkIntegrationTests: XCTestCase {
         XCTAssertFalse(view.hasMarkedText())
     }
 
+    @MainActor
+    func testHoloscapeTerminalViewDoesNotOverrideSwiftTermIMEEntryPoints() {
+        assertImplementationInherited(
+            #selector(NSResponder.keyDown(with:)),
+            "keyDown(with:) must keep SwiftTerm/AppKit's interpretKeyEvents path for IME composition"
+        )
+        assertImplementationInherited(
+            #selector(NSTextInputClient.insertText(_:replacementRange:)),
+            "insertText(_:replacementRange:) must keep SwiftTerm's typed-input path for committed IME text"
+        )
+        assertImplementationInherited(
+            #selector(NSTextInputClient.setMarkedText(_:selectedRange:replacementRange:)),
+            "setMarkedText must keep SwiftTerm's marked/preedit storage and overlay"
+        )
+        assertImplementationInherited(
+            #selector(NSTextInputClient.firstRect(forCharacterRange:actualRange:)),
+            "firstRect(forCharacterRange:) must keep SwiftTerm's candidate-window cursor geometry unless replaced intentionally"
+        )
+        assertImplementationInherited(
+            #selector(NSResponder.doCommand(by:)),
+            "doCommand(by:) must keep SwiftTerm's composition-aware AppKit command handling unless replaced intentionally"
+        )
+    }
+
     private func makeTerminal() -> Terminal {
         Terminal(
             delegate: LinkTestTerminalDelegate(),
@@ -98,6 +123,22 @@ final class TerminalImplicitLinkIntegrationTests: XCTestCase {
         HoloscapeTerminalView(
             frame: CGRect(x: 0, y: 0, width: 1000, height: 100),
             options: TerminalOptions(cols: 120, rows: 5, scrollback: 100)
+        )
+    }
+
+    private func assertImplementationInherited(_ selector: Selector, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
+        guard let holoscapeMethod = class_getInstanceMethod(HoloscapeTerminalView.self, selector),
+              let swiftTermMethod = class_getInstanceMethod(LocalProcessTerminalView.self, selector) else {
+            XCTFail("Expected both HoloscapeTerminalView and LocalProcessTerminalView to respond to \(selector)", file: file, line: line)
+            return
+        }
+
+        XCTAssertEqual(
+            method_getImplementation(holoscapeMethod),
+            method_getImplementation(swiftTermMethod),
+            message,
+            file: file,
+            line: line
         )
     }
 }
