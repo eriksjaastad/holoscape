@@ -147,11 +147,12 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
             ),
             Tool(
                 name: "holoscape_run_applescript",
-                description: "Execute AppleScript source locally through NSAppleScript and return its result. This can control scriptable macOS apps and may trigger normal macOS Automation permission prompts.",
+                description: "Execute AppleScript source locally through osascript with a timeout and return its result. This can control scriptable macOS apps and may trigger normal macOS Automation permission prompts.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "source": .object(["type": .string("string"), "description": .string("AppleScript source to execute")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
                     ]),
                     "required": .array([.string("source")]),
                 ])
@@ -239,10 +240,14 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 )
 
             case "holoscape_run_applescript":
-                let result = try runAppleScriptTool(args: args)
-                return CallTool.Result(
-                    content: [.text(text: formatAppleScriptToolResult(result), annotations: nil, _meta: nil)]
-                )
+                do {
+                    let result = try await runAppleScriptTool(args: args)
+                    return CallTool.Result(
+                        content: [.text(text: formatAppleScriptToolResult(result), annotations: nil, _meta: nil)]
+                    )
+                } catch {
+                    return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)], isError: true)
+                }
 
             default:
                 return CallTool.Result(content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)], isError: true)
