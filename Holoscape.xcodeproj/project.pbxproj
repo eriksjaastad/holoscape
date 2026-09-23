@@ -135,6 +135,8 @@
 		5AC06471695662FB93F29FA8 /* FeatureFlagPropertyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22492E4B8A9E6867F1AC35FB /* FeatureFlagPropertyTests.swift */; };
 		5B20B07AA53C6944A8731058 /* HoloscapeConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDBA842AC263082D397B2206 /* HoloscapeConfig.swift */; };
 		5B5BDC73BDD15EB0FEB195A5 /* AuthEnvironmentBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A60210985827D4BF2CC1EFF /* AuthEnvironmentBuilder.swift */; };
+		6D3B7E7D7E49A1C3AB20C611 /* AgentAPIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3B7E7C7E49A1C3AB20C611 /* AgentAPIKeyStore.swift */; };
+		6D3B7E7F7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3B7E7E7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift */; };
 		5D24C888DB5E8C8B9AE019AE /* AgentStatusAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34E7A23F23DEADA68A374CCC /* AgentStatusAdapter.swift */; };
 		5D656CACA515C91C259CA4EE /* TimestampInjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FA9C478B7E3E49C78A56786 /* TimestampInjector.swift */; };
 		5DC474AAAD2D2122CA1AE1B3 /* SessionProfileManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AACCB148A27764966AF71824 /* SessionProfileManagerTests.swift */; };
@@ -538,6 +540,8 @@
 		32D5039388E4FDCC93E1DEFD /* SidebarViewSkinContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarViewSkinContextTests.swift; sourceTree = "<group>"; };
 		3361DB7C236D881B834951BF /* LEDArrayLayerRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LEDArrayLayerRendererTests.swift; sourceTree = "<group>"; };
 		34E7A23F23DEADA68A374CCC /* AgentStatusAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStatusAdapter.swift; sourceTree = "<group>"; };
+		6D3B7E7C7E49A1C3AB20C611 /* AgentAPIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIKeyStore.swift; sourceTree = "<group>"; };
+		6D3B7E7E7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIKeyResolverTests.swift; sourceTree = "<group>"; };
 		34F6DFFD1F2DBEF325ED1885 /* ConfigServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigServiceTests.swift; sourceTree = "<group>"; };
 		36570263BA9A5EF325491629 /* BrokerSessionRecordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrokerSessionRecordTests.swift; sourceTree = "<group>"; };
 		37B014172438F19FAD650873 /* DiskBackedScrollbackStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskBackedScrollbackStoreTests.swift; sourceTree = "<group>"; };
@@ -936,6 +940,7 @@
 		485019853AE0CF04354A7F2F /* Unit */ = {
 			isa = PBXGroup;
 			children = (
+				6D3B7E7E7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift */,
 				ED3B6F24B08A99378ED93D50 /* AgentChannelControllerTests.swift */,
 				7A3B12318D376DF104012BC8 /* AgentChannelPromptTests.swift */,
 				42B4D6707AC49A5631054A48 /* AgentStatusAdapterTests.swift */,
@@ -1140,6 +1145,7 @@
 			isa = PBXGroup;
 			children = (
 				42892FD5916B8CC02208A8E6 /* AnimatedLayerRenderer.swift */,
+				6D3B7E7C7E49A1C3AB20C611 /* AgentAPIKeyStore.swift */,
 				40E83C7470FBF5F1F75D091F /* AnimationEngine.swift */,
 				18DF2D8257A1CB528A129D6E /* ANSIStripper.swift */,
 				4A60210985827D4BF2CC1EFF /* AuthEnvironmentBuilder.swift */,
@@ -1645,6 +1651,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				60D4B8606DFF0E6CE1BBFED1 /* ANSIStripperTests.swift in Sources */,
+				6D3B7E7F7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift in Sources */,
 				B2C735BE75B48EA899E0B22A /* AgentChannelControllerTests.swift in Sources */,
 				9CFFBB47DA84416E69449CE6 /* AgentChannelPromptTests.swift in Sources */,
 				73084E64A2D9FE640AC78AFB /* AgentStatusAdapterTests.swift in Sources */,
@@ -1856,6 +1863,7 @@
 			files = (
 				CEEA94117E9B2989093DCE46 /* ANSIStripper.swift in Sources */,
 				718C30CC2234FBC6798C237E /* AgentAuthType.swift in Sources */,
+				6D3B7E7D7E49A1C3AB20C611 /* AgentAPIKeyStore.swift in Sources */,
 				482B3BB74D9F3A9968055E82 /* AgentChannelController.swift in Sources */,
 				5D24C888DB5E8C8B9AE019AE /* AgentStatusAdapter.swift in Sources */,
 				22269AF05247BE8652176EA8 /* AmplifyDescriptors.swift in Sources */,

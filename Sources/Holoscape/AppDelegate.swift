@@ -333,9 +333,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 channelType: .agentAPI,
                 brokerSessionID: metadata.brokerSessionID
             )
+            let authType: AgentAuthType
+            do {
+                authType = try AgentAPIKeyResolver().authType()
+            } catch {
+                NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
+                return nil
+            }
             let controller = AgentChannelController.brokerBacked(
                 id: metadata.id,
-                authType: .apiKey(""),  // TODO: retrieve from secure storage
+                authType: authType,
                 workingDirectory: dir,
                 userLabel: metadata.role,
                 instanceNumber: metadata.instanceNumber,
