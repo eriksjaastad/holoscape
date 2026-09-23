@@ -195,7 +195,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HoloscapeTests",
-            dependencies: ["Holoscape", "SwiftTerm", "Cspirv_cross", "Cglslang"],
+            dependencies: ["Holoscape", "HoloscapeMCP", "SwiftTerm", "Cspirv_cross", "Cglslang"],
             path: "Tests/HoloscapeTests"
         ),
         .testTarget(
