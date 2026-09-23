@@ -14,7 +14,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
         XCTAssertEqual(report.outputSessionCount, 3)
         XCTAssertEqual(report.inputProbeCount, 8)
-        XCTAssertGreaterThanOrEqual(report.outputBytesRead, 3 * 80 * 20)
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, report.expectedMinimumOutputBytes)
         XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
         XCTAssertLessThan(report.maxInputEchoLatency, 1.0, report.description)
         XCTAssertLessThan(report.maxRunLoopProbeGap, 0.35, report.description)
@@ -34,7 +34,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
         XCTAssertEqual(report.outputSessionCount, 8)
         XCTAssertEqual(report.inputProbeCount, 24)
-        XCTAssertGreaterThanOrEqual(report.outputBytesRead, 8 * 220 * 20, report.description)
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, report.expectedMinimumOutputBytes, report.description)
         XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
         XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
         XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
@@ -55,14 +55,14 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
         XCTAssertEqual(report.outputSessionCount, 6)
         XCTAssertEqual(report.inputProbeCount, 18)
-        XCTAssertGreaterThanOrEqual(report.outputBytesRead, 6 * 140 * 500, report.description)
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, report.expectedMinimumOutputBytes, report.description)
         XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
         XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
         XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
         XCTAssertLessThan(report.duration, 7.0, report.description)
-        for sessionIndex in 0..<6 {
+        for sessionIndex in 0..<harness.outputSessionCount {
             XCTAssertTrue(
-                report.outputCompletionTokens.contains(String(format: "session-%d-%04d", sessionIndex, 139)),
+                report.outputCompletionTokens.contains(String(format: "session-%d-%04d", sessionIndex, harness.outputLinesPerSession - 1)),
                 report.description
             )
         }
@@ -116,6 +116,7 @@ private struct BrokerThroughputStallHarness {
 
         var outputBytesRead = 0
         var outputTextBySession: [BrokerSessionID: String] = [:]
+        var completedOutputSessions = Set<Int>()
         var echoedInput = ""
         var echoedInputTokens = Set<String>()
         var maxInputEchoLatency: TimeInterval = 0
@@ -145,15 +146,21 @@ private struct BrokerThroughputStallHarness {
                 }
             }
 
-            for id in sessionIDs where id != inputID {
+            for index in 0..<outputSessionCount {
+                let id = sessionIDs[index + 1]
                 let output = try runtime.readAvailableOutput(id: id)
                 outputBytesRead += output.count
                 if !output.isEmpty {
                     outputTextBySession[id, default: ""] += String(decoding: output, as: UTF8.self)
                 }
+                if !completedOutputSessions.contains(index),
+                   outputTextBySession[id, default: ""].contains(completionMarker(sessionIndex: index)) {
+                    completedOutputSessions.insert(index)
+                }
             }
 
-            if outputBytesRead >= expectedMinimumOutputBytes,
+            if completedOutputSessions.count == outputSessionCount,
+               outputBytesRead >= expectedMinimumOutputBytes,
                unsentProbeIndex == inputProbeCount,
                echoedInputTokens.contains("probe-000"),
                echoedInputTokens.contains(String(format: "probe-%03d", inputProbeCount - 1)) {
@@ -170,6 +177,7 @@ private struct BrokerThroughputStallHarness {
             outputLinesPerSession: outputLinesPerSession,
             inputProbeCount: inputProbeCount,
             outputBytesRead: outputBytesRead,
+            expectedMinimumOutputBytes: expectedMinimumOutputBytes,
             maxInputSendLatency: maxInputSendLatency,
             maxInputEchoLatency: maxInputEchoLatency,
             maxRunLoopProbeGap: maxRunLoopProbeGap,
@@ -182,7 +190,23 @@ private struct BrokerThroughputStallHarness {
     }
 
     private var expectedMinimumOutputBytes: Int {
-        outputSessionCount * outputLinesPerSession * 20
+        outputSessionCount * outputLinesPerSession * minimumBytesPerOutputLine
+    }
+
+    private var minimumBytesPerOutputLine: Int {
+        // Matches the per-line shape emitted by outputScript(_:): the largest
+        // session index and line number bound the per-line byte count.
+        let payload = String(repeating: "x", count: outputPayloadBytes)
+        let referenceLine = String(
+            format: "session-%d-%04d \(payload) holoscape-throughput-baseline\n",
+            outputSessionCount - 1,
+            outputLinesPerSession - 1
+        )
+        return referenceLine.utf8.count
+    }
+
+    private func completionMarker(sessionIndex: Int) -> String {
+        String(format: "session-%d-%04d", sessionIndex, outputLinesPerSession - 1)
     }
 
     private func outputScript(sessionIndex: Int) -> String {
@@ -196,6 +220,7 @@ private struct BrokerThroughputStallReport: CustomStringConvertible {
     let outputLinesPerSession: Int
     let inputProbeCount: Int
     let outputBytesRead: Int
+    let expectedMinimumOutputBytes: Int
     let maxInputSendLatency: TimeInterval
     let maxInputEchoLatency: TimeInterval
     let maxRunLoopProbeGap: TimeInterval
@@ -204,6 +229,6 @@ private struct BrokerThroughputStallReport: CustomStringConvertible {
     let outputCompletionTokens: Set<String>
 
     var description: String {
-        "BrokerThroughputStallReport(outputSessionCount: \(outputSessionCount), outputLinesPerSession: \(outputLinesPerSession), inputProbeCount: \(inputProbeCount), outputBytesRead: \(outputBytesRead), maxInputSendLatency: \(maxInputSendLatency), maxInputEchoLatency: \(maxInputEchoLatency), maxRunLoopProbeGap: \(maxRunLoopProbeGap), duration: \(duration), echoedInputTokens: \(echoedInputTokens.sorted()), outputCompletionTokens: \(outputCompletionTokens.sorted()))"
+        "BrokerThroughputStallReport(outputSessionCount: \(outputSessionCount), outputLinesPerSession: \(outputLinesPerSession), inputProbeCount: \(inputProbeCount), outputBytesRead: \(outputBytesRead), expectedMinimumOutputBytes: \(expectedMinimumOutputBytes), maxInputSendLatency: \(maxInputSendLatency), maxInputEchoLatency: \(maxInputEchoLatency), maxRunLoopProbeGap: \(maxRunLoopProbeGap), duration: \(duration), echoedInputTokens: \(echoedInputTokens.sorted()), outputCompletionTokens: \(outputCompletionTokens.sorted()))"
     }
 }
