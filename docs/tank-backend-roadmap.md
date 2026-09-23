@@ -1,6 +1,6 @@
 # Holoscape Tank Backend Roadmap
 
-Status: execution roadmap, created for umbrella card #7164.
+Status: execution roadmap; Phase 0 through Phase 6 have been reconciled as Done on the Holoscape board as of 2026-09-23.
 
 ## Product rule
 
@@ -20,6 +20,25 @@ Holoscape should feel wild on the outside and conservative underneath:
 ## Umbrella card
 
 - #7164 — Roadmap: make Holoscape a tank-solid self-contained terminal before feature expansion
+
+## Current board state
+
+The original tank-backend phase cards are complete on the Holoscape board:
+
+- #7164 — roadmap umbrella: Done
+- #7165 — baseline and acceptance gates: Done
+- #7166 — terminal correctness audit: Done
+- #7167 — session-survival substrate decision: Done
+- #7168 — process/session survival implementation: Done
+- #7169 — persistent channel state model: Done
+- #7170 — Claude/Codex adapter parity: Done
+- #7171 — scrollback/history persistence: Done
+- #7172 — setup and macOS permission flow: Done
+- #7173 — removable plugin architecture: Done
+- #7174 — first-party Project Tracker plugin: Done
+- #7175 — skin visuals connected to real terminal/channel state: Done
+
+Do not restart the stale immediate-order queue from the initial roadmap. New work should come from verified follow-up gaps, current failing tests, or newly-created cards with acceptance criteria.
 
 ## Phase 0 — Baseline before more feature breadth
 
@@ -165,12 +184,13 @@ Definition of done:
 - visual polish never masks backend failure;
 - skin errors degrade loudly but safely.
 
-## Immediate execution order
+## Next reliability queue after Phase 0-6
 
-1. Finish #7164 and commit this roadmap.
-2. Start #7165 and use #5866/#5876/#5973/#5988 as inputs.
-3. Start #7166 or #7167 depending on whether the next worker is better suited to testing or architecture research.
-4. Keep unrelated watch cards out of this roadmap unless Erik explicitly pulls them in.
+1. Keep broker-backed terminal throughput/stall benchmarks current when lower-level broker locks, socket handling, output draining, or PTY write paths change.
+2. Treat the IME QA matrix in `docs/terminal-ime-qa-matrix.md` as a manual daily-driver gate before claiming non-Latin input support; add implementation cards only for observed failures.
+3. Expand terminal-correctness coverage around interactive PTY behavior, cwd/resize truth, scrollback restoration, and crash/relaunch recovery before adding feature breadth.
+4. Keep Project Tracker, message ledgers, cross-computer sync, agent addressing, and handoff semantics behind removable plugin seams.
+5. Keep unrelated watch/backlog cards out of this roadmap unless Erik explicitly pulls them in or they become prerequisites for terminal reliability.
 
 ## Non-goals for the next stretch
 
