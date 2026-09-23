@@ -685,6 +685,38 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [started])
     }
 
+    func testPruneFinalRecordsRemovesOnlyOldExitedAndErroredRecords() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let oldExited = try coordinator.start(launchRequest(workingDirectory: "/tmp/old-exited"), channelType: .shell, label: "old-exited", attachedChannelID: nil)
+        let oldErrored = try coordinator.start(launchRequest(workingDirectory: "/tmp/old-errored"), channelType: .shell, label: "old-errored", attachedChannelID: nil)
+        let oldStale = try coordinator.start(launchRequest(workingDirectory: "/tmp/old-stale"), channelType: .shell, label: "old-stale", attachedChannelID: nil)
+        let oldDetached = try coordinator.start(launchRequest(workingDirectory: "/tmp/old-detached"), channelType: .shell, label: "old-detached", attachedChannelID: nil)
+        let recentExited = try coordinator.start(launchRequest(workingDirectory: "/tmp/recent-exited"), channelType: .shell, label: "recent-exited", attachedChannelID: nil)
+
+        now = Date(timeIntervalSince1970: 1_010)
+        _ = try coordinator.exit(oldExited.id, exitCode: 0)
+        _ = try coordinator.markErrored(oldErrored.id)
+        _ = try coordinator.detach(oldStale.id)
+        now = Date(timeIntervalSince1970: 1_020)
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(oldStale.id)
+        _ = try coordinator.reconcileRuntimeStatus(oldStale.id)
+        runtime.statusError = nil
+        now = Date(timeIntervalSince1970: 1_030)
+        _ = try coordinator.detach(oldDetached.id)
+        now = Date(timeIntervalSince1970: 1_200)
+        _ = try coordinator.exit(recentExited.id, exitCode: 0)
+
+        let removed = try coordinator.pruneFinalRecords(updatedBefore: Date(timeIntervalSince1970: 1_100))
+
+        XCTAssertEqual(removed.map(\.id).sorted { $0.rawValue < $1.rawValue }, [oldErrored.id, oldExited.id].sorted { $0.rawValue < $1.rawValue })
+        XCTAssertEqual(
+            try coordinator.loadAll().map(\.id).sorted { $0.rawValue < $1.rawValue },
+            [oldDetached.id, oldStale.id, recentExited.id].sorted { $0.rawValue < $1.rawValue }
+        )
+    }
+
     private func makeCoordinator(
         runtime: any BrokerSessionRuntime = MetadataOnlyBrokerSessionRuntime(),
         registry: BrokerSessionRegistry? = nil,
