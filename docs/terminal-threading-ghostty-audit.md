@@ -138,7 +138,7 @@ Do not try to clone Ghostty's thread model immediately. Holoscape is still using
 
 Do harden toward Ghostty's shape in the remaining incremental steps:
 
-1. **Keep measuring broker-backed throughput under output pressure.** The executable baseline exists; scale it before making lower-level lock/runtime changes.
+1. **Keep measuring broker-backed throughput under output pressure.** The executable baseline now covers both a small output/input case and a scaled many-session case; expand it further before making lower-level lock/runtime changes.
 2. **Continue reducing read-path dependence on main-actor work.** Native broker output reads are now off-main and output-signaled; parsing/rendering still depend on SwiftTerm/AppKit on the main actor.
 3. **Define immutable render/state snapshots before shader-state coupling.** Skins and shader uniforms should read snapshots, not live controller or SwiftTerm internals.
 
@@ -151,7 +151,7 @@ Do harden toward Ghostty's shape in the remaining incremental steps:
 
 ## Proposed follow-up cards
 
-1. **Scale broker-backed terminal throughput/stall benchmarks.** Exercise many sessions producing output while typing into one active tab; capture main-thread stall budget and output latency beyond the small unit-test baseline.
+1. **Scale broker-backed terminal throughput/stall benchmarks.** Initial scaled coverage exists for eight output-heavy sessions plus active input probes; keep expanding it when lower-level lock/runtime changes are proposed.
 2. **Extend output availability signaling across the out-of-process broker protocol.** Native in-process broker output is signaled now; socket/process-host clients still need a protocol-level wake/stream mechanism before the polling fallback can be removed entirely.
 3. **Tighten per-session runtime locking if scaled benchmarks show contention.** Split output append/drain from PTY writes only with benchmark evidence.
 4. **Define terminal/channel render snapshots.** Freeze the state consumed by skins, shader uniforms, and tab truth so future render-thread work has a clean data boundary.
