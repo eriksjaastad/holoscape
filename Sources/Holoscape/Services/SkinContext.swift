@@ -763,10 +763,10 @@ final class SkinContext {
         case .sidebarRowSelected:
             fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
         case .sidebarRowIndicator:
-            // Base is "active" green so an unmatched connection-state
+            // Base is "active/usable" green so an unmatched connection-state
             // variant still produces a visible dot (bug-visible rather
             // than silently invisible). Variants override for the
-            // connecting and disconnected states.
+            // needs-approval, error/disconnected, and stale states.
             fill = .color(NSColor.systemGreen)
         case .sidebarSectionHeader:
             fill = .color(NSColor.clear)
@@ -894,13 +894,14 @@ final class SkinContext {
                 ),
             ]
         case .sidebarRowIndicator:
-            // Base fill is systemGreen (active). No need for an "active"
-            // variant — the absence of a match falls through to the
-            // base, which IS the active color. Variants paint the two
-            // non-default states.
+            // Base fill is systemGreen (active/usable). No need for an
+            // "active" variant — the absence of a match falls through to
+            // the base, which IS the active color. Variants paint the three
+            // non-default connection states: 1 = needs-approval,
+            // 2 = error/disconnected, 3 = stale.
             return [
                 StateVariant(
-                    name: "connecting",
+                    name: "needs-approval",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(1),
                     ]),
@@ -912,6 +913,13 @@ final class SkinContext {
                         "channelConnectionState": .scalar(2),
                     ]),
                     fill: .color("#ff3b30")  // approximates NSColor.systemRed
+                ),
+                StateVariant(
+                    name: "stale",
+                    match: MatchExpression(conditions: [
+                        "channelConnectionState": .scalar(3),
+                    ]),
+                    fill: .color("#a97ae6")
                 ),
             ]
         default:
