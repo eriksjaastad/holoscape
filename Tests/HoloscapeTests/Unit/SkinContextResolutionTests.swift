@@ -119,6 +119,51 @@ final class SkinContextResolutionTests: XCTestCase {
         }
     }
 
+    // MARK: - Built-in sidebar indicator connection ordinals
+
+    /// #7570 follow-up — the built-in no-skin `.sidebarRowIndicator` defaults
+    /// must truthfully distinguish the 4-state connection ordinal:
+    /// 0 = connected/usable (base green), 1 = needs-approval,
+    /// 2 = error/disconnected, 3 = stale. Regression guard against the stale
+    /// ordinal (3) falling through to the active-green base.
+    func testBuiltInSidebarIndicatorDistinguishesConnectionOrdinals() throws {
+        let snap = ReactiveUniformSnapshot()
+        let ctx = SkinContext.builtInDefaults(reactive: snap)
+
+        func fill(for ordinal: Int32) -> NSColor {
+            snap.setChannelConnectionState(ordinal)
+            let resolved = ctx.currentState(for: .sidebarRowIndicator, with: snap)
+            guard case .color(let color) = resolved.fill else {
+                XCTFail("sidebarRowIndicator must resolve to a color fill")
+                return .clear
+            }
+            return color
+        }
+
+        let active = fill(for: 0)
+        let needsApproval = fill(for: 1)
+        let disconnected = fill(for: 2)
+        let stale = fill(for: 3)
+
+        // Base (no matching variant) is the active/usable green dot.
+        XCTAssertEqual(active, NSColor.systemGreen)
+
+        // Each non-default ordinal resolves to its own built-in fill:
+        // 1 = needs-approval (yellow), 2 = error/disconnected (red),
+        // 3 = stale (purple).
+        XCTAssertEqual(needsApproval, try XCTUnwrap(NSColor(hex: "#ffcc00")))
+        XCTAssertEqual(disconnected, try XCTUnwrap(NSColor(hex: "#ff3b30")))
+        XCTAssertEqual(stale, try XCTUnwrap(NSColor(hex: "#a97ae6")))
+
+        // Ordinal 3 (stale) must NOT fall through to active green.
+        XCTAssertNotEqual(stale, NSColor.systemGreen, "stale must not render as active green")
+
+        // The three non-default ordinals must be pairwise distinct.
+        XCTAssertNotEqual(needsApproval, disconnected)
+        XCTAssertNotEqual(needsApproval, stale)
+        XCTAssertNotEqual(disconnected, stale)
+    }
+
     // MARK: - Operator evaluation
 
     func testEqualityOperator() {
