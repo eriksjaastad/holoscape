@@ -21,7 +21,8 @@ final class DisconnectedVsStaleBrokerTruthTests: XCTestCase {
     func testDisconnectedPersistentStateCarriesReconnectNotStale() {
         let state = PersistentChannelState.fromRuntimeState(.disconnected, recoveryAction: .reconnect)
 
-        XCTAssertEqual(state.kind, .ready, "A disconnected channel keeps its ready durable kind")
+        XCTAssertEqual(state.kind, .disconnected, "A disconnected channel keeps a distinct disconnected durable kind")
+        XCTAssertNotEqual(state.kind, .ready, "A disconnected channel must not be persisted as ready/usable")
         XCTAssertNotEqual(state.kind, .stale, "A disconnected channel must not be persisted as stale")
         XCTAssertEqual(state.recoveryAction, .reconnect, "A disconnected channel reports reconnect guidance")
     }
@@ -59,7 +60,7 @@ final class DisconnectedVsStaleBrokerTruthTests: XCTestCase {
             type: .shell,
             role: "Shell",
             persistentState: PersistentChannelState(
-                kind: .ready,
+                kind: .disconnected,
                 source: .processLifecycle,
                 updatedAt: Date(timeIntervalSince1970: 1_800_000_002),
                 recoveryAction: .reconnect
@@ -69,7 +70,7 @@ final class DisconnectedVsStaleBrokerTruthTests: XCTestCase {
         let data = try JSONEncoder().encode(metadata)
         let decoded = try JSONDecoder().decode(ChannelMetadata.self, from: data)
 
-        XCTAssertEqual(decoded.persistentState?.kind, .ready)
+        XCTAssertEqual(decoded.persistentState?.kind, .disconnected)
         XCTAssertEqual(decoded.persistentState?.recoveryAction, .reconnect)
         XCTAssertNotEqual(
             decoded.persistentState?.recoveryAction,
