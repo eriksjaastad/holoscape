@@ -181,7 +181,7 @@ Conditional overrides within a `SurfaceDescriptor`:
   "fill": { "kind": "color", "value": "#1aff8c" },
   "states": [
     {
-      "name": "connecting",
+      "name": "needs-approval",
       "match": { "channelConnectionState": 1 },
       "fill": { "kind": "color", "value": "#ffcc00" }
     },
@@ -189,6 +189,11 @@ Conditional overrides within a `SurfaceDescriptor`:
       "name": "disconnected",
       "match": { "channelConnectionState": 2 },
       "fill": { "kind": "color", "value": "#ff3b30" }
+    },
+    {
+      "name": "stale",
+      "match": { "channelConnectionState": 3 },
+      "fill": { "kind": "color", "value": "#a97ae6" }
     }
   ]
 }
@@ -346,10 +351,12 @@ Ships under `Sources/Holoscape/Resources/Skins/HoloscapeSynthwave/`. v2 manifest
     "sidebar.row.indicator": {
       "fill": { "kind": "color", "value": "#1aff8c" },
       "states": [
-        { "name": "connecting",   "match": { "channelConnectionState": 1 },
+        { "name": "needs-approval", "match": { "channelConnectionState": 1 },
           "fill": { "kind": "color", "value": "#ffcc00" } },
-        { "name": "disconnected", "match": { "channelConnectionState": 2 },
-          "fill": { "kind": "color", "value": "#ff3b30" } }
+        { "name": "disconnected",   "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#ff3b30" } },
+        { "name": "stale",          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#a97ae6" } }
       ]
     }
   }
