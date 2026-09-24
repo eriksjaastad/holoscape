@@ -72,6 +72,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(resizedOutput.contains("43 132"), resizedOutput)
     }
 
+    func testPTYSessionLaunchesInRequestedWorkingDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NativePTYBrokerSessionRuntimeCwdTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // /var/... on macOS is a symlink to /private/var/...; resolve it so the
+        // PTY child's getcwd() output matches the directory we actually created.
+        let resolvedDirectory = directory.resolvingSymlinksInPath().path
+
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "cwd-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/pwd",
+            workingDirectory: resolvedDirectory,
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains(resolvedDirectory), output)
+    }
+
     func testTerminatePreservesExitedSessionForScrollbackReads() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "terminated-scrollback-native-pty-runtime-test")
