@@ -33,7 +33,8 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     var channelIsActive: Int32 { lock.withLock { _channelIsActive } }
     var channelUnread: Int32 { lock.withLock { _channelUnread } }
     /// Connection state as an ordinal for state-variant matching:
-    /// 0 = active (connected, running), 1 = connecting, 2 = disconnected.
+    /// 0 = connected/usable, 1 = attention-needed, 2 = error/disconnected,
+    /// 3 = stale. Mirrors `PersistentChannelStateKind.reactiveChannelConnectionOrdinal`.
     /// Lets sidebar status-indicator surfaces pick their fill through
     /// `match: { channelConnectionState: 1 }` rather than Swift branches.
     var channelConnectionState: Int32 { lock.withLock { _channelConnectionState } }
@@ -97,7 +98,8 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
         }
     }
 
-    /// Set connection-state ordinal (0=active, 1=connecting, 2=disconnected).
+    /// Set connection-state ordinal (0=connected/usable, 1=attention-needed,
+    /// 2=error/disconnected, 3=stale).
     /// Separate from `channelIsActive` which is a boolean for "is this the
     /// currently-focused tab." Connection state describes the underlying
     /// channel's lifecycle.
