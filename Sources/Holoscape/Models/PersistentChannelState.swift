@@ -46,6 +46,10 @@ struct PersistentChannelState: Codable, Equatable, Sendable {
 enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
     /// A shell/agent/process exists but has no known in-flight work.
     case ready
+    /// The channel has no live process attached (never started, exited, or
+    /// closed). Distinct from `ready` — there is no running process to resume —
+    /// and from `stale` — the channel is recoverable by a plain `reconnect`.
+    case disconnected
     /// The channel is actively producing output or an adapter marks it busy.
     case running
     /// The channel is blocked on an operator decision/approval prompt.
@@ -62,7 +66,7 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
         case .connecting:
             self = .running
         case .disconnected:
-            self = .ready
+            self = .disconnected
         case .stale:
             self = .stale
         }
@@ -72,14 +76,14 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
         switch self {
         case .needsApproval, .error, .stale:
             return true
-        case .ready, .running:
+        case .ready, .running, .disconnected:
             return false
         }
     }
 
     var isRecoverable: Bool {
         switch self {
-        case .error, .stale:
+        case .error, .stale, .disconnected:
             return true
         case .ready, .running, .needsApproval:
             return false
@@ -88,8 +92,11 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
 
     /// Stable priority for tab/sidebar rendering when multiple signals arrive.
     /// Higher wins so transient output cannot hide approval/error/stale states.
+    /// `disconnected` is the least-active durable state: below `ready`, and never
+    /// able to hide running/needs-approval/error/stale signals.
     var displayPriority: Int {
         switch self {
+        case .disconnected: return 5
         case .ready: return 10
         case .running: return 20
         case .needsApproval: return 30
@@ -101,6 +108,7 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
     var displayLabel: String {
         switch self {
         case .ready: return "ready"
+        case .disconnected: return "disconnected"
         case .running: return "running"
         case .needsApproval: return "needs approval"
         case .error: return "error"
@@ -116,7 +124,7 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
     /// model instead of one-off notification strings.
     var reactiveAgentStateOrdinal: Int32 {
         switch self {
-        case .ready:
+        case .ready, .disconnected:
             return 0
         case .running:
             return 1
@@ -135,7 +143,7 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
             return 0
         case .needsApproval:
             return 1
-        case .error:
+        case .error, .disconnected:
             return 2
         case .stale:
             return 3
@@ -146,7 +154,7 @@ enum PersistentChannelStateKind: String, Codable, CaseIterable, Sendable {
     /// 0=none, 1=info, 2=warn, 3=error.
     var reactiveNotificationKindOrdinal: Int32 {
         switch self {
-        case .ready, .running:
+        case .ready, .disconnected, .running:
             return 0
         case .needsApproval:
             return 2

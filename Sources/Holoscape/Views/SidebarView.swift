@@ -505,6 +505,7 @@ class SidebarTabEntry: NSButton {
         if let persistentState {
             switch persistentState.kind {
             case .ready: statusTextField.stringValue = ""
+            case .disconnected: statusTextField.stringValue = "disconnected"
             case .running: statusTextField.stringValue = ""
             case .needsApproval: statusTextField.stringValue = "needs approval"
             case .error: statusTextField.stringValue = persistentState.reason ?? "error"

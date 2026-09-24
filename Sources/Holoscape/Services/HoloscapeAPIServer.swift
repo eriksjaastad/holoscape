@@ -314,7 +314,7 @@ class HoloscapeAPIServer {
         switch state.kind {
         case .needsApproval, .ready:
             return state.kind
-        case .running, .error, .stale:
+        case .running, .error, .stale, .disconnected:
             return nil
         }
     }
@@ -340,7 +340,7 @@ class HoloscapeAPIServer {
         case .ready:
             content.title = "Task Complete"
             content.body = "\(channel.displayLabel) is ready for input"
-        case .running, .error, .stale, .none:
+        case .running, .error, .stale, .disconnected, .none:
             content.title = "Holoscape"
             content.body = "\(channel.displayLabel): \(type)"
         }

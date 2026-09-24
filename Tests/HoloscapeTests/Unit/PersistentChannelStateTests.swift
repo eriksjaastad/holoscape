@@ -2,10 +2,10 @@ import XCTest
 @testable import Holoscape
 
 final class PersistentChannelStateTests: XCTestCase {
-    func testRuntimeStateMappingStartsWithCurrentLifecycleCompatibility() {
+    func testRuntimeStateMappingPreservesDisconnectedDistinctFromReady() {
         XCTAssertEqual(PersistentChannelStateKind(runtimeState: .active), .running)
         XCTAssertEqual(PersistentChannelStateKind(runtimeState: .connecting), .running)
-        XCTAssertEqual(PersistentChannelStateKind(runtimeState: .disconnected), .ready)
+        XCTAssertEqual(PersistentChannelStateKind(runtimeState: .disconnected), .disconnected)
         XCTAssertEqual(PersistentChannelStateKind(runtimeState: .stale), .stale)
     }
 
@@ -13,16 +13,20 @@ final class PersistentChannelStateTests: XCTestCase {
         XCTAssertGreaterThan(PersistentChannelStateKind.needsApproval.displayPriority, PersistentChannelStateKind.running.displayPriority)
         XCTAssertGreaterThan(PersistentChannelStateKind.error.displayPriority, PersistentChannelStateKind.needsApproval.displayPriority)
         XCTAssertGreaterThan(PersistentChannelStateKind.stale.displayPriority, PersistentChannelStateKind.error.displayPriority)
+        XCTAssertLessThan(PersistentChannelStateKind.disconnected.displayPriority, PersistentChannelStateKind.ready.displayPriority)
     }
 
     func testOperatorAttentionAndRecoveryContract() {
         XCTAssertFalse(PersistentChannelStateKind.ready.requiresOperatorAttention)
+        XCTAssertFalse(PersistentChannelStateKind.disconnected.requiresOperatorAttention)
         XCTAssertFalse(PersistentChannelStateKind.running.requiresOperatorAttention)
         XCTAssertTrue(PersistentChannelStateKind.needsApproval.requiresOperatorAttention)
         XCTAssertTrue(PersistentChannelStateKind.error.requiresOperatorAttention)
         XCTAssertTrue(PersistentChannelStateKind.stale.requiresOperatorAttention)
 
         XCTAssertFalse(PersistentChannelStateKind.needsApproval.isRecoverable)
+        XCTAssertFalse(PersistentChannelStateKind.ready.isRecoverable)
+        XCTAssertTrue(PersistentChannelStateKind.disconnected.isRecoverable)
         XCTAssertTrue(PersistentChannelStateKind.error.isRecoverable)
         XCTAssertTrue(PersistentChannelStateKind.stale.isRecoverable)
     }
@@ -84,6 +88,7 @@ final class PersistentChannelStateTests: XCTestCase {
 
     func testPersistentKindsExposeStableReactiveOrdinalsForSkins() {
         XCTAssertEqual(PersistentChannelStateKind.ready.reactiveAgentStateOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.disconnected.reactiveAgentStateOrdinal, 0)
         XCTAssertEqual(PersistentChannelStateKind.running.reactiveAgentStateOrdinal, 1)
         XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveAgentStateOrdinal, 2)
         XCTAssertEqual(PersistentChannelStateKind.error.reactiveAgentStateOrdinal, 3)
@@ -93,9 +98,11 @@ final class PersistentChannelStateTests: XCTestCase {
         XCTAssertEqual(PersistentChannelStateKind.running.reactiveChannelConnectionOrdinal, 0)
         XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveChannelConnectionOrdinal, 1)
         XCTAssertEqual(PersistentChannelStateKind.error.reactiveChannelConnectionOrdinal, 2)
+        XCTAssertEqual(PersistentChannelStateKind.disconnected.reactiveChannelConnectionOrdinal, 2)
         XCTAssertEqual(PersistentChannelStateKind.stale.reactiveChannelConnectionOrdinal, 3)
 
         XCTAssertEqual(PersistentChannelStateKind.ready.reactiveNotificationKindOrdinal, 0)
+        XCTAssertEqual(PersistentChannelStateKind.disconnected.reactiveNotificationKindOrdinal, 0)
         XCTAssertEqual(PersistentChannelStateKind.running.reactiveNotificationKindOrdinal, 0)
         XCTAssertEqual(PersistentChannelStateKind.needsApproval.reactiveNotificationKindOrdinal, 2)
         XCTAssertEqual(PersistentChannelStateKind.error.reactiveNotificationKindOrdinal, 3)
@@ -115,5 +122,14 @@ final class PersistentChannelStateTests: XCTestCase {
         XCTAssertEqual(snapshot.intValue(forMatchKey: "agentState"), 3)
         XCTAssertEqual(snapshot.intValue(forMatchKey: "channelConnectionState"), 3)
         XCTAssertEqual(snapshot.intValue(forMatchKey: "notificationKind"), 3)
+
+        // A disconnected channel must publish the "error/disconnected" connection
+        // ordinal (2), not the "connected/usable" ordinal (0) that `.ready` would
+        // have produced before the disconnected kind existed.
+        snapshot.applyPersistentChannelState(PersistentChannelState(kind: .disconnected, source: .processLifecycle))
+
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "agentState"), 0)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "channelConnectionState"), 2)
+        XCTAssertEqual(snapshot.intValue(forMatchKey: "notificationKind"), 0)
     }
 }
