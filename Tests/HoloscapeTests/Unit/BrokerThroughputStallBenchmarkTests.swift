@@ -139,19 +139,12 @@ private struct BrokerThroughputStallHarness {
             sessionIDs.append(id)
         }
 
-        // Release the producers once the harness is ready to probe. Opening a
-        // FIFO for writing blocks until that session's producer has opened it
-        // for reading, so every output session is guaranteed to observe its
-        // start byte before it begins emitting — no timing guesswork.
-        for barrierPath in barrierPaths {
-            try releaseFIFO(at: barrierPath)
-        }
-
         var maxInputSendLatency: TimeInterval = 0
         var probeSendTimes: [String: Date] = [:]
         var unsentProbeIndex = 0
         var lastProbeSentAt = Date.distantPast
         let firstProbeDueAt = Date()
+        var didReleaseProducers = false
 
         var outputBytesRead = 0
         var outputTextBySession: [BrokerSessionID: String] = [:]
@@ -176,10 +169,20 @@ private struct BrokerThroughputStallHarness {
                 unsentProbeIndex += 1
             }
 
+            // Start output only after the first input probe has entered the
+            // active session, so the measured probes overlap producer output
+            // instead of observing data that was already buffered in memory.
+            if !didReleaseProducers, unsentProbeIndex > 0 {
+                for barrierPath in barrierPaths {
+                    try releaseFIFO(at: barrierPath, deadline: deadline)
+                }
+                didReleaseProducers = true
+            }
+
             let inputChunk = String(decoding: try runtime.readAvailableOutput(id: inputID), as: UTF8.self)
             echoedInput += inputChunk
-            for token in inputChunk.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
-                echoedInputTokens.insert(token)
+            echoedInputTokens = Set(echoedInput.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+            for token in echoedInputTokens {
                 if let sentAt = probeSendTimes[token] {
                     maxInputEchoLatency = max(maxInputEchoLatency, Date().timeIntervalSince(sentAt))
                     probeSendTimes[token] = nil
@@ -261,8 +264,14 @@ private struct BrokerThroughputStallHarness {
         }
     }
 
-    private func releaseFIFO(at path: String) throws {
-        let fd = path.withCString { open($0, O_WRONLY) }
+    private func releaseFIFO(at path: String, deadline: Date) throws {
+        var fd: Int32 = -1
+        while fd < 0, Date() < deadline {
+            fd = path.withCString { open($0, O_WRONLY | O_NONBLOCK) }
+            if fd < 0, errno == ENXIO || errno == EAGAIN {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+        }
         guard fd >= 0 else {
             throw NSError(
                 domain: NSPOSIXErrorDomain,
@@ -272,8 +281,15 @@ private struct BrokerThroughputStallHarness {
         }
         defer { close(fd) }
         let byte: UInt8 = 0
-        _ = withUnsafePointer(to: byte) { ptr in
+        let bytesWritten = withUnsafePointer(to: byte) { ptr in
             write(fd, ptr, 1)
+        }
+        guard bytesWritten == 1 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "write fifo release byte failed: \(String(cString: strerror(errno)))"]
+            )
         }
     }
 
