@@ -34,7 +34,7 @@ The baseline remains XCTest-sized and deterministic enough for normal unit-test 
 
 The scaled and burst tiers are not final daily-driver stress tests. They are the executable seed that future broker-threading cards can expand before changing lower-level runtime locking or transport behavior.
 
-The harness run loop gates exit on per-session completion markers — the final `session-<i>-<last>` line from each output session — rather than a raw byte-count threshold, so the burst tier is not flake-prone under slow spawn or drain skew. The byte floor is derived from the emitted line shape (`outputPayloadBytes` plus the fixed header/footer overhead) instead of a hardcoded per-line constant.
+The harness run loop gates exit on per-session completion markers — explicit `session-<i>-complete` tokens emitted after each output session's final payload line — rather than a raw byte-count threshold, so the burst tier is not flake-prone under slow spawn or drain skew. The byte floor is derived from the emitted line shape (`outputPayloadBytes` plus the fixed header/footer overhead) instead of a hardcoded per-line constant.
 
 ## Run
 
@@ -71,7 +71,7 @@ Expected burst baseline:
 - input probes: 18;
 - payload per output line: 512 bytes;
 - output bytes: at least `6 * 140 * (512 + per-line overhead)` — derived from the emitted line shape, not a fixed constant;
-- per-session completion: every `session-<i>-0139` marker observed (explicit full drain);
+- per-session completion: every explicit `session-<i>-complete` marker observed after that session's final payload line;
 - max synchronous input-send latency budget: `< 0.5s`;
 - max input echo latency budget: `< 1.5s`;
 - max run-loop probe gap budget: `< 0.5s`;
