@@ -184,7 +184,7 @@
       "fill": { "kind": "color", "value": "#67d9ff" },
       "states": [
         {
-          "name": "connecting",
+          "name": "needs-approval",
           "match": { "channelConnectionState": 1 },
           "fill": { "kind": "color", "value": "#ffb347" }
         },
