@@ -71,6 +71,10 @@ final class MercuryDeckIntegrationTests: XCTestCase {
     func testMercuryDeckSurfacesResolveDurableChannelStates() throws {
         let engine = SkinEngine()
         let loaded = try engine.loadComposite(named: "MercuryDeck")
+
+        let indicatorStates = try XCTUnwrap(loaded.surfaces?[.sidebarRowIndicator]?.states)
+        XCTAssertEqual(indicatorStates.map(\.name), ["needs-approval", "disconnected", "stale"])
+
         let snap = ReactiveUniformSnapshot()
         let context = MainWindowController.buildSkinContext(overriding: loaded.surfaces, reactive: snap)
 
