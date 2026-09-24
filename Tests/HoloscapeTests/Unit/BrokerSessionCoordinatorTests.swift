@@ -13,6 +13,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             case attach(BrokerSessionID, UUID)
             case terminate(BrokerSessionID, Int32?)
             case markErrored(BrokerSessionID)
+            case resize(BrokerSessionID, TerminalGridSize)
         }
 
         var events: [Event] = []
@@ -54,7 +55,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
             maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
         }
-        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
+            events.append(.resize(id, size))
+        }
         func isRunning(id: BrokerSessionID) throws -> Bool {
             if let statusError { throw statusError }
             return running
@@ -373,6 +376,46 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             .attach(started.id, secondChannel),
             .terminate(started.id, 0)
         ])
+    }
+
+    func testResizeForwardsExactGridSizeToRuntimeWithoutMutatingRecord() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 550) })
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            workingDirectory: "/tmp/resize-truth",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let started = try coordinator.start(
+            request,
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000550")!
+        )
+
+        let size = TerminalGridSize(columns: 132, rows: 48)
+        try coordinator.resize(started.id, size: size)
+
+        XCTAssertEqual(runtime.events, [.create(started.id, request), .resize(started.id, size)])
+        XCTAssertEqual(
+            try coordinator.loadAll(),
+            [started],
+            "Resize must propagate to the PTY without mutating durable lifecycle metadata"
+        )
+    }
+
+    func testResizeMissingSessionFailsLoudlyWithoutTouchingRuntime() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 1) })
+        let missingID = BrokerSessionID(rawValue: "missing-resize-session")
+
+        XCTAssertThrowsError(
+            try coordinator.resize(missingID, size: TerminalGridSize(columns: 100, rows: 30))
+        ) { error in
+            XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(missingID))
+        }
+        XCTAssertEqual(runtime.events, [])
     }
 
     func testReconcileRuntimeStatusPreservesRunningSessions() throws {
