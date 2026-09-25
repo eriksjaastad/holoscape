@@ -119,6 +119,7 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private static func isValidSessionID(_ rawValue: String) -> Bool {
+        guard !rawValue.isEmpty else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
         return rawValue.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
