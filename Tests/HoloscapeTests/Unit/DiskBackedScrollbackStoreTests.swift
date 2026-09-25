@@ -32,6 +32,14 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(restored, "-kept-suffix")
     }
 
+    func testIsValidSessionIDRejectsEmptyAndWhitespaceAndAcceptsValidID() {
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID(""))
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("   "))
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("\t\n"))
+        XCTAssertTrue(DiskBackedScrollbackStore.isValidSessionID("session-valid-id"))
+        XCTAssertTrue(DiskBackedScrollbackStore.isValidSessionID("Session_Valid_ID_0123"))
+    }
+
     func testInvalidSessionIDCannotEscapeScrollbackDirectory() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

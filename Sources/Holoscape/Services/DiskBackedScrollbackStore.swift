@@ -118,7 +118,7 @@ struct DiskBackedScrollbackStore: Sendable {
         return directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
     }
 
-    private static func isValidSessionID(_ rawValue: String) -> Bool {
+    static func isValidSessionID(_ rawValue: String) -> Bool {
         guard !rawValue.isEmpty else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
         return rawValue.unicodeScalars.allSatisfy { allowed.contains($0) }
