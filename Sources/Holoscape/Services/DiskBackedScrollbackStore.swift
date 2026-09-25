@@ -12,6 +12,13 @@ struct DiskBackedScrollbackStore: Sendable {
         case invalidSessionID(String)
     }
 
+    /// Maintenance-facing metadata for one persisted per-session scrollback tail.
+    struct StoredScrollbackTail: Equatable, Sendable {
+        let sessionID: BrokerSessionID
+        let byteCount: Int
+        let modifiedAt: Date?
+    }
+
     let directory: URL
     private let maxRetainedBytes: Int
 
@@ -65,6 +72,35 @@ struct DiskBackedScrollbackStore: Sendable {
         return attributes[.size] as? Int ?? 0
     }
 
+    /// Enumerates the persisted per-session scrollback tails in the configured
+    /// directory, exposing just enough metadata for a settings or manual
+    /// maintenance UI. Only valid `.scrollback` session files are reported;
+    /// foreign files and malformed session names are skipped.
+    func listStoredTails() throws -> [StoredScrollbackTail] {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        let urls = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        var tails: [StoredScrollbackTail] = []
+        for url in urls {
+            guard url.pathExtension == "scrollback" else { continue }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            guard values.isRegularFile == true else { continue }
+            let rawID = url.deletingPathExtension().lastPathComponent
+            guard Self.isValidSessionID(rawID) else { continue }
+            tails.append(StoredScrollbackTail(
+                sessionID: BrokerSessionID(rawValue: rawID),
+                byteCount: values.fileSize ?? 0,
+                modifiedAt: values.contentModificationDate
+            ))
+        }
+        return tails.sorted { $0.sessionID.rawValue < $1.sessionID.rawValue }
+    }
+
     private func prune(_ url: URL) throws {
         guard maxRetainedBytes > 0 else {
             try Data().write(to: url, options: .atomic)
@@ -76,10 +112,14 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func fileURL(for id: BrokerSessionID) throws -> URL {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-        guard id.rawValue.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+        guard Self.isValidSessionID(id.rawValue) else {
             throw StoreError.invalidSessionID(id.rawValue)
         }
         return directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+    }
+
+    private static func isValidSessionID(_ rawValue: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        return rawValue.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 }
