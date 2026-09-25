@@ -47,6 +47,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     func readTail(for id: BrokerSessionID, maxBytes: Int) throws -> Data {
         guard maxBytes > 0 else { return Data() }
+        guard maxRetainedBytes > 0 else { return Data() }
         let fileManager = FileManager.default
         let url = try fileURL(for: id)
         guard fileManager.fileExists(atPath: url.path) else { return Data() }

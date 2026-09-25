@@ -52,6 +52,32 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try store.storedByteCount(for: id), 8)
     }
 
+    func testReadTailZeroRetentionOnExistingPersistedFileReturnsEmpty() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "disk-backed-scrollback-zero-retention")
+
+        // An existing persisted tail left behind by a positive-retention store.
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        try Data("persisted-tail\n".utf8).write(to: url)
+
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 0)
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data())
+    }
+
+    func testReadTailNegativeRetentionOnExistingPersistedFileReturnsEmpty() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "disk-backed-scrollback-negative-retention")
+
+        // An existing persisted tail left behind by a positive-retention store.
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        try Data("persisted-tail\n".utf8).write(to: url)
+
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: -1)
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data())
+    }
+
     func testIsValidSessionIDRejectsEmptyAndWhitespaceAndAcceptsValidID() {
         XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID(""))
         XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("   "))
