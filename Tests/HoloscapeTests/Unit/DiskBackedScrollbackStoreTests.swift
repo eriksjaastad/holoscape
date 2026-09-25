@@ -32,6 +32,14 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(restored, "-kept-suffix")
     }
 
+    func testIsValidSessionIDRejectsEmptyAndWhitespaceAndAcceptsValidID() {
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID(""))
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("   "))
+        XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("\t\n"))
+        XCTAssertTrue(DiskBackedScrollbackStore.isValidSessionID("session-valid-id"))
+        XCTAssertTrue(DiskBackedScrollbackStore.isValidSessionID("Session_Valid_ID_0123"))
+    }
+
     func testInvalidSessionIDCannotEscapeScrollbackDirectory() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -162,6 +170,44 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.remove(for: id)) { error in
             XCTAssertEqual(error as? DiskBackedScrollbackStore.StoreError, .invalidSessionID("../escape"))
         }
+    }
+
+    func testListStoredTailsSkipsWhitespaceStemScrollbackFile() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1024)
+        let id = BrokerSessionID(rawValue: "session-ws-guard")
+
+        try store.append(Data("tail-bytes\n".utf8), for: id)
+
+        // A whitespace-only stem with a `.scrollback` extension must not be reported.
+        FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("   .scrollback").path,
+            contents: Data("ws\n".utf8)
+        )
+
+        let tails = try store.listStoredTails()
+        XCTAssertEqual(tails.map(\.sessionID), [id])
+        XCTAssertEqual(tails.count, 1)
+    }
+
+    func testListStoredTailsSkipsBareEmptyStemScrollbackFile() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1024)
+        let id = BrokerSessionID(rawValue: "session-empty-stem-guard")
+
+        try store.append(Data("tail-bytes\n".utf8), for: id)
+
+        // A bare `.scrollback` file (empty stem) must not surface as a session tail.
+        FileManager.default.createFile(
+            atPath: directory.appendingPathComponent(".scrollback").path,
+            contents: Data("orphan\n".utf8)
+        )
+
+        let tails = try store.listStoredTails()
+        XCTAssertEqual(tails.map(\.sessionID), [id])
+        XCTAssertEqual(tails.count, 1)
     }
 
     private func makeTempDirectory() throws -> URL {
