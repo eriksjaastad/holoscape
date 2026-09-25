@@ -97,6 +97,28 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(tails.count, 1)
     }
 
+    func testListStoredTailsSkipsNonRegularScrollbackEntries() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1024)
+        let id = BrokerSessionID(rawValue: "session-regular-only")
+
+        try store.append(Data("real-tail\n".utf8), for: id)
+
+        // A directory named like a session tail must not be reported.
+        let phantomDirectory = directory.appendingPathComponent("phantom").appendingPathExtension("scrollback")
+        try FileManager.default.createDirectory(at: phantomDirectory, withIntermediateDirectories: true)
+
+        // A symlink named like a session tail must not be reported either.
+        let realFile = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let phantomSymlink = directory.appendingPathComponent("linked").appendingPathExtension("scrollback")
+        try FileManager.default.createSymbolicLink(at: phantomSymlink, withDestinationURL: realFile)
+
+        let tails = try store.listStoredTails()
+        XCTAssertEqual(tails.map(\.sessionID), [id])
+        XCTAssertEqual(tails.count, 1)
+    }
+
     func testListStoredTailsReturnsEmptyWhenDirectoryMissing() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiskBackedScrollbackStoreTests")

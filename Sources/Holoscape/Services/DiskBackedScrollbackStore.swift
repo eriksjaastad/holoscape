@@ -81,16 +81,17 @@ struct DiskBackedScrollbackStore: Sendable {
         guard fileManager.fileExists(atPath: directory.path) else { return [] }
         let urls = try fileManager.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         )
 
         var tails: [StoredScrollbackTail] = []
         for url in urls {
             guard url.pathExtension == "scrollback" else { continue }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            guard values.isRegularFile == true else { continue }
             let rawID = url.deletingPathExtension().lastPathComponent
             guard Self.isValidSessionID(rawID) else { continue }
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             tails.append(StoredScrollbackTail(
                 sessionID: BrokerSessionID(rawValue: rawID),
                 byteCount: values.fileSize ?? 0,
