@@ -256,6 +256,32 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(tails.count, 1)
     }
 
+    func testListStoredTailsSkipsEntryWhoseMetadataCannotBeRead() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1024)
+        let surviving = BrokerSessionID(rawValue: "session-survives")
+        let vanishing = BrokerSessionID(rawValue: "session-vanishing")
+
+        try store.append(Data("good-tail\n".utf8), for: surviving)
+        try store.append(Data("bad-tail\n".utf8), for: vanishing)
+
+        // Simulate the per-entry race where a tail is deleted between directory
+        // enumeration and its metadata read: the read throws for exactly that
+        // entry while every other entry reads normally. Compare on the session
+        // ID stem rather than full URL equality, since the temporary directory
+        // path can be returned in symlink-resolved form.
+        let tails = try store.listStoredTails(resourceValues: { url in
+            if url.deletingPathExtension().lastPathComponent == vanishing.rawValue {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+            return try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+        })
+
+        XCTAssertEqual(tails.map(\.sessionID), [surviving])
+        XCTAssertEqual(tails.count, 1)
+    }
+
     private func makeTempDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DiskBackedScrollbackStoreTests")

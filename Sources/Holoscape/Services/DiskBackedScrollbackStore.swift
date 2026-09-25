@@ -82,8 +82,19 @@ struct DiskBackedScrollbackStore: Sendable {
     /// Enumerates the persisted per-session scrollback tails in the configured
     /// directory, exposing just enough metadata for a settings or manual
     /// maintenance UI. Only valid `.scrollback` session files are reported;
-    /// foreign files and malformed session names are skipped.
-    func listStoredTails() throws -> [StoredScrollbackTail] {
+    /// foreign files and malformed session names are skipped, and a single
+    /// entry whose metadata cannot be read (for example a tail deleted between
+    /// directory enumeration and this read) is skipped rather than failing the
+    /// whole listing, so maintenance still surfaces every tail it can.
+    ///
+    /// `resourceValues` is a seam over the per-entry metadata read so the
+    /// resilience path can be exercised deterministically in tests; callers
+    /// that omit it get the real `URL.resourceValues(forKeys:)` read.
+    func listStoredTails(
+        resourceValues: (URL) throws -> URLResourceValues = { url in
+            try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+        }
+    ) throws -> [StoredScrollbackTail] {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: directory.path) else { return [] }
         let urls = try fileManager.contentsOfDirectory(
@@ -95,7 +106,14 @@ struct DiskBackedScrollbackStore: Sendable {
         var tails: [StoredScrollbackTail] = []
         for url in urls {
             guard url.pathExtension == "scrollback" else { continue }
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            let values: URLResourceValues
+            do {
+                values = try resourceValues(url)
+            } catch {
+                // A per-entry metadata/readability race must not throw out the
+                // entire listing; skip the bad entry and surface the rest.
+                continue
+            }
             guard values.isRegularFile == true else { continue }
             let rawID = url.deletingPathExtension().lastPathComponent
             guard Self.isValidSessionID(rawID) else { continue }
