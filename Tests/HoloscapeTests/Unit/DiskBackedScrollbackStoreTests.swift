@@ -32,6 +32,26 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(restored, "-kept-suffix")
     }
 
+    func testReadTailRepairsOversizedPersistedFile() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "crash-oversized-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        let suffix = "KEPTTAIL" // exactly 8 bytes
+
+        // Simulate a crash between append's FileHandle write and its prune: the
+        // persisted file is left larger than the retention cap.
+        let oversized = Data(("LEFTOVER-PREFIX-" + suffix).utf8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        try oversized.write(to: url)
+
+        let tail = try store.readTail(for: id, maxBytes: 64)
+        XCTAssertEqual(String(decoding: tail, as: UTF8.self), suffix)
+
+        // The read must repair the persisted file back down to the cap.
+        XCTAssertEqual(try store.storedByteCount(for: id), 8)
+    }
+
     func testIsValidSessionIDRejectsEmptyAndWhitespaceAndAcceptsValidID() {
         XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID(""))
         XCTAssertFalse(DiskBackedScrollbackStore.isValidSessionID("   "))

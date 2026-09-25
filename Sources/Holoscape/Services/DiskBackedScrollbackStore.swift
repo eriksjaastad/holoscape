@@ -51,6 +51,12 @@ struct DiskBackedScrollbackStore: Sendable {
         let url = try fileURL(for: id)
         guard fileManager.fileExists(atPath: url.path) else { return Data() }
         let data = try Data(contentsOf: url)
+        // A crash between append's write and its prune can leave the persisted
+        // tail oversized relative to the retention cap. Repair it on read so a
+        // normal store operation restores the bounded-scrollback guarantee.
+        if data.count > maxRetainedBytes {
+            try prune(url)
+        }
         let capped = min(maxBytes, maxRetainedBytes)
         guard data.count > capped else { return data }
         return Data(data.suffix(capped))
