@@ -16,6 +16,11 @@ protocol AppearanceSettingsDelegate: AnyObject {
     /// its own signal so this PR can wire it without disturbing any
     /// existing observers of `didChange`.
     func appearanceSettingsDidSelectSkin(_ name: String)
+
+    /// The settings surface requested the scrollback storage maintenance window.
+    /// Implemented in `AppDelegate`, which owns and retains the
+    /// `ScrollbackMaintenanceWindowController`.
+    func appearanceSettingsDidRequestScrollbackStorage()
 }
 
 @MainActor
@@ -42,6 +47,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private let notifSSHCheckbox = NSButton(checkboxWithTitle: "SSH", target: nil, action: nil)
     private let notifMCPCheckbox = NSButton(checkboxWithTitle: "MCP", target: nil, action: nil)
     private let notifGroupChatCheckbox = NSButton(checkboxWithTitle: "Group Chat", target: nil, action: nil)
+    private let storageButton = NSButton(title: "Manage Stored Scrollback…", target: nil, action: nil)
 
     init(
         config: AppearanceConfig,
@@ -169,6 +175,16 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         indentedRow.addArrangedSubview(spacer)
         indentedRow.addArrangedSubview(channelTypeStack)
         stack.addArrangedSubview(indentedRow)
+
+        // Storage section — opens the scrollback maintenance window.
+        let storageHeader = NSTextField(labelWithString: "Storage")
+        storageHeader.font = NSFont.boldSystemFont(ofSize: 13)
+        stack.addArrangedSubview(storageHeader)
+
+        storageButton.target = self
+        storageButton.action = #selector(openScrollbackStorage(_:))
+        storageButton.setAccessibilityIdentifier("storage-button")
+        stack.addArrangedSubview(storageButton)
     }
 
     private func makeRow(label: String, control: NSView) -> NSStackView {
@@ -317,6 +333,10 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         for cb in [notifShellCheckbox, notifAgentCheckbox, notifSSHCheckbox, notifMCPCheckbox, notifGroupChatCheckbox] {
             cb.isEnabled = enabled
         }
+    }
+
+    @objc private func openScrollbackStorage(_ sender: NSButton) {
+        settingsDelegate?.appearanceSettingsDidRequestScrollbackStorage()
     }
 
     private func applyAndSave() {

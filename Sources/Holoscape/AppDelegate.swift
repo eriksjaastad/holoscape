@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     var channelManagerRef: ChannelManager?
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
+    private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
     private var apiServer: HoloscapeAPIServer?
 
     private var isUITesting: Bool {
@@ -178,6 +179,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // owns the SkinEngine instance, the active SkinFontBundle, and
         // the chrome view references `applySkin` re-injects into.
         windowController?.reloadSkin(named: name)
+    }
+
+    func appearanceSettingsDidRequestScrollbackStorage() {
+        let controller = scrollbackStorageWindowController ?? ScrollbackMaintenanceWindowController()
+        scrollbackStorageWindowController = controller
+        controller.refreshListing()
+        controller.showWindow(nil)
+        controller.window?.center()
     }
 
     @objc func openSettings() {
