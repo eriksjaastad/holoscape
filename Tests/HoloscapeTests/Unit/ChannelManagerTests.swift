@@ -164,7 +164,22 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(channel.displayLabel, "Build Agent")
 
         manager.saveState()
-        XCTAssertEqual(configService.load().channels.first?.customLabel, "Build Agent")
+        let saved = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(saved.role, "Shell", "Rename must not replace the launch/profile identity")
+        XCTAssertEqual(saved.customLabel, "Build Agent")
+
+        let restoredManager = ChannelManager(configService: configService)
+        restoredManager.restoreState { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                workingDirectory: metadata.workingDirectory,
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+        XCTAssertEqual(restoredManager.labelForChannel(id: channel.channelId), "Shell")
+        XCTAssertEqual(restoredManager.channel(for: channel.channelId)?.displayLabel, "Build Agent")
     }
 
     func testRenameChannelRejectsBlankLabelWithoutChangingDisplayName() {

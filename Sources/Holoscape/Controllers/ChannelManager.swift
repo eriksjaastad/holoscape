@@ -245,7 +245,7 @@ class ChannelManager {
             return ChannelMetadata(
                 id: channel.channelId,
                 type: channel.channelType,
-                role: channel.displayLabel,
+                role: channelLabels[id] ?? channel.displayLabel,
                 context: nil,
                 instanceNumber: nil,
                 workingDirectory: workingDir,
