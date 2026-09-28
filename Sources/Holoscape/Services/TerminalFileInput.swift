@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 /// Converts file and bitmap pasteboard payloads into terminal-safe path input.
 ///
@@ -47,6 +48,28 @@ struct TerminalFileInput {
             ])
         }
 
+        if let imageData = genericImageData(from: pasteboard),
+           let image = NSImage(data: imageData),
+           let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            return shellQuotedPaths([
+                try persistImageData(png, fileExtension: "png", in: imageDirectory),
+            ])
+        }
+
+        return nil
+    }
+
+    private static func genericImageData(from pasteboard: NSPasteboard) -> Data? {
+        for type in pasteboard.types ?? [] {
+            guard let uniformType = UTType(type.rawValue),
+                  uniformType.conforms(to: .image),
+                  let data = pasteboard.data(forType: type) else {
+                continue
+            }
+            return data
+        }
         return nil
     }
 

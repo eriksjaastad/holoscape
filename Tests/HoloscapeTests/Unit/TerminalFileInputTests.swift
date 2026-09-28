@@ -67,6 +67,35 @@ final class TerminalFileInputTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
     }
 
+    func testPublicImageOnlyPasteboardIsConvertedToPNGPath() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("TerminalFileInputTests-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 1,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 4,
+            bitsPerPixel: 32
+        )!
+        let sourcePNG = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertTrue(pasteboard.setData(sourcePNG, forType: TerminalFileInput.imageType))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TerminalFileInputTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let input = try XCTUnwrap(
+            TerminalFileInput.inputText(from: pasteboard, imageDirectory: directory)
+        )
+        let path = String(input.dropFirst().dropLast())
+        XCTAssertEqual(URL(fileURLWithPath: path).pathExtension, "png")
+        XCTAssertNotNil(NSImage(contentsOfFile: path))
+    }
+
     func testTerminalViewInsertsDroppedFilePathAsInputWithoutNewline() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("TerminalFileInputTests-\(UUID().uuidString)"))
         pasteboard.clearContents()
