@@ -43,6 +43,52 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
         setAccessibilityIdentifier("terminal-view")
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
+        registerForDraggedTypes(TerminalFileInput.readableTypes)
+    }
+
+    open override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canAcceptFileInput(from: sender.draggingPasteboard) ? .copy : []
+    }
+
+    open override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        insertFileInput(from: sender.draggingPasteboard)
+    }
+
+    @objc open override func paste(_ sender: Any) {
+        if insertFileInput(from: .general) {
+            return
+        }
+        super.paste(sender)
+    }
+
+    private func canAcceptFileInput(from pasteboard: NSPasteboard) -> Bool {
+        if !TerminalFileInput.fileURLs(from: pasteboard).isEmpty {
+            return true
+        }
+        return pasteboard.availableType(from: [TerminalFileInput.imageType, .png, .tiff]) != nil
+    }
+
+    @discardableResult
+    func insertFileInput(from pasteboard: NSPasteboard) -> Bool {
+        do {
+            guard let text = try TerminalFileInput.inputText(from: pasteboard) else {
+                return false
+            }
+            sendPastedText(text)
+            return true
+        } catch {
+            NSLog("HoloscapeTerminalView: failed to persist pasted image: \(error)")
+            NSSound.beep()
+            return false
+        }
+    }
+
+    private func sendPastedText(_ text: String) {
+        var bytes = Array(text.utf8)
+        if terminal.bracketedPasteMode {
+            bytes = Array("\u{1B}[200~".utf8) + bytes + Array("\u{1B}[201~".utf8)
+        }
+        send(source: self, data: bytes[...])
     }
 
     open override func linefeed(source: Terminal) {
