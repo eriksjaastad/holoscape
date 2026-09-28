@@ -49,7 +49,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     private var reconnectDelay: TimeInterval = 1.0
     private let maxReconnectDelay: TimeInterval = 30.0
     private let profileLabel: String
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private(set) var customDisplayLabel: String?
 
     private static let isoFormatter: ISO8601DateFormatter = {
@@ -78,7 +78,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     func setCustomDisplayLabel(_ label: String?) {
-        customDisplayLabel = label
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var contentView: NSView { scrollView }

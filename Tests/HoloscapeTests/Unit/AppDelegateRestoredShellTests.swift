@@ -233,6 +233,27 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID, brokerSessionID])
     }
 
+    func testRestoredGroupChatPreservesProfileAndInstanceIdentity() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .groupChat,
+            role: "Team Chat",
+            instanceNumber: 3,
+            apiURL: "https://chat.example.com",
+            apiKeyEnv: "TEAM_CHAT_KEY"
+        )
+
+        let controller = AppDelegate.restoredGroupChatController(
+            from: metadata,
+            apiURL: "https://chat.example.com",
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(controller.displayLabel, "Team Chat 3")
+        XCTAssertEqual(controller.instanceNumber, 3)
+        XCTAssertEqual(controller.apiKeyEnv, "TEAM_CHAT_KEY")
+    }
+
     func testRestoredLegacyRootShellMigratesToDefaultProjectDirectory() {
         let metadata = ChannelMetadata(
             id: UUID(),

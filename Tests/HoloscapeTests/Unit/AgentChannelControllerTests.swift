@@ -131,6 +131,23 @@ final class AgentChannelControllerTests: XCTestCase {
         )
     }
 
+    func testNumberedAgentCustomLabelIsExactPresentationValue() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: 2,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+
+        XCTAssertEqual(controller.instanceNumber, 2)
+        XCTAssertNotEqual(controller.displayLabel, "Build")
+        controller.setCustomDisplayLabel("Build")
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
     func testAgentOutputHandlerRoutesThroughTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         let delegate = MockChannelDelegate()

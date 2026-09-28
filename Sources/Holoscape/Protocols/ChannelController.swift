@@ -8,6 +8,7 @@ protocol ChannelController: AnyObject {
     var displayBaseLabel: String { get }
     var displayLabel: String { get }
     var customDisplayLabel: String? { get }
+    var instanceNumber: Int? { get }
     var hasUnread: Bool { get set }
     var state: ChannelState { get }
     var persistentState: PersistentChannelState { get }
@@ -33,6 +34,7 @@ protocol ChannelController: AnyObject {
 
 extension ChannelController {
     var displayBaseLabel: String { displayLabel }
+    var instanceNumber: Int? { nil }
 
     var activatedAt: Date? { nil }
     var lastInteractionAt: Date { activatedAt ?? .distantPast }
@@ -46,6 +48,14 @@ extension ChannelController {
 
     func applyPersistentState(_ state: PersistentChannelState) {}
     func recordUserInteraction(at date: Date) {}
+}
+
+enum ChannelCustomDisplayLabel {
+    static func normalized(_ label: String?) -> String? {
+        guard let label else { return nil }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 enum ChannelRecoveryAction: Codable, Equatable, Sendable {

@@ -16,6 +16,22 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.displayLabel, "\(repo.lastPathComponent) · feature/tab-branch")
     }
 
+    func testNumberedShellCustomLabelIsExactPresentationValue() {
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: 2,
+            label: "Shell",
+            workingDirectory: "/tmp/build",
+            terminal: MockTerminalProcess()
+        )
+
+        XCTAssertEqual(controller.displayLabel, "build 2")
+
+        controller.setCustomDisplayLabel("Build")
+
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
     func testActivateUsesInjectedTerminalProcess() {
         let terminal = MockTerminalProcess()
         let controller = ShellChannelController(

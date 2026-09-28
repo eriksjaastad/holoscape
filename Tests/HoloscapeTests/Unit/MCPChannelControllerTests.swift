@@ -16,6 +16,15 @@ final class MCPChannelControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testNumberedMCPCustomLabelIsExactPresentationValue() {
+        let controller = MCPChannelController(id: UUID(), endpoint: URL(string: "http://localhost:8080/mcp/ceo")!, label: "CEO", instanceNumber: 2)
+
+        controller.setCustomDisplayLabel("Build")
+
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
+    @MainActor
     func testChannelTypeIsMCP() {
         let controller = MCPChannelController(id: UUID(), endpoint: URL(string: "http://localhost:8080")!, label: "CEO", instanceNumber: nil)
         XCTAssertEqual(controller.channelType, .mcp)

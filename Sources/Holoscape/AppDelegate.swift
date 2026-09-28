@@ -379,8 +379,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 }
             }
             guard !apiURL.isEmpty, !apiKey.isEmpty else { return nil }
-            let controller = GroupChatChannelController(id: metadata.id, apiURL: apiURL, apiKey: apiKey)
-            return controller
+            return Self.restoredGroupChatController(from: metadata, apiURL: apiURL, apiKey: apiKey)
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
             let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
@@ -400,6 +399,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let controller = BridgeChannelController(id: metadata.id, channelManager: cm, instanceNumber: metadata.instanceNumber)
             return controller
         }
+    }
+
+    static func restoredGroupChatController(
+        from metadata: ChannelMetadata,
+        apiURL: String,
+        apiKey: String
+    ) -> GroupChatChannelController {
+        GroupChatChannelController(
+            id: metadata.id,
+            apiURL: apiURL,
+            apiKey: apiKey,
+            label: metadata.role,
+            instanceNumber: metadata.instanceNumber,
+            apiKeyEnv: metadata.apiKeyEnv
+        )
     }
 
     static func restoredShellLaunchParameters(from metadata: ChannelMetadata) -> (label: String?, workingDirectory: String) {

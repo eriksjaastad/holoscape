@@ -23,7 +23,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var customDisplayLabel: String?
     private let command: String
     private var detectedRole: String?
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
@@ -63,7 +63,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func setCustomDisplayLabel(_ label: String?) {
-        customDisplayLabel = label
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var displayLabel: String {

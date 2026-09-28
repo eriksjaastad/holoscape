@@ -174,9 +174,9 @@ class ChannelManager {
     /// Apply a user-owned display label without changing launch or process identity.
     @discardableResult
     func renameChannel(id: UUID, to label: String) -> Bool {
-        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let channel = channels[id] else { return false }
-        channel.setCustomDisplayLabel(trimmed)
+        guard let normalized = ChannelCustomDisplayLabel.normalized(label),
+              let channel = channels[id] else { return false }
+        channel.setCustomDisplayLabel(normalized)
         saveState()
         return true
     }
@@ -247,7 +247,7 @@ class ChannelManager {
                 type: channel.channelType,
                 role: channelLabels[id] ?? channel.displayLabel,
                 context: nil,
-                instanceNumber: nil,
+                instanceNumber: channel.instanceNumber,
                 workingDirectory: workingDir,
                 customLabel: channel.customDisplayLabel,
                 host: host,
@@ -276,6 +276,7 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
+                recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
                     restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
                 }
@@ -380,6 +381,7 @@ class ChannelManager {
             channels[controller.channelId] = controller
             channelOrder.append(controller.channelId)
             channelLabels[controller.channelId] = metadata.role
+            recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
             restoredBrokerSessionIDs[controller.channelId] = record.id
             restoredCount += 1
         }
@@ -394,7 +396,19 @@ class ChannelManager {
         return channelLabels[id]
     }
 
+    func channel(matchingLaunchLabel label: String) -> (any ChannelController)? {
+        channelOrder.compactMap { id -> (any ChannelController)? in
+            guard channelLabels[id]?.caseInsensitiveCompare(label) == .orderedSame else { return nil }
+            return channels[id]
+        }.first
+    }
+
     // MARK: - Private
+
+    private func recordRestoredInstanceNumber(_ instanceNumber: Int?, for label: String) {
+        let key = label.lowercased()
+        highWaterMarks[key] = max(highWaterMarks[key, default: 0], instanceNumber ?? 1)
+    }
 
     private func nextInstanceNumber(for label: String) -> Int? {
         let key = label.lowercased()

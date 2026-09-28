@@ -17,6 +17,15 @@ final class GroupChatV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testNumberedGroupChatCustomLabelIsExactPresentationValue() {
+        let controller = GroupChatChannelController(id: UUID(), apiURL: "https://chat.example.com", apiKey: "key", label: "Group Chat", instanceNumber: 2)
+
+        controller.setCustomDisplayLabel("Build")
+
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
+    @MainActor
     func testV1ConvenienceInitDisplaysChat() {
         let controller = GroupChatChannelController(id: UUID(), apiURL: "https://chat.example.com", apiKey: "key")
         XCTAssertEqual(controller.displayLabel, "Chat")

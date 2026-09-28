@@ -14,7 +14,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
     let profile: SessionProfile
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private(set) var customDisplayLabel: String?
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
@@ -30,7 +30,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func setCustomDisplayLabel(_ label: String?) {
-        customDisplayLabel = label
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var tabIdentityIndicator: ChannelTabIdentityIndicator? { .ssh }

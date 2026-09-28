@@ -12,7 +12,7 @@ class BridgeChannelController: NSObject, ChannelController {
     private let textView: NSTextView
     private let scrollView: NSScrollView
     private let channelManager: ChannelManager
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private(set) var customDisplayLabel: String?
 
     private(set) var activatedAt: Date? = Date()
@@ -29,7 +29,7 @@ class BridgeChannelController: NSObject, ChannelController {
     }
 
     func setCustomDisplayLabel(_ label: String?) {
-        customDisplayLabel = label
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var contentView: NSView { scrollView }
