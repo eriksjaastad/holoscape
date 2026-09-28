@@ -3,14 +3,20 @@ import Foundation
 /// HTTP client for communicating with Holoscape's embedded API server.
 struct HoloscapeClient: Sendable {
     let baseURL: String
+    private let session: URLSession
 
     init(port: UInt16 = 7865) {
-        self.baseURL = "http://127.0.0.1:\(port)"
+        self.init(baseURL: "http://127.0.0.1:\(port)")
+    }
+
+    init(baseURL: String, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
     }
 
     func listChannels() async throws -> [[String: Any]] {
         let data = try await get("/channels")
-        guard let channels = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        guard let channels = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw HoloscapeError.invalidResponse
         }
         return channels
@@ -22,62 +28,91 @@ struct HoloscapeClient: Sendable {
         if let label { body["label"] = label }
         if let cmd { body["cmd"] = cmd }
         let data = try await post("/channels", body: body)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return try decodeObject(from: data)
     }
 
     func switchChannel(id: String) async throws -> [String: Any] {
         let data = try await post("/channels/\(id)/switch", body: nil)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return try decodeObject(from: data)
     }
 
     func closeChannel(id: String) async throws -> [String: Any] {
         let data = try await delete("/channels/\(id)")
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return try decodeObject(from: data)
     }
 
     func sendInput(id: String, text: String) async throws -> [String: Any] {
         let data = try await post("/channels/\(id)/input", body: ["text": text])
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return try decodeObject(from: data)
     }
 
     func readOutput(id: String, lines: Int = 50) async throws -> [String: Any] {
         let data = try await get("/channels/\(id)/output?lines=\(lines)")
-        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw HoloscapeError.invalidResponse
-        }
-        return result
+        return try decodeObject(from: data)
     }
 
     // MARK: - HTTP Methods
 
     private func get(_ path: String) async throws -> Data {
-        let url = URL(string: baseURL + path)!
-        let (data, _) = try await URLSession.shared.data(from: url)
-        return data
+        try await perform(request(path: path, method: "GET"))
     }
 
     private func post(_ path: String, body: [String: Any]?) async throws -> Data {
-        let url = URL(string: baseURL + path)!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        var request = try request(path: path, method: "POST")
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return data
+        return try await perform(request)
     }
 
     private func delete(_ path: String) async throws -> Data {
-        let url = URL(string: baseURL + path)!
+        try await perform(request(path: path, method: "DELETE"))
+    }
+
+    private func request(path: String, method: String) throws -> URLRequest {
+        guard let url = URL(string: baseURL + path) else {
+            throw HoloscapeError.invalidResponse
+        }
         var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        let (data, _) = try await URLSession.shared.data(for: request)
+        request.httpMethod = method
+        return request
+    }
+
+    private func perform(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else {
+            throw HoloscapeError.invalidResponse
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw HoloscapeError.httpError(statusCode: response.statusCode)
+        }
         return data
+    }
+
+    private func decodeObject(from data: Data) throws -> [String: Any] {
+        guard let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HoloscapeError.invalidResponse
+        }
+        return result
     }
 }
 
-enum HoloscapeError: Error {
+enum HoloscapeError: Error, Equatable {
     case invalidResponse
     case connectionFailed
+    case httpError(statusCode: Int)
+}
+
+extension HoloscapeError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "Holoscape returned an invalid response"
+        case .connectionFailed:
+            return "Could not connect to Holoscape"
+        case let .httpError(statusCode):
+            return "Holoscape returned HTTP status \(statusCode)"
+        }
+    }
 }
