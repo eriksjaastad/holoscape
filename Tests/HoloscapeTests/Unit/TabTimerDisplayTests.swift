@@ -40,7 +40,8 @@ private final class MockTimerChannel: ChannelController {
     let channelId = UUID()
     let channelType: ChannelType = .shell
     let displayBaseLabel: String
-    var displayLabel: String { displayBaseLabel }
+    var customDisplayLabel: String?
+    var displayLabel: String { customDisplayLabel ?? displayBaseLabel }
     var hasUnread = false
     let state: ChannelState
     var persistentState: PersistentChannelState {
@@ -63,6 +64,7 @@ private final class MockTimerChannel: ChannelController {
     func deactivate() {}
     func retry() {}
     func lastLines(_ count: Int) -> [String] { [] }
+    func setCustomDisplayLabel(_ label: String?) { customDisplayLabel = label }
 }
 
 private extension NSView {

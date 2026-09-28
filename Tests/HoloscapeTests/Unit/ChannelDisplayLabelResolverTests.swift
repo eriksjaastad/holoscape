@@ -50,7 +50,8 @@ private final class MockChannel: ChannelController {
     var activatedAt: Date? = nil
 
     let displayBaseLabel: String
-    var displayLabel: String { displayBaseLabel }
+    var customDisplayLabel: String?
+    var displayLabel: String { customDisplayLabel ?? displayBaseLabel }
 
     init(baseLabel: String) {
         self.displayBaseLabel = baseLabel
@@ -61,4 +62,5 @@ private final class MockChannel: ChannelController {
     func deactivate() {}
     func retry() {}
     func lastLines(_ count: Int) -> [String] { [] }
+    func setCustomDisplayLabel(_ label: String?) { customDisplayLabel = label }
 }

@@ -7,6 +7,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let context: String?
     let instanceNumber: Int?
     let workingDirectory: String?
+    let customLabel: String?
     let host: String?
     let user: String?
     let command: String?
@@ -24,6 +25,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
 
     init(id: UUID, type: ChannelType, role: String, context: String? = nil,
          instanceNumber: Int? = nil, workingDirectory: String? = nil,
+         customLabel: String? = nil,
          host: String? = nil, user: String? = nil, command: String? = nil,
          endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil,
          pinnedAt: Date? = nil, persistentState: PersistentChannelState? = nil,
@@ -35,6 +37,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.context = context
         self.instanceNumber = instanceNumber
         self.workingDirectory = workingDirectory
+        self.customLabel = customLabel
         self.host = host
         self.user = user
         self.command = command

@@ -2453,7 +2453,23 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuRename(_ sender: NSMenuItem) {
-        // TODO: Implement inline rename
+        guard let id = sender.representedObject as? UUID,
+              let channel = channelManager.channel(for: id) else { return }
+
+        let input = NSTextField(string: channel.displayLabel)
+        input.placeholderString = "Channel name"
+        input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Channel"
+        alert.informativeText = "Choose a display name for this channel. The running session is not changed."
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn,
+              channelManager.renameChannel(id: id, to: input.stringValue) else { return }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {

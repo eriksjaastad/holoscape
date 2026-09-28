@@ -116,6 +116,28 @@ final class SidebarUITests: HoloscapeUITestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
+    func testRenameContextMenuUpdatesChannelLabel() throws {
+        let shellEntry = firstSidebarEntry()
+        XCTAssertTrue(shellEntry.waitForExistence(timeout: 2), "Sidebar entry should exist")
+
+        shellEntry.rightClick()
+        let renameItem = app.menuItems["Rename"]
+        XCTAssertTrue(renameItem.waitForExistence(timeout: 2), "Rename menu item should exist")
+        renameItem.click()
+
+        let alert = app.alerts["Rename Channel"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 2), "Rename alert should appear")
+        let nameField = alert.textFields.firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 2), "Rename alert should contain a name field")
+        nameField.click()
+        nameField.typeKey("a", modifierFlags: .command)
+        nameField.typeText("UI Rename Test")
+        alert.buttons["Rename"].click()
+
+        let renamedEntry = app.buttons.matching(NSPredicate(format: "title CONTAINS %@", "UI Rename Test")).firstMatch
+        XCTAssertTrue(renamedEntry.waitForExistence(timeout: 3), "Renamed channel should refresh in the sidebar")
+    }
+
     // MARK: - Channel Labels
 
     func testChannelLabelNotTruncatedAtDefaultWidth() throws {

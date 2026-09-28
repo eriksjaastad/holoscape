@@ -171,6 +171,16 @@ class ChannelManager {
         return channelOrder.compactMap { channels[$0] }
     }
 
+    /// Apply a user-owned display label without changing launch or process identity.
+    @discardableResult
+    func renameChannel(id: UUID, to label: String) -> Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let channel = channels[id] else { return false }
+        channel.setCustomDisplayLabel(trimmed)
+        saveState()
+        return true
+    }
+
     /// Return all active agent channels (for bridge broadcasting).
     func agentChannels() -> [any ChannelController] {
         let agentTypes: Set<ChannelType> = [.agentDirect, .agentAPI, .ssh, .mcp]
@@ -239,6 +249,7 @@ class ChannelManager {
                 context: nil,
                 instanceNumber: nil,
                 workingDirectory: workingDir,
+                customLabel: channel.customDisplayLabel,
                 host: host,
                 user: user,
                 command: command,
@@ -261,6 +272,7 @@ class ChannelManager {
         let config = configService.load()
         for metadata in config.channels {
             if let controller = factory(metadata) {
+                controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role

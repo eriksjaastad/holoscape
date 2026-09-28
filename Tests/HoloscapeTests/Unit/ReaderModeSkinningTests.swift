@@ -39,7 +39,8 @@ final class ReaderModeSkinningTests: XCTestCase {
     private final class StubChannel: NSObject, ChannelController {
         let channelId = UUID()
         var channelType: ChannelType = .shell
-        let displayLabel = "test"
+        var customDisplayLabel: String?
+        var displayLabel: String { customDisplayLabel ?? "test" }
         var hasUnread: Bool = false
         var state: ChannelState = .active
         var contentView: NSView = NSView()
@@ -51,6 +52,7 @@ final class ReaderModeSkinningTests: XCTestCase {
         func deactivate() {}
         func retry() {}
         func lastLines(_ count: Int) -> [String] { ["hello world"] }
+        func setCustomDisplayLabel(_ label: String?) { customDisplayLabel = label }
     }
 
     private func makeSurface(

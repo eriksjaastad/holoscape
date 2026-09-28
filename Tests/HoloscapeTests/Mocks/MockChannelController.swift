@@ -12,6 +12,7 @@ class MockChannelController: NSObject, ChannelController {
     var displayBaseLabelOverride: String?
     var displayBaseLabel: String { displayBaseLabelOverride ?? displayLabel }
     var displayLabel: String
+    private(set) var customDisplayLabel: String?
     var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
@@ -74,6 +75,13 @@ class MockChannelController: NSObject, ChannelController {
 
     func lastLines(_ count: Int) -> [String] {
         return []
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = label
+        if let label {
+            displayLabel = label
+        }
     }
 
     func recordUserInteraction(at date: Date = Date()) {

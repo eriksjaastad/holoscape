@@ -19,6 +19,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var staleBrokerSessionID: BrokerSessionID?
     private let instanceNumber: Int?
     private let explicitLabel: String?
+    private(set) var customDisplayLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
     private(set) var activatedAt: Date?
@@ -30,6 +31,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var displayBaseLabel: String {
+        if let customDisplayLabel {
+            return customDisplayLabel
+        }
         let base: String
         if let dir = workingDirectory {
             let directoryLabel = URL(fileURLWithPath: dir).lastPathComponent
@@ -58,6 +62,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private static func isGenericShellLabel(_ label: String) -> Bool {
         label.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Shell") == .orderedSame
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = label
     }
 
     var contentView: NSView { terminal.terminalContentView }

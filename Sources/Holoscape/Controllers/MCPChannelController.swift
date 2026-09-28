@@ -14,15 +14,23 @@ class MCPChannelController: NSObject, ChannelController {
     private let mcpClient: MCPClient
     let profileLabel: String
     private let instanceNumber: Int?
+    private(set) var customDisplayLabel: String?
 
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
 
     var displayLabel: String {
+        if let customDisplayLabel {
+            return customDisplayLabel
+        }
         if let num = instanceNumber {
             return "\(profileLabel) \(num)"
         }
         return profileLabel
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = label
     }
 
     var contentView: NSView { scrollView }

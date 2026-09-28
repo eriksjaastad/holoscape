@@ -7,6 +7,7 @@ protocol ChannelController: AnyObject {
     var channelType: ChannelType { get }
     var displayBaseLabel: String { get }
     var displayLabel: String { get }
+    var customDisplayLabel: String? { get }
     var hasUnread: Bool { get set }
     var state: ChannelState { get }
     var persistentState: PersistentChannelState { get }
@@ -20,6 +21,7 @@ protocol ChannelController: AnyObject {
     func retry()
     func lastLines(_ count: Int) -> [String]
     func applyPersistentState(_ state: PersistentChannelState)
+    func setCustomDisplayLabel(_ label: String?)
 
     var commandHistory: CommandHistory { get }
     var delegate: ChannelControllerDelegate? { get set }

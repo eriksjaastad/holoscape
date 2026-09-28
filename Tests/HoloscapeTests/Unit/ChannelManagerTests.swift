@@ -141,6 +141,73 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(all[2].channelId, third.channelId)
     }
 
+    func testRenameChannelTrimsAndPersistsCustomLabel() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerRenameTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                workingDirectory: "/tmp/rename-source",
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+
+        XCTAssertTrue(manager.renameChannel(id: channel.channelId, to: "  Build Agent  "))
+        XCTAssertEqual(channel.displayLabel, "Build Agent")
+
+        manager.saveState()
+        XCTAssertEqual(configService.load().channels.first?.customLabel, "Build Agent")
+    }
+
+    func testRenameChannelRejectsBlankLabelWithoutChangingDisplayName() {
+        let channel = createMockChannel(type: .shell, role: "Shell")
+        let originalLabel = channel.displayLabel
+
+        XCTAssertFalse(manager.renameChannel(id: channel.channelId, to: "  \n "))
+        XCTAssertEqual(channel.displayLabel, originalLabel)
+    }
+
+    func testRestoreStateAppliesPersistedCustomLabel() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerRenameRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let channelID = UUID()
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: channelID,
+            type: .shell,
+            role: "Shell",
+            workingDirectory: "/tmp/rename-restore",
+            customLabel: "Release Shell"
+        )]
+        configService.save(config)
+
+        let manager = ChannelManager(configService: configService)
+        manager.restoreState { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                workingDirectory: metadata.workingDirectory,
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+
+        XCTAssertEqual(try XCTUnwrap(manager.channel(for: channelID)).displayLabel, "Release Shell")
+    }
+
     func testCreateLocalShellProfileUsesProfileDirectory() {
         let profile = SessionProfile(
             label: "Shell",
