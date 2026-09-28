@@ -122,6 +122,13 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(codex.tabIdentityIndicator, .codex)
         XCTAssertEqual(gemini.tabIdentityIndicator, .gemini)
         XCTAssertEqual(ollama.tabIdentityIndicator, .ollama)
+
+        codex.setCustomDisplayLabel("Claude review")
+        XCTAssertEqual(
+            codex.tabIdentityIndicator,
+            .codex,
+            "A custom display label must not override the identity implied by the launch command"
+        )
     }
 
     func testAgentOutputHandlerRoutesThroughTerminalProcessSeam() {

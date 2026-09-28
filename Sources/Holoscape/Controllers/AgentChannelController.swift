@@ -97,7 +97,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var tabIdentityIndicator: ChannelTabIdentityIndicator? {
-        ChannelTabIdentityIndicator.detect(from: [command, userLabel, detectedRole, displayLabel])
+        ChannelTabIdentityIndicator.detect(from: [command, userLabel, detectedRole])
     }
 
     var contentView: NSView { terminal.terminalContentView }
