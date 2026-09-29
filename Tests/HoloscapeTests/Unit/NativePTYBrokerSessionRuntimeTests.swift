@@ -94,6 +94,31 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
     }
 
+    func testCreateSessionRejectsNonPositiveGridDimensionsDecodedFromBrokerProtocol() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "negative-create-grid-native-pty-runtime-test")
+        let invalidSize = try JSONDecoder().decode(
+            TerminalGridSize.self,
+            from: Data(#"{"columns":80,"rows":-1}"#.utf8)
+        )
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: invalidSize
+        )
+
+        XCTAssertThrowsError(try runtime.createSession(id: id, request: request)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .invalidGridSize(invalidSize)
+            )
+        }
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
     func testResizeSessionRejectsGridDimensionsThatDoNotFitPTYWinsizeAndKeepsSessionRunning() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "oversized-resize-grid-native-pty-runtime-test")
@@ -112,6 +137,32 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTAssertEqual(
                 error as? NativePTYBrokerSessionRuntime.RuntimeError,
                 .invalidGridSize(oversizedSize)
+            )
+        }
+        XCTAssertTrue(try runtime.isRunning(id: id))
+    }
+
+    func testResizeSessionRejectsNonPositiveGridDimensionsDecodedFromBrokerProtocol() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "negative-resize-grid-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let invalidSize = try JSONDecoder().decode(
+            TerminalGridSize.self,
+            from: Data(#"{"columns":-1,"rows":24}"#.utf8)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        XCTAssertThrowsError(try runtime.resizeSession(id: id, size: invalidSize)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .invalidGridSize(invalidSize)
             )
         }
         XCTAssertTrue(try runtime.isRunning(id: id))

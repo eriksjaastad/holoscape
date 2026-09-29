@@ -311,7 +311,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     private func validatePTYGridSize(_ size: TerminalGridSize) throws {
-        guard size.columns <= Int(UInt16.max), size.rows <= Int(UInt16.max) else {
+        guard (1...Int(UInt16.max)).contains(size.columns),
+              (1...Int(UInt16.max)).contains(size.rows) else {
             throw RuntimeError.invalidGridSize(size)
         }
     }
