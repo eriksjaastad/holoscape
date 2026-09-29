@@ -103,15 +103,34 @@ final class ChannelManagerTests: XCTestCase {
         func lastLines(_ count: Int) -> [String] { [] }
     }
 
+    private var temporaryConfigDirectory: URL!
     private var configService: ConfigService!
     private var manager: ChannelManager!
 
     override func setUp() async throws {
         try await super.setUp()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         await MainActor.run {
-            configService = ConfigService()
+            temporaryConfigDirectory = directory
+            configService = ConfigService(configDir: directory)
             manager = ChannelManager(configService: configService)
         }
+    }
+
+    override func tearDown() async throws {
+        let directory = await MainActor.run {
+            manager = nil
+            configService = nil
+            let directory = temporaryConfigDirectory
+            temporaryConfigDirectory = nil
+            return directory
+        }
+        if let directory {
+            try FileManager.default.removeItem(at: directory)
+        }
+        try await super.tearDown()
     }
 
     // MARK: - Channel Creation
@@ -1196,6 +1215,16 @@ final class ChannelManagerTests: XCTestCase {
     }
 
     // MARK: - State Persistence
+
+    func testSharedConfigServiceWritesOnlyToPerTestDirectory() throws {
+        let channel = createMockChannel(type: .shell, role: "Shell")
+
+        manager.saveState()
+
+        let configURL = temporaryConfigDirectory.appendingPathComponent("config.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configURL.path))
+        XCTAssertEqual(configService.load().channels.map(\.id), [channel.channelId])
+    }
 
     func testSaveAndRestoreState() {
         let channel = createMockChannel(type: .shell, role: "Shell")
