@@ -131,6 +131,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         }
 
         try validatePTYGridSize(request.initialSize)
+        let resolvedEnvironment = try environment(for: request.environmentProfile)
 
         var masterFD: Int32 = -1
         var slaveFD: Int32 = -1
@@ -151,7 +152,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         if let workingDirectory = request.workingDirectory {
             process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
         }
-        process.environment = try environment(for: request.environmentProfile)
+        process.environment = resolvedEnvironment
 
         let slaveRead = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
         let slaveWrite = FileHandle(fileDescriptor: dup(slaveFD), closeOnDealloc: true)
