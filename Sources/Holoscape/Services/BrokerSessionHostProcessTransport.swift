@@ -35,14 +35,16 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     ) throws {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
-        let errorPipe = Pipe()
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
         process.environment = environment
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        // Helper diagnostics are not part of the JSON-lines protocol. Send them
+        // directly to the null device so an unread stderr pipe can never apply
+        // backpressure and prevent the helper from producing its response.
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()

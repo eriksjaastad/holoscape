@@ -413,6 +413,33 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
     }
 
+    func testProcessTransportDrainsHighVolumeStderrBeforeHelperResponse() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("stderr-before-response")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        /usr/bin/head -c 1048576 /dev/zero >&2
+        IFS= read -r line
+        printf '%s\\n' "$line"
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            responseTimeoutSeconds: 1
+        )
+        defer { transport.close() }
+        let frame = Data("{\"status\":\"after-stderr\"}\n".utf8)
+
+        XCTAssertEqual(try transport.sendFrame(frame), frame)
+    }
+
     func testProcessTransportFailsLoudlyWhenHelperExitsBeforeResponse() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/usr/bin/true")
