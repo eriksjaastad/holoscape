@@ -440,6 +440,35 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try transport.sendFrame(frame), frame)
     }
 
+    func testProcessTransportCloseEscalatesWhenHelperIgnoresTermination() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportCloseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("ignore-termination")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        IFS= read -r line
+        printf '%s\\n' "$line"
+        (sleep 2; kill -KILL $$) &
+        wait
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = try BrokerSessionHostProcessTransport(executableURL: helperURL)
+        let frame = Data("{\"status\":\"ready\"}\n".utf8)
+        XCTAssertEqual(try transport.sendFrame(frame), frame)
+
+        let start = Date()
+        transport.close()
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+    }
+
     func testProcessTransportFailsLoudlyWhenHelperExitsBeforeResponse() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/usr/bin/true")

@@ -26,6 +26,7 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     private let lock = NSLock()
     private var readBuffer = Data()
     private var isClosed = false
+    private static let terminationGracePeriodMilliseconds = 250
 
     init(
         executableURL: URL,
@@ -88,6 +89,17 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         try? outputHandle.close()
         if process.isRunning {
             process.terminate()
+            let deadline = DispatchTime.now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
+            while process.isRunning, DispatchTime.now() < deadline {
+                usleep(10_000)
+            }
+            if process.isRunning {
+                let result = Darwin.kill(process.processIdentifier, SIGKILL)
+                if result != 0, errno != ESRCH {
+                    NSLog("Broker helper force-termination failed: %s", strerror(errno))
+                    return
+                }
+            }
             process.waitUntilExit()
         }
     }
