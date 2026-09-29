@@ -368,6 +368,31 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertFalse(try runtime.isRunning(id: id))
     }
 
+    func testPTYEOFStopsOutputMonitoring() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "eof-output-monitoring-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf eof-output; exit 0"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForOutput(from: runtime, id: id, containing: "eof-output")
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+
+        let deadline = Date().addingTimeInterval(3)
+        while try runtime.isOutputMonitoring(id: id), Date() < deadline {
+            usleep(20_000)
+        }
+
+        XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+    }
+
     func testShellProfileSetsDeterministicTerminalEnvironmentFromSparseGUIEnvironment() throws {
         let runtime = NativePTYBrokerSessionRuntime(processEnvironment: [
             "HOME": NSHomeDirectory(),

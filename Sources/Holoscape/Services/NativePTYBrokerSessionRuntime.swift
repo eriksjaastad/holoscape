@@ -167,7 +167,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         }
         masterHandle.readabilityHandler = { [weak session] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             session?.appendOutput(data)
         }
 
@@ -226,6 +229,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         handler: (@Sendable (BrokerSessionID) -> Void)?
     ) throws {
         try session(for: id).setOutputAvailabilityHandler(handler)
+    }
+
+    func isOutputMonitoring(id: BrokerSessionID) throws -> Bool {
+        try session(for: id).masterHandle.readabilityHandler != nil
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
