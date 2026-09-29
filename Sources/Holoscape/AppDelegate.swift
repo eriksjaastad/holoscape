@@ -317,26 +317,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
             return controller
         case .agentDirect:
-            let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
             let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
                 for: metadata.id,
                 channelType: .agentDirect,
                 brokerSessionID: metadata.brokerSessionID
             )
-            let controller = AgentChannelController.brokerBacked(
-                id: metadata.id,
+            let controller = Self.restoredAgentController(
+                from: metadata,
                 authType: .oauth,
-                workingDirectory: dir,
-                userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber,
-                command: metadata.command ?? "claude",
                 existingBrokerSessionID: brokerSession?.id,
-                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
         case .agentAPI:
-            let dir = metadata.workingDirectory.map { URL(fileURLWithPath: $0) }
             let brokerSession = channelManagerRef?.brokerBackedAgentSessionToRestore(
                 for: metadata.id,
                 channelType: .agentAPI,
@@ -349,15 +342,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
                 return nil
             }
-            let controller = AgentChannelController.brokerBacked(
-                id: metadata.id,
+            let controller = Self.restoredAgentController(
+                from: metadata,
                 authType: authType,
-                workingDirectory: dir,
-                userLabel: metadata.role,
-                instanceNumber: metadata.instanceNumber,
-                command: metadata.command ?? "claude",
                 existingBrokerSessionID: brokerSession?.id,
-                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
@@ -399,6 +387,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let controller = BridgeChannelController(id: metadata.id, channelManager: cm, instanceNumber: metadata.instanceNumber)
             return controller
         }
+    }
+
+    static func restoredAgentController(
+        from metadata: ChannelMetadata,
+        authType: AgentAuthType,
+        existingBrokerSessionID: BrokerSessionID?,
+        coordinator: (any BrokerSessionCoordinating)?
+    ) -> AgentChannelController {
+        AgentChannelController.brokerBacked(
+            id: metadata.id,
+            authType: authType,
+            workingDirectory: metadata.workingDirectory.map { URL(fileURLWithPath: $0) },
+            userLabel: metadata.role,
+            instanceNumber: metadata.instanceNumber,
+            useRawLabel: metadata.useRawLabel ?? true,
+            command: metadata.command ?? "claude",
+            existingBrokerSessionID: existingBrokerSessionID,
+            restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+            coordinator: coordinator
+        )
     }
 
     static func restoredGroupChatController(

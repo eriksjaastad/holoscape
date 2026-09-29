@@ -55,6 +55,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         command
     }
 
+    var persistedUseRawLabel: Bool {
+        useRawLabel
+    }
+
     var displayBaseLabel: String {
         if let customDisplayLabel {
             return customDisplayLabel

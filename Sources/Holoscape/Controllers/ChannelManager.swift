@@ -4,7 +4,6 @@ import Foundation
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
     private var channelOrder: [UUID] = []
-    private var instanceCounters: [String: Int] = [:]
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
@@ -207,6 +206,7 @@ class ChannelManager {
             var endpoint: String?
             var apiURL: String?
             var apiKeyEnv: String?
+            var useRawLabel: Bool?
 
             var workingDir: String?
             var staleBrokerSessionID: BrokerSessionID?
@@ -217,6 +217,7 @@ class ChannelManager {
             } else if let agentChannel = channel as? AgentChannelController {
                 workingDir = agentChannel.persistedWorkingDirectory
                 command = agentChannel.persistedCommand
+                useRawLabel = agentChannel.persistedUseRawLabel
                 staleBrokerSessionID = agentChannel.staleBrokerSessionID
             } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
@@ -248,6 +249,7 @@ class ChannelManager {
                 role: channelLabels[id] ?? channel.displayLabel,
                 context: nil,
                 instanceNumber: channel.instanceNumber,
+                useRawLabel: useRawLabel,
                 workingDirectory: workingDir,
                 customLabel: channel.customDisplayLabel,
                 host: host,
@@ -262,6 +264,7 @@ class ChannelManager {
                 staleBrokerSessionID: staleBrokerSessionID
             )
         }
+        config.channelInstanceHighWaterMarks = highWaterMarks
         configService.save(config)
     }
 
@@ -270,6 +273,10 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) {
         let config = configService.load()
+        for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
+            let key = label.lowercased()
+            highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
+        }
         for metadata in config.channels {
             if let controller = factory(metadata) {
                 controller.setCustomDisplayLabel(metadata.customLabel)
@@ -369,10 +376,14 @@ class ChannelManager {
         let records = unmatchedBrokerBackedSessionsToRestore()
         var restoredCount = 0
         for record in records {
+            let role = restoredRole(for: record)
+            let instanceNumber = nextInstanceNumber(for: role)
             let metadata = ChannelMetadata(
                 id: UUID(),
                 type: record.channelType,
-                role: restoredRole(for: record),
+                role: role,
+                instanceNumber: instanceNumber,
+                useRawLabel: record.channelType == .agentDirect || record.channelType == .agentAPI ? true : nil,
                 workingDirectory: record.workingDirectory,
                 command: restoredCommand(for: record),
                 brokerSessionID: record.id
@@ -415,12 +426,13 @@ class ChannelManager {
         let activeCount = channelLabels.values.filter { $0.lowercased() == key }.count
         let hwm = highWaterMarks[key, default: 0]
 
-        if activeCount == 0 {
-            // First channel with this label — no number
+        if activeCount == 0 && hwm == 0 {
+            // First channel ever created with this label — no number.
             highWaterMarks[key] = 1
             return nil
         } else {
-            // Additional channel — assign next number
+            // Additional channel, including the first live channel after all
+            // earlier siblings closed — never reuse a durable ordinal.
             let next = max(hwm, activeCount) + 1
             highWaterMarks[key] = next
             return next

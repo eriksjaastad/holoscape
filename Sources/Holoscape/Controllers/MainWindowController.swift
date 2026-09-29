@@ -1986,6 +1986,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     workingDirectory: workDir,
                     userLabel: label,
                     instanceNumber: instanceNum,
+                    useRawLabel: true,
                     command: command ?? "claude",
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
@@ -2286,12 +2287,34 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             type: .groupChat,
             role: "Chat",
             workingDirectory: nil
-        ) { id, _, _, _, _ in
-            GroupChatChannelController(id: id, apiURL: apiURL, apiKey: apiKey)
+        ) { id, _, role, instanceNum, _ in
+            Self.builtInGroupChatController(
+                id: id,
+                apiURL: apiURL,
+                apiKey: apiKey,
+                label: role,
+                instanceNumber: instanceNum
+            )
         }
         channel.delegate = self
         channel.activate()
         switchToChannel(channel.channelId)
+    }
+
+    static func builtInGroupChatController(
+        id: UUID,
+        apiURL: String,
+        apiKey: String,
+        label: String,
+        instanceNumber: Int?
+    ) -> GroupChatChannelController {
+        GroupChatChannelController(
+            id: id,
+            apiURL: apiURL,
+            apiKey: apiKey,
+            label: label,
+            instanceNumber: instanceNumber
+        )
     }
 
     private func createBridgeChannel() {

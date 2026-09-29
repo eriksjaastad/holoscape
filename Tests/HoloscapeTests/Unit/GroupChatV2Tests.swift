@@ -17,6 +17,20 @@ final class GroupChatV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testBuiltInGroupChatCreationPreservesAssignedInstanceNumber() {
+        let controller = MainWindowController.builtInGroupChatController(
+            id: UUID(),
+            apiURL: "https://chat.example.com",
+            apiKey: "key",
+            label: "Chat",
+            instanceNumber: 2
+        )
+
+        XCTAssertEqual(controller.instanceNumber, 2)
+        XCTAssertEqual(controller.displayLabel, "Chat 2")
+    }
+
+    @MainActor
     func testNumberedGroupChatCustomLabelIsExactPresentationValue() {
         let controller = GroupChatChannelController(id: UUID(), apiURL: "https://chat.example.com", apiKey: "key", label: "Group Chat", instanceNumber: 2)
 

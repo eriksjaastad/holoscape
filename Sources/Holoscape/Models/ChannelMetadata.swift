@@ -6,6 +6,9 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let role: String
     let context: String?
     let instanceNumber: Int?
+    /// Whether the agent launch label is an exact presentation value rather than
+    /// input for role abbreviation. Nil identifies legacy saved metadata.
+    let useRawLabel: Bool?
     let workingDirectory: String?
     let customLabel: String?
     let host: String?
@@ -24,7 +27,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let staleBrokerSessionID: BrokerSessionID?
 
     init(id: UUID, type: ChannelType, role: String, context: String? = nil,
-         instanceNumber: Int? = nil, workingDirectory: String? = nil,
+         instanceNumber: Int? = nil, useRawLabel: Bool? = nil, workingDirectory: String? = nil,
          customLabel: String? = nil,
          host: String? = nil, user: String? = nil, command: String? = nil,
          endpoint: String? = nil, apiURL: String? = nil, apiKeyEnv: String? = nil,
@@ -36,6 +39,7 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.role = role
         self.context = context
         self.instanceNumber = instanceNumber
+        self.useRawLabel = useRawLabel
         self.workingDirectory = workingDirectory
         self.customLabel = customLabel
         self.host = host
