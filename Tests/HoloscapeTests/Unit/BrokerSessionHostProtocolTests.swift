@@ -469,6 +469,60 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
     }
 
+    func testLazyProcessTransportCloseInterruptsInFlightPartialResponse() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportConcurrentCloseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("stream-partial-response")
+        let requestReceivedURL = temporaryDirectory.appendingPathComponent("request-received")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        IFS= read -r line
+        : > "$1"
+        (sleep 2; kill -KILL $$) &
+        while :; do
+            printf x
+            sleep 0.05
+        done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = LazyBrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [requestReceivedURL.path],
+            responseTimeoutSeconds: 1
+        )
+        defer { transport.close() }
+        let sendFinished = expectation(description: "in-flight send interrupted")
+        let sendError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try transport.sendFrame(Data("{}\n".utf8))
+            } catch {
+                sendError.set(error)
+            }
+            sendFinished.fulfill()
+        }
+
+        let requestDeadline = Date().addingTimeInterval(1)
+        while !FileManager.default.fileExists(atPath: requestReceivedURL.path), Date() < requestDeadline {
+            usleep(10_000)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: requestReceivedURL.path))
+
+        let start = Date()
+        transport.close()
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+        wait(for: [sendFinished], timeout: 1)
+        XCTAssertNotNil(sendError.value)
+    }
+
     func testProcessTransportFailsLoudlyWhenHelperExitsBeforeResponse() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/usr/bin/true")

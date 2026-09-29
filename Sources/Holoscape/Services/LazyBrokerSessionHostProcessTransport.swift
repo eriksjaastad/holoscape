@@ -31,31 +31,33 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
+        let activeTransport = try transportForFrame()
+        return try activeTransport.sendFrame(frame)
+    }
+
+    private func transportForFrame() throws -> BrokerSessionHostProcessTransport {
         lock.lock()
         defer { lock.unlock() }
-        let activeTransport: BrokerSessionHostProcessTransport
         if let transport {
-            activeTransport = transport
-        } else {
-            do {
-                let launched = try BrokerSessionHostProcessTransport(
-                    executableURL: executableURL,
-                    arguments: arguments,
-                    environment: environment,
-                    responseTimeoutSeconds: responseTimeoutSeconds
-                )
-                BrokerHostLaunchDiagnostics.clearLaunchFailure()
-                transport = launched
-                activeTransport = launched
-            } catch {
-                BrokerHostLaunchDiagnostics.recordLaunchFailure(
-                    executablePath: executableURL.path,
-                    message: String(describing: error)
-                )
-                throw error
-            }
+            return transport
         }
-        return try activeTransport.sendFrame(frame)
+        do {
+            let launched = try BrokerSessionHostProcessTransport(
+                executableURL: executableURL,
+                arguments: arguments,
+                environment: environment,
+                responseTimeoutSeconds: responseTimeoutSeconds
+            )
+            BrokerHostLaunchDiagnostics.clearLaunchFailure()
+            transport = launched
+            return launched
+        } catch {
+            BrokerHostLaunchDiagnostics.recordLaunchFailure(
+                executablePath: executableURL.path,
+                message: String(describing: error)
+            )
+            throw error
+        }
     }
 
     func close() {

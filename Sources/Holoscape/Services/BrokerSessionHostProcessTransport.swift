@@ -15,6 +15,7 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         case writeFailed(String)
         case readFailed(String)
         case responseTimedOut
+        case transportClosed
         case helperClosedPipe(exitStatus: Int32?)
         case helperExited(exitStatus: Int32)
     }
@@ -23,7 +24,8 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     private let inputHandle: FileHandle
     private let outputHandle: FileHandle
     private let responseTimeoutSeconds: Int
-    private let lock = NSLock()
+    private let requestLock = NSLock()
+    private let stateLock = NSLock()
     private var readBuffer = Data()
     private var isClosed = false
     private static let terminationGracePeriodMilliseconds = 250
@@ -64,8 +66,15 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
-        lock.lock()
-        defer { lock.unlock() }
+        requestLock.lock()
+        defer { requestLock.unlock() }
+
+        stateLock.lock()
+        let closed = isClosed
+        stateLock.unlock()
+        if closed {
+            throw TransportError.transportClosed
+        }
 
         if !process.isRunning {
             throw TransportError.helperExited(exitStatus: process.terminationStatus)
@@ -81,12 +90,16 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     }
 
     func close() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !isClosed else { return }
+        stateLock.lock()
+        guard !isClosed else {
+            stateLock.unlock()
+            return
+        }
         isClosed = true
+        stateLock.unlock()
+
         try? inputHandle.close()
-        try? outputHandle.close()
+        defer { try? outputHandle.close() }
         if process.isRunning {
             process.terminate()
             let deadline = DispatchTime.now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
