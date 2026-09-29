@@ -106,10 +106,12 @@ final class ChannelManagerTests: XCTestCase {
     private var configService: ConfigService!
     private var manager: ChannelManager!
 
-    override func setUp() {
-        super.setUp()
-        configService = ConfigService()
-        manager = ChannelManager(configService: configService)
+    override func setUp() async throws {
+        try await super.setUp()
+        await MainActor.run {
+            configService = ConfigService()
+            manager = ChannelManager(configService: configService)
+        }
     }
 
     // MARK: - Channel Creation
