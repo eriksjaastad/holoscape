@@ -13,6 +13,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         case missingSession(BrokerSessionID)
         case openPTYFailed(errno: Int32)
         case launchFailed(String)
+        case invalidGridSize(TerminalGridSize)
         case resizeFailed(errno: Int32)
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case unsupportedEnvironmentProfile(BrokerEnvironmentProfile, reason: String)
@@ -128,6 +129,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         if sessions[id] != nil {
             throw RuntimeError.duplicateSession(id)
         }
+
+        try validatePTYGridSize(request.initialSize)
 
         var masterFD: Int32 = -1
         var slaveFD: Int32 = -1
@@ -249,6 +252,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
         let session = try session(for: id)
+        try validatePTYGridSize(size)
         var windowSize = winsize(
             ws_row: UInt16(size.rows),
             ws_col: UInt16(size.columns),
@@ -304,6 +308,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             throw RuntimeError.missingSession(id)
         }
         return session
+    }
+
+    private func validatePTYGridSize(_ size: TerminalGridSize) throws {
+        guard (1...Int(UInt16.max)).contains(size.columns),
+              (1...Int(UInt16.max)).contains(size.rows) else {
+            throw RuntimeError.invalidGridSize(size)
+        }
     }
 
     private func environment(for profile: BrokerEnvironmentProfile) throws -> [String: String] {
