@@ -298,7 +298,7 @@ class HoloscapeAPIServer {
 
         let cwdName = URL(fileURLWithPath: normalizedCwd).lastPathComponent.lowercased()
         // Fallback for older tests/callers that still encode the target in the label.
-        return cm.allChannels().first { $0.displayLabel.lowercased() == cwdName }
+        return cm.channel(matchingLaunchLabel: cwdName)
     }
 
     private func normalizePath(_ path: String) -> String {

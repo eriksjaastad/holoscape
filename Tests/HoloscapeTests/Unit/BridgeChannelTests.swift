@@ -20,6 +20,16 @@ final class BridgeChannelTests: XCTestCase {
     }
 
     @MainActor
+    func testNumberedBridgeCustomLabelIsExactPresentationValue() {
+        let channelManager = ChannelManager(configService: ConfigService())
+        let controller = BridgeChannelController(id: UUID(), channelManager: channelManager, instanceNumber: 2)
+
+        controller.setCustomDisplayLabel("Build")
+
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
+    @MainActor
     func testChannelTypeIsBridge() {
         let configService = ConfigService()
         let channelManager = ChannelManager(configService: configService)

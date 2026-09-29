@@ -233,6 +233,92 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID, brokerSessionID])
     }
 
+    func testRestoredAgentPreservesRawProfileLabel() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRawAgentLabelRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentDirect,
+            role: "mini-claude",
+            command: "claude"
+        )
+
+        let controller = try XCTUnwrap(appDelegate.createChannelFromMetadata(metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.displayLabel, "mini-claude")
+    }
+
+    func testRestoredAgentPreservesPersistedInferredLabelSemantics() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateInferredAgentLabelRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentDirect,
+            role: "mini-claude",
+            useRawLabel: false,
+            command: "claude"
+        )
+
+        let controller = try XCTUnwrap(appDelegate.createChannelFromMetadata(metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.displayLabel, "MIN")
+    }
+
+    func testRestoredAPIAgentPreservesRawProfileLabel() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "mini-claude",
+            useRawLabel: true,
+            command: "claude"
+        )
+
+        let controller = AppDelegate.restoredAgentController(
+            from: metadata,
+            authType: .apiKey("test-key"),
+            existingBrokerSessionID: nil,
+            coordinator: RecordingBrokerSessionCoordinator()
+        )
+
+        XCTAssertEqual(controller.channelType, .agentAPI)
+        XCTAssertEqual(controller.displayLabel, "mini-claude")
+    }
+
+    func testRestoredGroupChatPreservesProfileAndInstanceIdentity() {
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .groupChat,
+            role: "Team Chat",
+            instanceNumber: 3,
+            apiURL: "https://chat.example.com",
+            apiKeyEnv: "TEAM_CHAT_KEY"
+        )
+
+        let controller = AppDelegate.restoredGroupChatController(
+            from: metadata,
+            apiURL: "https://chat.example.com",
+            apiKey: "test-key"
+        )
+
+        XCTAssertEqual(controller.displayLabel, "Team Chat 3")
+        XCTAssertEqual(controller.instanceNumber, 3)
+        XCTAssertEqual(controller.apiKeyEnv, "TEAM_CHAT_KEY")
+    }
+
     func testRestoredLegacyRootShellMigratesToDefaultProjectDirectory() {
         let metadata = ChannelMetadata(
             id: UUID(),

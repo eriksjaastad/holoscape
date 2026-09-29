@@ -12,6 +12,8 @@ class MockChannelController: NSObject, ChannelController {
     var displayBaseLabelOverride: String?
     var displayBaseLabel: String { displayBaseLabelOverride ?? displayLabel }
     var displayLabel: String
+    private(set) var customDisplayLabel: String?
+    let instanceNumber: Int?
     var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
@@ -43,11 +45,13 @@ class MockChannelController: NSObject, ChannelController {
         id: UUID = UUID(),
         type: ChannelType = .shell,
         label: String = "Mock",
+        instanceNumber: Int? = nil,
         state: ChannelState = .disconnected
     ) {
         self.channelId = id
         self.channelType = type
         self.displayLabel = label
+        self.instanceNumber = instanceNumber
         self.state = state
         super.init()
     }
@@ -74,6 +78,13 @@ class MockChannelController: NSObject, ChannelController {
 
     func lastLines(_ count: Int) -> [String] {
         return []
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
+        if let customDisplayLabel {
+            displayLabel = customDisplayLabel
+        }
     }
 
     func recordUserInteraction(at date: Date = Date()) {

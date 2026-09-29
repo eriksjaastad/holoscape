@@ -122,6 +122,30 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(codex.tabIdentityIndicator, .codex)
         XCTAssertEqual(gemini.tabIdentityIndicator, .gemini)
         XCTAssertEqual(ollama.tabIdentityIndicator, .ollama)
+
+        codex.setCustomDisplayLabel("Claude review")
+        XCTAssertEqual(
+            codex.tabIdentityIndicator,
+            .codex,
+            "A custom display label must not override the identity implied by the launch command"
+        )
+    }
+
+    func testNumberedAgentCustomLabelIsExactPresentationValue() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: 2,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+
+        XCTAssertEqual(controller.instanceNumber, 2)
+        XCTAssertNotEqual(controller.displayLabel, "Build")
+        controller.setCustomDisplayLabel("Build")
+        XCTAssertEqual(controller.displayLabel, "Build")
     }
 
     func testAgentOutputHandlerRoutesThroughTerminalProcessSeam() {

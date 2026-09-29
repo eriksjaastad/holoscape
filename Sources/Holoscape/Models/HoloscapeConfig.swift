@@ -4,6 +4,9 @@ struct HoloscapeConfig: Codable, Equatable, Sendable {
     var appearance: AppearanceConfig
     var channels: [ChannelMetadata]
     var lastLaunchTimestamp: Date?
+    /// Highest instance ordinal ever assigned per normalized launch label.
+    /// Optional so configurations written before durable numbering still decode.
+    var channelInstanceHighWaterMarks: [String: Int]? = nil
 
     // V1.5 fields — all Optional for backward compatibility with V1 configs
     var sessionProfiles: [SessionProfile]?

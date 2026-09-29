@@ -1986,6 +1986,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     workingDirectory: workDir,
                     userLabel: label,
                     instanceNumber: instanceNum,
+                    useRawLabel: true,
                     command: command ?? "claude",
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
@@ -2286,12 +2287,34 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             type: .groupChat,
             role: "Chat",
             workingDirectory: nil
-        ) { id, _, _, _, _ in
-            GroupChatChannelController(id: id, apiURL: apiURL, apiKey: apiKey)
+        ) { id, _, role, instanceNum, _ in
+            Self.builtInGroupChatController(
+                id: id,
+                apiURL: apiURL,
+                apiKey: apiKey,
+                label: role,
+                instanceNumber: instanceNum
+            )
         }
         channel.delegate = self
         channel.activate()
         switchToChannel(channel.channelId)
+    }
+
+    static func builtInGroupChatController(
+        id: UUID,
+        apiURL: String,
+        apiKey: String,
+        label: String,
+        instanceNumber: Int?
+    ) -> GroupChatChannelController {
+        GroupChatChannelController(
+            id: id,
+            apiURL: apiURL,
+            apiKey: apiKey,
+            label: label,
+            instanceNumber: instanceNumber
+        )
     }
 
     private func createBridgeChannel() {
@@ -2453,7 +2476,23 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuRename(_ sender: NSMenuItem) {
-        // TODO: Implement inline rename
+        guard let id = sender.representedObject as? UUID,
+              let channel = channelManager.channel(for: id) else { return }
+
+        let input = NSTextField(string: channel.displayLabel)
+        input.placeholderString = "Channel name"
+        input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Channel"
+        alert.informativeText = "Choose a display name for this channel. The running session is not changed."
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn,
+              channelManager.renameChannel(id: id, to: input.stringValue) else { return }
+        refreshAllTabs()
     }
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {

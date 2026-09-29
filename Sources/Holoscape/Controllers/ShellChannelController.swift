@@ -17,8 +17,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// owns it. Retained (and persisted) while the tab is stale so the recreate
     /// guidance and the tab/session association survive relaunch/restore.
     private(set) var staleBrokerSessionID: BrokerSessionID?
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private let explicitLabel: String?
+    private(set) var customDisplayLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
     private(set) var activatedAt: Date?
@@ -30,6 +31,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var displayBaseLabel: String {
+        if let customDisplayLabel {
+            return customDisplayLabel
+        }
         let base: String
         if let dir = workingDirectory {
             let directoryLabel = URL(fileURLWithPath: dir).lastPathComponent
@@ -50,6 +54,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     var displayLabel: String {
         let base = displayBaseLabel
+        if customDisplayLabel != nil {
+            return base
+        }
         if let n = instanceNumber {
             return "\(base) \(n)"
         }
@@ -58,6 +65,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private static func isGenericShellLabel(_ label: String) -> Bool {
         label.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Shell") == .orderedSame
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var contentView: NSView { terminal.terminalContentView }

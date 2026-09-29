@@ -27,7 +27,8 @@ final class NotificationServiceTests: XCTestCase {
     private final class TestChannel: ChannelController {
         let channelId = UUID(uuidString: "00000000-0000-0000-0000-000000007172")!
         let channelType: ChannelType
-        let displayLabel = "Codex"
+        var customDisplayLabel: String?
+        var displayLabel: String { customDisplayLabel ?? "Codex" }
         var hasUnread = false
         let state: ChannelState = .active
         let contentView = NSView(frame: .zero)
@@ -45,6 +46,7 @@ final class NotificationServiceTests: XCTestCase {
         func retry() {}
         func lastLines(_ count: Int) -> [String] { [] }
         func applyPersistentState(_ state: PersistentChannelState) {}
+        func setCustomDisplayLabel(_ label: String?) { customDisplayLabel = label }
     }
 
     func testInitDoesNotRequestNotificationAuthorization() {

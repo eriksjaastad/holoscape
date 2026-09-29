@@ -7,6 +7,10 @@ enum ChannelDisplayLabelResolver {
         var resolved: [UUID: String] = [:]
 
         for channel in channels {
+            if let customLabel = ChannelCustomDisplayLabel.normalized(channel.customDisplayLabel) {
+                resolved[channel.channelId] = customLabel
+                continue
+            }
             let base = normalizedDisplayBaseLabel(channel.displayBaseLabel)
             let key = base.lowercased()
             let nextCount = seenCounts[key, default: 0] + 1

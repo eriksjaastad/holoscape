@@ -113,6 +113,16 @@ final class SSHChannelControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testNumberedSSHCustomLabelIsExactPresentationValue() {
+        let profile = SessionProfile(label: "mini-claude", connection: .ssh, command: "claude", directory: "~", host: "mac-mini.local", user: "erik")
+        let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: 2)
+
+        controller.setCustomDisplayLabel("Build")
+
+        XCTAssertEqual(controller.displayLabel, "Build")
+    }
+
+    @MainActor
     func testSSHSizeChangedForwardsResizeThroughTerminalProcessSeam() async {
         let terminal = MockTerminalProcess()
         let profile = SessionProfile(label: "mini", connection: .ssh, command: "zsh", directory: "~", host: "mac-mini.local", user: "erik")

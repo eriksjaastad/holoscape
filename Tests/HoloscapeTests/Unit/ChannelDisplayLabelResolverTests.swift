@@ -35,6 +35,19 @@ final class ChannelDisplayLabelResolverTests: XCTestCase {
         XCTAssertEqual(labels[first.channelId], "Projects")
         XCTAssertEqual(labels[second.channelId], "projects 2")
     }
+
+    func testCustomLabelsRemainExactAndDoNotConsumeCollisionNumbers() {
+        let custom = MockChannel(baseLabel: "Shell")
+        custom.setCustomDisplayLabel("  Build  ")
+        let firstUnrenamed = MockChannel(baseLabel: "Build")
+        let secondUnrenamed = MockChannel(baseLabel: "Build")
+
+        let labels = ChannelDisplayLabelResolver.labels(for: [custom, firstUnrenamed, secondUnrenamed])
+
+        XCTAssertEqual(labels[custom.channelId], "Build")
+        XCTAssertEqual(labels[firstUnrenamed.channelId], "Build")
+        XCTAssertEqual(labels[secondUnrenamed.channelId], "Build 2")
+    }
 }
 
 @MainActor
@@ -50,7 +63,8 @@ private final class MockChannel: ChannelController {
     var activatedAt: Date? = nil
 
     let displayBaseLabel: String
-    var displayLabel: String { displayBaseLabel }
+    var customDisplayLabel: String?
+    var displayLabel: String { customDisplayLabel ?? displayBaseLabel }
 
     init(baseLabel: String) {
         self.displayBaseLabel = baseLabel
@@ -61,4 +75,5 @@ private final class MockChannel: ChannelController {
     func deactivate() {}
     func retry() {}
     func lastLines(_ count: Int) -> [String] { [] }
+    func setCustomDisplayLabel(_ label: String?) { customDisplayLabel = label }
 }

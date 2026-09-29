@@ -20,9 +20,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let authType: AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
+    private(set) var customDisplayLabel: String?
     private let command: String
     private var detectedRole: String?
-    private let instanceNumber: Int?
+    let instanceNumber: Int?
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
@@ -54,12 +55,26 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         command
     }
 
+    var persistedUseRawLabel: Bool {
+        useRawLabel
+    }
+
     var displayBaseLabel: String {
-        ChannelGitBranchLabel.decorate(undecoratedDisplayBaseLabel, workingDirectory: workingDirectory?.path)
+        if let customDisplayLabel {
+            return customDisplayLabel
+        }
+        return ChannelGitBranchLabel.decorate(undecoratedDisplayBaseLabel, workingDirectory: workingDirectory?.path)
+    }
+
+    func setCustomDisplayLabel(_ label: String?) {
+        customDisplayLabel = ChannelCustomDisplayLabel.normalized(label)
     }
 
     var displayLabel: String {
         let base = displayBaseLabel
+        if customDisplayLabel != nil {
+            return base
+        }
         if let num = instanceNumber {
             let undecorated = undecoratedDisplayBaseLabel
             if useRawLabel {
@@ -86,7 +101,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     var tabIdentityIndicator: ChannelTabIdentityIndicator? {
-        ChannelTabIdentityIndicator.detect(from: [command, userLabel, detectedRole, displayLabel])
+        ChannelTabIdentityIndicator.detect(from: [command, userLabel, detectedRole])
     }
 
     var contentView: NSView { terminal.terminalContentView }
