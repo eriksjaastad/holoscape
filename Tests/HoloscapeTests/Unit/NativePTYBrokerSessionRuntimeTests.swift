@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Holoscape
@@ -481,6 +482,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
             XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
+    func testRejectedEnvironmentProfilesDoNotLeakPTYFileDescriptors() {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            workingDirectory: "/tmp",
+            environmentProfile: .agentAPI,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let descriptorCountBefore = openFileDescriptorCount()
+
+        for index in 0..<32 {
+            let id = BrokerSessionID(rawValue: "rejected-environment-fd-leak-\(index)")
+            XCTAssertThrowsError(try runtime.createSession(id: id, request: request))
+        }
+
+        XCTAssertEqual(openFileDescriptorCount(), descriptorCountBefore)
+    }
+
+    private func openFileDescriptorCount() -> Int {
+        (0..<Int(getdtablesize())).reduce(into: 0) { count, descriptor in
+            errno = 0
+            if fcntl(Int32(descriptor), F_GETFD) != -1 || errno != EBADF {
+                count += 1
+            }
         }
     }
 
