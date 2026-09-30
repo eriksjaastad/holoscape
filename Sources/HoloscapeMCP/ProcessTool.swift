@@ -15,6 +15,8 @@ struct ProcessToolResult: Sendable {
     let timedOut: Bool
     let stdout: String
     let stderr: String
+    let stdoutTruncated: Bool
+    let stderrTruncated: Bool
 }
 
 enum ProcessToolError: LocalizedError {
@@ -40,21 +42,46 @@ enum ProcessToolError: LocalizedError {
 final class ProcessToolOutputBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var chunks: [Data] = []
+    private var byteCount = 0
+    private var didTruncate = false
+    private let maxBytes: Int
+
+    init(maxBytes: Int = .max) {
+        self.maxBytes = max(0, maxBytes)
+    }
 
     func append(_ data: Data) {
         guard !data.isEmpty else { return }
         lock.lock()
-        chunks.append(data)
+        let remaining = max(0, maxBytes - byteCount)
+        if data.count > remaining {
+            if remaining > 0 {
+                chunks.append(data.prefix(remaining))
+                byteCount += remaining
+            }
+            didTruncate = true
+        } else {
+            chunks.append(data)
+            byteCount += data.count
+        }
         lock.unlock()
     }
 
-    func string() -> String {
+    func snapshot() -> (string: String, truncated: Bool) {
         lock.lock()
         let data = chunks.reduce(into: Data()) { partial, chunk in
             partial.append(chunk)
         }
+        let truncated = didTruncate
         lock.unlock()
-        return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        return (
+            String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self),
+            truncated
+        )
+    }
+
+    func string() -> String {
+        snapshot().string
     }
 }
 
@@ -101,7 +128,10 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
     )
 }
 
-func runProcessTool(_ request: ProcessToolRequest) async throws -> ProcessToolResult {
+func runProcessTool(
+    _ request: ProcessToolRequest,
+    maxOutputBytes: Int = 1_048_576
+) async throws -> ProcessToolResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
     process.arguments = ["-lc", request.command]
@@ -125,8 +155,8 @@ func runProcessTool(_ request: ProcessToolRequest) async throws -> ProcessToolRe
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
 
-    let stdout = ProcessToolOutputBuffer()
-    let stderr = ProcessToolOutputBuffer()
+    let stdout = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
+    let stderr = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let completion = ProcessToolCompletion()
 
     stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -143,13 +173,17 @@ func runProcessTool(_ request: ProcessToolRequest) async throws -> ProcessToolRe
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             stdout.append(stdoutPipe.fileHandleForReading.availableData)
             stderr.append(stderrPipe.fileHandleForReading.availableData)
+            let standardOutput = stdout.snapshot()
+            let standardError = stderr.snapshot()
             continuation.resume(returning: ProcessToolResult(
                 command: request.command,
                 workingDirectory: request.workingDirectory,
                 exitCode: timedOut ? nil : process.terminationStatus,
                 timedOut: timedOut,
-                stdout: stdout.string(),
-                stderr: stderr.string()
+                stdout: standardOutput.string,
+                stderr: standardError.string,
+                stdoutTruncated: standardOutput.truncated,
+                stderrTruncated: standardError.truncated
             ))
         }
 
@@ -185,6 +219,12 @@ func formatProcessToolResult(_ result: ProcessToolResult) -> String {
         lines.append("timedOut: true")
     } else {
         lines.append("exitCode: \(result.exitCode ?? -1)")
+    }
+    if result.stdoutTruncated {
+        lines.append("stdoutTruncated: true")
+    }
+    if result.stderrTruncated {
+        lines.append("stderrTruncated: true")
     }
     lines.append("stdout:")
     lines.append(result.stdout.isEmpty ? "(empty)" : result.stdout)
