@@ -523,6 +523,141 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertNotNil(sendError.value)
     }
 
+    func testDirectProcessTransportCloseCancelsAdmittedReadWithoutClosingItsDescriptors() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportDirectCloseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("block-response")
+        let requestReceivedURL = temporaryDirectory.appendingPathComponent("request-received")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        IFS= read -r line
+        : > "$1"
+        while :; do sleep 1; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [requestReceivedURL.path],
+            responseTimeoutSeconds: 5
+        )
+        let sendFinished = expectation(description: "admitted direct send returned")
+        let sendError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try transport.sendFrame(Data("{}\n".utf8))
+            } catch {
+                sendError.set(error)
+            }
+            sendFinished.fulfill()
+        }
+
+        try waitForFile(at: requestReceivedURL.path)
+        transport.close()
+        wait(for: [sendFinished], timeout: 1)
+        XCTAssertEqual(
+            sendError.value as? BrokerSessionHostProcessTransport.TransportError,
+            .transportClosed
+        )
+    }
+
+    func testDirectProcessTransportFullInputPipeClosePreservesTypedErrorUnderDefaultSIGPIPE() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportSIGPIPETests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("fill-input-pipe")
+        let inputBlockedURL = temporaryDirectory.appendingPathComponent("input-blocked")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        dd bs=1 count=1 of=/dev/null 2>/dev/null
+        : > "$1"
+        while :; do sleep 1; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [inputBlockedURL.path],
+            responseTimeoutSeconds: 5
+        )
+        let sendFinished = expectation(description: "full-pipe send returned without SIGPIPE")
+        let sendError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try transport.sendFrame(Data(repeating: 0x61, count: 8 * 1_024 * 1_024))
+            } catch {
+                sendError.set(error)
+            }
+            sendFinished.fulfill()
+        }
+
+        try waitForFile(at: inputBlockedURL.path)
+        transport.close()
+        wait(for: [sendFinished], timeout: 1)
+        XCTAssertEqual(
+            sendError.value as? BrokerSessionHostProcessTransport.TransportError,
+            .transportClosed
+        )
+    }
+
+    func testLazyProcessTransportCloseCancelsBlockedAndQueuedRequestsWithoutResurrection() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyBrokerSessionHostProcessTransportQueuedCloseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("block-response")
+        let requestReceivedURL = temporaryDirectory.appendingPathComponent("request-received")
+        let launchCountURL = temporaryDirectory.appendingPathComponent("launch-count")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        printf x >> "$2"
+        trap '' TERM
+        IFS= read -r line
+        : > "$1"
+        while :; do sleep 1; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = LazyBrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [requestReceivedURL.path, launchCountURL.path],
+            responseTimeoutSeconds: 5
+        )
+        let firstFinished = expectation(description: "blocked first request returned")
+        let secondFinished = expectation(description: "queued second request returned")
+        let firstError = LockedErrorBox()
+        let secondError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { _ = try transport.sendFrame(Data("{\"request\":1}\n".utf8)) } catch { firstError.set(error) }
+            firstFinished.fulfill()
+        }
+        try waitForFile(at: requestReceivedURL.path)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { _ = try transport.sendFrame(Data("{\"request\":2}\n".utf8)) } catch { secondError.set(error) }
+            secondFinished.fulfill()
+        }
+
+        transport.close()
+        wait(for: [firstFinished, secondFinished], timeout: 1)
+        XCTAssertEqual(firstError.value as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        XCTAssertEqual(secondError.value as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        XCTAssertEqual(try String(contentsOf: launchCountURL, encoding: .utf8), "x")
+    }
+
     func testProcessTransportFailsLoudlyWhenHelperExitsBeforeResponse() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/usr/bin/true")
@@ -551,6 +686,41 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         XCTAssertEqual(try transport.sendFrame(firstFrame), firstFrame)
         XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
+    }
+
+    func testLazyProcessTransportCloseBeforeFirstSendIsTerminalAndNeverLaunches() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyBrokerSessionHostProcessTransportCloseBeforeLaunchTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("count-launch")
+        let launchCountURL = temporaryDirectory.appendingPathComponent("launch-count")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        printf x >> "$1"
+        exec /bin/cat
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: helperURL.path
+        )
+
+        let transport = LazyBrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [launchCountURL.path]
+        )
+        transport.close()
+        transport.close()
+
+        for _ in 0..<3 {
+            XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+                XCTAssertEqual(
+                    error as? BrokerSessionHostProcessTransport.TransportError,
+                    .transportClosed
+                )
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: launchCountURL.path))
     }
 
     func testBrokerHostCommandRunsOnlyWhenExplicitlyRequested() throws {
@@ -1193,6 +1363,16 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             usleep(10_000)
         }
         XCTFail("Timed out waiting for broker socket at \(path)")
+    }
+
+    private func waitForFile(at path: String) throws {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: path) {
+                return
+            }
+            usleep(10_000)
+        }
+        XCTFail("Timed out waiting for helper marker at \(path)")
     }
 
     private func waitForOutput(

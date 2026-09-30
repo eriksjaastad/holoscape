@@ -13,6 +13,7 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
     private let responseTimeoutSeconds: Int
     private let lock = NSLock()
     private var transport: BrokerSessionHostProcessTransport?
+    private var isClosed = false
 
     init(
         executableURL: URL,
@@ -38,6 +39,9 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
     private func transportForFrame() throws -> BrokerSessionHostProcessTransport {
         lock.lock()
         defer { lock.unlock() }
+        if isClosed {
+            throw BrokerSessionHostProcessTransport.TransportError.transportClosed
+        }
         if let transport {
             return transport
         }
@@ -62,6 +66,11 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
 
     func close() {
         lock.lock()
+        guard !isClosed else {
+            lock.unlock()
+            return
+        }
+        isClosed = true
         let activeTransport = transport
         transport = nil
         lock.unlock()
