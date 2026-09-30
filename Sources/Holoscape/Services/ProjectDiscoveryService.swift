@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 @MainActor
 class ProjectDiscoveryService {
@@ -96,45 +97,119 @@ class ProjectDiscoveryService {
     }
 
     private func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                process.arguments = [
-                    "-o", "ConnectTimeout=10",
-                    "\(user)@\(host)",
-                    "ls", "-1", root
-                ]
-
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
-
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                process.waitUntilExit()
-
-                guard process.terminationStatus == 0 else {
-                    continuation.resume(throwing: DiscoveryError.sshFailed(exitCode: process.terminationStatus))
-                    return
-                }
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                let dirs = output.components(separatedBy: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                    .sorted()
-                continuation.resume(returning: dirs)
-            }
-        }
+        try await Self.listDirectories(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "\(user)@\(host)",
+                "ls", "-1", root,
+            ],
+            timeout: 15
+        )
     }
 
-    enum DiscoveryError: Error {
-        case sshFailed(exitCode: Int32)
+    nonisolated static func listDirectories(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async throws -> [String] {
+        let result = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result {
+                    try runProcess(executableURL: executableURL, arguments: arguments, timeout: timeout)
+                })
+            }
+        }
+
+        guard result.exitCode == 0 else {
+            let stderr = String(decoding: result.stderr, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw DiscoveryError.processFailed(exitCode: result.exitCode, stderr: stderr)
+        }
+
+        return String(decoding: result.stdout, as: UTF8.self)
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .sorted()
+    }
+
+    private nonisolated static func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) throws -> ProcessResult {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let termination = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in termination.signal() }
+        try process.run()
+
+        let stdout = ProcessOutputBox()
+        let stderr = ProcessOutputBox()
+        let readers = DispatchGroup()
+        for (pipe, destination) in [(stdoutPipe, stdout), (stderrPipe, stderr)] {
+            readers.enter()
+            DispatchQueue.global(qos: .utility).async {
+                destination.set(pipe.fileHandleForReading.readDataToEndOfFile())
+                readers.leave()
+            }
+        }
+
+        let boundedTimeout = max(0, timeout)
+        if termination.wait(timeout: .now() + boundedTimeout) == .timedOut {
+            process.terminate()
+            if termination.wait(timeout: .now() + 0.5) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = termination.wait(timeout: .now() + 0.5)
+            }
+            stdoutPipe.fileHandleForReading.closeFile()
+            stderrPipe.fileHandleForReading.closeFile()
+            _ = readers.wait(timeout: .now() + 0.5)
+            throw DiscoveryError.processTimedOut
+        }
+
+        readers.wait()
+        return ProcessResult(
+            exitCode: process.terminationStatus,
+            stdout: stdout.value,
+            stderr: stderr.value
+        )
+    }
+
+    enum DiscoveryError: Error, Equatable {
+        case processFailed(exitCode: Int32, stderr: String)
+        case processTimedOut
+    }
+}
+
+private struct ProcessResult: Sendable {
+    let exitCode: Int32
+    let stdout: Data
+    let stderr: Data
+}
+
+private final class ProcessOutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    var value: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func set(_ data: Data) {
+        lock.lock()
+        self.data = data
+        lock.unlock()
     }
 }

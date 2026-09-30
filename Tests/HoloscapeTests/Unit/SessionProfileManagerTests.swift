@@ -57,6 +57,81 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(profiles[0].directory, root.appendingPathComponent("auxesis", isDirectory: true).standardizedFileURL.path)
     }
 
+    func testRemoteDirectoryListingParsesSortedNonemptyLines() async throws {
+        let script = try makeDiscoveryScript("""
+        printf 'zeta\\n\\n alpha \\n'
+        """)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let directories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path],
+            timeout: 1
+        )
+
+        XCTAssertEqual(directories, ["alpha", "zeta"])
+    }
+
+    func testRemoteDirectoryListingDrainsHighVolumeStderr() async throws {
+        let script = try makeDiscoveryScript("""
+        i=0
+        while [ "$i" -lt 20000 ]; do
+          printf 'diagnostic-%05d: project discovery warning payload\\n' "$i" >&2
+          i=$((i + 1))
+        done
+        printf 'holoscape\\n'
+        """)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let directories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path],
+            timeout: 5
+        )
+
+        XCTAssertEqual(directories, ["holoscape"])
+    }
+
+    func testRemoteDirectoryListingTimesOutHungProcess() async throws {
+        let script = try makeDiscoveryScript("exec sleep 5")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let startedAt = Date()
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 0.05
+            )
+            XCTFail("Expected project discovery to time out")
+        } catch {
+            XCTAssertEqual(error as? ProjectDiscoveryService.DiscoveryError, .processTimedOut)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 2)
+    }
+
+    func testRemoteDirectoryListingPreservesNonzeroExitAndStderr() async throws {
+        let script = try makeDiscoveryScript("""
+        printf 'permission denied\\n' >&2
+        exit 7
+        """)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 1
+            )
+            XCTFail("Expected project discovery to report the process failure")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .processFailed(exitCode: 7, stderr: "permission denied")
+            )
+        }
+    }
+
     @MainActor
     func testRefreshDiscoveredSessionsPopulatesLauncherProjectCache() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -282,5 +357,12 @@ final class SessionProfileManagerTests: XCTestCase {
         let recent = config.recentSessions ?? []
         XCTAssertEqual(recent.count, 20)
         XCTAssertEqual(recent[0].label, "session-24")  // most recent first
+    }
+
+    private func makeDiscoveryScript(_ body: String) throws -> URL {
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-project-discovery-\(UUID().uuidString).sh")
+        try ("#!/bin/sh\n" + body + "\n").write(to: script, atomically: true, encoding: .utf8)
+        return script
     }
 }
