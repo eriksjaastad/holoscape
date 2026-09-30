@@ -221,15 +221,35 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(scrollback.contains("preserved-scrollback"), scrollback)
     }
 
+    func testTerminatePreservesExitCodeMismatchFailure() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "exit-code-mismatch-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "exit 7"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 7)
+
+        XCTAssertThrowsError(try runtime.terminateSession(id: id, exitCode: 0)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .exitCodeMismatch(expected: 0, observed: 7)
+            )
+        }
+        XCTAssertEqual(try runtime.listSessions(), [id])
+    }
+
     func testTerminateForceKillsProcessThatIgnoresSIGTERMWithinBoundedTime() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "sigterm-resistant-terminate-native-pty-runtime-test")
         let pids = try createSIGTERMResistantSession(runtime: runtime, id: id)
-        defer {
-            _ = Darwin.kill(pids.root, SIGKILL)
-            _ = Darwin.kill(pids.child, SIGKILL)
-            try? runtime.markSessionErrored(id: id)
-        }
+        defer { try? runtime.markSessionErrored(id: id) }
         let completed = DispatchSemaphore(value: 0)
         let capturedError = LockedRuntimeErrorBox()
 
@@ -244,8 +264,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let firstWait = completed.wait(timeout: .now() + 1.5)
         if firstWait == .timedOut {
-            _ = Darwin.kill(pids.root, SIGKILL)
-            _ = Darwin.kill(pids.child, SIGKILL)
+            try? runtime.markSessionErrored(id: id)
             _ = completed.wait(timeout: .now() + 1)
         }
 
@@ -260,10 +279,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "sigterm-resistant-error-native-pty-runtime-test")
         let pids = try createSIGTERMResistantSession(runtime: runtime, id: id)
-        defer {
-            _ = Darwin.kill(pids.root, SIGKILL)
-            _ = Darwin.kill(pids.child, SIGKILL)
-        }
+        defer { try? runtime.markSessionErrored(id: id) }
         let completed = DispatchSemaphore(value: 0)
         let capturedError = LockedRuntimeErrorBox()
 
@@ -278,8 +294,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let firstWait = completed.wait(timeout: .now() + 1.5)
         if firstWait == .timedOut {
-            _ = Darwin.kill(pids.root, SIGKILL)
-            _ = Darwin.kill(pids.child, SIGKILL)
+            try? runtime.markSessionErrored(id: id)
             _ = completed.wait(timeout: .now() + 1)
         }
 
@@ -290,6 +305,36 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTAssertTrue(waitForProcessToExit(pids.root), "error cleanup left root PID \(pids.root) running")
         XCTAssertTrue(waitForProcessToExit(pids.child), "error cleanup left descendant PID \(pids.child) running")
+    }
+
+    func testTerminationFailureIsLoudAndKeepsSessionRetryable() throws {
+        let signaler = FailFirstProcessGroupSignaler()
+        let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
+        let id = BrokerSessionID(rawValue: "retryable-termination-failure-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        XCTAssertThrowsError(try runtime.terminateSession(id: id, exitCode: nil)) { error in
+            guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected terminationFailed, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertTrue(reason.contains("Operation not permitted"), reason)
+        }
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        XCTAssertTrue(try runtime.isRunning(id: id))
+
+        try runtime.markSessionErrored(id: id)
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
     }
 
     func testDuplicateSessionFailsLoudlyWithoutReplacingOriginalSession() throws {
@@ -709,5 +754,21 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+}
+
+private final class FailFirstProcessGroupSignaler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
+        lock.lock()
+        if shouldFail {
+            shouldFail = false
+            lock.unlock()
+            return EPERM
+        }
+        lock.unlock()
+        return Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
     }
 }

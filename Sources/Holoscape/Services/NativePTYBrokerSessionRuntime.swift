@@ -84,8 +84,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         func markTerminated(_ status: Int32) {
             lock.lock()
             terminationStatus = status
+            processGroupID = nil
             lock.unlock()
-            scheduleProcessGroupRetirementCheck()
         }
 
         func observedTerminationStatus() -> Int32? {
@@ -103,11 +103,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
         func setProcessGroupID(_ id: pid_t) {
             lock.lock()
-            processGroupID = id
-            lock.unlock()
-            if !process.isRunning {
-                scheduleProcessGroupRetirementCheck()
+            if terminationStatus == nil {
+                processGroupID = id
             }
+            lock.unlock()
         }
 
         func observedProcessGroupID() -> pid_t? {
@@ -130,29 +129,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             defer { terminationLock.unlock() }
             return try body()
         }
-
-        private func scheduleProcessGroupRetirementCheck() {
-            guard let processGroupID = observedProcessGroupID() else { return }
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
-                guard let self, self.observedProcessGroupID() == processGroupID else { return }
-                if Darwin.kill(-processGroupID, 0) == 0 || errno != ESRCH {
-                    self.scheduleProcessGroupRetirementCheck()
-                } else {
-                    self.retireProcessGroup(processGroupID)
-                }
-            }
-        }
     }
 
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
     private let scrollbackStore: DiskBackedScrollbackStore?
     private let processEnvironment: [String: String]
+    private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
         scrollbackDirectory: URL? = nil,
-        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
+            Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
+        }
     ) {
         if let scrollbackDirectory {
             self.scrollbackStore = DiskBackedScrollbackStore(directory: scrollbackDirectory)
@@ -160,6 +151,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             self.scrollbackStore = nil
         }
         self.processEnvironment = processEnvironment
+        self.processGroupSignal = processGroupSignal
     }
 
     func listSessions() throws -> [BrokerSessionID] {
@@ -354,13 +346,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     private func terminateBoundedly(_ session: Session) throws {
         try session.withTerminationLock {
+            guard session.process.isRunning else { return }
             guard let processGroupID = session.observedProcessGroupID() else {
-                if !session.process.isRunning { return }
                 throw RuntimeError.terminationFailed(session.id, reason: "missing isolated process group")
-            }
-            if !session.process.isRunning, !processGroupExists(processGroupID) {
-                session.retireProcessGroup(processGroupID)
-                return
             }
 
             try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
@@ -385,9 +373,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         signal: Int32,
         sessionID: BrokerSessionID
     ) throws {
-        let result = Darwin.kill(-processGroupID, signal)
-        if result != 0, errno != ESRCH {
-            let signalError = errno
+        let signalError = processGroupSignal(processGroupID, signal)
+        if signalError != 0, signalError != ESRCH {
             throw RuntimeError.terminationFailed(
                 sessionID,
                 reason: "signal \(signal) failed: \(String(cString: strerror(signalError)))"
