@@ -150,6 +150,46 @@ final class SessionProfileManagerTests: XCTestCase {
         }
     }
 
+    func testRemoteDirectoryListingRejectsStdoutBeyondConfiguredLimit() async throws {
+        let script = try makeDiscoveryScript("printf 'project-name-that-exceeds-the-test-limit\\n'")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 1,
+                maxOutputBytes: 8
+            )
+            XCTFail("Expected oversized stdout to fail explicitly")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .outputLimitExceeded(stream: "stdout", maxBytes: 8)
+            )
+        }
+    }
+
+    func testRemoteDirectoryListingRejectsStderrBeyondConfiguredLimit() async throws {
+        let script = try makeDiscoveryScript("printf 'diagnostic-that-exceeds-the-test-limit\\n' >&2; exit 7")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 1,
+                maxOutputBytes: 8
+            )
+            XCTFail("Expected oversized stderr to fail explicitly")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .outputLimitExceeded(stream: "stderr", maxBytes: 8)
+            )
+        }
+    }
+
     @MainActor
     func testRefreshDiscoveredSessionsPopulatesLauncherProjectCache() async throws {
         let root = FileManager.default.temporaryDirectory

@@ -112,12 +112,18 @@ class ProjectDiscoveryService {
     nonisolated static func listDirectories(
         executableURL: URL,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        maxOutputBytes: Int = 1_048_576
     ) async throws -> [String] {
         let result = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(with: Result {
-                    try runProcess(executableURL: executableURL, arguments: arguments, timeout: timeout)
+                    try runProcess(
+                        executableURL: executableURL,
+                        arguments: arguments,
+                        timeout: timeout,
+                        maxOutputBytes: maxOutputBytes
+                    )
                 })
             }
         }
@@ -138,7 +144,8 @@ class ProjectDiscoveryService {
     private nonisolated static func runProcess(
         executableURL: URL,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        maxOutputBytes: Int
     ) throws -> ProcessResult {
         let process = Process()
         process.executableURL = executableURL
@@ -159,7 +166,11 @@ class ProjectDiscoveryService {
         for (pipe, destination) in [(stdoutPipe, stdout), (stderrPipe, stderr)] {
             readers.enter()
             DispatchQueue.global(qos: .utility).async {
-                destination.set(pipe.fileHandleForReading.readDataToEndOfFile())
+                destination.read(
+                    from: pipe.fileHandleForReading,
+                    maxBytes: max(0, maxOutputBytes),
+                    onLimitExceeded: { process.terminate() }
+                )
                 readers.leave()
             }
         }
@@ -175,6 +186,12 @@ class ProjectDiscoveryService {
             stdoutPipe.fileHandleForReading.closeFile()
             stderrPipe.fileHandleForReading.closeFile()
             _ = readers.wait(timeout: .now() + 0.5)
+            if stdout.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+            }
+            if stderr.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+            }
             throw DiscoveryError.processTimedOut
         }
 
@@ -183,6 +200,18 @@ class ProjectDiscoveryService {
             stderrPipe.fileHandleForReading.closeFile()
             _ = readers.wait(timeout: .now() + 0.5)
             throw DiscoveryError.processTimedOut
+        }
+        if stdout.limitExceeded {
+            throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+        }
+        if stderr.limitExceeded {
+            throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+        }
+        if let readFailure = stdout.readFailure {
+            throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+        }
+        if let readFailure = stderr.readFailure {
+            throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
         }
         return ProcessResult(
             exitCode: process.terminationStatus,
@@ -194,6 +223,8 @@ class ProjectDiscoveryService {
     enum DiscoveryError: Error, Equatable {
         case processFailed(exitCode: Int32, stderr: String)
         case processTimedOut
+        case outputLimitExceeded(stream: String, maxBytes: Int)
+        case outputReadFailed(stream: String, message: String)
     }
 }
 
@@ -206,6 +237,8 @@ private struct ProcessResult: Sendable {
 private final class ProcessOutputBox: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
+    private var didExceedLimit = false
+    private var failure: String?
 
     var value: Data {
         lock.lock()
@@ -213,9 +246,41 @@ private final class ProcessOutputBox: @unchecked Sendable {
         return data
     }
 
-    func set(_ data: Data) {
+    var limitExceeded: Bool {
         lock.lock()
-        self.data = data
-        lock.unlock()
+        defer { lock.unlock() }
+        return didExceedLimit
+    }
+
+    var readFailure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+
+    func read(
+        from handle: FileHandle,
+        maxBytes: Int,
+        onLimitExceeded: () -> Void
+    ) {
+        do {
+            while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                lock.lock()
+                let remaining = max(0, maxBytes - data.count)
+                if chunk.count > remaining {
+                    data.append(chunk.prefix(remaining))
+                    didExceedLimit = true
+                    lock.unlock()
+                    onLimitExceeded()
+                    return
+                }
+                data.append(chunk)
+                lock.unlock()
+            }
+        } catch {
+            lock.lock()
+            failure = String(describing: error)
+            lock.unlock()
+        }
     }
 }
