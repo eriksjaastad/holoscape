@@ -165,7 +165,8 @@ class ProjectDiscoveryService {
         }
 
         let boundedTimeout = max(0, timeout)
-        if termination.wait(timeout: .now() + boundedTimeout) == .timedOut {
+        let operationDeadline = DispatchTime.now() + boundedTimeout
+        if termination.wait(timeout: operationDeadline) == .timedOut {
             process.terminate()
             if termination.wait(timeout: .now() + 0.5) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)
@@ -177,7 +178,12 @@ class ProjectDiscoveryService {
             throw DiscoveryError.processTimedOut
         }
 
-        readers.wait()
+        if readers.wait(timeout: operationDeadline) == .timedOut {
+            stdoutPipe.fileHandleForReading.closeFile()
+            stderrPipe.fileHandleForReading.closeFile()
+            _ = readers.wait(timeout: .now() + 0.5)
+            throw DiscoveryError.processTimedOut
+        }
         return ProcessResult(
             exitCode: process.terminationStatus,
             stdout: stdout.value,
