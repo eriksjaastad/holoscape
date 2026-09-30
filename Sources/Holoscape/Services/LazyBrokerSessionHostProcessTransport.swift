@@ -11,6 +11,7 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
     private let arguments: [String]
     private let environment: [String: String]?
     private let responseTimeoutSeconds: Int
+    private let transportFactory: (URL, [String], [String: String]?, Int) throws -> BrokerSessionHostProcessTransport
     private let lock = NSLock()
     private var transport: BrokerSessionHostProcessTransport?
     private var isClosed = false
@@ -19,12 +20,21 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
         executableURL: URL,
         arguments: [String] = [BrokerSessionHostCommand.modeFlag],
         environment: [String: String]? = nil,
-        responseTimeoutSeconds: Int = 5
+        responseTimeoutSeconds: Int = 5,
+        transportFactory: @escaping (URL, [String], [String: String]?, Int) throws -> BrokerSessionHostProcessTransport = { executableURL, arguments, environment, responseTimeoutSeconds in
+            try BrokerSessionHostProcessTransport(
+                executableURL: executableURL,
+                arguments: arguments,
+                environment: environment,
+                responseTimeoutSeconds: responseTimeoutSeconds
+            )
+        }
     ) {
         self.executableURL = executableURL
         self.arguments = arguments
         self.environment = environment
         self.responseTimeoutSeconds = responseTimeoutSeconds
+        self.transportFactory = transportFactory
     }
 
     deinit {
@@ -46,12 +56,7 @@ final class LazyBrokerSessionHostProcessTransport: @unchecked Sendable {
             return transport
         }
         do {
-            let launched = try BrokerSessionHostProcessTransport(
-                executableURL: executableURL,
-                arguments: arguments,
-                environment: environment,
-                responseTimeoutSeconds: responseTimeoutSeconds
-            )
+            let launched = try transportFactory(executableURL, arguments, environment, responseTimeoutSeconds)
             BrokerHostLaunchDiagnostics.clearLaunchFailure()
             transport = launched
             return launched

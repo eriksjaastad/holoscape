@@ -26,6 +26,11 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     private let inputDescriptor: Int32
     private let outputDescriptor: Int32
     private let responseTimeoutSeconds: Int
+    // Narrow test observers make otherwise scheduler-dependent ownership
+    // boundaries observable. Production callers leave them nil.
+    private let requestLockWaitObserver: (() -> Void)?
+    private let requestLockAcquiredObserver: (() -> Void)?
+    private let responseReadObserver: ((Int32) -> Void)?
     private let requestLock = NSLock()
     private let stateLock = NSLock()
     private var readBuffer = Data()
@@ -39,7 +44,10 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         executableURL: URL,
         arguments: [String] = [],
         environment: [String: String]? = nil,
-        responseTimeoutSeconds: Int = 5
+        responseTimeoutSeconds: Int = 5,
+        requestLockWaitObserver: (() -> Void)? = nil,
+        requestLockAcquiredObserver: (() -> Void)? = nil,
+        responseReadObserver: ((Int32) -> Void)? = nil
     ) throws {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -80,6 +88,9 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         self.inputDescriptor = inputDescriptor
         self.outputDescriptor = outputDescriptor
         self.responseTimeoutSeconds = responseTimeoutSeconds
+        self.requestLockWaitObserver = requestLockWaitObserver
+        self.requestLockAcquiredObserver = requestLockAcquiredObserver
+        self.responseReadObserver = responseReadObserver
     }
 
     deinit {
@@ -87,8 +98,12 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
-        requestLock.lock()
+        if !requestLock.try() {
+            requestLockWaitObserver?()
+            requestLock.lock()
+        }
         defer { requestLock.unlock() }
+        requestLockAcquiredObserver?()
         try admitRequest()
         defer { releaseRequestOwnership() }
 
@@ -176,7 +191,7 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     }
 
     private func readResponseFrameLocked() throws -> Data {
-        var inactivityDeadline = Date().addingTimeInterval(TimeInterval(responseTimeoutSeconds))
+        var inactivityDeadline = monotonicDeadline(after: responseTimeoutSeconds)
         while true {
             if let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
                 let frame = readBuffer.prefix(through: newlineIndex)
@@ -184,12 +199,12 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
                 return Data(frame)
             }
             try throwIfClosed()
-            let remainingMilliseconds = max(0, Int(inactivityDeadline.timeIntervalSinceNow * 1_000))
+            let remainingMilliseconds = monotonicRemainingMilliseconds(until: inactivityDeadline)
             if remainingMilliseconds == 0 {
                 throw TransportError.responseTimedOut
             }
             var pollFD = pollfd(fd: outputDescriptor, events: Int16(POLLIN), revents: 0)
-            let readyCount = poll(&pollFD, 1, Int32(min(remainingMilliseconds, Self.pollIntervalMilliseconds)))
+            let readyCount = poll(&pollFD, 1, remainingMilliseconds)
             if readyCount == 0 { continue }
             if readyCount < 0 {
                 if errno == EINTR { continue }
@@ -198,10 +213,11 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
             }
 
             var bytes = [UInt8](repeating: 0, count: 4096)
+            responseReadObserver?(outputDescriptor)
             let byteCount = Darwin.read(outputDescriptor, &bytes, bytes.count)
             if byteCount > 0 {
                 readBuffer.append(contentsOf: bytes.prefix(byteCount))
-                inactivityDeadline = Date().addingTimeInterval(TimeInterval(responseTimeoutSeconds))
+                inactivityDeadline = monotonicDeadline(after: responseTimeoutSeconds)
                 continue
             }
             if byteCount < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
@@ -225,6 +241,26 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         if closed {
             throw TransportError.transportClosed
         }
+    }
+
+    private func monotonicDeadline(after seconds: Int) -> UInt64 {
+        let nonnegativeSeconds = UInt64(max(0, seconds))
+        let (timeoutNanoseconds, multiplyOverflow) = nonnegativeSeconds.multipliedReportingOverflow(by: 1_000_000_000)
+        if multiplyOverflow { return .max }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let (deadline, addOverflow) = now.addingReportingOverflow(timeoutNanoseconds)
+        return addOverflow ? .max : deadline
+    }
+
+    private func monotonicRemainingMilliseconds(until deadline: UInt64) -> Int32 {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline > now else { return 0 }
+        let remainingNanoseconds = deadline - now
+        // Round up, never down: a sub-millisecond remainder must not become an
+        // early timeout. The result is capped before conversion to Int32.
+        let milliseconds = remainingNanoseconds / 1_000_000
+            + (remainingNanoseconds % 1_000_000 == 0 ? 0 : 1)
+        return Int32(min(milliseconds, UInt64(Self.pollIntervalMilliseconds)))
     }
 
     private func terminateHelperBoundedly() {

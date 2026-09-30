@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Holoscape
@@ -444,14 +445,17 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerSessionHostProcessTransportCloseTests-\(UUID().uuidString)")
         let helperURL = temporaryDirectory.appendingPathComponent("ignore-termination")
+        let terminationTrapInstalledURL = temporaryDirectory.appendingPathComponent("termination-trap-installed")
+        let helperPIDURL = temporaryDirectory.appendingPathComponent("helper-pid")
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try """
         #!/bin/sh
         trap '' TERM
+        : > "$1"
+        printf '%s\\n' "$$" > "$2"
         IFS= read -r line
         printf '%s\\n' "$line"
-        (sleep 2; kill -KILL $$) &
         wait
         """.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
@@ -459,14 +463,18 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             ofItemAtPath: helperURL.path
         )
 
-        let transport = try BrokerSessionHostProcessTransport(executableURL: helperURL)
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            arguments: [terminationTrapInstalledURL.path, helperPIDURL.path]
+        )
+        try waitForFile(at: terminationTrapInstalledURL.path)
+        let helperPID = try helperPID(at: helperPIDURL)
+        defer { _ = Darwin.kill(helperPID, SIGKILL) }
         let frame = Data("{\"status\":\"ready\"}\n".utf8)
         XCTAssertEqual(try transport.sendFrame(frame), frame)
 
-        let start = Date()
         transport.close()
-
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
+        XCTAssertTrue(waitForProcessToExit(helperPID), "Helper PID \(helperPID) survived TERM-to-KILL escalation")
     }
 
     func testLazyProcessTransportCloseInterruptsInFlightPartialResponse() throws {
@@ -523,62 +531,75 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertNotNil(sendError.value)
     }
 
-    func testDirectProcessTransportCloseCancelsAdmittedReadWithoutClosingItsDescriptors() throws {
+    func testDirectProcessTransportCloseRetainsAdmittedDescriptorAfterPollReadiness() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BrokerSessionHostProcessTransportDirectCloseTests-\(UUID().uuidString)")
-        let helperURL = temporaryDirectory.appendingPathComponent("block-response")
-        let requestReceivedURL = temporaryDirectory.appendingPathComponent("request-received")
+            .appendingPathComponent("BrokerSessionHostProcessTransportDescriptorLifetimeTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("ready-response")
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try """
         #!/bin/sh
-        trap '' TERM
         IFS= read -r line
-        : > "$1"
+        printf partial
         while :; do sleep 1; done
         """.write(to: helperURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: helperURL.path
-        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
 
+        let readReady = DispatchSemaphore(value: 0)
+        let allowRead = DispatchSemaphore(value: 0)
+        let descriptorUsed = expectation(description: "cached descriptor used after close")
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: helperURL,
-            arguments: [requestReceivedURL.path],
-            responseTimeoutSeconds: 5
+            responseTimeoutSeconds: 5,
+            responseReadObserver: { descriptor in
+                readReady.signal()
+                allowRead.wait()
+                XCTAssertNotEqual(fcntl(descriptor, F_GETFD), -1, "close released or reused the admitted descriptor")
+                descriptorUsed.fulfill()
+            }
         )
         let sendFinished = expectation(description: "admitted direct send returned")
         let sendError = LockedErrorBox()
         DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                _ = try transport.sendFrame(Data("{}\n".utf8))
-            } catch {
-                sendError.set(error)
-            }
+            do { _ = try transport.sendFrame(Data("{}\n".utf8)) } catch { sendError.set(error) }
             sendFinished.fulfill()
         }
 
-        try waitForFile(at: requestReceivedURL.path)
+        XCTAssertEqual(readReady.wait(timeout: .now() + 1), .success)
         transport.close()
-        wait(for: [sendFinished], timeout: 1)
-        XCTAssertEqual(
-            sendError.value as? BrokerSessionHostProcessTransport.TransportError,
-            .transportClosed
-        )
+        allowRead.signal()
+        wait(for: [descriptorUsed, sendFinished], timeout: 1)
+        XCTAssertEqual(sendError.value as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
     }
 
-    func testDirectProcessTransportFullInputPipeClosePreservesTypedErrorUnderDefaultSIGPIPE() throws {
+    func testDirectProcessTransportBrokenPipeReturnsTypedErrorUnderDefaultSIGPIPEInChildProcess() throws {
+        if let resultPath = ProcessInfo.processInfo.environment["HOLOSCAPE_SIGPIPE_CHILD_RESULT"],
+           let helperPath = ProcessInfo.processInfo.environment["HOLOSCAPE_SIGPIPE_CHILD_HELPER"],
+           let stdinClosedPath = ProcessInfo.processInfo.environment["HOLOSCAPE_SIGPIPE_CHILD_STDIN_CLOSED"],
+           let helperPIDPath = ProcessInfo.processInfo.environment["HOLOSCAPE_SIGPIPE_CHILD_HELPER_PID"] {
+            Self.runBrokenPipeProbe(
+                helperURL: URL(fileURLWithPath: helperPath),
+                stdinClosedURL: URL(fileURLWithPath: stdinClosedPath),
+                helperPIDURL: URL(fileURLWithPath: helperPIDPath),
+                resultURL: URL(fileURLWithPath: resultPath)
+            )
+            return
+        }
+
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerSessionHostProcessTransportSIGPIPETests-\(UUID().uuidString)")
-        let helperURL = temporaryDirectory.appendingPathComponent("fill-input-pipe")
-        let inputBlockedURL = temporaryDirectory.appendingPathComponent("input-blocked")
+        let helperURL = temporaryDirectory.appendingPathComponent("closed-stdin")
+        let stdinClosedURL = temporaryDirectory.appendingPathComponent("stdin-closed")
+        let helperPIDURL = temporaryDirectory.appendingPathComponent("helper-pid")
+        let resultURL = temporaryDirectory.appendingPathComponent("child-result")
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
         try """
         #!/bin/sh
         trap '' TERM
-        dd bs=1 count=1 of=/dev/null 2>/dev/null
+        exec 0<&-
         : > "$1"
+        printf '%s\\n' "$$" > "$2"
         while :; do sleep 1; done
         """.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
@@ -586,29 +607,30 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             ofItemAtPath: helperURL.path
         )
 
-        let transport = try BrokerSessionHostProcessTransport(
-            executableURL: helperURL,
-            arguments: [inputBlockedURL.path],
-            responseTimeoutSeconds: 5
-        )
-        let sendFinished = expectation(description: "full-pipe send returned without SIGPIPE")
-        let sendError = LockedErrorBox()
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                _ = try transport.sendFrame(Data(repeating: 0x61, count: 8 * 1_024 * 1_024))
-            } catch {
-                sendError.set(error)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerSessionHostProtocolTests/testDirectProcessTransportBrokenPipeReturnsTypedErrorUnderDefaultSIGPIPEInChildProcess",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SIGPIPE_CHILD_RESULT": resultURL.path,
+            "HOLOSCAPE_SIGPIPE_CHILD_HELPER": helperURL.path,
+            "HOLOSCAPE_SIGPIPE_CHILD_STDIN_CLOSED": stdinClosedURL.path,
+            "HOLOSCAPE_SIGPIPE_CHILD_HELPER_PID": helperPIDURL.path,
+        ]) { _, childValue in childValue }
+        try child.run()
+        child.waitUntilExit()
+        if FileManager.default.fileExists(atPath: helperPIDURL.path), let helperPID = try? helperPID(at: helperPIDURL) {
+            if !waitForProcessToExit(helperPID) {
+                _ = Darwin.kill(helperPID, SIGKILL)
             }
-            sendFinished.fulfill()
+            XCTAssertTrue(waitForProcessToExit(helperPID), "SIGPIPE probe left helper PID \(helperPID) running")
         }
-
-        try waitForFile(at: inputBlockedURL.path)
-        transport.close()
-        wait(for: [sendFinished], timeout: 1)
-        XCTAssertEqual(
-            sendError.value as? BrokerSessionHostProcessTransport.TransportError,
-            .transportClosed
-        )
+        XCTAssertEqual(child.terminationReason, .exit, "Child died from signal \(child.terminationStatus) instead of returning typed writeFailed")
+        XCTAssertEqual(child.terminationStatus, 0)
+        XCTAssertEqual(try String(contentsOf: resultURL, encoding: .utf8), "W", "Expected normal typed writeFailed completion")
     }
 
     func testLazyProcessTransportCloseCancelsBlockedAndQueuedRequestsWithoutResurrection() throws {
@@ -632,10 +654,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             ofItemAtPath: helperURL.path
         )
 
+        let secondRequestWaitingForLock = DispatchSemaphore(value: 0)
         let transport = LazyBrokerSessionHostProcessTransport(
             executableURL: helperURL,
             arguments: [requestReceivedURL.path, launchCountURL.path],
-            responseTimeoutSeconds: 5
+            responseTimeoutSeconds: 5,
+            transportFactory: { executableURL, arguments, environment, responseTimeoutSeconds in
+                try BrokerSessionHostProcessTransport(
+                    executableURL: executableURL,
+                    arguments: arguments,
+                    environment: environment,
+                    responseTimeoutSeconds: responseTimeoutSeconds,
+                    requestLockWaitObserver: { secondRequestWaitingForLock.signal() }
+                )
+            }
         )
         let firstFinished = expectation(description: "blocked first request returned")
         let secondFinished = expectation(description: "queued second request returned")
@@ -651,10 +683,15 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             secondFinished.fulfill()
         }
 
+        XCTAssertEqual(secondRequestWaitingForLock.wait(timeout: .now() + 1), .success)
         transport.close()
         wait(for: [firstFinished, secondFinished], timeout: 1)
         XCTAssertEqual(firstError.value as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
         XCTAssertEqual(secondError.value as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        XCTAssertEqual(try String(contentsOf: launchCountURL, encoding: .utf8), "x")
+        XCTAssertThrowsError(try transport.sendFrame(Data("{\"request\":3}\n".utf8))) { error in
+            XCTAssertEqual(error as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        }
         XCTAssertEqual(try String(contentsOf: launchCountURL, encoding: .utf8), "x")
     }
 
@@ -1373,6 +1410,66 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             usleep(10_000)
         }
         XCTFail("Timed out waiting for helper marker at \(path)")
+    }
+
+    private static func waitForFileCreation(at path: String) -> Bool {
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: path) {
+                return true
+            }
+            usleep(10_000)
+        }
+        return false
+    }
+
+    private func helperPID(at url: URL) throws -> pid_t {
+        try waitForFile(at: url.path)
+        guard let pid = pid_t(try String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw NSError(domain: "BrokerSessionHostProtocolTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Helper did not report a valid PID"])
+        }
+        return pid
+    }
+
+    private func waitForProcessToExit(_ pid: pid_t) -> Bool {
+        for _ in 0..<100 {
+            if Darwin.kill(pid, 0) == -1, errno == ESRCH {
+                return true
+            }
+            usleep(10_000)
+        }
+        return false
+    }
+
+    private static func runBrokenPipeProbe(
+        helperURL: URL,
+        stdinClosedURL: URL,
+        helperPIDURL: URL,
+        resultURL: URL
+    ) {
+        _ = Darwin.signal(SIGPIPE, SIG_DFL)
+        let result: String
+        do {
+            let transport = try BrokerSessionHostProcessTransport(
+                executableURL: helperURL,
+                arguments: [stdinClosedURL.path, helperPIDURL.path]
+            )
+            defer { transport.close() }
+            guard waitForFileCreation(at: stdinClosedURL.path) else {
+                try? "E".write(to: resultURL, atomically: true, encoding: .utf8)
+                return
+            }
+            do {
+                _ = try transport.sendFrame(Data("{}\\n".utf8))
+                result = "N"
+            } catch let error as BrokerSessionHostProcessTransport.TransportError {
+                result = error == .writeFailed("Broken pipe") ? "W" : "E"
+            } catch {
+                result = "E"
+            }
+        } catch {
+            result = "E"
+        }
+        try? result.write(to: resultURL, atomically: true, encoding: .utf8)
     }
 
     private func waitForOutput(
