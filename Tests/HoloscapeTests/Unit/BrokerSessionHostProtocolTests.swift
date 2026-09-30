@@ -230,6 +230,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
     func testHostWaitForOutputAvailabilityBlocksUntilRuntimeSignals() throws {
         let runtime = SignalingBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
+        let sendableHost = TestSendableValue(value: host)
         let codec = BrokerSessionHostCodec()
         let sessionID = BrokerSessionID(rawValue: "host-output-availability")
         let responseReady = expectation(description: "wait response returned after signal")
@@ -237,7 +238,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let frame = try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 1_000)))
+                let frame = try sendableHost.value.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 1_000)))
                 responseBox.set(try codec.decodeResponse(frame))
             } catch {
                 XCTFail("wait request failed: \(error)")
@@ -835,12 +836,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             runtimeFactory: { runtime },
             socketMaxConnections: 1
         )
+        let sendableCommand = TestSendableValue(value: command)
         let serverFinished = expectation(description: "socket command served one request")
         let serverError = LockedErrorBox()
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                XCTAssertTrue(try command.runIfRequested())
+                let handled = try sendableCommand.value.runIfRequested()
+                XCTAssertTrue(handled)
             } catch {
                 serverError.set(error)
             }
@@ -1530,6 +1533,15 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTFail("Timed out waiting for coordinator output containing \(expected). Saw: \(output)", file: file, line: line)
         return output
     }
+}
+
+/// Test-only boundary for immutable values moved to one worker queue.
+///
+/// Each use joins the worker before the test reads related state. This wrapper
+/// deliberately avoids claiming that the production value is generally
+/// `Sendable`.
+private struct TestSendableValue<Value>: @unchecked Sendable {
+    let value: Value
 }
 
 private final class LockedErrorBox: @unchecked Sendable {
