@@ -25,6 +25,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         let process: Process
         let masterHandle: FileHandle
         let scrollbackStore: DiskBackedScrollbackStore?
+        var processGroupID: pid_t?
         let lock = NSLock()
         var output = Data()
         var scrollback = Data()
@@ -188,6 +189,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             throw RuntimeError.launchFailed(error.localizedDescription)
         }
 
+        let expectedProcessGroupID = process.processIdentifier
+        let observedProcessGroupID = getpgid(process.processIdentifier)
+        if process.isRunning, observedProcessGroupID != expectedProcessGroupID {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            masterHandle.readabilityHandler = nil
+            masterHandle.closeFile()
+            slaveRead.closeFile()
+            slaveWrite.closeFile()
+            slaveError.closeFile()
+            throw RuntimeError.launchFailed("PTY child did not start in an isolated process group")
+        }
+        // Foundation launches each Process as its own process-group leader on
+        // Darwin. Retaining that ID lets shutdown cover the shell and every
+        // command it launches, even after the shell itself exits.
+        session.processGroupID = expectedProcessGroupID
+
         slaveRead.closeFile()
         slaveWrite.closeFile()
         slaveError.closeFile()
@@ -213,7 +230,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     func markSessionErrored(id: BrokerSessionID) throws {
-        try close(try removeSession(id))
+        let session = try session(for: id)
+        try close(session)
+        _ = try removeSession(id)
     }
 
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
@@ -284,38 +303,55 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     private func close(_ session: Session) throws {
-        session.masterHandle.readabilityHandler = nil
-        defer { session.masterHandle.closeFile() }
         try terminateBoundedly(session)
+        session.masterHandle.readabilityHandler = nil
+        session.masterHandle.closeFile()
     }
 
     private func terminateBoundedly(_ session: Session) throws {
-        guard session.process.isRunning else { return }
-
-        session.process.terminate()
-        if waitForTermination(of: session.process) { return }
-
-        let result = Darwin.kill(session.process.processIdentifier, SIGKILL)
-        if result != 0, errno != ESRCH {
-            throw RuntimeError.terminationFailed(
-                session.id,
-                reason: "SIGKILL failed: \(String(cString: strerror(errno)))"
-            )
+        guard let processGroupID = session.processGroupID else {
+            throw RuntimeError.terminationFailed(session.id, reason: "missing isolated process group")
         }
-        guard waitForTermination(of: session.process) else {
+        if !session.process.isRunning, !processGroupExists(processGroupID) { return }
+
+        try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
+        if waitForTermination(of: session.process, processGroupID: processGroupID) { return }
+
+        try signalProcessGroup(processGroupID, signal: SIGKILL, sessionID: session.id)
+        guard waitForTermination(of: session.process, processGroupID: processGroupID) else {
             throw RuntimeError.terminationFailed(
                 session.id,
-                reason: "process remained running after SIGTERM and SIGKILL"
+                reason: "process group remained running after SIGTERM and SIGKILL"
             )
         }
     }
 
-    private func waitForTermination(of process: Process) -> Bool {
+    private func signalProcessGroup(
+        _ processGroupID: pid_t,
+        signal: Int32,
+        sessionID: BrokerSessionID
+    ) throws {
+        let result = Darwin.kill(-processGroupID, signal)
+        if result != 0, errno != ESRCH {
+            let signalError = errno
+            throw RuntimeError.terminationFailed(
+                sessionID,
+                reason: "signal \(signal) failed: \(String(cString: strerror(signalError)))"
+            )
+        }
+    }
+
+    private func waitForTermination(of process: Process, processGroupID: pid_t) -> Bool {
         let deadline = DispatchTime.now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
-        while process.isRunning, DispatchTime.now() < deadline {
+        while (process.isRunning || processGroupExists(processGroupID)), DispatchTime.now() < deadline {
             usleep(10_000)
         }
-        return !process.isRunning
+        return !process.isRunning && !processGroupExists(processGroupID)
+    }
+
+    private func processGroupExists(_ processGroupID: pid_t) -> Bool {
+        if Darwin.kill(-processGroupID, 0) == 0 { return true }
+        return errno != ESRCH
     }
 
     private func session(for id: BrokerSessionID) throws -> Session {

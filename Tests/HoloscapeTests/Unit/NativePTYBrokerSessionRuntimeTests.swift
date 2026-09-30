@@ -224,9 +224,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     func testTerminateForceKillsProcessThatIgnoresSIGTERMWithinBoundedTime() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "sigterm-resistant-terminate-native-pty-runtime-test")
-        let pid = try createSIGTERMResistantSession(runtime: runtime, id: id)
+        let pids = try createSIGTERMResistantSession(runtime: runtime, id: id)
         defer {
-            _ = Darwin.kill(pid, SIGKILL)
+            _ = Darwin.kill(pids.root, SIGKILL)
+            _ = Darwin.kill(pids.child, SIGKILL)
             try? runtime.markSessionErrored(id: id)
         }
         let completed = DispatchSemaphore(value: 0)
@@ -243,7 +244,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let firstWait = completed.wait(timeout: .now() + 1.5)
         if firstWait == .timedOut {
-            _ = Darwin.kill(pid, SIGKILL)
+            _ = Darwin.kill(pids.root, SIGKILL)
+            _ = Darwin.kill(pids.child, SIGKILL)
             _ = completed.wait(timeout: .now() + 1)
         }
 
@@ -251,13 +253,17 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertNil(capturedError.value)
         XCTAssertFalse(try runtime.isRunning(id: id))
         XCTAssertNotNil(try runtime.terminationStatus(id: id))
+        XCTAssertTrue(waitForProcessToExit(pids.child), "termination left descendant PID \(pids.child) running")
     }
 
     func testMarkErroredForceKillsProcessThatIgnoresSIGTERMWithinBoundedTime() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "sigterm-resistant-error-native-pty-runtime-test")
-        let pid = try createSIGTERMResistantSession(runtime: runtime, id: id)
-        defer { _ = Darwin.kill(pid, SIGKILL) }
+        let pids = try createSIGTERMResistantSession(runtime: runtime, id: id)
+        defer {
+            _ = Darwin.kill(pids.root, SIGKILL)
+            _ = Darwin.kill(pids.child, SIGKILL)
+        }
         let completed = DispatchSemaphore(value: 0)
         let capturedError = LockedRuntimeErrorBox()
 
@@ -272,7 +278,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let firstWait = completed.wait(timeout: .now() + 1.5)
         if firstWait == .timedOut {
-            _ = Darwin.kill(pid, SIGKILL)
+            _ = Darwin.kill(pids.root, SIGKILL)
+            _ = Darwin.kill(pids.child, SIGKILL)
             _ = completed.wait(timeout: .now() + 1)
         }
 
@@ -281,7 +288,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try runtime.isRunning(id: id)) { runtimeError in
             XCTAssertEqual(runtimeError as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
         }
-        XCTAssertTrue(waitForProcessToExit(pid), "error cleanup left PID \(pid) running")
+        XCTAssertTrue(waitForProcessToExit(pids.root), "error cleanup left root PID \(pids.root) running")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "error cleanup left descendant PID \(pids.child) running")
     }
 
     func testDuplicateSessionFailsLoudlyWithoutReplacingOriginalSession() throws {
@@ -578,22 +586,42 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     private func createSIGTERMResistantSession(
         runtime: NativePTYBrokerSessionRuntime,
         id: BrokerSessionID
-    ) throws -> pid_t {
+    ) throws -> (root: pid_t, child: pid_t) {
+        let readinessURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-sigterm-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: readinessURL) }
         let request = BrokerSessionLaunchRequest(
             command: "/bin/sh",
-            arguments: ["-c", "trap '' TERM; printf 'SIGTERM_READY:%d\\n' \"$$\"; while :; do :; done"],
+            arguments: [
+                "-c",
+                "trap '' TERM; /bin/sh -c 'trap \"\" TERM; : > \"$1\"; while :; do :; done' sh \"$1\" & child=$!; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'SIGTERM_READY:%d:%d\\n' \"$$\" \"$child\"; wait \"$child\"",
+                "sh",
+                readinessURL.path
+            ],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         try runtime.createSession(id: id, request: request)
-        let output = try waitForOutput(from: runtime, id: id, containing: "SIGTERM_READY:")
-        guard let marker = output.range(of: "SIGTERM_READY:"),
-              let pid = pid_t(output[marker.upperBound...].prefix(while: { $0.isNumber })) else {
-            XCTFail("Could not parse SIGTERM-resistant child PID from output: \(output)")
-            throw CocoaError(.coderReadCorrupt)
+        do {
+            let output = try waitForOutput(from: runtime, id: id, containing: "SIGTERM_READY:")
+            guard let marker = output.range(of: "SIGTERM_READY:") else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            let components = output[marker.upperBound...]
+                .prefix(while: { $0.isNumber || $0 == ":" })
+                .split(separator: ":")
+            guard components.count == 2,
+                  let rootPID = pid_t(components[0]),
+                  let childPID = pid_t(components[1]) else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            return (rootPID, childPID)
+        } catch {
+            try? runtime.markSessionErrored(id: id)
+            XCTFail("Could not prepare SIGTERM-resistant process tree: \(error)")
+            throw error
         }
-        return pid
     }
 
     private func waitForProcessToExit(_ pid: pid_t) -> Bool {
