@@ -587,16 +587,11 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         runtime: NativePTYBrokerSessionRuntime,
         id: BrokerSessionID
     ) throws -> (root: pid_t, child: pid_t) {
-        let readinessURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holoscape-sigterm-ready-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: readinessURL) }
         let request = BrokerSessionLaunchRequest(
             command: "/bin/sh",
             arguments: [
                 "-c",
-                "trap '' TERM; /bin/sh -c 'trap \"\" TERM; : > \"$1\"; while :; do :; done' sh \"$1\" & child=$!; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'SIGTERM_READY:%d:%d\\n' \"$$\" \"$child\"; wait \"$child\"",
-                "sh",
-                readinessURL.path
+                "ready=0; trap 'ready=1' USR1; trap '' TERM; /bin/sh -c 'trap \"\" TERM; kill -USR1 \"$1\"; while :; do :; done' sh \"$$\" & child=$!; while [ \"$ready\" -eq 0 ]; do :; done; printf 'SIGTERM_READY:%d:%d\\n' \"$$\" \"$child\"; wait \"$child\""
             ],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
@@ -618,7 +613,12 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             }
             return (rootPID, childPID)
         } catch {
-            try? runtime.markSessionErrored(id: id)
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch let cleanupError {
+                XCTFail("Fixture setup failed with \(error); cleanup also failed with \(cleanupError)")
+                throw cleanupError
+            }
             XCTFail("Could not prepare SIGTERM-resistant process tree: \(error)")
             throw error
         }

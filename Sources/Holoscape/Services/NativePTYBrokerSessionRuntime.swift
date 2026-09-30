@@ -25,8 +25,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         let process: Process
         let masterHandle: FileHandle
         let scrollbackStore: DiskBackedScrollbackStore?
-        var processGroupID: pid_t?
+        private var processGroupID: pid_t?
         let lock = NSLock()
+        private let terminationLock = NSLock()
         var output = Data()
         var scrollback = Data()
         var terminationStatus: Int32?
@@ -84,6 +85,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             lock.lock()
             terminationStatus = status
             lock.unlock()
+            scheduleProcessGroupRetirementCheck()
         }
 
         func observedTerminationStatus() -> Int32? {
@@ -97,6 +99,48 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             lock.lock()
             outputAvailabilityHandler = handler
             lock.unlock()
+        }
+
+        func setProcessGroupID(_ id: pid_t) {
+            lock.lock()
+            processGroupID = id
+            lock.unlock()
+            if !process.isRunning {
+                scheduleProcessGroupRetirementCheck()
+            }
+        }
+
+        func observedProcessGroupID() -> pid_t? {
+            lock.lock()
+            let id = processGroupID
+            lock.unlock()
+            return id
+        }
+
+        func retireProcessGroup(_ id: pid_t) {
+            lock.lock()
+            if processGroupID == id {
+                processGroupID = nil
+            }
+            lock.unlock()
+        }
+
+        func withTerminationLock<T>(_ body: () throws -> T) rethrows -> T {
+            terminationLock.lock()
+            defer { terminationLock.unlock() }
+            return try body()
+        }
+
+        private func scheduleProcessGroupRetirementCheck() {
+            guard let processGroupID = observedProcessGroupID() else { return }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
+                guard let self, self.observedProcessGroupID() == processGroupID else { return }
+                if Darwin.kill(-processGroupID, 0) == 0 || errno != ESRCH {
+                    self.scheduleProcessGroupRetirementCheck()
+                } else {
+                    self.retireProcessGroup(processGroupID)
+                }
+            }
         }
     }
 
@@ -203,7 +247,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         // Foundation launches each Process as its own process-group leader on
         // Darwin. Retaining that ID lets shutdown cover the shell and every
         // command it launches, even after the shell itself exits.
-        session.processGroupID = expectedProcessGroupID
+        session.setProcessGroupID(expectedProcessGroupID)
 
         slaveRead.closeFile()
         slaveWrite.closeFile()
@@ -309,20 +353,30 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     private func terminateBoundedly(_ session: Session) throws {
-        guard let processGroupID = session.processGroupID else {
-            throw RuntimeError.terminationFailed(session.id, reason: "missing isolated process group")
-        }
-        if !session.process.isRunning, !processGroupExists(processGroupID) { return }
+        try session.withTerminationLock {
+            guard let processGroupID = session.observedProcessGroupID() else {
+                if !session.process.isRunning { return }
+                throw RuntimeError.terminationFailed(session.id, reason: "missing isolated process group")
+            }
+            if !session.process.isRunning, !processGroupExists(processGroupID) {
+                session.retireProcessGroup(processGroupID)
+                return
+            }
 
-        try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
-        if waitForTermination(of: session.process, processGroupID: processGroupID) { return }
+            try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
+            if waitForTermination(of: session.process, processGroupID: processGroupID) {
+                session.retireProcessGroup(processGroupID)
+                return
+            }
 
-        try signalProcessGroup(processGroupID, signal: SIGKILL, sessionID: session.id)
-        guard waitForTermination(of: session.process, processGroupID: processGroupID) else {
-            throw RuntimeError.terminationFailed(
-                session.id,
-                reason: "process group remained running after SIGTERM and SIGKILL"
-            )
+            try signalProcessGroup(processGroupID, signal: SIGKILL, sessionID: session.id)
+            guard waitForTermination(of: session.process, processGroupID: processGroupID) else {
+                throw RuntimeError.terminationFailed(
+                    session.id,
+                    reason: "process group remained running after SIGTERM and SIGKILL"
+                )
+            }
+            session.retireProcessGroup(processGroupID)
         }
     }
 
