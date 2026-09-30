@@ -16,6 +16,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         case invalidGridSize(TerminalGridSize)
         case resizeFailed(errno: Int32)
         case exitCodeMismatch(expected: Int32, observed: Int32)
+        case terminationFailed(BrokerSessionID, reason: String)
         case unsupportedEnvironmentProfile(BrokerEnvironmentProfile, reason: String)
     }
 
@@ -102,6 +103,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     private var sessions: [BrokerSessionID: Session] = [:]
     private let scrollbackStore: DiskBackedScrollbackStore?
     private let processEnvironment: [String: String]
+    private static let terminationGracePeriodMilliseconds = 500
 
     init(
         scrollbackDirectory: URL? = nil,
@@ -202,10 +204,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
         let session = try session(for: id)
-        if session.process.isRunning {
-            session.process.terminate()
-            session.process.waitUntilExit()
-        }
+        try terminateBoundedly(session)
         let observedExitCode = session.process.terminationStatus
         session.markTerminated(observedExitCode)
         if let exitCode, observedExitCode != exitCode {
@@ -214,7 +213,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     func markSessionErrored(id: BrokerSessionID) throws {
-        close(try removeSession(id))
+        try close(try removeSession(id))
     }
 
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
@@ -284,13 +283,39 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         return session.process.isRunning ? nil : session.process.terminationStatus
     }
 
-    private func close(_ session: Session) {
+    private func close(_ session: Session) throws {
         session.masterHandle.readabilityHandler = nil
-        if session.process.isRunning {
-            session.process.terminate()
-            session.process.waitUntilExit()
+        defer { session.masterHandle.closeFile() }
+        try terminateBoundedly(session)
+    }
+
+    private func terminateBoundedly(_ session: Session) throws {
+        guard session.process.isRunning else { return }
+
+        session.process.terminate()
+        if waitForTermination(of: session.process) { return }
+
+        let result = Darwin.kill(session.process.processIdentifier, SIGKILL)
+        if result != 0, errno != ESRCH {
+            throw RuntimeError.terminationFailed(
+                session.id,
+                reason: "SIGKILL failed: \(String(cString: strerror(errno)))"
+            )
         }
-        session.masterHandle.closeFile()
+        guard waitForTermination(of: session.process) else {
+            throw RuntimeError.terminationFailed(
+                session.id,
+                reason: "process remained running after SIGTERM and SIGKILL"
+            )
+        }
+    }
+
+    private func waitForTermination(of process: Process) -> Bool {
+        let deadline = DispatchTime.now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
+        while process.isRunning, DispatchTime.now() < deadline {
+            usleep(10_000)
+        }
+        return !process.isRunning
     }
 
     private func session(for id: BrokerSessionID) throws -> Session {
