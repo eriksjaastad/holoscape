@@ -456,7 +456,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         printf '%s\\n' "$$" > "$2"
         IFS= read -r line
         printf '%s\\n' "$line"
-        wait
+        while :; do :; done
         """.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o700],
@@ -473,7 +473,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let frame = Data("{\"status\":\"ready\"}\n".utf8)
         XCTAssertEqual(try transport.sendFrame(frame), frame)
 
+        let closeStarted = DispatchTime.now().uptimeNanoseconds
         transport.close()
+        let closeElapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - closeStarted) / 1_000_000_000
+        XCTAssertLessThan(closeElapsedSeconds, 1.5, "TERM-to-KILL close was not bounded")
         XCTAssertTrue(waitForProcessToExit(helperPID), "Helper PID \(helperPID) survived TERM-to-KILL escalation")
     }
 
@@ -620,13 +623,25 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "HOLOSCAPE_SIGPIPE_CHILD_STDIN_CLOSED": stdinClosedURL.path,
             "HOLOSCAPE_SIGPIPE_CHILD_HELPER_PID": helperPIDURL.path,
         ]) { _, childValue in childValue }
+        let childExited = DispatchSemaphore(value: 0)
+        child.terminationHandler = { _ in childExited.signal() }
         try child.run()
-        child.waitUntilExit()
+        let initialExit = childExited.wait(timeout: .now() + 5)
+        if initialExit == .timedOut {
+            child.terminate()
+            if childExited.wait(timeout: .now() + 1) == .timedOut {
+                _ = Darwin.kill(child.processIdentifier, SIGKILL)
+                _ = childExited.wait(timeout: .now() + 1)
+            }
+        }
         if FileManager.default.fileExists(atPath: helperPIDURL.path), let helperPID = try? helperPID(at: helperPIDURL) {
             if !waitForProcessToExit(helperPID) {
                 _ = Darwin.kill(helperPID, SIGKILL)
             }
             XCTAssertTrue(waitForProcessToExit(helperPID), "SIGPIPE probe left helper PID \(helperPID) running")
+        }
+        guard initialExit == .success else {
+            return XCTFail("SIGPIPE probe child exceeded its parent-enforced five-second deadline")
         }
         XCTAssertEqual(child.terminationReason, .exit, "Child died from signal \(child.terminationStatus) instead of returning typed writeFailed")
         XCTAssertEqual(child.terminationStatus, 0)
