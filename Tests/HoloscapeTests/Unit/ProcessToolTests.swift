@@ -3,23 +3,6 @@ import XCTest
 @testable import HoloscapeMCP
 
 final class ProcessToolTests: XCTestCase {
-    private final class PIDBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value: pid_t?
-
-        func store(_ pid: pid_t) {
-            lock.lock()
-            value = pid
-            lock.unlock()
-        }
-
-        func load() -> pid_t? {
-            lock.lock()
-            defer { lock.unlock() }
-            return value
-        }
-    }
-
     private var launcherExecutableURL: URL {
         Bundle(for: Self.self).bundleURL
             .deletingLastPathComponent()
@@ -36,10 +19,16 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertFalse(completion.claim())
     }
 
-    func testProcessGroupPresenceTreatsPermissionDeniedAsExisting() {
-        XCTAssertEqual(processToolGroupPresence(killResult: -1, error: EPERM), true)
-        XCTAssertEqual(processToolGroupPresence(killResult: -1, error: ESRCH), false)
-        XCTAssertNil(processToolGroupPresence(killResult: -1, error: EINVAL))
+    func testControllerStatusParsesCleanupFailureOutsideProcessOutput() {
+        XCTAssertEqual(
+            parseProcessToolControllerStatus("timedOut:unconfirmed"),
+            .timedOut(cleanupConfirmed: false)
+        )
+        XCTAssertEqual(
+            parseProcessToolControllerStatus("completed:17"),
+            .completed(exitCode: 17)
+        )
+        XCTAssertNil(parseProcessToolControllerStatus("timedOut:maybe"))
     }
 
     func testRunProcessToolPreservesOutputBelowLimit() async throws {
@@ -96,8 +85,9 @@ final class ProcessToolTests: XCTestCase {
     }
 
     func testRunProcessToolLaunchesDedicatedProcessGroup() async throws {
+        let callerProcessGroup = getpgrp()
         let result = try await runProcessTool(
-            request(command: "test \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\""),
+            request(command: "test \"$(ps -o pgid= -p $$ | tr -d ' ')\" != \"\(callerProcessGroup)\""),
             launcherExecutableURL: launcherExecutableURL
         )
 
@@ -139,7 +129,7 @@ final class ProcessToolTests: XCTestCase {
         assertProcessIsGone(childPID, "Timed-out descendants must be gone before returning")
     }
 
-    func testTimeoutTerminatesGroupAfterRootExitsBeforeCleanup() async throws {
+    func testNormalCompletionCleansDescendantsAfterRootExits() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-root-exit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -147,127 +137,62 @@ final class ProcessToolTests: XCTestCase {
 
         let childPIDURL = directory.appendingPathComponent("child.pid")
         let command = """
-        zmodload zsh/zselect
         /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
-        while true; do zselect -t 100; done
+        while [[ ! -f \(childPIDURL.path) ]]; do sleep 0.01; done
+        exit 0
         """
 
         let result = try await runProcessTool(
-            request(command: command, timeoutSeconds: 0.5),
-            launcherExecutableURL: launcherExecutableURL,
-            beforeTimeoutTermination: { rootPID in
-                _ = Darwin.kill(rootPID, SIGKILL)
-                let deadline = DispatchTime.now() + .seconds(1)
-                while DispatchTime.now() < deadline {
-                    errno = 0
-                    if Darwin.kill(rootPID, 0) == -1, errno == ESRCH { return }
-                    usleep(10_000)
-                }
-            }
+            request(command: command),
+            launcherExecutableURL: launcherExecutableURL
         )
 
         let childPID = try pid(from: childPIDURL)
         defer { _ = Darwin.kill(childPID, SIGKILL) }
-        XCTAssertTrue(result.timedOut)
-        XCTAssertEqual(result.processCleanupConfirmed, true)
-        assertProcessIsGone(childPID, "Timed-out descendants must be gone when the root exits before cleanup")
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.exitCode, 0)
+        assertProcessIsGone(childPID, "Normal completion must not leave descendants after the root exits")
     }
 
-    func testRunProcessToolReportsUnconfirmedCleanupOutsideCappedStderr() async throws {
+    func testImmediateCommandsDoNotRaceControllerSetup() async throws {
+        for _ in 0..<20 {
+            let result = try await runProcessTool(
+                request(command: "exit 0"),
+                launcherExecutableURL: launcherExecutableURL
+            )
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertFalse(result.timedOut)
+        }
+    }
+
+    func testCommandCannotEscapeCleanupByKillingItsDirectParent() async throws {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holoscape-process-tool-cleanup-\(UUID().uuidString)")
+            .appendingPathComponent("holoscape-process-tool-parent-kill-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let pidURL = directory.appendingPathComponent("process.pid")
-        let result = try await runProcessTool(
-            request(
-                command: "zmodload zsh/zselect; echo $$ > \(pidURL.path); printf 123456789 >&2; while true; do zselect -t 100; done",
-                timeoutSeconds: 0.25
-            ),
-            maxOutputBytes: 5,
-            launcherExecutableURL: launcherExecutableURL,
-            terminateProcessTree: { _ in false }
-        )
-        let processPID = try pid(from: pidURL)
-        defer { _ = Darwin.kill(processPID, SIGKILL) }
-
-        XCTAssertTrue(result.timedOut)
-        XCTAssertEqual(result.processCleanupConfirmed, false)
-        XCTAssertEqual(result.stderr, "12345")
-        XCTAssertTrue(result.stderrTruncated)
-        XCTAssertTrue(formatProcessToolResult(result).contains("processCleanupConfirmed: false"))
-    }
-
-    func testIdentityCaptureFailureAfterRootExitKillsRemainingGroup() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holoscape-process-tool-identity-root-exit-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let commandPIDURL = directory.appendingPathComponent("command.pid")
         let command = """
-        zmodload zsh/zselect
-        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
-        while true; do zselect -t 100; done
+        echo $$ > \(commandPIDURL.path)
+        kill -KILL $PPID
+        while true; do sleep 1; done
         """
 
         do {
             _ = try await runProcessTool(
-                request(command: command),
-                launcherExecutableURL: launcherExecutableURL,
-                processIdentityProvider: { rootPID in
-                    let childDeadline = DispatchTime.now() + .seconds(1)
-                    while DispatchTime.now() < childDeadline,
-                          !FileManager.default.fileExists(atPath: childPIDURL.path) {
-                        usleep(10_000)
-                    }
-                    _ = Darwin.kill(rootPID, SIGKILL)
-                    let deadline = DispatchTime.now() + .seconds(1)
-                    while DispatchTime.now() < deadline {
-                        errno = 0
-                        if Darwin.kill(rootPID, 0) == -1, errno == ESRCH { break }
-                        usleep(10_000)
-                    }
-                    return nil
-                }
+                request(command: command, timeoutSeconds: 1),
+                launcherExecutableURL: launcherExecutableURL
             )
-            XCTFail("Expected identity capture failure")
+            XCTFail("Expected the shell runner failure to fail closed")
         } catch let error as ProcessToolError {
             guard case .launchFailed = error else {
                 return XCTFail("Expected launchFailed, got \(error)")
             }
         }
 
-        let childPID = try pid(from: childPIDURL)
-        defer { _ = Darwin.kill(childPID, SIGKILL) }
-        assertProcessIsGone(childPID, "Identity failure must clean descendants after root exit")
-    }
-
-    func testIdentityCaptureFailureKillsResistantProcessGroupBeforeThrowing() async throws {
-        let capturedPID = PIDBox()
-
-        do {
-            _ = try await runProcessTool(
-                request(
-                    command: "zmodload zsh/zselect; trap '' TERM; while true; do zselect -t 100; done"
-                ),
-                launcherExecutableURL: launcherExecutableURL,
-                processIdentityProvider: { pid in
-                    capturedPID.store(pid)
-                    usleep(100_000)
-                    return nil
-                }
-            )
-            XCTFail("Expected identity capture failure")
-        } catch let error as ProcessToolError {
-            guard case .launchFailed = error else {
-                return XCTFail("Expected launchFailed, got \(error)")
-            }
-        }
-
-        let processPID = try XCTUnwrap(capturedPID.load())
-        assertProcessIsGone(processPID, "Identity capture failure must not leak the launched group")
+        let commandPID = try pid(from: commandPIDURL)
+        defer { _ = Darwin.kill(commandPID, SIGKILL) }
+        assertProcessIsGone(commandPID, "A command must not escape cleanup by killing its direct parent")
     }
 
     private func request(command: String, timeoutSeconds: Double = 2) -> ProcessToolRequest {

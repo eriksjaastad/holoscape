@@ -114,121 +114,342 @@ final class ProcessToolCompletion: @unchecked Sendable {
     }
 }
 
-struct ProcessToolProcessIdentity: Hashable, Sendable {
-    let pid: pid_t
-    let startSeconds: UInt64
-    let startMicroseconds: UInt64
+enum ProcessToolControllerStatus: Equatable {
+    case completed(exitCode: Int32)
+    case timedOut(cleanupConfirmed: Bool)
+    case launchFailed(String)
+}
 
-    init(pid: pid_t, info: proc_bsdinfo) {
-        self.pid = pid
-        startSeconds = info.pbi_start_tvsec
-        startMicroseconds = info.pbi_start_tvusec
+func parseProcessToolControllerStatus(_ text: String) -> ProcessToolControllerStatus? {
+    let status = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if status.hasPrefix("completed:"),
+       let exitCode = Int32(status.dropFirst("completed:".count)) {
+        return .completed(exitCode: exitCode)
+    }
+    if status == "timedOut:confirmed" {
+        return .timedOut(cleanupConfirmed: true)
+    }
+    if status == "timedOut:unconfirmed" {
+        return .timedOut(cleanupConfirmed: false)
+    }
+    if status.hasPrefix("launchFailed:") {
+        return .launchFailed(String(status.dropFirst("launchFailed:".count)))
+    }
+    return nil
+}
+
+private final class ProcessToolAnchorState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var terminating = false
+
+    func beginTermination() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !terminating else { return false }
+        terminating = true
+        return true
+    }
+
+    func isTerminating() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return terminating
     }
 }
 
-private enum ProcessToolIdentityLookup {
-    case found(ProcessToolProcessIdentity)
-    case missing
-    case unavailable
-}
+private func processToolNoopSignalHandler(_: Int32) {}
 
-private enum ProcessToolIdentityState: Equatable {
-    case matching
-    case gone
-    case reused
-    case unavailable
-}
-
-private func processToolIdentity(for pid: pid_t) -> ProcessToolIdentityLookup {
-    var info = proc_bsdinfo()
-    let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
-    if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, expectedSize) == expectedSize {
-        return .found(ProcessToolProcessIdentity(pid: pid, info: info))
-    }
-
-    errno = 0
-    if Darwin.kill(pid, 0) == -1, errno == ESRCH {
-        return .missing
-    }
-    return .unavailable
-}
-
-private func processToolState(of identity: ProcessToolProcessIdentity) -> ProcessToolIdentityState {
-    switch processToolIdentity(for: identity.pid) {
-    case .found(let current):
-        return current == identity ? .matching : .reused
-    case .missing:
-        return .gone
-    case .unavailable:
-        return .unavailable
+private func writeProcessToolStatus(_ status: String, to path: String) {
+    do {
+        try Data(status.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    } catch {
+        FileHandle.standardError.write(Data("Failed to write process status: \(error.localizedDescription)\n".utf8))
     }
 }
 
-func processToolGroupPresence(killResult: Int32, error: Int32) -> Bool? {
-    if killResult == 0 || error == EPERM { return true }
-    return error == ESRCH ? false : nil
+private func spawnProcessToolShell(command: String, processGroupID: pid_t) throws -> pid_t {
+    var fileActions: posix_spawn_file_actions_t?
+    var attributes: posix_spawnattr_t?
+    guard posix_spawn_file_actions_init(&fileActions) == 0,
+          posix_spawnattr_init(&attributes) == 0 else {
+        throw ProcessToolError.launchFailed("Could not initialize shell launch attributes")
+    }
+    defer {
+        posix_spawn_file_actions_destroy(&fileActions)
+        posix_spawnattr_destroy(&attributes)
+    }
+
+    guard posix_spawn_file_actions_addopen(
+        &fileActions,
+        STDIN_FILENO,
+        "/dev/null",
+        O_RDONLY,
+        0
+    ) == 0,
+    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
+    posix_spawnattr_setpgroup(&attributes, processGroupID) == 0 else {
+        throw ProcessToolError.launchFailed("Could not configure shell process group")
+    }
+
+    var spawnedPID: pid_t = 0
+    let result = "/bin/zsh".withCString { shellPointer in
+        "-lc".withCString { flagPointer in
+            command.withCString { commandPointer in
+                var arguments: [UnsafeMutablePointer<CChar>?] = [
+                    UnsafeMutablePointer(mutating: shellPointer),
+                    UnsafeMutablePointer(mutating: flagPointer),
+                    UnsafeMutablePointer(mutating: commandPointer),
+                    nil,
+                ]
+                return arguments.withUnsafeMutableBufferPointer { buffer in
+                    posix_spawn(
+                        &spawnedPID,
+                        shellPointer,
+                        &fileActions,
+                        &attributes,
+                        buffer.baseAddress!,
+                        environ
+                    )
+                }
+            }
+        }
+    }
+    guard result == 0 else {
+        throw ProcessToolError.launchFailed(String(cString: strerror(result)))
+    }
+    return spawnedPID
 }
 
-private func processToolGroupExists(_ processGroupID: pid_t) -> Bool? {
-    errno = 0
-    let result = Darwin.kill(-processGroupID, 0)
-    let error = errno
-    return processToolGroupPresence(killResult: result, error: error)
+private func spawnProcessToolShellRunner(
+    command: String,
+    commandStatusPath: String,
+    processGroupID: pid_t
+) throws -> pid_t {
+    var fileActions: posix_spawn_file_actions_t?
+    var attributes: posix_spawnattr_t?
+    guard posix_spawn_file_actions_init(&fileActions) == 0,
+          posix_spawnattr_init(&attributes) == 0 else {
+        throw ProcessToolError.launchFailed("Could not initialize shell runner launch attributes")
+    }
+    defer {
+        posix_spawn_file_actions_destroy(&fileActions)
+        posix_spawnattr_destroy(&attributes)
+    }
+
+    guard posix_spawn_file_actions_addopen(
+        &fileActions,
+        STDIN_FILENO,
+        "/dev/null",
+        O_RDONLY,
+        0
+    ) == 0,
+    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
+    posix_spawnattr_setpgroup(&attributes, processGroupID) == 0 else {
+        throw ProcessToolError.launchFailed("Could not configure shell runner process group")
+    }
+
+    var spawnedPID: pid_t = 0
+    let executablePath = CommandLine.arguments[0]
+    let result = executablePath.withCString { executablePointer in
+        "--holoscape-process-shell-runner".withCString { modePointer in
+            command.withCString { commandPointer in
+                commandStatusPath.withCString { statusPointer in
+                    var arguments: [UnsafeMutablePointer<CChar>?] = [
+                        UnsafeMutablePointer(mutating: executablePointer),
+                        UnsafeMutablePointer(mutating: modePointer),
+                        UnsafeMutablePointer(mutating: commandPointer),
+                        UnsafeMutablePointer(mutating: statusPointer),
+                        nil,
+                    ]
+                    return arguments.withUnsafeMutableBufferPointer { buffer in
+                        posix_spawn(
+                            &spawnedPID,
+                            executablePointer,
+                            &fileActions,
+                            &attributes,
+                            buffer.baseAddress!,
+                            environ
+                        )
+                    }
+                }
+            }
+        }
+    }
+    guard result == 0 else {
+        throw ProcessToolError.launchFailed(String(cString: strerror(result)))
+    }
+    return spawnedPID
 }
 
-private func terminateProcessToolGroup(
-    rootedAt root: ProcessToolProcessIdentity,
-    gracePeriodMilliseconds: Int = 250,
-    killConfirmationMilliseconds: Int = 1_000
+private func processToolExitCode(from waitStatus: Int32) -> Int32 {
+    let signal = waitStatus & 0x7f
+    return signal == 0 ? (waitStatus >> 8) & 0xff : signal
+}
+
+/// Keeps the command's direct parent separate from the process-group anchor.
+/// If a command terminates its parent, the anchor still reserves the group ID
+/// and the controller can safely order cleanup through the anchor capability.
+func runProcessToolShellRunner(command: String, commandStatusPath: String) -> Never {
+    let shellPID: pid_t
+    do {
+        shellPID = try spawnProcessToolShell(command: command, processGroupID: getpgrp())
+    } catch {
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: commandStatusPath)
+        Darwin.exit(127)
+    }
+
+    var waitStatus: Int32 = 0
+    while waitpid(shellPID, &waitStatus, 0) == -1, errno == EINTR {}
+    writeProcessToolStatus("completed:\(processToolExitCode(from: waitStatus))", to: commandStatusPath)
+    Darwin.exit(0)
+}
+
+/// Runs inside a dedicated session and remains its process-group anchor until the
+/// controller orders cleanup. The final SIGKILL includes this process, so the
+/// numeric group ID cannot be reused between validation and signaling.
+func runProcessToolAnchor(command: String, commandStatusPath: String) -> Never {
+    guard getpgrp() == getpid() || setsid() != -1 else {
+        writeProcessToolStatus("launchFailed:Could not establish dedicated process session", to: commandStatusPath)
+        Darwin.exit(126)
+    }
+
+    _ = Darwin.signal(SIGTERM, processToolNoopSignalHandler)
+    let state = ProcessToolAnchorState()
+    let shellRunnerPID: pid_t
+    do {
+        shellRunnerPID = try spawnProcessToolShellRunner(
+            command: command,
+            commandStatusPath: commandStatusPath,
+            processGroupID: getpgrp()
+        )
+    } catch {
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: commandStatusPath)
+        Darwin.exit(127)
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+        var commandByte: UInt8 = 0
+        let bytesRead = Darwin.read(STDIN_FILENO, &commandByte, 1)
+        guard bytesRead == 1 || bytesRead == 0 else { return }
+        guard state.beginTermination() else { return }
+
+        let processGroupID = getpgrp()
+        _ = Darwin.kill(-processGroupID, SIGTERM)
+        usleep(250_000)
+        _ = Darwin.kill(-processGroupID, SIGKILL)
+        Darwin._exit(125)
+    }
+
+    var waitStatus: Int32 = 0
+    while waitpid(shellRunnerPID, &waitStatus, 0) == -1, errno == EINTR {}
+    guard !state.isTerminating() else {
+        while true { pause() }
+    }
+
+    if !FileManager.default.fileExists(atPath: commandStatusPath) {
+        writeProcessToolStatus("launchFailed:Shell runner exited without reporting command status", to: commandStatusPath)
+    }
+    while true { pause() }
+}
+
+private func requestProcessToolAnchorCleanup(
+    process: Process,
+    control: FileHandle,
+    timeoutMilliseconds: Int = 2_000
 ) -> Bool {
-    switch processToolState(of: root) {
-    case .matching:
-        guard getpgid(root.pid) == root.pid else { return false }
-    case .gone:
-        guard let groupExists = processToolGroupExists(root.pid) else { return false }
-        guard groupExists else { return true }
-    case .reused:
-        return processToolGroupExists(root.pid) == false
-    case .unavailable:
+    do {
+        try control.write(contentsOf: Data([1]))
+    } catch {
         return false
     }
 
-    if Darwin.kill(-root.pid, SIGTERM) == -1, errno != ESRCH { return false }
-    let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
-    while DispatchTime.now() < termDeadline {
-        guard let exists = processToolGroupExists(root.pid) else { return false }
-        guard exists else { return true }
+    let deadline = DispatchTime.now() + .milliseconds(timeoutMilliseconds)
+    while process.isRunning, DispatchTime.now() < deadline {
         usleep(10_000)
     }
-
-    if Darwin.kill(-root.pid, SIGKILL) == -1, errno != ESRCH { return false }
-    let killDeadline = DispatchTime.now() + .milliseconds(killConfirmationMilliseconds)
-    while DispatchTime.now() < killDeadline {
-        guard let exists = processToolGroupExists(root.pid) else { return false }
-        guard exists else { return true }
-        usleep(10_000)
-    }
-    return processToolGroupExists(root.pid) == false
+    return !process.isRunning
 }
 
-private func terminateUnidentifiedProcessToolGroup(
-    processGroupID: pid_t,
-    gracePeriodMilliseconds: Int = 250,
-    killConfirmationMilliseconds: Int = 1_000
-) -> Bool {
-    _ = Darwin.kill(-processGroupID, SIGTERM)
-    let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
-    while DispatchTime.now() < termDeadline {
-        if processToolGroupExists(processGroupID) == false { return true }
-        usleep(10_000)
+/// Owns timeout arbitration outside the command's process group. It only sends
+/// cleanup through the anchor's pipe while that anchor is alive; it never signals
+/// a process group by a previously observed PID.
+func runProcessToolController(
+    command: String,
+    timeoutSeconds: Double,
+    statusPath: String,
+    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0])
+) -> Never {
+    _ = Darwin.signal(SIGPIPE, SIG_IGN)
+    let commandStatusPath = statusPath + ".command"
+    try? FileManager.default.removeItem(atPath: commandStatusPath)
+
+    let anchor = Process()
+    let controlPipe = Pipe()
+    anchor.executableURL = launcherExecutableURL
+    anchor.arguments = ["--holoscape-process-anchor", command, commandStatusPath]
+    anchor.standardInput = controlPipe
+    anchor.standardOutput = FileHandle.standardOutput
+    anchor.standardError = FileHandle.standardError
+
+    do {
+        try anchor.run()
+        try? controlPipe.fileHandleForReading.close()
+    } catch {
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
+        Darwin.exit(127)
     }
-    _ = Darwin.kill(-processGroupID, SIGKILL)
-    let killDeadline = DispatchTime.now() + .milliseconds(killConfirmationMilliseconds)
-    while DispatchTime.now() < killDeadline {
-        if processToolGroupExists(processGroupID) == false { return true }
-        usleep(10_000)
+
+    let deadline = DispatchTime.now() + timeoutSeconds
+    var commandStatus: ProcessToolControllerStatus?
+    while DispatchTime.now() < deadline {
+        if let data = FileManager.default.contents(atPath: commandStatusPath),
+           let text = String(data: data, encoding: .utf8),
+           let parsed = parseProcessToolControllerStatus(text) {
+            commandStatus = parsed
+            break
+        }
+        if !anchor.isRunning { break }
+        usleep(5_000)
     }
-    return processToolGroupExists(processGroupID) == false
+
+    if case .completed(let exitCode) = commandStatus {
+        let cleanupConfirmed = requestProcessToolAnchorCleanup(
+            process: anchor,
+            control: controlPipe.fileHandleForWriting
+        )
+        try? controlPipe.fileHandleForWriting.close()
+        try? FileManager.default.removeItem(atPath: commandStatusPath)
+        guard cleanupConfirmed else {
+            writeProcessToolStatus("launchFailed:Completed command process group cleanup could not be confirmed", to: statusPath)
+            Darwin.exit(125)
+        }
+        writeProcessToolStatus("completed:\(exitCode)", to: statusPath)
+        Darwin.exit(0)
+    }
+
+    if case .launchFailed(let reason) = commandStatus {
+        let cleanupConfirmed = requestProcessToolAnchorCleanup(
+            process: anchor,
+            control: controlPipe.fileHandleForWriting
+        )
+        try? controlPipe.fileHandleForWriting.close()
+        try? FileManager.default.removeItem(atPath: commandStatusPath)
+        let suffix = cleanupConfirmed ? "" : "; process cleanup could not be confirmed"
+        writeProcessToolStatus("launchFailed:\(reason)\(suffix)", to: statusPath)
+        Darwin.exit(127)
+    }
+
+    let cleanupConfirmed = anchor.isRunning && requestProcessToolAnchorCleanup(
+        process: anchor,
+        control: controlPipe.fileHandleForWriting
+    )
+    try? controlPipe.fileHandleForWriting.close()
+    try? FileManager.default.removeItem(atPath: commandStatusPath)
+    writeProcessToolStatus(
+        cleanupConfirmed ? "timedOut:confirmed" : "timedOut:unconfirmed",
+        to: statusPath
+    )
+    Darwin.exit(0)
 }
 
 func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest {
@@ -264,17 +485,18 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
 func runProcessTool(
     _ request: ProcessToolRequest,
     maxOutputBytes: Int = 1_048_576,
-    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]),
-    processIdentityProvider: @escaping @Sendable (pid_t) -> ProcessToolProcessIdentity? = { pid in
-        guard case .found(let identity) = processToolIdentity(for: pid) else { return nil }
-        return identity
-    },
-    beforeTimeoutTermination: @escaping @Sendable (pid_t) -> Void = { _ in },
-    terminateProcessTree: (@Sendable (pid_t) -> Bool)? = nil
+    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0])
 ) async throws -> ProcessToolResult {
     let process = Process()
+    let statusURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("holoscape-process-tool-\(UUID().uuidString).status")
     process.executableURL = launcherExecutableURL
-    process.arguments = ["--holoscape-process-group-shell", request.command]
+    process.arguments = [
+        "--holoscape-process-controller",
+        request.command,
+        String(request.timeoutSeconds),
+        statusURL.path,
+    ]
 
     if let workingDirectory = request.workingDirectory, !workingDirectory.isEmpty {
         var isDirectory: ObjCBool = false
@@ -297,7 +519,6 @@ func runProcessTool(
 
     let stdout = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let stderr = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
-    let completion = ProcessToolCompletion()
 
     stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
         stdout.append(handle.availableData)
@@ -307,100 +528,58 @@ func runProcessTool(
     }
 
     return try await withCheckedThrowingContinuation { continuation in
-        @Sendable func finishAfterClaim(
-            timedOut: Bool,
-            drainPipes: Bool = true,
-            processCleanupConfirmed: Bool? = nil
-        ) {
+        process.terminationHandler = { _ in
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
-            if drainPipes {
-                stdout.append(stdoutPipe.fileHandleForReading.availableData)
-                stderr.append(stderrPipe.fileHandleForReading.availableData)
-            } else {
-                try? stdoutPipe.fileHandleForReading.close()
-                try? stderrPipe.fileHandleForReading.close()
-            }
+            stdout.append(stdoutPipe.fileHandleForReading.availableData)
+            stderr.append(stderrPipe.fileHandleForReading.availableData)
             let standardOutput = stdout.snapshot()
             let standardError = stderr.snapshot()
-            continuation.resume(returning: ProcessToolResult(
-                command: request.command,
-                workingDirectory: request.workingDirectory,
-                exitCode: timedOut ? nil : process.terminationStatus,
-                timedOut: timedOut,
-                stdout: standardOutput.string,
-                stderr: standardError.string,
-                stdoutTruncated: standardOutput.truncated,
-                stderrTruncated: standardError.truncated,
-                processCleanupConfirmed: processCleanupConfirmed
-            ))
+            let status = try? String(contentsOf: statusURL, encoding: .utf8)
+            try? FileManager.default.removeItem(at: statusURL)
+            guard let status, let parsed = parseProcessToolControllerStatus(status) else {
+                continuation.resume(throwing: ProcessToolError.launchFailed("Controller exited without a valid status"))
+                return
+            }
+
+            switch parsed {
+            case .completed(let exitCode):
+                continuation.resume(returning: ProcessToolResult(
+                    command: request.command,
+                    workingDirectory: request.workingDirectory,
+                    exitCode: exitCode,
+                    timedOut: false,
+                    stdout: standardOutput.string,
+                    stderr: standardError.string,
+                    stdoutTruncated: standardOutput.truncated,
+                    stderrTruncated: standardError.truncated,
+                    processCleanupConfirmed: nil
+                ))
+            case .timedOut(let cleanupConfirmed):
+                continuation.resume(returning: ProcessToolResult(
+                    command: request.command,
+                    workingDirectory: request.workingDirectory,
+                    exitCode: nil,
+                    timedOut: true,
+                    stdout: standardOutput.string,
+                    stderr: standardError.string,
+                    stdoutTruncated: standardOutput.truncated,
+                    stderrTruncated: standardError.truncated,
+                    processCleanupConfirmed: cleanupConfirmed
+                ))
+            case .launchFailed(let reason):
+                continuation.resume(throwing: ProcessToolError.launchFailed(reason))
+            }
         }
 
         do {
             try process.run()
         } catch {
-            _ = completion.claim()
+            process.terminationHandler = nil
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+            try? FileManager.default.removeItem(at: statusURL)
             continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
-            return
-        }
-
-        let groupDeadline = DispatchTime.now() + .milliseconds(100)
-        while process.isRunning,
-              getpgid(process.processIdentifier) != process.processIdentifier,
-              DispatchTime.now() < groupDeadline {
-            usleep(1_000)
-        }
-        guard !process.isRunning || getpgid(process.processIdentifier) == process.processIdentifier else {
-            guard completion.claim() else { return }
-            process.terminate()
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            continuation.resume(throwing: ProcessToolError.launchFailed("Could not establish dedicated process group"))
-            return
-        }
-
-        let launchedIdentity: ProcessToolProcessIdentity
-        if let identity = processIdentityProvider(process.processIdentifier) {
-            launchedIdentity = identity
-        } else {
-            guard completion.claim() else { return }
-            let cleanupConfirmed = terminateUnidentifiedProcessToolGroup(
-                processGroupID: process.processIdentifier
-            )
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            let reason = cleanupConfirmed
-                ? "Could not capture launched process identity"
-                : "Could not capture launched process identity; process cleanup could not be confirmed"
-            continuation.resume(throwing: ProcessToolError.launchFailed(reason))
-            return
-        }
-
-        process.terminationHandler = { _ in
-            guard completion.claim() else { return }
-            finishAfterClaim(timedOut: false)
-        }
-
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + request.timeoutSeconds) {
-            switch completion.claimTimeout(isRunning: { process.isRunning }) {
-            case .unclaimed:
-                return
-            case .processExited:
-                finishAfterClaim(timedOut: false)
-                return
-            case .timedOut:
-                break
-            }
-            beforeTimeoutTermination(process.processIdentifier)
-            let terminated = terminateProcessTree?(process.processIdentifier)
-                ?? terminateProcessToolGroup(rootedAt: launchedIdentity)
-            finishAfterClaim(
-                timedOut: true,
-                drainPipes: terminated,
-                processCleanupConfirmed: terminated
-            )
         }
     }
 }

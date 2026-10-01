@@ -7,31 +7,30 @@ func log(_ msg: String) {
     FileHandle.standardError.write(Data("[HoloscapeMCP] \(msg)\n".utf8))
 }
 
-if CommandLine.arguments.count == 3,
-   CommandLine.arguments[1] == "--holoscape-process-group-shell" {
-    if getpgrp() != getpid(), setsid() == -1 {
-        FileHandle.standardError.write(Data("Failed to create process session: \(String(cString: strerror(errno)))\n".utf8))
-        exit(126)
-    }
-    let shellPath = "/bin/zsh"
-    let loginFlag = "-lc"
-    shellPath.withCString { shellPathPointer in
-        loginFlag.withCString { loginFlagPointer in
-            CommandLine.arguments[2].withCString { commandPointer in
-                var arguments: [UnsafeMutablePointer<CChar>?] = [
-                    UnsafeMutablePointer(mutating: shellPathPointer),
-                    UnsafeMutablePointer(mutating: loginFlagPointer),
-                    UnsafeMutablePointer(mutating: commandPointer),
-                    nil,
-                ]
-                arguments.withUnsafeMutableBufferPointer { buffer in
-                    _ = execv(shellPathPointer, buffer.baseAddress!)
-                }
-            }
-        }
-    }
-    FileHandle.standardError.write(Data("Failed to exec shell: \(String(cString: strerror(errno)))\n".utf8))
-    exit(127)
+if CommandLine.arguments.count == 4,
+   CommandLine.arguments[1] == "--holoscape-process-shell-runner" {
+    runProcessToolShellRunner(
+        command: CommandLine.arguments[2],
+        commandStatusPath: CommandLine.arguments[3]
+    )
+}
+
+if CommandLine.arguments.count == 4,
+   CommandLine.arguments[1] == "--holoscape-process-anchor" {
+    runProcessToolAnchor(
+        command: CommandLine.arguments[2],
+        commandStatusPath: CommandLine.arguments[3]
+    )
+}
+
+if CommandLine.arguments.count == 5,
+   CommandLine.arguments[1] == "--holoscape-process-controller",
+   let timeoutSeconds = Double(CommandLine.arguments[3]) {
+    runProcessToolController(
+        command: CommandLine.arguments[2],
+        timeoutSeconds: timeoutSeconds,
+        statusPath: CommandLine.arguments[4]
+    )
 }
 
 log("Starting server...")
