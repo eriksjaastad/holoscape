@@ -224,13 +224,14 @@ class GroupChatChannelController: NSObject, ChannelController {
     // MARK: - Polling
 
     private func startPolling() {
+        guard state != .disconnected else { return }
         pollTimer?.invalidate()
-        fetchMessages()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.fetchMessages()
             }
         }
+        fetchMessages()
     }
 
     private func fetchMessages() {
@@ -241,7 +242,7 @@ class GroupChatChannelController: NSObject, ChannelController {
         }
 
         guard let url = URL(string: urlString) else {
-            handleConnectionError(GroupChatTransportError.invalidEndpoint)
+            handlePollingFailure(GroupChatTransportError.invalidEndpoint)
             return
         }
 
@@ -253,14 +254,12 @@ class GroupChatChannelController: NSObject, ChannelController {
                 guard let self else { return }
 
                 if let error {
-                    if self.state != .disconnected {
-                        self.handleConnectionError(error)
-                    }
+                    self.handlePollingFailure(error)
                     return
                 }
 
                 guard let httpResponse = response as? HTTPURLResponse else {
-                    self.handleConnectionError(GroupChatTransportError.nonHTTPResponse)
+                    self.handlePollingFailure(GroupChatTransportError.nonHTTPResponse)
                     return
                 }
 
@@ -273,14 +272,14 @@ class GroupChatChannelController: NSObject, ChannelController {
                 }
 
                 guard (200..<300).contains(httpResponse.statusCode) else {
-                    self.handleConnectionError(GroupChatTransportError.httpStatus(httpResponse.statusCode))
+                    self.handlePollingFailure(GroupChatTransportError.httpStatus(httpResponse.statusCode))
                     return
                 }
 
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let messages = json["messages"] as? [[String: Any]] else {
-                    self.handleConnectionError(GroupChatTransportError.malformedMessages)
+                    self.handlePollingFailure(GroupChatTransportError.malformedMessages)
                     return
                 }
 
@@ -313,6 +312,11 @@ class GroupChatChannelController: NSObject, ChannelController {
                 }
             }
         }.resume()
+    }
+
+    private func handlePollingFailure(_ error: Error) {
+        guard state != .disconnected else { return }
+        handleConnectionError(error)
     }
 
     private func handleConnectionError(_ error: Error) {

@@ -150,6 +150,59 @@ final class GroupChatV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testDeactivateCancelsInvalidEndpointReconnectTimer() async throws {
+        let controller = GroupChatChannelController(
+            id: UUID(),
+            apiURL: "http://[",
+            apiKey: "key",
+            label: "Chat",
+            instanceNumber: nil
+        )
+
+        controller.activate()
+        controller.deactivate()
+        try await Task.sleep(for: .milliseconds(1_200))
+
+        XCTAssertEqual(controller.state, .disconnected)
+    }
+
+    @MainActor
+    func testLateInvalidPollingResponseDoesNotReactivateDeactivatedChannel() async throws {
+        let requestReceived = expectation(description: "poll request received")
+        let releaseResponse = DispatchSemaphore(value: 0)
+        let session = makeStubbedSession()
+        defer { session.invalidateAndCancel() }
+        GroupChatURLProtocolStub.setHandler { request in
+            requestReceived.fulfill()
+            XCTAssertEqual(releaseResponse.wait(timeout: .now() + 1), .success)
+            let response = URLResponse(
+                url: try XCTUnwrap(request.url),
+                mimeType: "application/json",
+                expectedContentLength: 2,
+                textEncodingName: "utf-8"
+            )
+            return (response, Data("{}".utf8))
+        }
+        let controller = GroupChatChannelController(
+            id: UUID(),
+            apiURL: "https://chat.example.com",
+            apiKey: "key",
+            label: "Chat",
+            instanceNumber: nil,
+            session: session
+        )
+
+        controller.activate()
+        await fulfillment(of: [requestReceived], timeout: 1)
+        controller.deactivate()
+        releaseResponse.signal()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertFalse(controller.lastLines(20).contains { $0.contains("Connection failed") })
+    }
+
+    @MainActor
     func testSuccessfulSendAndPollingPreserveCurrentBehavior() async throws {
         let sendReceived = expectation(description: "send request received")
         let pollReceived = expectation(description: "poll request received")
