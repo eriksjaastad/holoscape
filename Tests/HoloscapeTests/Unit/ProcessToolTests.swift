@@ -195,6 +195,38 @@ final class ProcessToolTests: XCTestCase {
         assertProcessIsGone(commandPID, "A command must not escape cleanup by killing its direct parent")
     }
 
+    func testDetachedDescendantDoesNotBlockTimeoutAndMarksCleanupUnconfirmed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-detached-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let detachedPIDURL = directory.appendingPathComponent("detached.pid")
+        let python = "import os,time; os.setsid(); open('\(detachedPIDURL.path)','w').write(str(os.getpid())); time.sleep(30)"
+        let command = """
+        /usr/bin/python3 -c \(shellQuote(python)) &
+        while [[ ! -f \(detachedPIDURL.path) ]]; do sleep 0.01; done
+        while true; do sleep 1; done
+        """
+
+        let startedAt = DispatchTime.now()
+        let result = try await runProcessTool(
+            request(command: command, timeoutSeconds: 0.5),
+            launcherExecutableURL: launcherExecutableURL
+        )
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000_000
+
+        let detachedPID = try pid(from: detachedPIDURL)
+        defer { _ = Darwin.kill(detachedPID, SIGKILL) }
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processCleanupConfirmed, false)
+        XCTAssertLessThan(elapsed, 3, "A detached writer must not block final output draining")
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     private func request(command: String, timeoutSeconds: Double = 2) -> ProcessToolRequest {
         ProcessToolRequest(
             command: command,

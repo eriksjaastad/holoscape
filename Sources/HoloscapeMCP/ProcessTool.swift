@@ -286,6 +286,43 @@ private func processToolExitCode(from waitStatus: Int32) -> Int32 {
     return signal == 0 ? (waitStatus >> 8) & 0xff : signal
 }
 
+private func waitForProcessToolChild(_ pid: pid_t) -> Result<Int32, ProcessToolError> {
+    var waitStatus: Int32 = 0
+    while true {
+        if waitpid(pid, &waitStatus, 0) == pid {
+            return .success(processToolExitCode(from: waitStatus))
+        }
+        if errno != EINTR {
+            return .failure(.launchFailed("Could not wait for child process: \(String(cString: strerror(errno)))"))
+        }
+    }
+}
+
+private func drainProcessToolPipe(
+    _ handle: FileHandle,
+    into buffer: ProcessToolOutputBuffer
+) -> Bool {
+    let descriptor = handle.fileDescriptor
+    let currentFlags = fcntl(descriptor, F_GETFL)
+    guard currentFlags != -1,
+          fcntl(descriptor, F_SETFL, currentFlags | O_NONBLOCK) != -1 else {
+        try? handle.close()
+        return false
+    }
+
+    var bytes = [UInt8](repeating: 0, count: 8_192)
+    while true {
+        let count = Darwin.read(descriptor, &bytes, bytes.count)
+        if count > 0 {
+            buffer.append(Data(bytes.prefix(count)))
+            continue
+        }
+        try? handle.close()
+        if count == 0 { return true }
+        return errno != EAGAIN && errno != EWOULDBLOCK
+    }
+}
+
 /// Keeps the command's direct parent separate from the process-group anchor.
 /// If a command terminates its parent, the anchor still reserves the group ID
 /// and the controller can safely order cleanup through the anchor capability.
@@ -298,9 +335,12 @@ func runProcessToolShellRunner(command: String, commandStatusPath: String) -> Ne
         Darwin.exit(127)
     }
 
-    var waitStatus: Int32 = 0
-    while waitpid(shellPID, &waitStatus, 0) == -1, errno == EINTR {}
-    writeProcessToolStatus("completed:\(processToolExitCode(from: waitStatus))", to: commandStatusPath)
+    switch waitForProcessToolChild(shellPID) {
+    case .success(let exitCode):
+        writeProcessToolStatus("completed:\(exitCode)", to: commandStatusPath)
+    case .failure(let error):
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: commandStatusPath)
+    }
     Darwin.exit(0)
 }
 
@@ -340,14 +380,20 @@ func runProcessToolAnchor(command: String, commandStatusPath: String) -> Never {
         Darwin._exit(125)
     }
 
-    var waitStatus: Int32 = 0
-    while waitpid(shellRunnerPID, &waitStatus, 0) == -1, errno == EINTR {}
+    let runnerResult = waitForProcessToolChild(shellRunnerPID)
     guard !state.isTerminating() else {
         while true { pause() }
     }
 
     if !FileManager.default.fileExists(atPath: commandStatusPath) {
-        writeProcessToolStatus("launchFailed:Shell runner exited without reporting command status", to: commandStatusPath)
+        let reason: String
+        switch runnerResult {
+        case .success:
+            reason = "Shell runner exited without reporting command status"
+        case .failure(let error):
+            reason = error.localizedDescription
+        }
+        writeProcessToolStatus("launchFailed:\(reason)", to: commandStatusPath)
     }
     while true { pause() }
 }
@@ -437,6 +483,16 @@ func runProcessToolController(
         let suffix = cleanupConfirmed ? "" : "; process cleanup could not be confirmed"
         writeProcessToolStatus("launchFailed:\(reason)\(suffix)", to: statusPath)
         Darwin.exit(127)
+    }
+
+    if commandStatus == nil, !anchor.isRunning, DispatchTime.now() < deadline {
+        try? controlPipe.fileHandleForWriting.close()
+        try? FileManager.default.removeItem(atPath: commandStatusPath)
+        writeProcessToolStatus(
+            "launchFailed:Process-group anchor exited before reporting command status",
+            to: statusPath
+        )
+        Darwin.exit(125)
     }
 
     let cleanupConfirmed = anchor.isRunning && requestProcessToolAnchorCleanup(
@@ -531,8 +587,9 @@ func runProcessTool(
         process.terminationHandler = { _ in
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
-            stdout.append(stdoutPipe.fileHandleForReading.availableData)
-            stderr.append(stderrPipe.fileHandleForReading.availableData)
+            let stdoutClosed = drainProcessToolPipe(stdoutPipe.fileHandleForReading, into: stdout)
+            let stderrClosed = drainProcessToolPipe(stderrPipe.fileHandleForReading, into: stderr)
+            let outputPipesClosed = stdoutClosed && stderrClosed
             let standardOutput = stdout.snapshot()
             let standardError = stderr.snapshot()
             let status = try? String(contentsOf: statusURL, encoding: .utf8)
@@ -553,7 +610,7 @@ func runProcessTool(
                     stderr: standardError.string,
                     stdoutTruncated: standardOutput.truncated,
                     stderrTruncated: standardError.truncated,
-                    processCleanupConfirmed: nil
+                    processCleanupConfirmed: outputPipesClosed ? nil : false
                 ))
             case .timedOut(let cleanupConfirmed):
                 continuation.resume(returning: ProcessToolResult(
@@ -565,7 +622,7 @@ func runProcessTool(
                     stderr: standardError.string,
                     stdoutTruncated: standardOutput.truncated,
                     stderrTruncated: standardError.truncated,
-                    processCleanupConfirmed: cleanupConfirmed
+                    processCleanupConfirmed: cleanupConfirmed && outputPipesClosed
                 ))
             case .launchFailed(let reason):
                 continuation.resume(throwing: ProcessToolError.launchFailed(reason))
