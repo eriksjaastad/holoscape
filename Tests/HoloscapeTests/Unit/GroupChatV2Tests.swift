@@ -204,32 +204,21 @@ final class GroupChatV2Tests: XCTestCase {
     }
 
     @MainActor
-    func testOlderPollingFailureCannotOverrideNewerSuccess() async throws {
+    func testPollingSerializesRequestsWhenResponseLatencyExceedsInterval() async throws {
         let firstRequestStarted = expectation(description: "first poll started")
-        let secondRequestCompleted = expectation(description: "second poll completed")
         let requestCount = LockedCounter()
         let session = makeStubbedSession()
         defer { session.invalidateAndCancel() }
         GroupChatURLProtocolStub.setHandler { request in
-            switch requestCount.increment() {
-            case 1:
+            if requestCount.increment() == 1 {
                 firstRequestStarted.fulfill()
-                return Self.httpResponse(
-                    for: request,
-                    statusCode: 503,
-                    body: #"{"messages":[]}"#,
-                    delay: 0.2
-                )
-            case 2:
-                secondRequestCompleted.fulfill()
-                return Self.httpResponse(
-                    for: request,
-                    statusCode: 200,
-                    body: #"{"messages":[{"sender":"claude","body":"newest","ts":"2026-09-30T23:00:00.000Z"}]}"#
-                )
-            default:
-                return Self.httpResponse(for: request, statusCode: 200, body: #"{"messages":[]}"#)
             }
+            return Self.httpResponse(
+                for: request,
+                statusCode: 200,
+                body: #"{"messages":[{"sender":"claude","body":"slow success","ts":"2026-09-30T23:00:00.000Z"}]}"#,
+                delay: 0.2
+            )
         }
         let controller = GroupChatChannelController(
             id: UUID(),
@@ -243,12 +232,12 @@ final class GroupChatV2Tests: XCTestCase {
         defer { controller.deactivate() }
 
         controller.activate()
-        await fulfillment(of: [firstRequestStarted, secondRequestCompleted], timeout: 1)
-        try await waitForLine(containing: "newest", in: controller)
-        try await Task.sleep(for: .milliseconds(250))
+        await fulfillment(of: [firstRequestStarted], timeout: 1)
+        try await Task.sleep(for: .milliseconds(125))
 
+        XCTAssertEqual(requestCount.current, 1)
+        try await waitForLine(containing: "slow success", in: controller)
         XCTAssertEqual(controller.state, .active)
-        XCTAssertFalse(controller.lastLines(20).contains { $0.contains("HTTP 503") })
     }
 
     @MainActor
@@ -419,6 +408,10 @@ final class GroupChatV2Tests: XCTestCase {
 private final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
+
+    var current: Int {
+        lock.withLock { value }
+    }
 
     func increment() -> Int {
         lock.withLock {

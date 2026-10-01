@@ -69,7 +69,8 @@ class GroupChatChannelController: NSObject, ChannelController {
     private var reconnectDelay: TimeInterval = 1.0
     private let maxReconnectDelay: TimeInterval = 30.0
     private let pollInterval: TimeInterval
-    private var latestPollRequestID: UInt = 0
+    private var pollGeneration: UInt = 0
+    private var isPollInFlight = false
     private let profileLabel: String
     private let session: URLSession
     let instanceNumber: Int?
@@ -196,6 +197,8 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     func activate() {
+        pollGeneration &+= 1
+        isPollInFlight = false
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)
         reconnectDelay = 1.0
@@ -206,7 +209,8 @@ class GroupChatChannelController: NSObject, ChannelController {
     func deactivate() {
         pollTimer?.invalidate()
         pollTimer = nil
-        latestPollRequestID &+= 1
+        pollGeneration &+= 1
+        isPollInFlight = false
         state = .disconnected
         activatedAt = nil
         delegate?.channelStateDidChange(self, to: .disconnected)
@@ -240,8 +244,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     private func fetchMessages() {
-        latestPollRequestID &+= 1
-        let requestID = latestPollRequestID
+        guard !isPollInFlight else { return }
         var urlString = "\(apiURL)/messages?limit=50"
         if let since = lastTimestamp {
             let encoded = since.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? since
@@ -256,11 +259,14 @@ class GroupChatChannelController: NSObject, ChannelController {
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
 
+        isPollInFlight = true
+        let requestGeneration = pollGeneration
         session.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.state != .disconnected,
-                      requestID == self.latestPollRequestID else { return }
+                      requestGeneration == self.pollGeneration else { return }
+                self.isPollInFlight = false
 
                 if let error {
                     self.handlePollingFailure(error)
