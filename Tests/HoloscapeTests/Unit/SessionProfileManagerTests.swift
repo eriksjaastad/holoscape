@@ -110,6 +110,26 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 2)
     }
 
+    func testRemoteDirectoryListingPreservesReadFailureWhenProcessRemainsAlive() async throws {
+        let script = try makeDiscoveryScript("exec sleep 1")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 0.05,
+                readChunk: { _, _ in throw SyntheticReadError.failed }
+            )
+            XCTFail("Expected the pipe read failure to take precedence over timeout")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .outputReadFailed(stream: "stdout", message: "failed")
+            )
+        }
+    }
+
     func testRemoteDirectoryListingTimesOutWhenExitedParentLeavesPipeOpen() async throws {
         let script = try makeDiscoveryScript("sleep 1 & exit 0")
         defer { try? FileManager.default.removeItem(at: script) }
@@ -465,5 +485,9 @@ final class SessionProfileManagerTests: XCTestCase {
             .appendingPathComponent("holoscape-project-discovery-\(UUID().uuidString).sh")
         try ("#!/bin/sh\n" + body + "\n").write(to: script, atomically: true, encoding: .utf8)
         return script
+    }
+
+    private enum SyntheticReadError: Error {
+        case failed
     }
 }

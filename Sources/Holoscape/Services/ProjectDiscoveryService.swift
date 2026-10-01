@@ -109,11 +109,16 @@ class ProjectDiscoveryService {
         )
     }
 
+    typealias ProcessOutputReader = @Sendable (FileHandle, Int) throws -> Data?
+
     nonisolated static func listDirectories(
         executableURL: URL,
         arguments: [String],
         timeout: TimeInterval,
-        maxOutputBytes: Int = 1_048_576
+        maxOutputBytes: Int = 1_048_576,
+        readChunk: @escaping ProcessOutputReader = { handle, count in
+            try handle.read(upToCount: count)
+        }
     ) async throws -> [String] {
         let result = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -122,7 +127,8 @@ class ProjectDiscoveryService {
                         executableURL: executableURL,
                         arguments: arguments,
                         timeout: timeout,
-                        maxOutputBytes: maxOutputBytes
+                        maxOutputBytes: maxOutputBytes,
+                        readChunk: readChunk
                     )
                 })
             }
@@ -145,7 +151,8 @@ class ProjectDiscoveryService {
         executableURL: URL,
         arguments: [String],
         timeout: TimeInterval,
-        maxOutputBytes: Int
+        maxOutputBytes: Int,
+        readChunk: @escaping ProcessOutputReader
     ) throws -> ProcessResult {
         let process = Process()
         process.executableURL = executableURL
@@ -169,6 +176,7 @@ class ProjectDiscoveryService {
                 destination.read(
                     from: pipe.fileHandleForReading,
                     maxBytes: max(0, maxOutputBytes),
+                    readChunk: readChunk,
                     onLimitExceeded: { process.terminate() }
                 )
                 readers.leave()
@@ -178,6 +186,8 @@ class ProjectDiscoveryService {
         let boundedTimeout = max(0, timeout)
         let operationDeadline = DispatchTime.now() + boundedTimeout
         if termination.wait(timeout: operationDeadline) == .timedOut {
+            let stdoutReadFailure = stdout.readFailure
+            let stderrReadFailure = stderr.readFailure
             process.terminate()
             if termination.wait(timeout: .now() + 0.5) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)
@@ -191,6 +201,12 @@ class ProjectDiscoveryService {
             }
             if stderr.limitExceeded {
                 throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+            }
+            if let readFailure = stdoutReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+            }
+            if let readFailure = stderrReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
             }
             throw DiscoveryError.processTimedOut
         }
@@ -286,10 +302,11 @@ private final class ProcessOutputBox: @unchecked Sendable {
     func read(
         from handle: FileHandle,
         maxBytes: Int,
+        readChunk: @escaping ProjectDiscoveryService.ProcessOutputReader,
         onLimitExceeded: () -> Void
     ) {
         do {
-            while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            while let chunk = try readChunk(handle, 64 * 1024), !chunk.isEmpty {
                 lock.lock()
                 let remaining = max(0, maxBytes - data.count)
                 if chunk.count > remaining {
