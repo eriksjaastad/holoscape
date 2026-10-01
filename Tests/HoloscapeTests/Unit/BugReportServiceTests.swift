@@ -4,18 +4,19 @@ import XCTest
 final class BugReportServiceTests: XCTestCase {
     private var session: URLSession!
     private var networkService: BugReportService!
-
-    private let pendingDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".holoscape/pending-reports")
+    private var pendingDir: URL!
 
     override func setUp() {
         super.setUp()
+        pendingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-pending-reports-\(UUID().uuidString)")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [BugReportURLProtocolStub.self]
         session = URLSession(configuration: configuration)
         networkService = BugReportService(
             endpoint: URL(string: "https://reports.test/reports")!,
-            session: session
+            session: session,
+            pendingDirectory: pendingDir
         )
     }
 
@@ -28,11 +29,8 @@ final class BugReportServiceTests: XCTestCase {
         BugReportURLProtocolStub.removeHandler()
         networkService = nil
         session = nil
-        if let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil) {
-            for file in files where file.pathExtension == "json" {
-                try? FileManager.default.removeItem(at: file)
-            }
-        }
+        try? FileManager.default.removeItem(at: pendingDir)
+        pendingDir = nil
         super.tearDown()
     }
 
@@ -196,7 +194,7 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testSavePendingBugReport() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
@@ -205,7 +203,7 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testSavePendingCrashReport() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingCrashReport(makeCrashReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
@@ -217,14 +215,14 @@ final class BugReportServiceTests: XCTestCase {
         cleanPendingDir()
         XCTAssertFalse(FileManager.default.fileExists(atPath: pendingDir.path), "Pending dir should not exist after cleanup")
 
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: pendingDir.path), "Pending dir should be recreated on save")
     }
 
     func testSavedReportIsValidJSON() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
@@ -242,7 +240,7 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testSavedReportDecodable() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         let original = makeBugReport()
         try service.savePendingBugReport(original)
 
@@ -268,7 +266,7 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testMultipleReportsSavedSeparately() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
         try service.savePendingBugReport(makeBugReport())
         try service.savePendingCrashReport(makeCrashReport())
@@ -279,7 +277,7 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testAgingDeletesOldReports() throws {
-        let service = BugReportService()
+        let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
 
         let files = try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
