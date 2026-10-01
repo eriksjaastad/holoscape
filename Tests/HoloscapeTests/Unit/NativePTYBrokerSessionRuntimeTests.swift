@@ -342,7 +342,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
     }
 
-    func testNaturalLeaderCleanupFailureIsLoudAndRetryable() throws {
+    func testNaturalLeaderCleanupFailureIsLoudWithoutRetryingStaleProcessGroup() throws {
         let signaler = FailFirstProcessGroupSignaler()
         let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
         let id = BrokerSessionID(rawValue: "natural-exit-cleanup-failure-native-pty-runtime-test")
@@ -377,10 +377,14 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(failedID, id)
         XCTAssertTrue(reason.contains("Operation not permitted"), reason)
 
-        try runtime.markSessionErrored(id: id)
-        XCTAssertThrowsError(try runtime.terminationStatus(id: id)) { error in
-            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            guard case let .terminationFailed(retryID, retryReason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retained cleanup failure, got \(error)")
+            }
+            XCTAssertEqual(retryID, id)
+            XCTAssertEqual(retryReason, reason)
         }
+        XCTAssertEqual(try runtime.listSessions(), [id])
     }
 
     func testTerminationFailureIsLoudAndKeepsSessionRetryable() throws {

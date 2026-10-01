@@ -112,6 +112,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
                 }
                 processGroupCleanupError = nil
             } else {
+                // Once the leader has exited, a bare numeric PGID cannot be
+                // retried safely: the kernel may later reuse it for an unrelated
+                // process group. Preserve the loud failure, but retire ownership.
+                if self.processGroupID == processGroupID {
+                    self.processGroupID = nil
+                }
                 processGroupCleanupError = signalError
             }
             lock.unlock()
@@ -278,8 +284,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             throw RuntimeError.launchFailed("PTY child did not start in an isolated process group")
         }
         // Foundation launches each Process as its own process-group leader on
-        // Darwin. Retaining that ID lets shutdown cover the shell and every
-        // command it launches, even after the shell itself exits.
+        // Darwin. The process group is this runtime's ownership boundary; a
+        // command that deliberately moves itself to another group/session has
+        // detached from broker-managed terminal lifetime.
         let alreadyTerminatedStatus = session.setProcessGroupID(expectedProcessGroupID)
         if let alreadyTerminatedStatus {
             session.handleProcessTermination(
@@ -401,6 +408,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     private func terminateBoundedly(_ session: Session) throws {
         try session.withTerminationLock {
+            try throwProcessGroupCleanupErrorIfPresent(for: session)
             guard let processGroupID = session.observedProcessGroupID() else {
                 return
             }
