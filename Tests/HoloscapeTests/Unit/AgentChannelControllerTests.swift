@@ -411,6 +411,51 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertNil(controller.adapterPersistentState)
     }
 
+    func testLateAgentAdapterAttentionCannotContaminateReplacementProcess() throws {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let exitedOwnerToken = try XCTUnwrap(controller.adapterOwnerToken)
+        XCTAssertTrue(
+            terminal.lastEnvironment.contains("HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=\(exitedOwnerToken)")
+        )
+
+        terminal.reportTermination(exitCode: 0)
+        controller.retry()
+        let replacementOwnerToken = try XCTUnwrap(controller.adapterOwnerToken)
+        XCTAssertNotEqual(replacementOwnerToken, exitedOwnerToken)
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: exitedOwnerToken))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: replacementOwnerToken))
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .needsApproval,
+                source: .agentAdapter,
+                reason: "Delayed approval event from the exited process"
+            ),
+            adapterOwnerToken: exitedOwnerToken
+        )
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.adapterPersistentState)
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter),
+            adapterOwnerToken: replacementOwnerToken
+        )
+
+        XCTAssertEqual(controller.persistentState.kind, .needsApproval)
+    }
+
     func testDirectProcessTerminationClearsAttentionAndRejectsLateAdapterEvent() async {
         let controller = AgentChannelController(
             id: UUID(),
@@ -565,6 +610,14 @@ final class AgentChannelControllerTests: XCTestCase {
 
         controller.applyPersistentState(
             PersistentChannelState(
+                kind: .error,
+                source: .agentAdapter,
+                reason: "Agent request failed"
+            )
+        )
+
+        controller.applyPersistentState(
+            PersistentChannelState(
                 kind: .ready,
                 source: .agentAdapter,
                 reason: "Agent response completed"
@@ -575,6 +628,14 @@ final class AgentChannelControllerTests: XCTestCase {
             controller.persistentState,
             pluginError,
             "A lower-priority agent completion must not erase a plugin-owned failure"
+        )
+
+        controller.deactivate()
+
+        XCTAssertEqual(
+            controller.persistentState,
+            pluginError,
+            "Process exit must clear process-owned attention without deleting plugin-owned state"
         )
     }
 

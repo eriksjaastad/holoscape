@@ -27,8 +27,17 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
-    private(set) var adapterPersistentState: PersistentChannelState?
-    private(set) var terminalOutputPersistentState: PersistentChannelState?
+    private var persistentStatesBySource: [PersistentChannelStateSource: PersistentChannelState] = [:]
+    private(set) var adapterPersistentState: PersistentChannelState? {
+        get { persistentStatesBySource[.agentAdapter] }
+        set { persistentStatesBySource[.agentAdapter] = newValue }
+    }
+    private(set) var terminalOutputPersistentState: PersistentChannelState? {
+        get { persistentStatesBySource[.terminalOutput] }
+        set { persistentStatesBySource[.terminalOutput] = newValue }
+    }
+    private(set) var adapterOwnerToken = UUID().uuidString
+    private var requiresAdapterOwnerToken = false
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var persistentState: PersistentChannelState {
@@ -37,10 +46,25 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
             recoveryAction: recoveryAction
         )
-        return [runtimeState, adapterPersistentState, terminalOutputPersistentState]
-            .compactMap { $0 }
-            .max { lhs, rhs in lhs.kind.displayPriority < rhs.kind.displayPriority }
+        return ([runtimeState] + persistentStatesBySource.values)
+            .max { lhs, rhs in
+                if lhs.kind.displayPriority != rhs.kind.displayPriority {
+                    return lhs.kind.displayPriority < rhs.kind.displayPriority
+                }
+                return Self.sourceDisplayPriority(lhs.source) < Self.sourceDisplayPriority(rhs.source)
+            }
             ?? runtimeState
+    }
+
+    private static func sourceDisplayPriority(_ source: PersistentChannelStateSource) -> Int {
+        switch source {
+        case .brokerRegistry: return 60
+        case .processLifecycle: return 50
+        case .terminalOutput: return 40
+        case .agentAdapter: return 30
+        case .userAction: return 20
+        case .plugin: return 10
+        }
     }
 
     var notificationDirectoryPath: String? {
@@ -204,7 +228,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.transitionToDisconnected()
+            self.transitionToDisconnected(invalidateAdapterOwner: true)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
@@ -239,10 +263,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: .connecting)
 
         // Build clean environment with auth isolation
-        let env = AuthEnvironmentBuilder.buildEnvironment(
+        var env = AuthEnvironmentBuilder.buildEnvironment(
             for: authType,
             workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
         )
+        env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
         let launch = Self.launchInvocation(for: command)
@@ -319,27 +344,34 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {
+        applyPersistentState(state, adapterOwnerToken: nil)
+    }
+
+    func acceptsAdapterEvent(ownerToken: String?) -> Bool {
+        guard state == .active else { return false }
+        if requiresAdapterOwnerToken {
+            return ownerToken == adapterOwnerToken
+        }
+        return ownerToken == nil || ownerToken == adapterOwnerToken
+    }
+
+    func applyPersistentState(_ state: PersistentChannelState, adapterOwnerToken ownerToken: String?) {
         if state.source == .agentAdapter {
             // Adapter events describe only the currently running agent process.
             // Delayed hooks from an exited process must not overwrite truthful
             // disconnected/stale lifecycle state.
-            guard self.state == .active else { return }
-            // A new adapter event supersedes an older adapter event (including
-            // completion clearing restored approval), but it remains subordinate
-            // to a higher-priority state owned by another source such as a plugin.
-            if let current = adapterPersistentState,
-               current.source != .agentAdapter,
-               state.kind.displayPriority < current.kind.displayPriority {
-                return
-            }
+            guard acceptsAdapterEvent(ownerToken: ownerToken) else { return }
+            // Once a process exits, unscoped legacy events can no longer prove
+            // they belong to its replacement. A matching launch-owned token is
+            // required, and an explicitly wrong token is always rejected.
             adapterPersistentState = state
             delegate?.channelStateDidChange(self, to: self.state)
             return
         }
-        guard state.kind.displayPriority >= persistentState.kind.displayPriority else {
-            return
-        }
-        adapterPersistentState = state
+        // Each producer owns and replaces only its own slot. This lets a plugin
+        // report recovery without erasing agent state, and lets process teardown
+        // clear process-owned attention without deleting plugin-owned failures.
+        persistentStatesBySource[state.source] = state
         delegate?.channelStateDidChange(self, to: self.state)
     }
 
@@ -452,7 +484,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.transitionToDisconnected()
+            self.transitionToDisconnected(invalidateAdapterOwner: true)
         }
     }
 
@@ -467,9 +499,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
     }
 
-    private func transitionToDisconnected() {
+    private func transitionToDisconnected(invalidateAdapterOwner: Bool = false) {
         adapterPersistentState = nil
         terminalOutputPersistentState = nil
+        persistentStatesBySource[.processLifecycle] = nil
+        persistentStatesBySource[.brokerRegistry] = nil
+        if invalidateAdapterOwner {
+            adapterOwnerToken = UUID().uuidString
+            requiresAdapterOwnerToken = true
+        }
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }

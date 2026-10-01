@@ -41,7 +41,11 @@ cwd = data.get('cwd') or os.environ.get('PWD') or ''
 if not cwd:
     sys.exit(0)
 
-payload = json.dumps({'type': notif_type, 'cwd': cwd}).encode()
+payload_data = {'type': notif_type, 'cwd': cwd}
+owner_token = os.environ.get('HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN')
+if owner_token:
+    payload_data['ownerToken'] = owner_token
+payload = json.dumps(payload_data).encode()
 req = urllib.request.Request(
     'http://127.0.0.1:7865/notify',
     data=payload,

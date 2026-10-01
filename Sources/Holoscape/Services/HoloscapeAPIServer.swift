@@ -255,15 +255,30 @@ class HoloscapeAPIServer {
         let cwd = json["cwd"] as? String
         let tool = json["tool"] as? String ?? json["agent"] as? String
         let reason = json["reason"] as? String
+        let ownerToken = json["ownerToken"] as? String
         // Match notification to a channel by working directory
         if let cwd, let channel = resolveChannelByCwd(cwd: cwd) {
-            channelNotifications[channel.channelId] = type
-            if let persistentState = agentStatusAdapter.persistentState(
+            let persistentState = agentStatusAdapter.persistentState(
                 tool: tool,
                 event: type,
                 reason: reason
-            ) {
-                channel.applyPersistentState(persistentState)
+            )
+            if let agentChannel = channel as? AgentChannelController,
+               persistentState != nil,
+               !agentChannel.acceptsAdapterEvent(ownerToken: ownerToken) {
+                return .json(["status": "ignored", "type": type])
+            }
+
+            channelNotifications[channel.channelId] = type
+            if let persistentState {
+                if let agentChannel = channel as? AgentChannelController {
+                    agentChannel.applyPersistentState(
+                        persistentState,
+                        adapterOwnerToken: ownerToken
+                    )
+                } else {
+                    channel.applyPersistentState(persistentState)
+                }
             }
             // Trigger tab refresh to update colors
             windowController?.refreshAllTabs()
