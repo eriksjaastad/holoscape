@@ -330,6 +330,76 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.source, .processLifecycle)
     }
 
+    func testRestoredAdapterAttentionClearsOnLaterAdapterCompletion() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .ready, source: .agentAdapter)
+        )
+
+        XCTAssertEqual(controller.adapterPersistentState?.kind, .ready)
+        XCTAssertNotEqual(controller.persistentState.kind, .needsApproval)
+    }
+
+    func testRestoredAttentionClearsWhenProcessTerminates() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        terminal.reportTermination(exitCode: 0)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertNil(controller.adapterPersistentState)
+        XCTAssertNil(controller.terminalOutputPersistentState)
+    }
+
+    func testControllerSendInputClearsRestoredTerminalOutputAttention() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .terminalOutput)
+        )
+
+        controller.sendInput("1")
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.terminalOutputPersistentState)
+        XCTAssertFalse(terminal.sentBytes.isEmpty)
+    }
+
     func testRestoredAttentionIsIgnoredAfterProcessActivationFails() {
         let terminal = MockTerminalProcess()
         terminal.startFailureDescription = "launch failed"

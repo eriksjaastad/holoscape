@@ -204,8 +204,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self.transitionToDisconnected()
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
@@ -229,6 +228,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     func sendInput(_ text: String) {
         guard state == .active else { return }
         recordUserInteraction()
+        clearTerminalOutputPersistentState()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -260,8 +260,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: userLabel,
             workingDirectory: workingDirectory?.path
         ) else {
-            state = .disconnected
-            delegate?.channelStateDidChange(self, to: .disconnected)
+            transitionToDisconnected()
             return
         }
 
@@ -312,8 +311,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession()
         recordBrokerDetach()
-        state = .disconnected
-        delegate?.channelStateDidChange(self, to: .disconnected)
+        transitionToDisconnected()
     }
 
     func retry() {
@@ -321,6 +319,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {
+        if state.source == .agentAdapter {
+            adapterPersistentState = state
+            delegate?.channelStateDidChange(self, to: self.state)
+            return
+        }
         guard state.kind.displayPriority >= persistentState.kind.displayPriority else {
             return
         }
@@ -437,8 +440,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self.transitionToDisconnected()
         }
     }
 
@@ -451,6 +453,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         case .oauth: return .agentOAuth
         case .apiKey: return .agentAPI
         }
+    }
+
+    private func transitionToDisconnected() {
+        adapterPersistentState = nil
+        terminalOutputPersistentState = nil
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
     }
 
     private func recordBrokerStart(
