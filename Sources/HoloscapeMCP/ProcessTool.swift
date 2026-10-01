@@ -134,7 +134,8 @@ private enum ProcessToolIdentityLookup {
 
 private enum ProcessToolIdentityState: Equatable {
     case matching
-    case goneOrReused
+    case gone
+    case reused
     case unavailable
 }
 
@@ -155,9 +156,9 @@ private func processToolIdentity(for pid: pid_t) -> ProcessToolIdentityLookup {
 private func processToolState(of identity: ProcessToolProcessIdentity) -> ProcessToolIdentityState {
     switch processToolIdentity(for: identity.pid) {
     case .found(let current):
-        return current == identity ? .matching : .goneOrReused
+        return current == identity ? .matching : .reused
     case .missing:
-        return .goneOrReused
+        return .gone
     case .unavailable:
         return .unavailable
     }
@@ -183,7 +184,10 @@ private func terminateProcessToolGroup(
     switch processToolState(of: root) {
     case .matching:
         guard getpgid(root.pid) == root.pid else { return false }
-    case .goneOrReused:
+    case .gone:
+        guard let groupExists = processToolGroupExists(root.pid) else { return false }
+        guard groupExists else { return true }
+    case .reused:
         return processToolGroupExists(root.pid) == false
     case .unavailable:
         return false
@@ -265,6 +269,7 @@ func runProcessTool(
         guard case .found(let identity) = processToolIdentity(for: pid) else { return nil }
         return identity
     },
+    beforeTimeoutTermination: @escaping @Sendable (pid_t) -> Void = { _ in },
     terminateProcessTree: (@Sendable (pid_t) -> Bool)? = nil
 ) async throws -> ProcessToolResult {
     let process = Process()
@@ -392,6 +397,7 @@ func runProcessTool(
             case .timedOut:
                 break
             }
+            beforeTimeoutTermination(process.processIdentifier)
             let terminated = terminateProcessTree?(process.processIdentifier)
                 ?? terminateProcessToolGroup(rootedAt: launchedIdentity)
             finishAfterClaim(

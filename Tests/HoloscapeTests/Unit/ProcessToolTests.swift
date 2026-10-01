@@ -139,6 +139,40 @@ final class ProcessToolTests: XCTestCase {
         assertProcessIsGone(childPID, "Timed-out descendants must be gone before returning")
     }
 
+    func testTimeoutTerminatesGroupAfterRootExitsBeforeCleanup() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-root-exit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let command = """
+        zmodload zsh/zselect
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while true; do zselect -t 100; done
+        """
+
+        let result = try await runProcessTool(
+            request(command: command, timeoutSeconds: 0.5),
+            launcherExecutableURL: launcherExecutableURL,
+            beforeTimeoutTermination: { rootPID in
+                _ = Darwin.kill(rootPID, SIGKILL)
+                let deadline = DispatchTime.now() + .seconds(1)
+                while DispatchTime.now() < deadline {
+                    errno = 0
+                    if Darwin.kill(rootPID, 0) == -1, errno == ESRCH { return }
+                    usleep(10_000)
+                }
+            }
+        )
+
+        let childPID = try pid(from: childPIDURL)
+        defer { _ = Darwin.kill(childPID, SIGKILL) }
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processCleanupConfirmed, true)
+        assertProcessIsGone(childPID, "Timed-out descendants must be gone when the root exits before cleanup")
+    }
+
     func testRunProcessToolReportsUnconfirmedCleanupOutsideCappedStderr() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-cleanup-\(UUID().uuidString)")
