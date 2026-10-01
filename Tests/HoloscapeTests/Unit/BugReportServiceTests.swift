@@ -167,41 +167,65 @@ final class BugReportServiceTests: XCTestCase {
         let transportError = URLError(.notConnectedToInternet)
         XCTAssertEqual(
             MainWindowController.bugReportSubmissionFailureMessage(for: transportError),
-            "\(transportError.localizedDescription). Report saved locally for retry."
+            "Network error: \(transportError.localizedDescription). Report saved locally for retry."
         )
     }
 
-    func testSavePendingBugReport() {
+    func testSubmissionFailureFeedbackReportsPersistenceFailure() {
+        let submissionError = BugReportServiceError.httpError(statusCode: 503)
+        let persistenceError = CocoaError(.fileWriteNoPermission)
+
+        XCTAssertEqual(
+            MainWindowController.bugReportSubmissionFailureMessage(
+                for: submissionError,
+                persistenceError: persistenceError
+            ),
+            "Report server returned HTTP status 503. Report could not be saved locally: \(persistenceError.localizedDescription)"
+        )
+    }
+
+    func testSavePendingBugReportPropagatesFilesystemFailure() throws {
+        let parentFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-report-parent-\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: parentFile)
+        defer { try? FileManager.default.removeItem(at: parentFile) }
+
+        let service = BugReportService(pendingDirectory: parentFile.appendingPathComponent("reports"))
+
+        XCTAssertThrowsError(try service.savePendingBugReport(makeBugReport()))
+    }
+
+    func testSavePendingBugReport() throws {
         let service = BugReportService()
-        service.savePendingBugReport(makeBugReport())
+        try service.savePendingBugReport(makeBugReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let bugFiles = files?.filter { $0.lastPathComponent.hasPrefix("bug-") } ?? []
         XCTAssertGreaterThan(bugFiles.count, 0, "Bug report should be saved to pending directory")
     }
 
-    func testSavePendingCrashReport() {
+    func testSavePendingCrashReport() throws {
         let service = BugReportService()
-        service.savePendingCrashReport(makeCrashReport())
+        try service.savePendingCrashReport(makeCrashReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let crashFiles = files?.filter { $0.lastPathComponent.hasPrefix("crash-") } ?? []
         XCTAssertGreaterThan(crashFiles.count, 0, "Crash report should be saved to pending directory")
     }
 
-    func testPendingDirectoryCreatedOnDemand() {
+    func testPendingDirectoryCreatedOnDemand() throws {
         cleanPendingDir()
         XCTAssertFalse(FileManager.default.fileExists(atPath: pendingDir.path), "Pending dir should not exist after cleanup")
 
         let service = BugReportService()
-        service.savePendingBugReport(makeBugReport())
+        try service.savePendingBugReport(makeBugReport())
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: pendingDir.path), "Pending dir should be recreated on save")
     }
 
-    func testSavedReportIsValidJSON() {
+    func testSavedReportIsValidJSON() throws {
         let service = BugReportService()
-        service.savePendingBugReport(makeBugReport())
+        try service.savePendingBugReport(makeBugReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let bugFiles = files?.filter { $0.lastPathComponent.hasPrefix("bug-") } ?? []
@@ -217,10 +241,10 @@ final class BugReportServiceTests: XCTestCase {
         XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data), "Saved report should be valid JSON")
     }
 
-    func testSavedReportDecodable() {
+    func testSavedReportDecodable() throws {
         let service = BugReportService()
         let original = makeBugReport()
-        service.savePendingBugReport(original)
+        try service.savePendingBugReport(original)
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let bugFiles = files?.filter { $0.lastPathComponent.hasPrefix("bug-") } ?? []
@@ -243,11 +267,11 @@ final class BugReportServiceTests: XCTestCase {
         XCTAssertEqual(decoded.description, "test bug")
     }
 
-    func testMultipleReportsSavedSeparately() {
+    func testMultipleReportsSavedSeparately() throws {
         let service = BugReportService()
-        service.savePendingBugReport(makeBugReport())
-        service.savePendingBugReport(makeBugReport())
-        service.savePendingCrashReport(makeCrashReport())
+        try service.savePendingBugReport(makeBugReport())
+        try service.savePendingBugReport(makeBugReport())
+        try service.savePendingCrashReport(makeCrashReport())
 
         let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         let reportFiles = files?.filter { $0.pathExtension == "json" } ?? []
@@ -256,7 +280,7 @@ final class BugReportServiceTests: XCTestCase {
 
     func testAgingDeletesOldReports() throws {
         let service = BugReportService()
-        service.savePendingBugReport(makeBugReport())
+        try service.savePendingBugReport(makeBugReport())
 
         let files = try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
         guard let bugFile = files.first(where: { $0.lastPathComponent.hasPrefix("bug-") }) else {

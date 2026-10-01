@@ -506,10 +506,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 do {
                     let response = try await service.submitCrashReport(report)
                     if !response.success {
-                        service.savePendingCrashReport(report)
+                        do {
+                            try service.savePendingCrashReport(report)
+                        } catch {
+                            print("[BugReportService] Failed to save rejected crash report: \(error.localizedDescription)")
+                        }
                     }
-                } catch {
-                    service.savePendingCrashReport(report)
+                } catch let submissionError {
+                    do {
+                        try service.savePendingCrashReport(report)
+                    } catch {
+                        print(
+                            "[BugReportService] Crash report submission failed (\(submissionError.localizedDescription)) "
+                                + "and local persistence failed: \(error.localizedDescription)"
+                        )
+                    }
                 }
             }
         }

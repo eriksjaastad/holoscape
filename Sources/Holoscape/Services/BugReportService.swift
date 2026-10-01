@@ -12,12 +12,14 @@ final class BugReportService: Sendable {
 
     init(
         endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        pendingDirectory: URL? = nil
     ) {
         self.silAPIEndpoint = endpoint
         self.session = session
-        self.pendingDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/pending-reports")
+        self.pendingDir = pendingDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".holoscape/pending-reports")
     }
 
     func submitBugReport(_ report: BugReport) async throws -> BugReportResponse {
@@ -58,23 +60,22 @@ final class BugReportService: Sendable {
 
     // MARK: - Pending Report Persistence
 
-    func savePendingBugReport(_ report: BugReport) {
-        savePending(report, prefix: "bug")
+    func savePendingBugReport(_ report: BugReport) throws {
+        try savePending(report, prefix: "bug")
     }
 
-    func savePendingCrashReport(_ report: CrashReport) {
-        savePending(report, prefix: "crash")
+    func savePendingCrashReport(_ report: CrashReport) throws {
+        try savePending(report, prefix: "crash")
     }
 
-    private func savePending<T: Encodable>(_ report: T, prefix: String) {
-        try? FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
+    private func savePending<T: Encodable>(_ report: T, prefix: String) throws {
+        try FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
         let filename = "\(prefix)-\(UUID().uuidString).json"
         let fileURL = pendingDir.appendingPathComponent(filename)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(report) {
-            try? data.write(to: fileURL, options: .atomic)
-        }
+        let data = try encoder.encode(report)
+        try data.write(to: fileURL, options: .atomic)
     }
 
     func retryPendingReports() {
