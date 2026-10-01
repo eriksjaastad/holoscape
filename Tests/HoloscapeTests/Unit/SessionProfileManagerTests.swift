@@ -128,6 +128,28 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.75)
     }
 
+    func testRemoteDirectoryListingReportsOutputLimitWhenExitedParentLeavesPipeOpen() async throws {
+        let script = try makeDiscoveryScript("printf 'oversized-output\\n'; sleep 1 & exit 0")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let startedAt = Date()
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 0.05,
+                maxOutputBytes: 8
+            )
+            XCTFail("Expected output overflow to take precedence over an inherited open pipe")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .outputLimitExceeded(stream: "stdout", maxBytes: 8)
+            )
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.75)
+    }
+
     func testRemoteDirectoryListingPreservesNonzeroExitAndStderr() async throws {
         let script = try makeDiscoveryScript("""
         printf 'permission denied\\n' >&2

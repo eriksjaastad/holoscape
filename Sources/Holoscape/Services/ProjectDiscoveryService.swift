@@ -199,6 +199,18 @@ class ProjectDiscoveryService {
             stdoutPipe.fileHandleForReading.closeFile()
             stderrPipe.fileHandleForReading.closeFile()
             _ = readers.wait(timeout: .now() + 0.5)
+            if stdout.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+            }
+            if stderr.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+            }
+            if let readFailure = stdout.readFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+            }
+            if let readFailure = stderr.readFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
+            }
             throw DiscoveryError.processTimedOut
         }
         if stdout.limitExceeded {
