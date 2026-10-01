@@ -18,8 +18,8 @@ final class BundledSkinTests: XCTestCase {
     private var originalConfigEnv: String?
     private var originalBundleEnv: String?
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-bundledskin-\(UUID().uuidString)")
         userSkins = tempRoot.appendingPathComponent("user/skins")
@@ -33,11 +33,11 @@ final class BundledSkinTests: XCTestCase {
         setenv("HOLOSCAPE_BUNDLE_SKINS_DIR", bundledSkins.path, 1)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempRoot)
         restoreEnv("HOLOSCAPE_CONFIG_DIR", original: originalConfigEnv)
         restoreEnv("HOLOSCAPE_BUNDLE_SKINS_DIR", original: originalBundleEnv)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Enumeration

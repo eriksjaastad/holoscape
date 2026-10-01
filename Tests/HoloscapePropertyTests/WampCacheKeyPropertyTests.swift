@@ -15,8 +15,8 @@ final class WampCacheKeyPropertyTests: XCTestCase {
     private var cacheRoot: URL!
     private var loader: WampBundleLoader!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-hash-\(UUID().uuidString)")
         cacheRoot = tempRoot.appendingPathComponent("cache")
@@ -26,9 +26,9 @@ final class WampCacheKeyPropertyTests: XCTestCase {
         loader = WampBundleLoader(cacheRoot: cacheRoot)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempRoot)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Generators

@@ -16,8 +16,8 @@ final class SpriteContentsRectTests: XCTestCase {
 
     /// Stub the ambient density manager to `.full` so sprite rendering
     /// actually runs. The minimal-mode short-circuit is covered separately.
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         let manager = DensityModeManager(
             initialMode: .full,
             configWriter: NoopDensityConfigWriter()
@@ -25,9 +25,9 @@ final class SpriteContentsRectTests: XCTestCase {
         SkinContext.ambientDensityManager = manager
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         SkinContext.ambientDensityManager = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     // MARK: - Fixtures

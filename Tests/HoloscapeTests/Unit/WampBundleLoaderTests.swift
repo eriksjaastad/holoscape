@@ -18,8 +18,8 @@ final class WampBundleLoaderTests: XCTestCase {
     private var engine: SkinEngine!
     private var loader: WampBundleLoader!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-wamp-\(UUID().uuidString)")
         cacheRoot = tempRoot.appendingPathComponent("cache")
@@ -35,9 +35,9 @@ final class WampBundleLoaderTests: XCTestCase {
         loader.sandbox = engine
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempRoot)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Happy path

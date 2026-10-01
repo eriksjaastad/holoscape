@@ -18,17 +18,17 @@ final class SkinEngineFontRegistrationTests: XCTestCase {
     private var fontsDir: URL!
     private let engine = SkinEngine()
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         skinDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-font-test-\(UUID().uuidString)")
         fontsDir = skinDir.appendingPathComponent("assets/fonts")
         try FileManager.default.createDirectory(at: fontsDir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: skinDir)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Absent directory

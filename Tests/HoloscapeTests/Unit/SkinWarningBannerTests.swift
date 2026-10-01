@@ -19,14 +19,14 @@ final class SkinWarningBannerTests: XCTestCase {
 
     private var host: NSView!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         host = nil
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Installation

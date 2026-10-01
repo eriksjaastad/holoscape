@@ -23,8 +23,8 @@ final class ZipSandboxPropertyTests: XCTestCase {
     private var engine: SkinEngine!
     private var loader: WampBundleLoader!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempRoot = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-zipsandbox-\(UUID().uuidString)")
         cacheRoot = tempRoot.appendingPathComponent("cache")
@@ -44,9 +44,9 @@ final class ZipSandboxPropertyTests: XCTestCase {
         loader.sandbox = engine
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempRoot)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Generators
@@ -160,7 +160,7 @@ final class ZipSandboxPropertyTests: XCTestCase {
     /// success/failure outcome. Purity preserved by unique filenames.
     private func attemptUnzip(entryPath: String, data: Data, includeManifest: Bool = false) -> Outcome {
         let url = bundleStageDir.appendingPathComponent(UUID().uuidString + ".wamp")
-        guard let archive = try? Archive(url: url, accessMode: .create) else {
+        guard let archive = try? Archive(url: url, accessMode: .create, pathEncoding: nil) else {
             return .failure(.notAZip(url.lastPathComponent))
         }
         if includeManifest {
