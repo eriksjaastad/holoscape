@@ -6,7 +6,9 @@ DerivedData/
 .DS_Store
 Package.resolved
 
-# Router daemon runtime state
+# Retired router runtime tombstones — existing checkouts may still contain
+# private message logs/state. Keep these paths ignored even though the sidecar
+# and its tracked source directory no longer exist.
 tools/router/__pycache__/
 tools/router/tests/__pycache__/
 tools/router/processed_ids.json

@@ -8,7 +8,7 @@ This plan also carves out a separate, smaller task for CLI/client detection so n
 
 ## What We Know
 
-- Holoscape already has a local agent-router prototype in `tools/router/router.py` that routes `pt message` traffic into running tabs.
+- Holoscape previously had a manual agent-router prototype that routed `pt message` traffic into running tabs. It was retired after an October 2026 audit found no runtime usage and multiple message-loss paths. Do not use that sidecar as the foundation for this feature.
 - Holoscape already has a chat-style channel type via `GroupChatChannelController`, so there is a UI pattern for rendering polled messages in a single tab.
 - Project Tracker already has the real message primitive:
   - `pt message send`
@@ -36,13 +36,19 @@ Holoscape should not invent its own second message database, inbox model, or cro
 - API/CLI contract for reading and writing board messages
 - Migration path away from ad hoc inbox/outbox usage
 
-### Holoscape owns
+### Holoscape core owns
 
-- A `Message Board` channel type or profile
-- Polling/rendering the PT-backed message feed inside one tab
-- Input box for posting/replying into PT
-- Optional unread badge / notification state for the board tab
-- Optional deep links from a board item to a live agent tab
+- The removable plugin contribution seam documented in `plugin-architecture.md`
+- Core terminal operation when the Project Tracker plugin is absent, disabled, or unavailable
+- Generic presentation primitives only when they are useful without Project Tracker
+
+### First-party Project Tracker plugin owns
+
+- An optional `Message Board` channel contribution
+- Polling/rendering the PT-backed message feed inside the contributed channel
+- Input for posting/replying into PT
+- Optional plugin-owned unread badges, notifications, and deep links
+- All Project Tracker endpoint configuration, availability state, and failures
 
 ## Architecture Direction
 
@@ -59,7 +65,7 @@ Do not use:
 
 ### Cross-computer model
 
-Project Tracker should handle cross-computer state. Holoscape should consume PT's API or CLI-visible contract.
+Project Tracker should handle cross-computer state. The optional first-party plugin should consume PT's API or CLI-visible contract; Holoscape core must not query PT.
 
 If PT needs sync, that decision belongs there. Holoscape should not be responsible for Turso/libSQL/cr-sqlite policy.
 
@@ -108,22 +114,23 @@ Current recommendation:
 - keep one canonical `messages` ledger
 - distinguish board-visible items with metadata, not a separate second system
 
-### Phase 2: Holoscape surface
+### Phase 2: First-party Project Tracker plugin surface
 
-Holoscape work:
+Plugin work, using only the contribution points in `plugin-architecture.md`:
 
-- add a `Message Board` channel entry
+- contribute an optional `Message Board` channel entry that disappears when the plugin is disabled
 - render PT messages in a single tab
 - support posting a new message
 - support reply to an existing message
 - show sender, recipient, timestamp, reply target, and priority
-- reuse as much of `GroupChatChannelController` as possible, but back it with PT instead of the existing group-chat backend
+- reuse generic chat presentation only through a plugin-facing seam; do not make `GroupChatChannelController` or any core channel controller depend on PT
+- keep endpoint, polling, state, and failure handling plugin-owned so PT unavailability cannot affect core terminal readiness
 
 ### Phase 3: Agent integration
 
-After PT and Holoscape surface exist:
+After PT and the plugin surface exist:
 
-- router/agents can post into the same PT ledger
+- agents can post into the same PT ledger through PT's supported contracts; the retired router sidecar is not revived
 - human can watch an exchange from the `Message Board` tab
 - human can intervene by replying in the board
 - Claude/Codex adapters can be normalized around PT instead of per-tool inbox conventions
@@ -141,9 +148,9 @@ These are the main questions to hand off to Project Tracker:
 
 ## Recommended Holoscape Questions
 
-1. Do we create a new `messageBoard` channel type, or reuse `groupChat` with a PT-backed controller?
-2. Should the board tab be a manually created channel or a built-in fixed session profile?
-3. Should agent-router traffic remain invisible in normal tabs once the board exists, or should both surfaces coexist?
+1. Which plugin channel-contribution contract represents `messageBoard` without adding PT semantics to a core channel type?
+2. Should the plugin-contributed board tab be manually created or offered as an optional plugin profile?
+3. Which PT-originated messages should the plugin render, given that the retired router sidecar will not coexist with it?
 4. How should unread state behave when the board is receiving high-volume agent chatter?
 
 ## Implementation Bias
@@ -152,13 +159,16 @@ Prefer this shape:
 
 - PT defines the data model and API
 - Auxesis becomes the primary management UI
-- Holoscape adds a thin PT-backed view
+- the first-party Project Tracker plugin contributes a thin PT-backed view
+- disabling or removing that plugin removes every PT-specific channel, command, badge, notification, and health state while the terminal remains complete
 - existing inbox/outbox file conventions become optional legacy adapters
 
 Avoid this shape:
 
 - Holoscape invents a new board store
+- Holoscape core polls PT or owns PT-specific channel lifecycle
 - router log becomes the message source
+- the retired router sidecar is restored as a delivery path
 - Claude inbox/outbox becomes the permanent protocol
 - Codex `.codex` internals become an integration target
 
@@ -167,4 +177,4 @@ Avoid this shape:
 1. File a small Holoscape/PT card for notification hook client detection: include `Clawed` and `Codex`.
 2. Hand this plan to Project Tracker as the architecture brief for board ownership.
 3. Have PT decide the canonical board semantics on top of `messages`.
-4. Once PT's contract exists, implement a PT-backed `Message Board` channel in Holoscape.
+4. Once PT's contract exists, implement a PT-backed `Message Board` contribution in the optional first-party Project Tracker plugin, including tests that disabling the plugin removes the contribution without affecting core channels.
