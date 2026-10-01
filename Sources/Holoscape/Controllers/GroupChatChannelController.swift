@@ -1,6 +1,26 @@
 import AppKit
 import Foundation
 
+private enum GroupChatTransportError: LocalizedError {
+    case invalidEndpoint
+    case nonHTTPResponse
+    case httpStatus(Int)
+    case malformedMessages
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEndpoint:
+            return "The chat endpoint is invalid"
+        case .nonHTTPResponse:
+            return "Server returned a non-HTTP response"
+        case .httpStatus(let statusCode):
+            return "Server returned HTTP \(statusCode)"
+        case .malformedMessages:
+            return "Server returned malformed messages"
+        }
+    }
+}
+
 private struct ChatTurnRole {
     let displayLabel: String
     let accentColor: NSColor
@@ -49,6 +69,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     private var reconnectDelay: TimeInterval = 1.0
     private let maxReconnectDelay: TimeInterval = 30.0
     private let profileLabel: String
+    private let session: URLSession
     let instanceNumber: Int?
     private(set) var customDisplayLabel: String?
 
@@ -84,13 +105,22 @@ class GroupChatChannelController: NSObject, ChannelController {
     var contentView: NSView { scrollView }
 
     /// V2 initializer: constructed from SessionProfile fields.
-    init(id: UUID, apiURL: String, apiKey: String, label: String, instanceNumber: Int?, apiKeyEnv: String? = nil) {
+    init(
+        id: UUID,
+        apiURL: String,
+        apiKey: String,
+        label: String,
+        instanceNumber: Int?,
+        apiKeyEnv: String? = nil,
+        session: URLSession = .shared
+    ) {
         self.channelId = id
         self.apiURL = apiURL.hasSuffix("/") ? String(apiURL.dropLast()) : apiURL
         self.apiKey = apiKey
         self.apiKeyEnv = apiKeyEnv
         self.profileLabel = label
         self.instanceNumber = instanceNumber
+        self.session = session
 
         self.scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.textView = NSTextView(frame: scrollView.contentView.bounds)
@@ -127,8 +157,12 @@ class GroupChatChannelController: NSObject, ChannelController {
             "priority": "normal",
         ]
 
-        guard let url = URL(string: "\(apiURL)/send"),
-              let jsonData = try? JSONSerialization.data(withJSONObject: payload) else {
+        guard let url = URL(string: "\(apiURL)/send") else {
+            appendMessage("[Error] Failed to send: \(GroupChatTransportError.invalidEndpoint.localizedDescription)")
+            return
+        }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload) else {
+            appendMessage("[Error] Failed to encode message.")
             return
         }
 
@@ -138,10 +172,20 @@ class GroupChatChannelController: NSObject, ChannelController {
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
         request.httpBody = jsonData
 
-        URLSession.shared.dataTask(with: request) { _, _, error in
-            if let error {
-                Task { @MainActor [weak self] in
-                    self?.appendMessage("[Error] Failed to send: \(error.localizedDescription)")
+        session.dataTask(with: request) { [weak self] _, response, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
+                    self.appendMessage("[Error] Failed to send: \(error.localizedDescription)")
+                    return
+                }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    self.appendMessage("[Error] Failed to send: \(GroupChatTransportError.nonHTTPResponse.localizedDescription)")
+                    return
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    self.appendMessage("[Error] Failed to send: \(GroupChatTransportError.httpStatus(httpResponse.statusCode).localizedDescription)")
+                    return
                 }
             }
         }.resume()
@@ -196,12 +240,15 @@ class GroupChatChannelController: NSObject, ChannelController {
             urlString += "&since=\(encoded)"
         }
 
-        guard let url = URL(string: urlString) else { return }
+        guard let url = URL(string: urlString) else {
+            handleConnectionError(GroupChatTransportError.invalidEndpoint)
+            return
+        }
 
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        session.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
 
@@ -212,7 +259,10 @@ class GroupChatChannelController: NSObject, ChannelController {
                     return
                 }
 
-                guard let httpResponse = response as? HTTPURLResponse else { return }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    self.handleConnectionError(GroupChatTransportError.nonHTTPResponse)
+                    return
+                }
 
                 if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
                     self.appendMessage("[Error] Authentication failed. Check API key.")
@@ -222,10 +272,15 @@ class GroupChatChannelController: NSObject, ChannelController {
                     return
                 }
 
-                guard httpResponse.statusCode == 200,
-                      let data,
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    self.handleConnectionError(GroupChatTransportError.httpStatus(httpResponse.statusCode))
+                    return
+                }
+
+                guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let messages = json["messages"] as? [[String: Any]] else {
+                    self.handleConnectionError(GroupChatTransportError.malformedMessages)
                     return
                 }
 
