@@ -4,6 +4,8 @@ import MCP
 struct AppleScriptToolResult: Sendable, Equatable {
     let source: String
     let output: String
+    let stdoutTruncated: Bool
+    let stderrTruncated: Bool
 }
 
 enum AppleScriptToolError: LocalizedError, Equatable {
@@ -11,6 +13,7 @@ enum AppleScriptToolError: LocalizedError, Equatable {
     case invalidTimeout
     case compileFailed(String)
     case executionFailed(number: Int?, message: String)
+    case executionOutputTruncated(exitCode: Int32, stdout: Bool, stderr: Bool)
     case timedOut(seconds: Double)
     case launchFailed(String)
 
@@ -27,6 +30,8 @@ enum AppleScriptToolError: LocalizedError, Equatable {
                 return "AppleScript execution failed (\(number)): \(message)"
             }
             return "AppleScript execution failed: \(message)"
+        case .executionOutputTruncated(let exitCode, let stdout, let stderr):
+            return "AppleScript execution failed with exit code \(exitCode); output truncated (stdout: \(stdout), stderr: \(stderr))"
         case .timedOut(let seconds):
             return "AppleScript execution timed out after \(seconds) seconds"
         case .launchFailed(let reason):
@@ -53,7 +58,10 @@ func appleScriptTimeout(from args: [String: Value]) throws -> Double {
     return timeout
 }
 
-func runAppleScriptTool(args: [String: Value]) async throws -> AppleScriptToolResult {
+func runAppleScriptTool(
+    args: [String: Value],
+    maxOutputBytes: Int = 1_048_576
+) async throws -> AppleScriptToolResult {
     let source = try appleScriptSource(from: args)
     let timeout = try appleScriptTimeout(from: args)
 
@@ -66,8 +74,8 @@ func runAppleScriptTool(args: [String: Value]) async throws -> AppleScriptToolRe
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
 
-    let stdout = ProcessToolOutputBuffer()
-    let stderr = ProcessToolOutputBuffer()
+    let stdout = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
+    let stderr = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let completion = ProcessToolCompletion()
 
     stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -78,36 +86,55 @@ func runAppleScriptTool(args: [String: Value]) async throws -> AppleScriptToolRe
     }
 
     return try await withCheckedThrowingContinuation { continuation in
-        @Sendable func finish(_ result: Result<AppleScriptToolResult, Error>) {
-            guard completion.claim() else { return }
+        @Sendable func collectOutput() -> (
+            stdout: (string: String, truncated: Bool),
+            stderr: (string: String, truncated: Bool)
+        )? {
+            guard completion.claim() else { return nil }
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             stdout.append(stdoutPipe.fileHandleForReading.availableData)
             stderr.append(stderrPipe.fileHandleForReading.availableData)
-            continuation.resume(with: result)
+            return (stdout.snapshot(), stderr.snapshot())
         }
 
         process.terminationHandler = { process in
-            let standardOutput = stdout.string().trimmingCharacters(in: .newlines)
-            let standardError = stderr.string().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let output = collectOutput() else { return }
+            let standardOutput = output.stdout.string.trimmingCharacters(in: .newlines)
+            let standardError = output.stderr.string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard process.terminationStatus == 0 else {
-                finish(.failure(parseAppleScriptExecutionError(from: standardError)))
+                if output.stdout.truncated || output.stderr.truncated {
+                    continuation.resume(throwing: AppleScriptToolError.executionOutputTruncated(
+                        exitCode: process.terminationStatus,
+                        stdout: output.stdout.truncated,
+                        stderr: output.stderr.truncated
+                    ))
+                    return
+                }
+                continuation.resume(throwing: parseAppleScriptExecutionError(from: standardError))
                 return
             }
-            finish(.success(AppleScriptToolResult(source: source, output: standardOutput)))
+            continuation.resume(returning: AppleScriptToolResult(
+                source: source,
+                output: standardOutput,
+                stdoutTruncated: output.stdout.truncated,
+                stderrTruncated: output.stderr.truncated
+            ))
         }
 
         do {
             try process.run()
         } catch {
-            finish(.failure(AppleScriptToolError.launchFailed(error.localizedDescription)))
+            guard collectOutput() != nil else { return }
+            continuation.resume(throwing: AppleScriptToolError.launchFailed(error.localizedDescription))
             return
         }
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
             guard process.isRunning else { return }
             process.terminate()
-            finish(.failure(AppleScriptToolError.timedOut(seconds: timeout)))
+            guard collectOutput() != nil else { return }
+            continuation.resume(throwing: AppleScriptToolError.timedOut(seconds: timeout))
         }
     }
 }
@@ -144,5 +171,14 @@ func appleScriptDescriptorString(_ descriptor: NSAppleEventDescriptor) -> String
 }
 
 func formatAppleScriptToolResult(_ result: AppleScriptToolResult) -> String {
-    "result:\n\(result.output.isEmpty ? "(empty)" : result.output)"
+    var lines: [String] = []
+    if result.stdoutTruncated {
+        lines.append("stdoutTruncated: true")
+    }
+    if result.stderrTruncated {
+        lines.append("stderrTruncated: true")
+    }
+    lines.append("result:")
+    lines.append(result.output.isEmpty ? "(empty)" : result.output)
+    return lines.joined(separator: "\n")
 }

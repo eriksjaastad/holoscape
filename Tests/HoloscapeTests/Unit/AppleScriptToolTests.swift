@@ -19,11 +19,40 @@ final class AppleScriptToolTests: XCTestCase {
     }
 
     func testRunAppleScriptToolReturnsResultText() async throws {
-        let result = try await runAppleScriptTool(args: ["source": .string("return \"holoscape\"")])
+        let result = try await runAppleScriptTool(
+            args: ["source": .string("return \"holoscape\"")],
+            maxOutputBytes: 32
+        )
 
         XCTAssertEqual(result.source, "return \"holoscape\"")
         XCTAssertEqual(result.output, "holoscape")
+        XCTAssertFalse(result.stdoutTruncated)
+        XCTAssertFalse(result.stderrTruncated)
         XCTAssertEqual(formatAppleScriptToolResult(result), "result:\nholoscape")
+    }
+
+    func testRunAppleScriptToolCapsStdoutAndReportsTruncation() async throws {
+        let result = try await runAppleScriptTool(
+            args: ["source": .string("return \"123456789\"")],
+            maxOutputBytes: 5
+        )
+
+        XCTAssertEqual(result.output, "12345")
+        XCTAssertTrue(result.stdoutTruncated)
+        XCTAssertFalse(result.stderrTruncated)
+        XCTAssertTrue(formatAppleScriptToolResult(result).contains("stdoutTruncated: true"))
+    }
+
+    func testRunAppleScriptToolCapsStderrAndReportsTruncation() async throws {
+        let result = try await runAppleScriptTool(
+            args: ["source": .string("log \"abcdefghi\"\nreturn \"ok\"")],
+            maxOutputBytes: 5
+        )
+
+        XCTAssertEqual(result.output, "ok")
+        XCTAssertFalse(result.stdoutTruncated)
+        XCTAssertTrue(result.stderrTruncated)
+        XCTAssertTrue(formatAppleScriptToolResult(result).contains("stderrTruncated: true"))
     }
 
     func testRunAppleScriptToolSurfacesExecutionErrors() async throws {
@@ -32,6 +61,21 @@ final class AppleScriptToolTests: XCTestCase {
             XCTFail("Expected AppleScript execution failure")
         } catch {
             XCTAssertEqual(error as? AppleScriptToolError, .executionFailed(number: 1234, message: "boom"))
+        }
+    }
+
+    func testRunAppleScriptToolReportsTruncatedExecutionErrors() async throws {
+        do {
+            _ = try await runAppleScriptTool(
+                args: ["source": .string("error \"abcdefghi\" number 1234")],
+                maxOutputBytes: 5
+            )
+            XCTFail("Expected truncated AppleScript execution failure")
+        } catch {
+            XCTAssertEqual(
+                error as? AppleScriptToolError,
+                .executionOutputTruncated(exitCode: 1, stdout: false, stderr: true)
+            )
         }
     }
 
