@@ -48,7 +48,7 @@ final class GroupChatV2Tests: XCTestCase {
                 expectedContentLength: 2,
                 textEncodingName: "utf-8"
             )
-            return (response, Data("{}".utf8))
+            return GroupChatURLProtocolStub.StubResponse(response: response, data: Data("{}".utf8))
         }
         let controller = GroupChatChannelController(
             id: UUID(),
@@ -169,19 +169,21 @@ final class GroupChatV2Tests: XCTestCase {
     @MainActor
     func testLateInvalidPollingResponseDoesNotReactivateDeactivatedChannel() async throws {
         let requestReceived = expectation(description: "poll request received")
-        let releaseResponse = DispatchSemaphore(value: 0)
         let session = makeStubbedSession()
         defer { session.invalidateAndCancel() }
         GroupChatURLProtocolStub.setHandler { request in
             requestReceived.fulfill()
-            XCTAssertEqual(releaseResponse.wait(timeout: .now() + 1), .success)
             let response = URLResponse(
                 url: try XCTUnwrap(request.url),
                 mimeType: "application/json",
                 expectedContentLength: 2,
                 textEncodingName: "utf-8"
             )
-            return (response, Data("{}".utf8))
+            return GroupChatURLProtocolStub.StubResponse(
+                response: response,
+                data: Data("{}".utf8),
+                delay: 0.1
+            )
         }
         let controller = GroupChatChannelController(
             id: UUID(),
@@ -195,11 +197,58 @@ final class GroupChatV2Tests: XCTestCase {
         controller.activate()
         await fulfillment(of: [requestReceived], timeout: 1)
         controller.deactivate()
-        releaseResponse.signal()
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .milliseconds(200))
 
         XCTAssertEqual(controller.state, .disconnected)
         XCTAssertFalse(controller.lastLines(20).contains { $0.contains("Connection failed") })
+    }
+
+    @MainActor
+    func testOlderPollingFailureCannotOverrideNewerSuccess() async throws {
+        let firstRequestStarted = expectation(description: "first poll started")
+        let secondRequestCompleted = expectation(description: "second poll completed")
+        let requestCount = LockedCounter()
+        let session = makeStubbedSession()
+        defer { session.invalidateAndCancel() }
+        GroupChatURLProtocolStub.setHandler { request in
+            switch requestCount.increment() {
+            case 1:
+                firstRequestStarted.fulfill()
+                return Self.httpResponse(
+                    for: request,
+                    statusCode: 503,
+                    body: #"{"messages":[]}"#,
+                    delay: 0.2
+                )
+            case 2:
+                secondRequestCompleted.fulfill()
+                return Self.httpResponse(
+                    for: request,
+                    statusCode: 200,
+                    body: #"{"messages":[{"sender":"claude","body":"newest","ts":"2026-09-30T23:00:00.000Z"}]}"#
+                )
+            default:
+                return Self.httpResponse(for: request, statusCode: 200, body: #"{"messages":[]}"#)
+            }
+        }
+        let controller = GroupChatChannelController(
+            id: UUID(),
+            apiURL: "https://chat.example.com",
+            apiKey: "key",
+            label: "Chat",
+            instanceNumber: nil,
+            session: session,
+            pollInterval: 0.05
+        )
+        defer { controller.deactivate() }
+
+        controller.activate()
+        await fulfillment(of: [firstRequestStarted, secondRequestCompleted], timeout: 1)
+        try await waitForLine(containing: "newest", in: controller)
+        try await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertFalse(controller.lastLines(20).contains { $0.contains("HTTP 503") })
     }
 
     @MainActor
@@ -254,15 +303,20 @@ final class GroupChatV2Tests: XCTestCase {
     private static func httpResponse(
         for request: URLRequest,
         statusCode: Int,
-        body: String
-    ) -> (URLResponse, Data) {
+        body: String,
+        delay: TimeInterval = 0
+    ) -> GroupChatURLProtocolStub.StubResponse {
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: statusCode,
             httpVersion: nil,
             headerFields: ["Content-Type": "application/json"]
         )!
-        return (response, Data(body.utf8))
+        return GroupChatURLProtocolStub.StubResponse(
+            response: response,
+            data: Data(body.utf8),
+            delay: delay
+        )
     }
 
     @MainActor
@@ -362,8 +416,32 @@ final class GroupChatV2Tests: XCTestCase {
     }
 }
 
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
+
 private final class GroupChatURLProtocolStub: URLProtocol, @unchecked Sendable {
-    typealias Handler = @Sendable (URLRequest) throws -> (URLResponse, Data)
+    struct StubResponse: @unchecked Sendable {
+        let response: URLResponse
+        let data: Data
+        let delay: TimeInterval
+
+        init(response: URLResponse, data: Data, delay: TimeInterval = 0) {
+            self.response = response
+            self.data = data
+            self.delay = delay
+        }
+    }
+
+    typealias Handler = @Sendable (URLRequest) throws -> StubResponse
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var handler: Handler?
@@ -396,10 +474,17 @@ private final class GroupChatURLProtocolStub: URLProtocol, @unchecked Sendable {
         }
 
         do {
-            let (response, data) = try currentHandler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            let stub = try currentHandler(request)
+            let deliver: @Sendable () -> Void = { [self, stub] in
+                client?.urlProtocol(self, didReceive: stub.response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: stub.data)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            if stub.delay > 0 {
+                DispatchQueue.global().asyncAfter(deadline: .now() + stub.delay, execute: deliver)
+            } else {
+                deliver()
+            }
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
         }

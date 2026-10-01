@@ -68,6 +68,8 @@ class GroupChatChannelController: NSObject, ChannelController {
     private var pollTimer: Timer?
     private var reconnectDelay: TimeInterval = 1.0
     private let maxReconnectDelay: TimeInterval = 30.0
+    private let pollInterval: TimeInterval
+    private var latestPollRequestID: UInt = 0
     private let profileLabel: String
     private let session: URLSession
     let instanceNumber: Int?
@@ -112,7 +114,8 @@ class GroupChatChannelController: NSObject, ChannelController {
         label: String,
         instanceNumber: Int?,
         apiKeyEnv: String? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        pollInterval: TimeInterval = 3.0
     ) {
         self.channelId = id
         self.apiURL = apiURL.hasSuffix("/") ? String(apiURL.dropLast()) : apiURL
@@ -121,6 +124,7 @@ class GroupChatChannelController: NSObject, ChannelController {
         self.profileLabel = label
         self.instanceNumber = instanceNumber
         self.session = session
+        self.pollInterval = pollInterval
 
         self.scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.textView = NSTextView(frame: scrollView.contentView.bounds)
@@ -202,6 +206,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     func deactivate() {
         pollTimer?.invalidate()
         pollTimer = nil
+        latestPollRequestID &+= 1
         state = .disconnected
         activatedAt = nil
         delegate?.channelStateDidChange(self, to: .disconnected)
@@ -226,7 +231,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     private func startPolling() {
         guard state != .disconnected else { return }
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.fetchMessages()
             }
@@ -235,6 +240,8 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     private func fetchMessages() {
+        latestPollRequestID &+= 1
+        let requestID = latestPollRequestID
         var urlString = "\(apiURL)/messages?limit=50"
         if let since = lastTimestamp {
             let encoded = since.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? since
@@ -251,7 +258,9 @@ class GroupChatChannelController: NSObject, ChannelController {
 
         session.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self,
+                      self.state != .disconnected,
+                      requestID == self.latestPollRequestID else { return }
 
                 if let error {
                     self.handlePollingFailure(error)
