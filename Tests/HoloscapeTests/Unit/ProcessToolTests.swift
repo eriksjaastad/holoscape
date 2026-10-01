@@ -60,6 +60,15 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testRunProcessToolLaunchesDedicatedProcessGroup() async throws {
+        let result = try await runProcessTool(
+            request(command: "test \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\"")
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(result.timedOut)
+    }
+
     func testRunProcessToolTimeoutTerminatesResistantProcessTreeBeforeReturning() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-\(UUID().uuidString)")

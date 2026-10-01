@@ -163,109 +163,41 @@ private func processToolState(of identity: ProcessToolProcessIdentity) -> Proces
     }
 }
 
-private func processToolDirectChildren(of parentPID: pid_t) -> [pid_t] {
-    let estimatedBytes = max(Int(proc_listchildpids(parentPID, nil, 0)), 0)
-    let estimatedCount = estimatedBytes / MemoryLayout<pid_t>.stride
-    var capacity = max(estimatedCount + 16, 16)
-    while true {
-        var childPIDs = [pid_t](repeating: 0, count: capacity)
-        let count = proc_listchildpids(
-            parentPID,
-            &childPIDs,
-            Int32(childPIDs.count * MemoryLayout<pid_t>.stride)
-        )
-        guard count > 0 else { return [] }
-        guard count >= capacity else { return Array(childPIDs.prefix(Int(count))) }
-        capacity *= 2
-    }
+private func processToolGroupExists(_ processGroupID: pid_t) -> Bool? {
+    errno = 0
+    if Darwin.kill(-processGroupID, 0) == 0 { return true }
+    return errno == ESRCH ? false : nil
 }
 
-private func processToolDescendants(
-    of rootPID: pid_t
-) -> (identities: Set<ProcessToolProcessIdentity>, confirmed: Bool) {
-    var descendants: Set<ProcessToolProcessIdentity> = []
-    var confirmed = true
-    var pending = processToolDirectChildren(of: rootPID)
-    while let pid = pending.popLast() {
-        switch processToolIdentity(for: pid) {
-        case .found(let identity):
-            guard descendants.insert(identity).inserted else { continue }
-            pending.append(contentsOf: processToolDirectChildren(of: pid))
-        case .missing:
-            continue
-        case .unavailable:
-            confirmed = false
-        }
-    }
-    return (descendants, confirmed)
-}
-
-private func terminateProcessToolTree(
-    rootedAt rootPID: pid_t,
+private func terminateProcessToolGroup(
+    rootedAt root: ProcessToolProcessIdentity,
     gracePeriodMilliseconds: Int = 250
 ) -> Bool {
-    let root: ProcessToolProcessIdentity
-    switch processToolIdentity(for: rootPID) {
-    case .found(let identity):
-        root = identity
-    case .missing:
-        return true
+    switch processToolState(of: root) {
+    case .matching:
+        guard getpgid(root.pid) == root.pid else { return false }
+    case .goneOrReused:
+        return processToolGroupExists(root.pid) == false
     case .unavailable:
         return false
     }
-    let initialDescendants = processToolDescendants(of: rootPID)
-    var ownedProcesses = initialDescendants.identities
-    var cleanupConfirmed = initialDescendants.confirmed
-    ownedProcesses.insert(root)
 
-    func signalAliveProcesses(_ signal: Int32) {
-        for identity in ownedProcesses {
-            switch processToolState(of: identity) {
-            case .matching:
-                _ = Darwin.kill(identity.pid, signal)
-            case .goneOrReused, .unavailable:
-                continue
-            }
-        }
-    }
-
-    func anyProcessMayBeAlive() -> Bool {
-        var mayBeAlive = false
-        for identity in ownedProcesses {
-            switch processToolState(of: identity) {
-            case .matching, .unavailable:
-                mayBeAlive = true
-            case .goneOrReused:
-                continue
-            }
-        }
-        return mayBeAlive
-    }
-
-    signalAliveProcesses(SIGTERM)
+    if Darwin.kill(-root.pid, SIGTERM) == -1, errno != ESRCH { return false }
     let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
     while DispatchTime.now() < termDeadline {
-        var discovered: Set<ProcessToolProcessIdentity> = []
-        for identity in ownedProcesses where processToolState(of: identity) == .matching {
-            let snapshot = processToolDescendants(of: identity.pid)
-            cleanupConfirmed = cleanupConfirmed && snapshot.confirmed
-            discovered.formUnion(snapshot.identities)
-        }
-        discovered.subtract(ownedProcesses)
-        if !discovered.isEmpty {
-            ownedProcesses.formUnion(discovered)
-            signalAliveProcesses(SIGTERM)
-        }
-        guard anyProcessMayBeAlive() else { return cleanupConfirmed }
+        guard let exists = processToolGroupExists(root.pid) else { return false }
+        guard exists else { return true }
         usleep(10_000)
     }
 
-    signalAliveProcesses(SIGKILL)
+    if Darwin.kill(-root.pid, SIGKILL) == -1, errno != ESRCH { return false }
     let killDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
-    while DispatchTime.now() < killDeadline, anyProcessMayBeAlive() {
+    while DispatchTime.now() < killDeadline {
+        guard let exists = processToolGroupExists(root.pid) else { return false }
+        guard exists else { return true }
         usleep(10_000)
     }
-    return !anyProcessMayBeAlive() && cleanupConfirmed
+    return processToolGroupExists(root.pid) == false
 }
 
 func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest {
@@ -301,9 +233,7 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
 func runProcessTool(
     _ request: ProcessToolRequest,
     maxOutputBytes: Int = 1_048_576,
-    terminateProcessTree: @escaping @Sendable (pid_t) -> Bool = {
-        terminateProcessToolTree(rootedAt: $0)
-    }
+    terminateProcessTree: (@Sendable (pid_t) -> Bool)? = nil
 ) async throws -> ProcessToolResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -369,11 +299,6 @@ func runProcessTool(
             ))
         }
 
-        process.terminationHandler = { _ in
-            guard completion.claim() else { return }
-            finishAfterClaim(timedOut: false)
-        }
-
         do {
             try process.run()
         } catch {
@@ -382,6 +307,28 @@ func runProcessTool(
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
             return
+        }
+
+        let launchedIdentity: ProcessToolProcessIdentity
+        switch processToolIdentity(for: process.processIdentifier) {
+        case .found(let identity):
+            launchedIdentity = identity
+        case .missing, .unavailable:
+            guard completion.claim() else { return }
+            if process.isRunning {
+                process.terminate()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: ProcessToolError.launchFailed("Could not capture launched process identity"))
+            } else {
+                finishAfterClaim(timedOut: false)
+            }
+            return
+        }
+
+        process.terminationHandler = { _ in
+            guard completion.claim() else { return }
+            finishAfterClaim(timedOut: false)
         }
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + request.timeoutSeconds) {
@@ -395,7 +342,8 @@ func runProcessTool(
             case .timedOut:
                 process.terminationHandler = nil
             }
-            let terminated = terminateProcessTree(process.processIdentifier)
+            let terminated = terminateProcessTree?(process.processIdentifier)
+                ?? terminateProcessToolGroup(rootedAt: launchedIdentity)
             finishAfterClaim(
                 timedOut: true,
                 drainPipes: terminated,
