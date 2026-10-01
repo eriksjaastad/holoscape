@@ -28,6 +28,7 @@ enum ProcessToolError: LocalizedError {
     case invalidTimeout
     case invalidWorkingDirectory(String)
     case launchFailed(String)
+    case executionStatusUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +40,8 @@ enum ProcessToolError: LocalizedError {
             return "Working directory does not exist or is not a directory: \(path)"
         case .launchFailed(let reason):
             return "Failed to launch process: \(reason)"
+        case .executionStatusUnavailable(let reason):
+            return "Process execution status is unavailable: \(reason). The command may have run; do not retry automatically"
         }
     }
 }
@@ -195,7 +198,7 @@ private func spawnProcessToolShell(command: String, processGroupID: pid_t) throw
 /// Launches a sacrificial direct parent for the command as leader of a fresh
 /// process group. The timeout controller keeps this child waitable until cleanup
 /// signals are sent, so its PID cannot be reused as an unrelated group ID.
-private func spawnProcessToolGroupLeader(command: String) throws -> pid_t {
+private func spawnProcessToolGroupLeader(command: String, statusPath: String) throws -> pid_t {
     var attributes: posix_spawnattr_t?
     guard posix_spawnattr_init(&attributes) == 0 else {
         throw ProcessToolError.launchFailed("Could not initialize group leader launch attributes")
@@ -212,21 +215,24 @@ private func spawnProcessToolGroupLeader(command: String) throws -> pid_t {
     let result = executablePath.withCString { executablePointer in
         "--holoscape-process-shell-runner".withCString { modePointer in
             command.withCString { commandPointer in
-                var arguments: [UnsafeMutablePointer<CChar>?] = [
-                    UnsafeMutablePointer(mutating: executablePointer),
-                    UnsafeMutablePointer(mutating: modePointer),
-                    UnsafeMutablePointer(mutating: commandPointer),
-                    nil,
-                ]
-                return arguments.withUnsafeMutableBufferPointer { buffer in
-                    posix_spawn(
-                        &spawnedPID,
-                        executablePointer,
+                statusPath.withCString { statusPointer in
+                    var arguments: [UnsafeMutablePointer<CChar>?] = [
+                        UnsafeMutablePointer(mutating: executablePointer),
+                        UnsafeMutablePointer(mutating: modePointer),
+                        UnsafeMutablePointer(mutating: commandPointer),
+                        UnsafeMutablePointer(mutating: statusPointer),
                         nil,
-                        &attributes,
-                        buffer.baseAddress!,
-                        environ
-                    )
+                    ]
+                    return arguments.withUnsafeMutableBufferPointer { buffer in
+                        posix_spawn(
+                            &spawnedPID,
+                            executablePointer,
+                            nil,
+                            &attributes,
+                            buffer.baseAddress!,
+                            environ
+                        )
+                    }
                 }
             }
         }
@@ -281,11 +287,18 @@ func waitForProcessToolChild(
 /// Keeps the timeout controller outside the command's group. `$PPID` therefore
 /// identifies this sacrificial runner; stopping or killing it cannot disable the
 /// controller, and its unreaped PID continues to reserve the group ID.
-func runProcessToolShellRunner(command: String) -> Never {
+func runProcessToolShellRunner(command: String, statusPath: String) -> Never {
+#if DEBUG
+    if ProcessInfo.processInfo.environment["HOLOSCAPE_PROCESS_TOOL_TEST_RUNNER_FAILURE"] == "1" {
+        writeProcessToolStatus("launchFailed:Injected shell-runner launch failure", to: statusPath)
+        Darwin.exit(127)
+    }
+#endif
     let shellPID: pid_t
     do {
         shellPID = try spawnProcessToolShell(command: command, processGroupID: getpgrp())
     } catch {
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
         FileHandle.standardError.write(Data("Failed to launch process shell: \(error.localizedDescription)\n".utf8))
         Darwin.exit(127)
     }
@@ -294,6 +307,7 @@ func runProcessToolShellRunner(command: String) -> Never {
     case .success(let exitCode):
         Darwin.exit(exitCode)
     case .failure(let error):
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
         FileHandle.standardError.write(Data("Failed to wait for process shell: \(error.localizedDescription)\n".utf8))
         Darwin.exit(127)
     }
@@ -470,7 +484,7 @@ func runProcessToolController(
 ) -> Never {
     let groupLeaderPID: pid_t
     do {
-        groupLeaderPID = try spawnProcessToolGroupLeader(command: command)
+        groupLeaderPID = try spawnProcessToolGroupLeader(command: command, statusPath: statusPath)
     } catch {
         writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
         Darwin.exit(127)
@@ -521,6 +535,11 @@ func runProcessToolController(
             reason = "Unknown child wait failure"
         }
         writeProcessToolStatus("launchFailed:\(reason)", to: statusPath)
+        Darwin.exit(125)
+    }
+
+    if let runnerStatus = try? String(contentsOfFile: statusPath, encoding: .utf8),
+       case .launchFailed = parseProcessToolControllerStatus(runnerStatus) {
         Darwin.exit(125)
     }
 
@@ -619,7 +638,7 @@ func runProcessTool(
             let status = try? String(contentsOf: statusURL, encoding: .utf8)
             try? FileManager.default.removeItem(at: statusURL)
             guard let status, let parsed = parseProcessToolControllerStatus(status) else {
-                continuation.resume(throwing: ProcessToolError.launchFailed("Controller exited without a valid status"))
+                continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a valid status record"))
                 return
             }
 

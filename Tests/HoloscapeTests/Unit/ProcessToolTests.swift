@@ -70,6 +70,60 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertEqual(buffer.snapshot().string, "holoscape")
     }
 
+    func testMissingStatusReportsUnknownExecutionWithoutClaimingLaunchFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-status-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("launcher")
+        let sideEffect = directory.appendingPathComponent("side-effect")
+        try Data("#!/bin/zsh\n/bin/zsh -lc \"$2\"\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher.path)
+
+        do {
+            _ = try await runProcessTool(
+                request(command: "printf completed > \(sideEffect.path)"),
+                launcherExecutableURL: launcher
+            )
+            XCTFail("Missing status must not be reported as success")
+        } catch let error as ProcessToolError {
+            guard case .executionStatusUnavailable = error else {
+                return XCTFail("Expected unknown execution status, got \(error)")
+            }
+            XCTAssertTrue(error.localizedDescription.contains("may have run"))
+            XCTAssertFalse(error.localizedDescription.contains("Failed to launch"))
+        }
+
+        XCTAssertEqual(try String(contentsOf: sideEffect, encoding: .utf8), "completed")
+    }
+
+    func testShellRunnerInfrastructureFailureIsNotCommandExit127() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-runner-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sideEffect = directory.appendingPathComponent("should-not-exist")
+
+        do {
+            _ = try await runProcessTool(
+                request(
+                    command: "touch \(sideEffect.path); exit 127",
+                    environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_RUNNER_FAILURE": "1"]
+                ),
+                launcherExecutableURL: launcherExecutableURL
+            )
+            XCTFail("Runner infrastructure failure must throw")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed(let reason) = error else {
+                return XCTFail("Expected launch failure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Injected shell-runner launch failure"))
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sideEffect.path))
+    }
+
     func testRunProcessToolPreservesOutputBelowLimit() async throws {
         let result = try await runProcessTool(
             request(command: "printf holoscape; printf warning >&2"),
@@ -291,11 +345,15 @@ final class ProcessToolTests: XCTestCase {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private func request(command: String, timeoutSeconds: Double = 2) -> ProcessToolRequest {
+    private func request(
+        command: String,
+        environment: [String: String] = [:],
+        timeoutSeconds: Double = 2
+    ) -> ProcessToolRequest {
         ProcessToolRequest(
             command: command,
             workingDirectory: nil,
-            environment: [:],
+            environment: environment,
             timeoutSeconds: timeoutSeconds
         )
     }
