@@ -2,11 +2,13 @@ import Foundation
 
 actor MCPClient {
     private let endpoint: URL
+    private let session: URLSession
     private var requestId: Int = 0
     private var initialized: Bool = false
 
-    init(endpoint: URL) {
+    init(endpoint: URL, session: URLSession = .shared) {
         self.endpoint = endpoint
+        self.session = session
     }
 
     /// Perform MCP initialize handshake.
@@ -29,6 +31,14 @@ actor MCPClient {
             "arguments": ["message": text],
         ]
         let result: [String: Any] = try await sendRequest(method: "tools/call", params: params)
+        if result["isError"] as? Bool == true {
+            let message = (result["content"] as? [[String: Any]])?
+                .compactMap { $0["text"] as? String }
+                .joined(separator: "\n")
+            throw MCPError.toolError(
+                message: message.flatMap { $0.isEmpty ? nil : $0 } ?? "The MCP tool reported a failure"
+            )
+        }
         if let content = result["content"] as? [[String: Any]],
            let first = content.first,
            let text = first["text"] as? String {
@@ -43,9 +53,10 @@ actor MCPClient {
 
     private func sendRequest<T>(method: String, params: [String: Any]) async throws -> T {
         requestId += 1
+        let currentRequestId = requestId
         let body: [String: Any] = [
             "jsonrpc": "2.0",
-            "id": requestId,
+            "id": currentRequestId,
             "method": method,
             "params": params,
         ]
@@ -55,12 +66,21 @@ actor MCPClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw MCPError.connectionFailed
+        let (responseData, response) = try await session.data(for: request)
+        try validateHTTPResponse(response)
+        guard let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
+            throw MCPError.invalidResponse
         }
-        guard let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let result = json["result"] as? T else {
+        guard json["jsonrpc"] as? String == "2.0",
+              json["id"] as? Int == currentRequestId else {
+            throw MCPError.invalidResponse
+        }
+        if let error = json["error"] as? [String: Any],
+           let code = error["code"] as? Int,
+           let message = error["message"] as? String {
+            throw MCPError.protocolError(code: code, message: message)
+        }
+        guard let result = json["result"] as? T else {
             throw MCPError.invalidResponse
         }
         return result
@@ -77,19 +97,38 @@ actor MCPClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
-        let _ = try await URLSession.shared.data(for: request)
+        let (_, response) = try await session.data(for: request)
+        try validateHTTPResponse(response)
+    }
+
+    private func validateHTTPResponse(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw MCPError.connectionFailed(statusCode: (response as? HTTPURLResponse)?.statusCode)
+        }
     }
 
     enum MCPError: Error, LocalizedError {
         case notInitialized
-        case connectionFailed
+        case connectionFailed(statusCode: Int?)
         case invalidResponse
+        case protocolError(code: Int, message: String)
+        case toolError(message: String)
 
         var errorDescription: String? {
             switch self {
-            case .notInitialized: return "MCP client not initialized"
-            case .connectionFailed: return "MCP connection failed"
-            case .invalidResponse: return "Invalid MCP response"
+            case .notInitialized:
+                return "MCP client not initialized"
+            case let .connectionFailed(statusCode?):
+                return "MCP connection failed with HTTP status \(statusCode)"
+            case .connectionFailed(statusCode: nil):
+                return "MCP connection failed"
+            case .invalidResponse:
+                return "Invalid MCP response"
+            case let .protocolError(code, message):
+                return "MCP protocol error \(code): \(message)"
+            case let .toolError(message):
+                return "MCP tool error: \(message)"
             }
         }
     }
