@@ -3,6 +3,29 @@ import XCTest
 @testable import HoloscapeMCP
 
 final class ProcessToolTests: XCTestCase {
+    private final class PIDBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: pid_t?
+
+        func store(_ pid: pid_t) {
+            lock.lock()
+            value = pid
+            lock.unlock()
+        }
+
+        func load() -> pid_t? {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private var launcherExecutableURL: URL {
+        Bundle(for: Self.self).bundleURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("HoloscapeMCP")
+    }
+
     func testTimeoutClaimTreatsExitBeforeClaimAsNormalCompletion() {
         let completion = ProcessToolCompletion()
         var states = [true, false]
@@ -16,7 +39,8 @@ final class ProcessToolTests: XCTestCase {
     func testRunProcessToolPreservesOutputBelowLimit() async throws {
         let result = try await runProcessTool(
             request(command: "printf holoscape; printf warning >&2"),
-            maxOutputBytes: 32
+            maxOutputBytes: 32,
+            launcherExecutableURL: launcherExecutableURL
         )
 
         XCTAssertEqual(result.exitCode, 0)
@@ -32,7 +56,8 @@ final class ProcessToolTests: XCTestCase {
     func testRunProcessToolCapsStdoutAndReportsTruncation() async throws {
         let result = try await runProcessTool(
             request(command: "printf 123456789"),
-            maxOutputBytes: 5
+            maxOutputBytes: 5,
+            launcherExecutableURL: launcherExecutableURL
         )
 
         XCTAssertEqual(result.stdout, "12345")
@@ -44,7 +69,8 @@ final class ProcessToolTests: XCTestCase {
     func testRunProcessToolCapsStderrAndReportsTruncation() async throws {
         let result = try await runProcessTool(
             request(command: "printf abcdefghi >&2"),
-            maxOutputBytes: 5
+            maxOutputBytes: 5,
+            launcherExecutableURL: launcherExecutableURL
         )
 
         XCTAssertEqual(result.stderr, "abcde")
@@ -54,7 +80,10 @@ final class ProcessToolTests: XCTestCase {
     }
 
     func testRunProcessToolPreservesNonzeroExit() async throws {
-        let result = try await runProcessTool(request(command: "exit 17"))
+        let result = try await runProcessTool(
+            request(command: "exit 17"),
+            launcherExecutableURL: launcherExecutableURL
+        )
 
         XCTAssertEqual(result.exitCode, 17)
         XCTAssertFalse(result.timedOut)
@@ -62,7 +91,8 @@ final class ProcessToolTests: XCTestCase {
 
     func testRunProcessToolLaunchesDedicatedProcessGroup() async throws {
         let result = try await runProcessTool(
-            request(command: "test \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\"")
+            request(command: "test \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\""),
+            launcherExecutableURL: launcherExecutableURL
         )
 
         XCTAssertEqual(result.exitCode, 0)
@@ -87,7 +117,8 @@ final class ProcessToolTests: XCTestCase {
 
         let result = try await runProcessTool(
             request(command: command, timeoutSeconds: 0.5),
-            maxOutputBytes: 32
+            maxOutputBytes: 32,
+            launcherExecutableURL: launcherExecutableURL
         )
 
         XCTAssertTrue(result.timedOut)
@@ -115,6 +146,7 @@ final class ProcessToolTests: XCTestCase {
                 timeoutSeconds: 0.25
             ),
             maxOutputBytes: 5,
+            launcherExecutableURL: launcherExecutableURL,
             terminateProcessTree: { _ in false }
         )
         let processPID = try pid(from: pidURL)
@@ -125,6 +157,32 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertEqual(result.stderr, "12345")
         XCTAssertTrue(result.stderrTruncated)
         XCTAssertTrue(formatProcessToolResult(result).contains("processCleanupConfirmed: false"))
+    }
+
+    func testIdentityCaptureFailureKillsResistantProcessGroupBeforeThrowing() async throws {
+        let capturedPID = PIDBox()
+
+        do {
+            _ = try await runProcessTool(
+                request(
+                    command: "zmodload zsh/zselect; trap '' TERM; while true; do zselect -t 100; done"
+                ),
+                launcherExecutableURL: launcherExecutableURL,
+                processIdentityProvider: { pid in
+                    capturedPID.store(pid)
+                    usleep(100_000)
+                    return nil
+                }
+            )
+            XCTFail("Expected identity capture failure")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed = error else {
+                return XCTFail("Expected launchFailed, got \(error)")
+            }
+        }
+
+        let processPID = try XCTUnwrap(capturedPID.load())
+        assertProcessIsGone(processPID, "Identity capture failure must not leak the launched group")
     }
 
     private func request(command: String, timeoutSeconds: Double = 2) -> ProcessToolRequest {

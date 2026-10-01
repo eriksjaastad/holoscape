@@ -114,7 +114,7 @@ final class ProcessToolCompletion: @unchecked Sendable {
     }
 }
 
-private struct ProcessToolProcessIdentity: Hashable, Sendable {
+struct ProcessToolProcessIdentity: Hashable, Sendable {
     let pid: pid_t
     let startSeconds: UInt64
     let startMicroseconds: UInt64
@@ -200,6 +200,25 @@ private func terminateProcessToolGroup(
     return processToolGroupExists(root.pid) == false
 }
 
+private func terminateUnidentifiedProcessToolGroup(
+    processGroupID: pid_t,
+    gracePeriodMilliseconds: Int = 250
+) -> Bool {
+    _ = Darwin.kill(-processGroupID, SIGTERM)
+    let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    while DispatchTime.now() < termDeadline {
+        if processToolGroupExists(processGroupID) == false { return true }
+        usleep(10_000)
+    }
+    _ = Darwin.kill(-processGroupID, SIGKILL)
+    let killDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    while DispatchTime.now() < killDeadline {
+        if processToolGroupExists(processGroupID) == false { return true }
+        usleep(10_000)
+    }
+    return processToolGroupExists(processGroupID) == false
+}
+
 func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest {
     guard let command = args["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
           !command.isEmpty else {
@@ -233,11 +252,16 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
 func runProcessTool(
     _ request: ProcessToolRequest,
     maxOutputBytes: Int = 1_048_576,
+    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]),
+    processIdentityProvider: @escaping @Sendable (pid_t) -> ProcessToolProcessIdentity? = { pid in
+        guard case .found(let identity) = processToolIdentity(for: pid) else { return nil }
+        return identity
+    },
     terminateProcessTree: (@Sendable (pid_t) -> Bool)? = nil
 ) async throws -> ProcessToolResult {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    process.arguments = ["-lc", request.command]
+    process.executableURL = launcherExecutableURL
+    process.arguments = ["--holoscape-process-group-shell", request.command]
 
     if let workingDirectory = request.workingDirectory, !workingDirectory.isEmpty {
         var isDirectory: ObjCBool = false
@@ -309,17 +333,36 @@ func runProcessTool(
             return
         }
 
+        let groupDeadline = DispatchTime.now() + .milliseconds(100)
+        while process.isRunning,
+              getpgid(process.processIdentifier) != process.processIdentifier,
+              DispatchTime.now() < groupDeadline {
+            usleep(1_000)
+        }
+        guard !process.isRunning || getpgid(process.processIdentifier) == process.processIdentifier else {
+            guard completion.claim() else { return }
+            process.terminate()
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            continuation.resume(throwing: ProcessToolError.launchFailed("Could not establish dedicated process group"))
+            return
+        }
+
         let launchedIdentity: ProcessToolProcessIdentity
-        switch processToolIdentity(for: process.processIdentifier) {
-        case .found(let identity):
+        if let identity = processIdentityProvider(process.processIdentifier) {
             launchedIdentity = identity
-        case .missing, .unavailable:
+        } else {
             guard completion.claim() else { return }
             if process.isRunning {
-                process.terminate()
+                let cleanupConfirmed = terminateUnidentifiedProcessToolGroup(
+                    processGroupID: process.processIdentifier
+                )
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: ProcessToolError.launchFailed("Could not capture launched process identity"))
+                let reason = cleanupConfirmed
+                    ? "Could not capture launched process identity"
+                    : "Could not capture launched process identity; process cleanup could not be confirmed"
+                continuation.resume(throwing: ProcessToolError.launchFailed(reason))
             } else {
                 finishAfterClaim(timedOut: false)
             }
