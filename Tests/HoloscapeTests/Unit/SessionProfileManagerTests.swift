@@ -150,6 +150,27 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.75)
     }
 
+    func testRemoteDirectoryListingPreservesNonzeroExitAndStderrAfterExitedParentLeavesPipeOpen() async throws {
+        let script = try makeDiscoveryScript("printf 'permission denied\\n' >&2; sleep 1 & exit 7")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let startedAt = Date()
+        do {
+            _ = try await ProjectDiscoveryService.listDirectories(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [script.path],
+                timeout: 0.05
+            )
+            XCTFail("Expected the exited parent's nonzero status to be preserved")
+        } catch {
+            XCTAssertEqual(
+                error as? ProjectDiscoveryService.DiscoveryError,
+                .processFailed(exitCode: 7, stderr: "permission denied")
+            )
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.75)
+    }
+
     func testRemoteDirectoryListingPreservesNonzeroExitAndStderr() async throws {
         let script = try makeDiscoveryScript("""
         printf 'permission denied\\n' >&2

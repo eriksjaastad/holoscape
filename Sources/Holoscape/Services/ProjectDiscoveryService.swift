@@ -196,6 +196,12 @@ class ProjectDiscoveryService {
         }
 
         if readers.wait(timeout: operationDeadline) == .timedOut {
+            // Preserve failures observed before forcing inherited descriptors closed.
+            // Closing a FileHandle that another queue is reading can itself produce
+            // an NSCocoaErrorDomain read error, which is cleanup noise rather than
+            // the subprocess failure that ended the parent process.
+            let stdoutReadFailure = stdout.readFailure
+            let stderrReadFailure = stderr.readFailure
             stdoutPipe.fileHandleForReading.closeFile()
             stderrPipe.fileHandleForReading.closeFile()
             _ = readers.wait(timeout: .now() + 0.5)
@@ -205,11 +211,18 @@ class ProjectDiscoveryService {
             if stderr.limitExceeded {
                 throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
             }
-            if let readFailure = stdout.readFailure {
+            if let readFailure = stdoutReadFailure {
                 throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
             }
-            if let readFailure = stderr.readFailure {
+            if let readFailure = stderrReadFailure {
                 throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
+            }
+            if process.terminationStatus != 0 {
+                return ProcessResult(
+                    exitCode: process.terminationStatus,
+                    stdout: stdout.value,
+                    stderr: stderr.value
+                )
             }
             throw DiscoveryError.processTimedOut
         }
