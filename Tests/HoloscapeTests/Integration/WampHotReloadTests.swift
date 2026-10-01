@@ -31,8 +31,8 @@ final class WampHotReloadTests: XCTestCase {
     private var bundleURL: URL!
     private var originalEnv: String?
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-wamp-hotreload-\(UUID().uuidString)")
         skinsDir = tempDir.appendingPathComponent("skins")
@@ -45,14 +45,14 @@ final class WampHotReloadTests: XCTestCase {
         setenv("HOLOSCAPE_CONFIG_DIR", tempDir.path, 1)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
         if let original = originalEnv {
             setenv("HOLOSCAPE_CONFIG_DIR", original, 1)
         } else {
             unsetenv("HOLOSCAPE_CONFIG_DIR")
         }
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - `.wamp` branch of startWatching creates a watcher

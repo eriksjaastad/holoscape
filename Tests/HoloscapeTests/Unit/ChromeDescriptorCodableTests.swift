@@ -138,7 +138,7 @@ final class ChromeDescriptorCodableTests: XCTestCase {
             z: 1,
             phaseOffset: 0,
             speedMultiplier: 1.0,
-            dataSource: .none,
+            dataSource: ChromeAnimationLayer.DataSource.none,
             params: ChromeAnimationLayer.Params(
                 particle: ParticleParams(
                     birthRate: 5.0,
@@ -244,7 +244,7 @@ final class ChromeDescriptorCodableTests: XCTestCase {
 
     // MARK: - LedArrayParams.Pattern — every case
 
-    private func roundTripPattern(_ p: LedArrayParams.Pattern, file: StaticString = #file, line: UInt = #line) throws {
+    private func roundTripPattern(_ p: LedArrayParams.Pattern, file: StaticString = #filePath, line: UInt = #line) throws {
         let decoded = try decoder.decode(LedArrayParams.Pattern.self, from: try encoder.encode(p))
         XCTAssertEqual(decoded, p, file: file, line: line)
     }

@@ -12,16 +12,16 @@ final class SkinEngineAssetLoadingTests: XCTestCase {
     private var tempSkinDir: URL!
     private let engine = SkinEngine()
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         tempSkinDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-skin-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempSkinDir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempSkinDir)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - validateAssetPath

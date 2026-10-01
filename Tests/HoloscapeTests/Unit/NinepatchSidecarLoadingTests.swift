@@ -12,16 +12,16 @@ final class NinepatchSidecarLoadingTests: XCTestCase {
     private var skinDir: URL!
     private let engine = SkinEngine()
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         skinDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("holoscape-9p-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: skinDir)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - Happy path

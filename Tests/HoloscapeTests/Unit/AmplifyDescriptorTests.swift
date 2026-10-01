@@ -85,11 +85,11 @@ final class AmplifyDescriptorTests: XCTestCase {
                 Polygon(points: [Point(x: 0, y: 0), Point(x: 1, y: 0), Point(x: 0, y: 1)]),  // valid
                 Polygon(points: []),  // invalid
             ],
-            modifier: .none
+            modifier: DragRegionDescriptor.Modifier.none
         )
         let pruned = desc.prunedToValidPolygons()
         XCTAssertEqual(pruned.polygons.count, 1)
-        XCTAssertEqual(pruned.modifier, .none)
+        XCTAssertEqual(pruned.modifier, DragRegionDescriptor.Modifier.none)
     }
 
     // MARK: - SpriteDescriptor

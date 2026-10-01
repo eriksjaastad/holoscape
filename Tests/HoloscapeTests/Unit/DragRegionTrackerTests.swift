@@ -229,7 +229,7 @@ final class DragRegionTrackerTests: XCTestCase {
     /// ordered front (windowNumber may be invalid). Use XCTUnwrap
     /// at the call site to produce a clean test failure with a
     /// named assertion instead of a SIGILL-style crash.
-    nonisolated static func syntheticMouseEvent(
+    static func syntheticMouseEvent(
         at point: NSPoint,
         in window: NSWindow,
         modifiers: NSEvent.ModifierFlags
