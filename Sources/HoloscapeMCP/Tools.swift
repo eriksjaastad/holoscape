@@ -236,7 +236,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 let result = try await runProcessTool(request)
                 return CallTool.Result(
                     content: [.text(text: formatProcessToolResult(result), annotations: nil, _meta: nil)],
-                    isError: result.timedOut || (result.exitCode ?? 0) != 0
+                    isError: processToolResultIsError(result)
                 )
 
             case "holoscape_run_applescript":
@@ -252,6 +252,8 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
             default:
                 return CallTool.Result(content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)], isError: true)
             }
+        } catch let error as ProcessToolError {
+            return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)], isError: true)
         } catch {
             return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription). Is Holoscape running?", annotations: nil, _meta: nil)], isError: true)
         }
