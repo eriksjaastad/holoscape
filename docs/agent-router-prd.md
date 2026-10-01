@@ -1,5 +1,14 @@
 # PRD: Agent-to-Agent Router Daemon
 
+> **Status: retired.** The manual router prototype was last exercised on
+> 2026-04-16, had no launch configuration, and was not running on either of
+> Erik's Macs when audited on 2026-10-01. Its executable and tests were removed
+> rather than hardening an unused, lossy delivery path. This document is kept as
+> historical product research only. Any future messaging UI must use the
+> removable Project Tracker plugin boundary described in
+> `project-tracker-message-board-plan.md`; it must not revive this sidecar as
+> Holoscape core behavior.
+
 ## Project Overview
 
 Erik manages 5–10 concurrent Claude Code agents across Holoscape tabs. When one agent needs input from another — a technical question, a design review, a status check — Erik manually copies the question from one tab, switches to the target tab, pastes it, waits for the answer, copies it back, and delivers it. This happens 6+ times per day, consuming 15–20% of active time. The real cost isn't time — it's cognitive interruption. Every relay breaks focus on whatever Erik was actually thinking about.

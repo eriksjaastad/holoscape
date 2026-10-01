@@ -8,7 +8,7 @@ This plan also carves out a separate, smaller task for CLI/client detection so n
 
 ## What We Know
 
-- Holoscape already has a local agent-router prototype in `tools/router/router.py` that routes `pt message` traffic into running tabs.
+- Holoscape previously had a manual agent-router prototype that routed `pt message` traffic into running tabs. It was retired after an October 2026 audit found no runtime usage and multiple message-loss paths. Do not use that sidecar as the foundation for this feature.
 - Holoscape already has a chat-style channel type via `GroupChatChannelController`, so there is a UI pattern for rendering polled messages in a single tab.
 - Project Tracker already has the real message primitive:
   - `pt message send`
