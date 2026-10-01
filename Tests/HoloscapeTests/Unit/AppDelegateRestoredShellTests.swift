@@ -123,6 +123,116 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.state, .active)
     }
 
+    func testRestoreChannelReappliesPersistedAgentAttentionStateAfterActivation() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008169")!
+        let brokerSessionID = BrokerSessionID(rawValue: "app-restored-agent-attention-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/app-restored-agent-attention",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRestoredAgentAttentionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let savedState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            updatedAt: Date(timeIntervalSince1970: 12),
+            reason: "Approve command execution",
+            recoveryAction: .reconnect
+        )
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/app-restored-agent-attention",
+            command: "codex",
+            persistentState: savedState,
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .active, "Restoring presentation state must not fake process lifecycle")
+        XCTAssertEqual(controller.persistentState, savedState)
+    }
+
+    func testRestoreChannelDoesNotReapplyOutdatedRuntimeStateOverLiveAgent() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008170")!
+        let brokerSessionID = BrokerSessionID(rawValue: "app-restored-agent-runtime-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/app-restored-agent-runtime",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRestoredAgentRuntimeTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let savedState = PersistentChannelState(
+            kind: .running,
+            source: .agentAdapter,
+            updatedAt: Date(timeIntervalSince1970: 12),
+            reason: "Outdated saved activity"
+        )
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/app-restored-agent-runtime",
+            command: "codex",
+            persistentState: savedState,
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+        XCTAssertNil(controller.persistentState.reason)
+        XCTAssertNotEqual(controller.persistentState, savedState)
+    }
+
     func testRestoreUnmatchedBrokerBackedSessionsAsTabsReattachesAndPersistsRecoveredShell() throws {
         let coordinator = RecordingBrokerSessionCoordinator()
         let brokerSessionID = BrokerSessionID(rawValue: "app-unmatched-shell-broker-session")
