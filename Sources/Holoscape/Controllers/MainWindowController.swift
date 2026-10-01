@@ -2951,13 +2951,18 @@ extension MainWindowController: BugReportDialogDelegate {
                 }
             } catch {
                 service.savePendingBugReport(report)
+                let message = Self.bugReportSubmissionFailureMessage(for: error)
                 await MainActor.run {
-                    self.showSubmitConfirmation(success: false, message: "Network error — report saved locally for retry.")
+                    self.showSubmitConfirmation(success: false, message: message)
                 }
             }
         }
 
         bugReportDialog = nil
+    }
+
+    nonisolated static func bugReportSubmissionFailureMessage(for error: Error) -> String {
+        "\(error.localizedDescription). Report saved locally for retry."
     }
 
     private func showSubmitConfirmation(success: Bool, message: String?) {

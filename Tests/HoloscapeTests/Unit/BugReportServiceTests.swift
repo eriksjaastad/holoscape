@@ -157,6 +157,20 @@ final class BugReportServiceTests: XCTestCase {
         }
     }
 
+    func testSubmissionFailureFeedbackPreservesSpecificErrorAndRetryStatus() {
+        let httpError = BugReportServiceError.httpError(statusCode: 503)
+        XCTAssertEqual(
+            MainWindowController.bugReportSubmissionFailureMessage(for: httpError),
+            "Report server returned HTTP status 503. Report saved locally for retry."
+        )
+
+        let transportError = URLError(.notConnectedToInternet)
+        XCTAssertEqual(
+            MainWindowController.bugReportSubmissionFailureMessage(for: transportError),
+            "\(transportError.localizedDescription). Report saved locally for retry."
+        )
+    }
+
     func testSavePendingBugReport() {
         let service = BugReportService()
         service.savePendingBugReport(makeBugReport())
