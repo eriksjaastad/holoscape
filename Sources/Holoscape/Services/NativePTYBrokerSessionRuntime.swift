@@ -7,7 +7,7 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -308,6 +308,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         slaveWrite.closeFile()
         slaveError.closeFile()
         sessions[id] = session
+    }
+
+    func createSessionAcknowledgingAgentStatusOwnerToken(
+        id: BrokerSessionID,
+        request: BrokerSessionLaunchRequest
+    ) throws -> Bool {
+        try createSession(id: id, request: request)
+        return request.agentStatusOwnerToken != nil
     }
 
     func detachSession(id: BrokerSessionID) throws {

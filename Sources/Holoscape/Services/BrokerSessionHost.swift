@@ -46,7 +46,8 @@ struct BrokerSessionHost {
             return .sessionIDs(try runtime.listSessions())
         case let .create(id, launchRequest):
             try runtime.createSession(id: id, request: launchRequest)
-            return .ok
+            guard launchRequest.agentStatusOwnerToken != nil else { return .ok }
+            return .created(agentStatusOwnerTokenApplied: true)
         case let .detach(id):
             try runtime.detachSession(id: id)
             return .ok

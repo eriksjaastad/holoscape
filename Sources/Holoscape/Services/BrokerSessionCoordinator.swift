@@ -102,7 +102,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord {
         let timestamp = now()
         let id = BrokerSessionID()
-        try runtime.createSession(id: id, request: request)
+        let ownerTokenWasApplied: Bool
+        if request.agentStatusOwnerToken != nil,
+           let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+            ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
+                id: id,
+                request: request
+            )
+        } else {
+            try runtime.createSession(id: id, request: request)
+            ownerTokenWasApplied = false
+        }
         let record = BrokerSessionRecord(
             id: id,
             channelType: channelType,
@@ -111,7 +121,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
-            agentStatusOwnerToken: request.agentStatusOwnerToken,
+            agentStatusOwnerToken: ownerTokenWasApplied ? request.agentStatusOwnerToken : nil,
             lifecycle: .running,
             exitCode: nil,
             createdAt: timestamp,

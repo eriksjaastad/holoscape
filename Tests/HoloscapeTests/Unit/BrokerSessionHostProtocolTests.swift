@@ -44,6 +44,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let codec = BrokerSessionHostCodec()
         let responses: [BrokerSessionHostResponse] = [
             .ok,
+            .created(agentStatusOwnerTokenApplied: true),
             .sessionIDs([
                 BrokerSessionID(rawValue: "response-session-a"),
                 BrokerSessionID(rawValue: "response-session-b"),

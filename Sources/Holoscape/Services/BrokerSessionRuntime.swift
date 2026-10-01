@@ -23,6 +23,17 @@ protocol BrokerSessionRuntime {
     func terminationStatus(id: BrokerSessionID) throws -> Int32?
 }
 
+/// Optional launch capability used to prove that the runtime actually injected
+/// the status-owner token into the child process. Older durable broker hosts can
+/// decode the additive request field but return only the legacy `.ok` response;
+/// callers must not persist ownership unless the runtime explicitly acknowledges it.
+protocol BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+    func createSessionAcknowledgingAgentStatusOwnerToken(
+        id: BrokerSessionID,
+        request: BrokerSessionLaunchRequest
+    ) throws -> Bool
+}
+
 enum ScrollbackReplaySource: Equatable, Sendable {
     case liveBrokerMemory
     case persistedDiskTail
