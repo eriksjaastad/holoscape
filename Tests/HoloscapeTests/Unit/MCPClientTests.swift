@@ -116,6 +116,81 @@ final class MCPClientTests: XCTestCase {
         }
     }
 
+    func testResponseWithMismatchedIDIsRejected() async {
+        MCPClientURLProtocolStub.setHandler { _ in
+            Self.response(
+                statusCode: 200,
+                body: #"{"jsonrpc":"2.0","id":999,"result":{}}"#
+            )
+        }
+
+        await assertInvalidResponse {
+            try await client.initialize()
+        }
+    }
+
+    func testResponseWithoutIDIsRejected() async {
+        MCPClientURLProtocolStub.setHandler { _ in
+            Self.response(
+                statusCode: 200,
+                body: #"{"jsonrpc":"2.0","result":{}}"#
+            )
+        }
+
+        await assertInvalidResponse {
+            try await client.initialize()
+        }
+    }
+
+    func testResponseWithInvalidJSONRPCVersionIsRejected() async {
+        MCPClientURLProtocolStub.setHandler { _ in
+            Self.response(
+                statusCode: 200,
+                body: #"{"jsonrpc":"1.0","id":1,"result":{}}"#
+            )
+        }
+
+        await assertInvalidResponse {
+            try await client.initialize()
+        }
+    }
+
+    func testToolErrorResultIsSurfacedInsteadOfReturnedAsReply() async throws {
+        MCPClientURLProtocolStub.setHandler { request in
+            let body = try Self.requestJSON(from: request)
+            switch body["method"] as? String {
+            case "initialize":
+                return Self.response(
+                    statusCode: 200,
+                    body: #"{"jsonrpc":"2.0","id":1,"result":{}}"#
+                )
+            case "notifications/initialized":
+                return Self.response(statusCode: 204, body: "")
+            case "tools/call":
+                XCTAssertEqual(body["id"] as? Int, 2)
+                return Self.response(
+                    statusCode: 200,
+                    body: #"{"jsonrpc":"2.0","id":2,"result":{"isError":true,"content":[{"type":"text","text":"delivery rejected"}]}}"#
+                )
+            default:
+                XCTFail("Unexpected method: \(String(describing: body["method"]))")
+                return Self.response(statusCode: 500, body: "")
+            }
+        }
+
+        try await client.initialize()
+        do {
+            _ = try await client.sendMessage("hello")
+            XCTFail("Expected tool error")
+        } catch {
+            guard case let MCPClient.MCPError.toolError(message) = error else {
+                return XCTFail("Expected toolError, got \(error)")
+            }
+            XCTAssertEqual(message, "delivery rejected")
+            XCTAssertEqual(error.localizedDescription, "MCP tool error: delivery rejected")
+        }
+    }
+
     func testMalformedResponseIsRejected() async {
         MCPClientURLProtocolStub.setHandler { _ in
             Self.response(statusCode: 200, body: #"{"jsonrpc":"2.0","id":1}"#)
@@ -145,6 +220,21 @@ final class MCPClientTests: XCTestCase {
                 return XCTFail("Expected connectionFailed, got \(error)", file: file, line: line)
             }
             XCTAssertEqual(actualStatusCode, statusCode, file: file, line: line)
+        }
+    }
+
+    private func assertInvalidResponse(
+        operation: () async throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            try await operation()
+            XCTFail("Expected invalid response", file: file, line: line)
+        } catch {
+            guard case MCPClient.MCPError.invalidResponse = error else {
+                return XCTFail("Expected invalidResponse, got \(error)", file: file, line: line)
+            }
         }
     }
 
