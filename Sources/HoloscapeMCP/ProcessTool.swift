@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MCP
 
@@ -98,6 +99,94 @@ final class ProcessToolCompletion: @unchecked Sendable {
     }
 }
 
+private struct ProcessToolProcessIdentity: Hashable, Sendable {
+    let pid: pid_t
+    let startSeconds: UInt64
+    let startMicroseconds: UInt64
+
+    init?(pid: pid_t) {
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, expectedSize) == expectedSize else {
+            return nil
+        }
+        self.pid = pid
+        startSeconds = info.pbi_start_tvsec
+        startMicroseconds = info.pbi_start_tvusec
+    }
+
+    var isAlive: Bool {
+        guard let current = Self(pid: pid) else { return false }
+        return current == self
+    }
+}
+
+private func processToolDirectChildren(of parentPID: pid_t) -> [pid_t] {
+    let estimatedBytes = max(Int(proc_listchildpids(parentPID, nil, 0)), 0)
+    let estimatedCount = estimatedBytes / MemoryLayout<pid_t>.stride
+    var capacity = max(estimatedCount + 16, 16)
+    while true {
+        var childPIDs = [pid_t](repeating: 0, count: capacity)
+        let count = proc_listchildpids(
+            parentPID,
+            &childPIDs,
+            Int32(childPIDs.count * MemoryLayout<pid_t>.stride)
+        )
+        guard count > 0 else { return [] }
+        guard count >= capacity else { return Array(childPIDs.prefix(Int(count))) }
+        capacity *= 2
+    }
+}
+
+private func processToolDescendants(of rootPID: pid_t) -> Set<ProcessToolProcessIdentity> {
+    var descendants: Set<ProcessToolProcessIdentity> = []
+    var pending = processToolDirectChildren(of: rootPID)
+    while let pid = pending.popLast() {
+        guard let identity = ProcessToolProcessIdentity(pid: pid), descendants.insert(identity).inserted else {
+            continue
+        }
+        pending.append(contentsOf: processToolDirectChildren(of: pid))
+    }
+    return descendants
+}
+
+private func terminateProcessToolTree(
+    rootedAt rootPID: pid_t,
+    gracePeriodMilliseconds: Int = 250
+) -> Bool {
+    guard let root = ProcessToolProcessIdentity(pid: rootPID) else { return true }
+    var ownedProcesses = processToolDescendants(of: rootPID)
+    ownedProcesses.insert(root)
+
+    func signalAliveProcesses(_ signal: Int32) {
+        for identity in ownedProcesses where identity.isAlive {
+            _ = Darwin.kill(identity.pid, signal)
+        }
+    }
+
+    signalAliveProcesses(SIGTERM)
+    let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    while DispatchTime.now() < termDeadline {
+        let discovered = ownedProcesses.reduce(into: Set<ProcessToolProcessIdentity>()) { result, identity in
+            guard identity.isAlive else { return }
+            result.formUnion(processToolDescendants(of: identity.pid))
+        }.subtracting(ownedProcesses)
+        if !discovered.isEmpty {
+            ownedProcesses.formUnion(discovered)
+            signalAliveProcesses(SIGTERM)
+        }
+        guard ownedProcesses.contains(where: \.isAlive) else { return true }
+        usleep(10_000)
+    }
+
+    signalAliveProcesses(SIGKILL)
+    let killDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    while DispatchTime.now() < killDeadline, ownedProcesses.contains(where: \.isAlive) {
+        usleep(10_000)
+    }
+    return !ownedProcesses.contains(where: \.isAlive)
+}
+
 func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest {
     guard let command = args["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
           !command.isEmpty else {
@@ -167,12 +256,16 @@ func runProcessTool(
     }
 
     return try await withCheckedThrowingContinuation { continuation in
-        @Sendable func finish(timedOut: Bool) {
-            guard completion.claim() else { return }
+        @Sendable func finishAfterClaim(timedOut: Bool, drainPipes: Bool = true) {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
-            stdout.append(stdoutPipe.fileHandleForReading.availableData)
-            stderr.append(stderrPipe.fileHandleForReading.availableData)
+            if drainPipes {
+                stdout.append(stdoutPipe.fileHandleForReading.availableData)
+                stderr.append(stderrPipe.fileHandleForReading.availableData)
+            } else {
+                try? stdoutPipe.fileHandleForReading.close()
+                try? stderrPipe.fileHandleForReading.close()
+            }
             let standardOutput = stdout.snapshot()
             let standardError = stderr.snapshot()
             continuation.resume(returning: ProcessToolResult(
@@ -188,7 +281,8 @@ func runProcessTool(
         }
 
         process.terminationHandler = { _ in
-            finish(timedOut: false)
+            guard completion.claim() else { return }
+            finishAfterClaim(timedOut: false)
         }
 
         do {
@@ -202,9 +296,13 @@ func runProcessTool(
         }
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + request.timeoutSeconds) {
-            guard process.isRunning else { return }
-            process.terminate()
-            finish(timedOut: true)
+            guard completion.claim() else { return }
+            process.terminationHandler = nil
+            let terminated = terminateProcessToolTree(rootedAt: process.processIdentifier)
+            if !terminated {
+                stderr.append(Data("Timed out; process cleanup could not be confirmed\n".utf8))
+            }
+            finishAfterClaim(timedOut: true, drainPipes: terminated)
         }
     }
 }
