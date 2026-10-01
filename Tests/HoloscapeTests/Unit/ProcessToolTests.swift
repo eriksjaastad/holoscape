@@ -9,20 +9,10 @@ final class ProcessToolTests: XCTestCase {
             .appendingPathComponent("HoloscapeMCP")
     }
 
-    func testTimeoutClaimTreatsExitBeforeClaimAsNormalCompletion() {
-        let completion = ProcessToolCompletion()
-        var states = [true, false]
-
-        let claim = completion.claimTimeout { states.removeFirst() }
-
-        XCTAssertEqual(claim, .processExited)
-        XCTAssertFalse(completion.claim())
-    }
-
     func testControllerStatusParsesCleanupFailureOutsideProcessOutput() {
         XCTAssertEqual(
-            parseProcessToolControllerStatus("timedOut:unconfirmed"),
-            .timedOut(cleanupConfirmed: false)
+            parseProcessToolControllerStatus("timedOut:groupSignalFailed"),
+            .timedOut(groupCleanupSucceeded: false)
         )
         XCTAssertEqual(
             parseProcessToolControllerStatus("completed:17"),
@@ -44,7 +34,7 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertEqual(result.stderr, "warning")
         XCTAssertFalse(result.stdoutTruncated)
         XCTAssertFalse(result.stderrTruncated)
-        XCTAssertNil(result.processCleanupConfirmed)
+        XCTAssertNil(result.processGroupCleanupSucceeded)
         XCTAssertFalse(formatProcessToolResult(result).contains("Truncated"))
     }
 
@@ -118,7 +108,7 @@ final class ProcessToolTests: XCTestCase {
         )
 
         XCTAssertTrue(result.timedOut)
-        XCTAssertEqual(result.processCleanupConfirmed, true)
+        XCTAssertEqual(result.processGroupCleanupSucceeded, true)
         let parentPID = try pid(from: parentPIDURL)
         let childPID = try pid(from: childPIDURL)
         defer {
@@ -165,44 +155,39 @@ final class ProcessToolTests: XCTestCase {
         }
     }
 
-    func testCommandCannotEscapeCleanupByKillingItsDirectParent() async throws {
+    func testExitedGroupLeaderStillReservesGroupForCleanup() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-parent-kill-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let commandPIDURL = directory.appendingPathComponent("command.pid")
+        let childPIDURL = directory.appendingPathComponent("child.pid")
         let command = """
-        echo $$ > \(commandPIDURL.path)
-        kill -KILL $PPID
-        while true; do sleep 1; done
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while [[ ! -f \(childPIDURL.path) ]]; do sleep 0.01; done
+        kill -KILL $$
         """
 
-        do {
-            _ = try await runProcessTool(
-                request(command: command, timeoutSeconds: 1),
-                launcherExecutableURL: launcherExecutableURL
-            )
-            XCTFail("Expected the shell runner failure to fail closed")
-        } catch let error as ProcessToolError {
-            guard case .launchFailed = error else {
-                return XCTFail("Expected launchFailed, got \(error)")
-            }
-        }
+        let result = try await runProcessTool(
+            request(command: command, timeoutSeconds: 1),
+            launcherExecutableURL: launcherExecutableURL
+        )
 
-        let commandPID = try pid(from: commandPIDURL)
-        defer { _ = Darwin.kill(commandPID, SIGKILL) }
-        assertProcessIsGone(commandPID, "A command must not escape cleanup by killing its direct parent")
+        let childPID = try pid(from: childPIDURL)
+        defer { _ = Darwin.kill(childPID, SIGKILL) }
+        XCTAssertEqual(result.exitCode, SIGKILL)
+        XCTAssertFalse(result.timedOut)
+        assertProcessIsGone(childPID, "An exited group leader must keep its group ID reserved through cleanup")
     }
 
-    func testDetachedDescendantDoesNotBlockTimeoutAndMarksCleanupUnconfirmed() async throws {
+    func testDetachedDescendantIsOutsideProcessGroupCleanupContract() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-detached-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let detachedPIDURL = directory.appendingPathComponent("detached.pid")
-        let python = "import os; os.setsid(); open('\(detachedPIDURL.path)','w').write(str(os.getpid())); [os.write(1,b'x'*8192) for _ in iter(int,1)]"
+        let python = "import os,time; os.setsid(); f=open('\(detachedPIDURL.path)','w'); f.write(str(os.getpid())); f.close(); [os.close(fd) for fd in (0,1,2)]; time.sleep(30)"
         let command = """
         /usr/bin/python3 -c \(shellQuote(python)) &
         while [[ ! -f \(detachedPIDURL.path) ]]; do sleep 0.01; done
@@ -219,8 +204,9 @@ final class ProcessToolTests: XCTestCase {
         let detachedPID = try pid(from: detachedPIDURL)
         defer { _ = Darwin.kill(detachedPID, SIGKILL) }
         XCTAssertTrue(result.timedOut)
-        XCTAssertEqual(result.processCleanupConfirmed, false)
-        XCTAssertLessThan(elapsed, 3, "A detached writer must not block final output draining")
+        XCTAssertEqual(result.processGroupCleanupSucceeded, true)
+        XCTAssertLessThan(elapsed, 3, "A detached process must not block group cleanup")
+        assertProcessExists(detachedPID, "A process that deliberately leaves the group is outside the cleanup contract")
     }
 
     private func shellQuote(_ value: String) -> String {
@@ -248,5 +234,9 @@ final class ProcessToolTests: XCTestCase {
         let error = errno
         XCTAssertEqual(result, -1, message)
         XCTAssertEqual(error, ESRCH, message)
+    }
+
+    private func assertProcessExists(_ pid: pid_t, _ message: String) {
+        XCTAssertEqual(Darwin.kill(pid, 0), 0, message)
     }
 }
