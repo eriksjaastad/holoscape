@@ -403,7 +403,21 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// prompts clear on user input, while adapter state remains adapter-owned.
     func restorePersistentAttentionState(_ restoredState: PersistentChannelState) {
         guard state == .active else { return }
-        guard restoredState.kind == .needsApproval || restoredState.kind == .error else { return }
+        switch (restoredState.source, restoredState.kind) {
+        case (.terminalOutput, .needsApproval),
+             (.terminalOutput, .error),
+             (.agentAdapter, .needsApproval),
+             (.agentAdapter, .error),
+             (.agentAdapter, .stale):
+            break
+        case (.terminalOutput, _),
+             (.agentAdapter, _),
+             (.processLifecycle, _),
+             (.brokerRegistry, _),
+             (.userAction, _),
+             (.plugin, _):
+            return
+        }
         guard restoredState.kind.displayPriority >= persistentState.kind.displayPriority else { return }
 
         switch restoredState.source {
@@ -474,9 +488,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             staleBrokerSessionID = terminal.staleBrokerSessionID
             invalidateAdapterOwner()
         case .failed, .none:
-            // Hard failures leave whatever durable identity the tab already had;
-            // only a successful attach clears it.
-            break
+            // An indeterminate reattach failure can still belong to the saved
+            // process generation (for example, a temporarily unreadable registry).
+            // Mirror any retained terminal handle so retry cannot create a second
+            // process merely because the failure was not classifiable.
+            if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
         }
         return channelState(for: kind)
     }

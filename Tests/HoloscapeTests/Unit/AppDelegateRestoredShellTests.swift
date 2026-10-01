@@ -6,10 +6,13 @@ final class AppDelegateRestoredShellTests: XCTestCase {
     private enum RecordingError: Error {
         case unexpectedStart
         case missingSession
+        case registryUnreadable
     }
 
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
         var reattachableSessionRecords: [BrokerSessionRecord] = []
+        var nextStartRecord: BrokerSessionRecord?
+        var reattachError: Error?
         var startCallCount = 0
         var reattachCalls: [(id: BrokerSessionID, attachedChannelID: UUID)] = []
         var readScrollbackTailCalls: [(id: BrokerSessionID, maxBytes: Int)] = []
@@ -21,6 +24,9 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             attachedChannelID: UUID?
         ) throws -> BrokerSessionRecord {
             startCallCount += 1
+            if let nextStartRecord {
+                return nextStartRecord
+            }
             throw RecordingError.unexpectedStart
         }
 
@@ -28,6 +34,9 @@ final class AppDelegateRestoredShellTests: XCTestCase {
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             reattachCalls.append((id: id, attachedChannelID: attachedChannelID))
+            if let reattachError {
+                throw reattachError
+            }
             guard let record = reattachableSessionRecords.first(where: { $0.id == id }) else {
                 throw RecordingError.missingSession
             }
@@ -177,6 +186,114 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.persistentState, savedState)
     }
 
+    func testRestoreChannelDoesNotReplayAttentionWithoutSavedProcessGeneration() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let replacementSessionID = BrokerSessionID(rawValue: "fresh-legacy-agent-session")
+        coordinator.nextStartRecord = BrokerSessionRecord(
+            id: replacementSessionID,
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/legacy-agent",
+            environmentProfile: .agentOAuth,
+            lifecycle: .running,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 20),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            lastAttachedChannelID: nil
+        )
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateLegacyAgentAttentionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let savedState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            reason: "Approval owned by an unknown legacy process"
+        )
+        let metadata = ChannelMetadata(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000008172")!,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/legacy-agent",
+            command: "codex",
+            persistentState: savedState
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, replacementSessionID)
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+        XCTAssertNil(controller.adapterPersistentState)
+        XCTAssertEqual(coordinator.startCallCount, 1)
+    }
+
+    func testRestoreChannelReappliesAdapterStaleAttentionToSameBrokerGeneration() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008173")!
+        let brokerSessionID = BrokerSessionID(rawValue: "app-restored-agent-stale-attention-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/app-restored-agent-stale-attention",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRestoredAgentStaleAttentionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let savedState = PersistentChannelState(
+            kind: .stale,
+            source: .agentAdapter,
+            updatedAt: Date(timeIntervalSince1970: 12),
+            reason: "codex:session_missing",
+            recoveryAction: .recreateBrokerSession
+        )
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/app-restored-agent-stale-attention",
+            command: "codex",
+            persistentState: savedState,
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .active, "Adapter presentation state must not fake process lifecycle")
+        XCTAssertEqual(controller.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(controller.persistentState, savedState)
+        XCTAssertEqual(controller.adapterPersistentState, savedState)
+    }
+
     func testRestoreChannelDoesNotReplayAttentionWhenSavedBrokerProcessIsGone() throws {
         let coordinator = RecordingBrokerSessionCoordinator()
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008171")!
@@ -214,6 +331,62 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertNil(controller.adapterPersistentState)
         XCTAssertEqual(coordinator.startCallCount, 0, "Restore must not spawn a replacement for a missing saved process")
         XCTAssertTrue(coordinator.reattachCalls.isEmpty)
+    }
+
+    func testRetryAfterRegistryReadFailureReattachesSavedProcessGenerationInPlace() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008174")!
+        let brokerSessionID = BrokerSessionID(rawValue: "registry-retry-agent-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/registry-retry-agent",
+                environmentProfile: .agentOAuth,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            )
+        ]
+        coordinator.reattachError = RecordingError.registryUnreadable
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateRegistryRetryAgentTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/registry-retry-agent",
+            command: "codex",
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.brokerSessionID, brokerSessionID, "An indeterminate registry failure must preserve the saved process generation")
+        XCTAssertEqual(coordinator.startCallCount, 0)
+
+        coordinator.reattachError = nil
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(coordinator.reattachCalls.map(\.id), [brokerSessionID, brokerSessionID])
+        XCTAssertEqual(coordinator.startCallCount, 0, "Retry must not spawn a replacement after an indeterminate registry failure")
     }
 
     func testRestoreChannelDoesNotReapplyOutdatedRuntimeStateOverLiveAgent() throws {

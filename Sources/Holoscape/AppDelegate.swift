@@ -251,9 +251,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
         // Runtime activation establishes the truthful process lifecycle first.
         // The controller restores only source-aware attention that still has a
-        // live process owner; skipped or failed activation remains disconnected.
+        // live saved process owner. Legacy metadata without a process generation
+        // starts a replacement and must not transfer the old process's attention.
         if let persistentState = metadata.persistentState,
-           let agentController = controller as? AgentChannelController {
+           let savedBrokerSessionID = metadata.brokerSessionID,
+           let agentController = controller as? AgentChannelController,
+           agentController.brokerSessionID == savedBrokerSessionID {
             agentController.restorePersistentAttentionState(persistentState)
         }
         return controller

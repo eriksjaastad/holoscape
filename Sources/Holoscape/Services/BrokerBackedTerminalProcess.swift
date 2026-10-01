@@ -165,7 +165,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 brokerSessionID = nil
                 staleBrokerSessionID = sessionID
             case .failed, .none:
-                brokerSessionID = nil
+                // An unclassified failure (including a temporarily unreadable
+                // registry) does not prove the session is gone. Keep the handle
+                // so an in-place retry reattaches this generation rather than
+                // silently spawning a second process.
+                brokerSessionID = sessionID
             }
             agentStatusOwnerToken = nil
             NSLog("Broker-backed terminal reattach failed: \(error)")
