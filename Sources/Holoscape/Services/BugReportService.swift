@@ -8,30 +8,31 @@ struct BugReportResponse: Codable {
 final class BugReportService: Sendable {
     let silAPIEndpoint: URL
     private let pendingDir: URL
+    private let session: URLSession
 
-    init(endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!) {
+    init(
+        endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!,
+        session: URLSession = .shared
+    ) {
         self.silAPIEndpoint = endpoint
+        self.session = session
         self.pendingDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".holoscape/pending-reports")
     }
 
     func submitBugReport(_ report: BugReport) async throws -> BugReportResponse {
-        let url = silAPIEndpoint.appendingPathComponent("bug")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        request.httpBody = try encoder.encode(report)
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoder = JSONDecoder()
-        return try decoder.decode(BugReportResponse.self, from: data)
+        try await submit(report, path: "bug")
     }
 
     func submitCrashReport(_ report: CrashReport) async throws -> BugReportResponse {
-        let url = silAPIEndpoint.appendingPathComponent("crash")
+        try await submit(report, path: "crash")
+    }
+
+    private func submit<Report: Encodable & Sendable>(
+        _ report: Report,
+        path: String
+    ) async throws -> BugReportResponse {
+        let url = silAPIEndpoint.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -40,9 +41,19 @@ final class BugReportService: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         request.httpBody = try encoder.encode(report)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoder = JSONDecoder()
-        return try decoder.decode(BugReportResponse.self, from: data)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BugReportServiceError.nonHTTPResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw BugReportServiceError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        do {
+            return try JSONDecoder().decode(BugReportResponse.self, from: data)
+        } catch {
+            throw BugReportServiceError.invalidResponse
+        }
     }
 
     // MARK: - Pending Report Persistence
@@ -110,6 +121,25 @@ final class BugReportService: Sendable {
                     }
                 }
             }
+        }
+    }
+}
+
+enum BugReportServiceError: Error, Equatable {
+    case nonHTTPResponse
+    case httpError(statusCode: Int)
+    case invalidResponse
+}
+
+extension BugReportServiceError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .nonHTTPResponse:
+            return "Report server returned a non-HTTP response"
+        case let .httpError(statusCode):
+            return "Report server returned HTTP status \(statusCode)"
+        case .invalidResponse:
+            return "Report server returned an invalid response"
         }
     }
 }
