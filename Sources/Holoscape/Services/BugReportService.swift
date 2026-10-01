@@ -8,30 +8,33 @@ struct BugReportResponse: Codable {
 final class BugReportService: Sendable {
     let silAPIEndpoint: URL
     private let pendingDir: URL
+    private let session: URLSession
 
-    init(endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!) {
+    init(
+        endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!,
+        session: URLSession = .shared,
+        pendingDirectory: URL? = nil
+    ) {
         self.silAPIEndpoint = endpoint
-        self.pendingDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/pending-reports")
+        self.session = session
+        self.pendingDir = pendingDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".holoscape/pending-reports")
     }
 
     func submitBugReport(_ report: BugReport) async throws -> BugReportResponse {
-        let url = silAPIEndpoint.appendingPathComponent("bug")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        request.httpBody = try encoder.encode(report)
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoder = JSONDecoder()
-        return try decoder.decode(BugReportResponse.self, from: data)
+        try await submit(report, path: "bug")
     }
 
     func submitCrashReport(_ report: CrashReport) async throws -> BugReportResponse {
-        let url = silAPIEndpoint.appendingPathComponent("crash")
+        try await submit(report, path: "crash")
+    }
+
+    private func submit<Report: Encodable & Sendable>(
+        _ report: Report,
+        path: String
+    ) async throws -> BugReportResponse {
+        let url = silAPIEndpoint.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -40,30 +43,39 @@ final class BugReportService: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         request.httpBody = try encoder.encode(report)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoder = JSONDecoder()
-        return try decoder.decode(BugReportResponse.self, from: data)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw BugReportServiceError.nonHTTPResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw BugReportServiceError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        do {
+            return try JSONDecoder().decode(BugReportResponse.self, from: data)
+        } catch {
+            throw BugReportServiceError.invalidResponse
+        }
     }
 
     // MARK: - Pending Report Persistence
 
-    func savePendingBugReport(_ report: BugReport) {
-        savePending(report, prefix: "bug")
+    func savePendingBugReport(_ report: BugReport) throws {
+        try savePending(report, prefix: "bug")
     }
 
-    func savePendingCrashReport(_ report: CrashReport) {
-        savePending(report, prefix: "crash")
+    func savePendingCrashReport(_ report: CrashReport) throws {
+        try savePending(report, prefix: "crash")
     }
 
-    private func savePending<T: Encodable>(_ report: T, prefix: String) {
-        try? FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
+    private func savePending<T: Encodable>(_ report: T, prefix: String) throws {
+        try FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
         let filename = "\(prefix)-\(UUID().uuidString).json"
         let fileURL = pendingDir.appendingPathComponent(filename)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(report) {
-            try? data.write(to: fileURL, options: .atomic)
-        }
+        let data = try encoder.encode(report)
+        try data.write(to: fileURL, options: .atomic)
     }
 
     func retryPendingReports() {
@@ -110,6 +122,25 @@ final class BugReportService: Sendable {
                     }
                 }
             }
+        }
+    }
+}
+
+enum BugReportServiceError: Error, Equatable {
+    case nonHTTPResponse
+    case httpError(statusCode: Int)
+    case invalidResponse
+}
+
+extension BugReportServiceError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .nonHTTPResponse:
+            return "Report server returned a non-HTTP response"
+        case let .httpError(statusCode):
+            return "Report server returned HTTP status \(statusCode)"
+        case .invalidResponse:
+            return "Report server returned an invalid response"
         }
     }
 }

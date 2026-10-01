@@ -2945,19 +2945,54 @@ extension MainWindowController: BugReportDialogDelegate {
                     if response.success {
                         self.showSubmitConfirmation(success: true, message: response.message)
                     } else {
-                        service.savePendingBugReport(report)
-                        self.showSubmitConfirmation(success: false, message: response.message)
+                        do {
+                            try service.savePendingBugReport(report)
+                            self.showSubmitConfirmation(success: false, message: response.message)
+                        } catch {
+                            let rejection = response.message ?? "Report server rejected the report"
+                            self.showSubmitConfirmation(
+                                success: false,
+                                message: "\(rejection). Report could not be saved locally: \(error.localizedDescription)"
+                            )
+                        }
                     }
                 }
-            } catch {
-                service.savePendingBugReport(report)
+            } catch let submissionError {
+                let persistenceError: Error?
+                do {
+                    try service.savePendingBugReport(report)
+                    persistenceError = nil
+                } catch {
+                    persistenceError = error
+                }
+                let message = Self.bugReportSubmissionFailureMessage(
+                    for: submissionError,
+                    persistenceError: persistenceError
+                )
                 await MainActor.run {
-                    self.showSubmitConfirmation(success: false, message: "Network error — report saved locally for retry.")
+                    self.showSubmitConfirmation(success: false, message: message)
                 }
             }
         }
 
         bugReportDialog = nil
+    }
+
+    nonisolated static func bugReportSubmissionFailureMessage(
+        for error: Error,
+        persistenceError: Error? = nil
+    ) -> String {
+        let submissionMessage: String
+        if error is URLError {
+            submissionMessage = "Network error: \(error.localizedDescription)"
+        } else {
+            submissionMessage = error.localizedDescription
+        }
+
+        if let persistenceError {
+            return "\(submissionMessage). Report could not be saved locally: \(persistenceError.localizedDescription)"
+        }
+        return "\(submissionMessage). Report saved locally for retry."
     }
 
     private func showSubmitConfirmation(success: Bool, message: String?) {
