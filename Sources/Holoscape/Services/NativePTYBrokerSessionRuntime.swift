@@ -26,6 +26,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         let masterHandle: FileHandle
         let scrollbackStore: DiskBackedScrollbackStore?
         private var processGroupID: pid_t?
+        private var processGroupCleanupError: Int32?
         let lock = NSLock()
         private let terminationLock = NSLock()
         var output = Data()
@@ -84,7 +85,35 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         func markTerminated(_ status: Int32) {
             lock.lock()
             terminationStatus = status
-            processGroupID = nil
+            lock.unlock()
+        }
+
+        func handleProcessTermination(
+            _ status: Int32,
+            signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
+        ) {
+            terminationLock.lock()
+            defer { terminationLock.unlock() }
+
+            lock.lock()
+            guard let processGroupID else {
+                terminationStatus = status
+                lock.unlock()
+                return
+            }
+            lock.unlock()
+
+            let signalError = signalProcessGroup(processGroupID, SIGKILL)
+            lock.lock()
+            terminationStatus = status
+            if signalError == 0 || signalError == ESRCH {
+                if self.processGroupID == processGroupID {
+                    self.processGroupID = nil
+                }
+                processGroupCleanupError = nil
+            } else {
+                processGroupCleanupError = signalError
+            }
             lock.unlock()
         }
 
@@ -101,12 +130,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             lock.unlock()
         }
 
-        func setProcessGroupID(_ id: pid_t) {
+        func setProcessGroupID(_ id: pid_t) -> Int32? {
             lock.lock()
-            if terminationStatus == nil {
-                processGroupID = id
-            }
+            processGroupID = id
+            let status = terminationStatus
             lock.unlock()
+            return status
         }
 
         func observedProcessGroupID() -> pid_t? {
@@ -116,10 +145,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             return id
         }
 
+        func observedProcessGroupCleanupError() -> Int32? {
+            lock.lock()
+            let error = processGroupCleanupError
+            lock.unlock()
+            return error
+        }
+
         func retireProcessGroup(_ id: pid_t) {
             lock.lock()
             if processGroupID == id {
                 processGroupID = nil
+                processGroupCleanupError = nil
             }
             lock.unlock()
         }
@@ -202,8 +239,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
         let session = Session(id: id, process: process, masterHandle: masterHandle, scrollbackStore: scrollbackStore)
+        let processGroupSignal = self.processGroupSignal
         process.terminationHandler = { [weak session] process in
-            session?.markTerminated(process.terminationStatus)
+            session?.handleProcessTermination(
+                process.terminationStatus,
+                signalProcessGroup: processGroupSignal
+            )
         }
         masterHandle.readabilityHandler = { [weak session] handle in
             let data = handle.availableData
@@ -239,7 +280,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         // Foundation launches each Process as its own process-group leader on
         // Darwin. Retaining that ID lets shutdown cover the shell and every
         // command it launches, even after the shell itself exits.
-        session.setProcessGroupID(expectedProcessGroupID)
+        let alreadyTerminatedStatus = session.setProcessGroupID(expectedProcessGroupID)
+        if let alreadyTerminatedStatus {
+            session.handleProcessTermination(
+                alreadyTerminatedStatus,
+                signalProcessGroup: processGroupSignal
+            )
+        } else if !process.isRunning {
+            session.handleProcessTermination(
+                process.terminationStatus,
+                signalProcessGroup: processGroupSignal
+            )
+        }
 
         slaveRead.closeFile()
         slaveWrite.closeFile()
@@ -327,11 +379,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
     }
 
     func isRunning(id: BrokerSessionID) throws -> Bool {
-        try session(for: id).process.isRunning
+        let session = try session(for: id)
+        try throwProcessGroupCleanupErrorIfPresent(for: session)
+        return session.process.isRunning
     }
 
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
         let session = try session(for: id)
+        try throwProcessGroupCleanupErrorIfPresent(for: session)
         if let status = session.observedTerminationStatus() {
             return status
         }
@@ -346,9 +401,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
 
     private func terminateBoundedly(_ session: Session) throws {
         try session.withTerminationLock {
-            guard session.process.isRunning else { return }
             guard let processGroupID = session.observedProcessGroupID() else {
-                throw RuntimeError.terminationFailed(session.id, reason: "missing isolated process group")
+                return
             }
 
             try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
@@ -366,6 +420,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             }
             session.retireProcessGroup(processGroupID)
         }
+    }
+
+    private func throwProcessGroupCleanupErrorIfPresent(for session: Session) throws {
+        guard let signalError = session.observedProcessGroupCleanupError() else { return }
+        throw RuntimeError.terminationFailed(
+            session.id,
+            reason: "automatic descendant cleanup failed: \(String(cString: strerror(signalError)))"
+        )
     }
 
     private func signalProcessGroup(

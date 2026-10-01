@@ -307,6 +307,82 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(waitForProcessToExit(pids.child), "error cleanup left descendant PID \(pids.child) running")
     }
 
+    func testNaturalLeaderExitKillsSIGTERMResistantDescendant() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "natural-exit-descendant-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "/bin/sh -c 'trap \"\" TERM HUP; sleep 5' & child=$!; printf 'ORPHAN_READY:%d\\n' \"$child\"; exit 0"
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        let startedAt = Date()
+        let output = try waitForOutput(from: runtime, id: id, containing: "ORPHAN_READY:")
+        guard let marker = output.range(of: "ORPHAN_READY:"),
+              let childPID = pid_t(output[marker.upperBound...].prefix(while: { $0.isNumber })) else {
+            return XCTFail("Could not parse descendant PID from: \(output)")
+        }
+
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+        XCTAssertTrue(
+            waitForProcessToExit(childPID),
+            "natural leader exit left descendant PID \(childPID) running"
+        )
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            1.5,
+            "natural leader cleanup waited for the descendant to exit on its own"
+        )
+    }
+
+    func testNaturalLeaderCleanupFailureIsLoudAndRetryable() throws {
+        let signaler = FailFirstProcessGroupSignaler()
+        let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
+        let id = BrokerSessionID(rawValue: "natural-exit-cleanup-failure-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "/bin/sh -c 'trap \"\" TERM HUP; sleep 5' & child=$!; printf 'ORPHAN_READY:%d\\n' \"$child\"; exit 0"
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        _ = try waitForOutput(from: runtime, id: id, containing: "ORPHAN_READY:")
+
+        let deadline = Date().addingTimeInterval(1)
+        var cleanupError: Error?
+        while Date() < deadline, cleanupError == nil {
+            do {
+                _ = try runtime.terminationStatus(id: id)
+            } catch {
+                cleanupError = error
+            }
+            if cleanupError == nil { usleep(10_000) }
+        }
+        guard case let .terminationFailed(failedID, reason) = cleanupError as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected loud automatic cleanup failure, got \(String(describing: cleanupError))")
+        }
+        XCTAssertEqual(failedID, id)
+        XCTAssertTrue(reason.contains("Operation not permitted"), reason)
+
+        try runtime.markSessionErrored(id: id)
+        XCTAssertThrowsError(try runtime.terminationStatus(id: id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
     func testTerminationFailureIsLoudAndKeepsSessionRetryable() throws {
         let signaler = FailFirstProcessGroupSignaler()
         let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
