@@ -313,13 +313,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 for: metadata.id,
                 brokerSessionID: metadata.brokerSessionID
             )
+            let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let controller = ShellChannelController.brokerBacked(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
                 workingDirectory: restoredShell.workingDirectory,
-                existingBrokerSessionID: brokerSession?.id,
-                restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+                existingBrokerSessionID: brokerIdentity.existing,
+                restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
@@ -329,10 +330,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 channelType: .agentDirect,
                 brokerSessionID: metadata.brokerSessionID
             )
+            let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let controller = Self.restoredAgentController(
                 from: metadata,
                 authType: .oauth,
-                existingBrokerSessionID: brokerSession?.id,
+                existingBrokerSessionID: brokerIdentity.existing,
+                restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             return controller
@@ -342,6 +345,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 channelType: .agentAPI,
                 brokerSessionID: metadata.brokerSessionID
             )
+            let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let authType: AgentAuthType
             do {
                 authType = try AgentAPIKeyResolver().authType()
@@ -352,7 +356,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             let controller = Self.restoredAgentController(
                 from: metadata,
                 authType: authType,
-                existingBrokerSessionID: brokerSession?.id,
+                existingBrokerSessionID: brokerIdentity.existing,
+                restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
             // agentAPI intentionally does not auto-activate — the restore
@@ -400,6 +405,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         from metadata: ChannelMetadata,
         authType: AgentAuthType,
         existingBrokerSessionID: BrokerSessionID?,
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)?
     ) -> AgentChannelController {
         AgentChannelController.brokerBacked(
@@ -411,9 +417,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             useRawLabel: metadata.useRawLabel ?? true,
             command: metadata.command ?? "claude",
             existingBrokerSessionID: existingBrokerSessionID,
-            restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID ?? metadata.staleBrokerSessionID,
             coordinator: coordinator
         )
+    }
+
+    /// Preserve the saved process generation across restore. A readable registry
+    /// that no longer contains the saved session is definitive stale truth; a
+    /// registry read failure keeps the live handle so activation retries and
+    /// fails loudly rather than silently spawning a replacement.
+    private func brokerRestoreIdentity(
+        metadata: ChannelMetadata,
+        resolvedSession: BrokerSessionRecord?
+    ) -> (existing: BrokerSessionID?, stale: BrokerSessionID?) {
+        if let resolvedSession {
+            return (resolvedSession.id, metadata.staleBrokerSessionID)
+        }
+        if let stale = metadata.staleBrokerSessionID {
+            return (nil, stale)
+        }
+        guard let saved = metadata.brokerSessionID else {
+            return (nil, nil)
+        }
+        if channelManagerRef?.brokerRegistryReadFailure != nil {
+            return (saved, nil)
+        }
+        return (nil, saved)
     }
 
     static func restoredGroupChatController(

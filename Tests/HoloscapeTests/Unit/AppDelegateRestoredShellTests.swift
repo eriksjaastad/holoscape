@@ -177,6 +177,45 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.persistentState, savedState)
     }
 
+    func testRestoreChannelDoesNotReplayAttentionWhenSavedBrokerProcessIsGone() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008171")!
+        let brokerSessionID = BrokerSessionID(rawValue: "exited-app-restored-agent-session")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateMissingRestoredAgentTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/missing-restored-agent",
+            command: "codex",
+            persistentState: PersistentChannelState(
+                kind: .needsApproval,
+                source: .agentAdapter,
+                reason: "Approval owned by exited process"
+            ),
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.staleBrokerSessionID, brokerSessionID)
+        XCTAssertEqual(controller.persistentState.kind, .stale)
+        XCTAssertNil(controller.adapterPersistentState)
+        XCTAssertEqual(coordinator.startCallCount, 0, "Restore must not spawn a replacement for a missing saved process")
+        XCTAssertTrue(coordinator.reattachCalls.isEmpty)
+    }
+
     func testRestoreChannelDoesNotReapplyOutdatedRuntimeStateOverLiveAgent() throws {
         let coordinator = RecordingBrokerSessionCoordinator()
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008170")!
