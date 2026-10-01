@@ -387,7 +387,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.listSessions(), [id])
     }
 
-    func testTerminationFailureIsLoudAndKeepsSessionRetryable() throws {
+    func testExplicitTerminationFailureIsLoudWithoutRetryingStaleProcessGroup() throws {
         let signaler = FailFirstProcessGroupSignaler()
         let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
         let id = BrokerSessionID(rawValue: "retryable-termination-failure-native-pty-runtime-test")
@@ -399,22 +399,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
 
         try runtime.createSession(id: id, request: request)
-        defer { try? runtime.markSessionErrored(id: id) }
+        defer { signaler.forceCleanup() }
 
+        var firstFailureReason: String?
         XCTAssertThrowsError(try runtime.terminateSession(id: id, exitCode: nil)) { error in
             guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
                 return XCTFail("Expected terminationFailed, got \(error)")
             }
             XCTAssertEqual(failedID, id)
             XCTAssertTrue(reason.contains("Operation not permitted"), reason)
+            firstFailureReason = reason
         }
         XCTAssertEqual(try runtime.listSessions(), [id])
-        XCTAssertTrue(try runtime.isRunning(id: id))
-
-        try runtime.markSessionErrored(id: id)
         XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
-            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+            guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retained termination failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(reason, firstFailureReason)
         }
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected non-retryable termination failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(reason, firstFailureReason)
+        }
+        XCTAssertEqual(try runtime.listSessions(), [id])
     }
 
     func testDuplicateSessionFailsLoudlyWithoutReplacingOriginalSession() throws {
@@ -840,9 +851,11 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
 private final class FailFirstProcessGroupSignaler: @unchecked Sendable {
     private let lock = NSLock()
     private var shouldFail = true
+    private var lastProcessGroupID: pid_t?
 
     func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
         lock.lock()
+        lastProcessGroupID = processGroupID
         if shouldFail {
             shouldFail = false
             lock.unlock()
@@ -850,5 +863,14 @@ private final class FailFirstProcessGroupSignaler: @unchecked Sendable {
         }
         lock.unlock()
         return Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
+    }
+
+    func forceCleanup() {
+        lock.lock()
+        let processGroupID = lastProcessGroupID
+        lock.unlock()
+        if let processGroupID {
+            _ = Darwin.kill(-processGroupID, SIGKILL)
+        }
     }
 }

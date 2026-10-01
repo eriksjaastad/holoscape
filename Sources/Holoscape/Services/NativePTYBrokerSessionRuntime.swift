@@ -26,7 +26,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         let masterHandle: FileHandle
         let scrollbackStore: DiskBackedScrollbackStore?
         private var processGroupID: pid_t?
-        private var processGroupCleanupError: Int32?
+        private var processGroupCleanupFailureReason: String?
         let lock = NSLock()
         private let terminationLock = NSLock()
         var output = Data()
@@ -110,7 +110,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
                 if self.processGroupID == processGroupID {
                     self.processGroupID = nil
                 }
-                processGroupCleanupError = nil
+                processGroupCleanupFailureReason = nil
             } else {
                 // Once the leader has exited, a bare numeric PGID cannot be
                 // retried safely: the kernel may later reuse it for an unrelated
@@ -118,7 +118,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
                 if self.processGroupID == processGroupID {
                     self.processGroupID = nil
                 }
-                processGroupCleanupError = signalError
+                processGroupCleanupFailureReason =
+                    "automatic descendant cleanup failed: \(String(cString: strerror(signalError)))"
             }
             lock.unlock()
         }
@@ -151,18 +152,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
             return id
         }
 
-        func observedProcessGroupCleanupError() -> Int32? {
+        func observedProcessGroupCleanupFailureReason() -> String? {
             lock.lock()
-            let error = processGroupCleanupError
+            let reason = processGroupCleanupFailureReason
             lock.unlock()
-            return error
+            return reason
         }
 
-        func retireProcessGroup(_ id: pid_t) {
+        func retireProcessGroup(_ id: pid_t, failureReason: String? = nil) {
             lock.lock()
             if processGroupID == id {
                 processGroupID = nil
-                processGroupCleanupError = nil
+                processGroupCleanupFailureReason = failureReason
             }
             lock.unlock()
         }
@@ -413,42 +414,37 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
                 return
             }
 
-            try signalProcessGroup(processGroupID, signal: SIGTERM, sessionID: session.id)
+            try signalProcessGroup(processGroupID, signal: SIGTERM, session: session)
             if waitForTermination(of: session.process, processGroupID: processGroupID) {
                 session.retireProcessGroup(processGroupID)
                 return
             }
 
-            try signalProcessGroup(processGroupID, signal: SIGKILL, sessionID: session.id)
+            try signalProcessGroup(processGroupID, signal: SIGKILL, session: session)
             guard waitForTermination(of: session.process, processGroupID: processGroupID) else {
-                throw RuntimeError.terminationFailed(
-                    session.id,
-                    reason: "process group remained running after SIGTERM and SIGKILL"
-                )
+                let reason = "process group remained running after SIGTERM and SIGKILL"
+                session.retireProcessGroup(processGroupID, failureReason: reason)
+                throw RuntimeError.terminationFailed(session.id, reason: reason)
             }
             session.retireProcessGroup(processGroupID)
         }
     }
 
     private func throwProcessGroupCleanupErrorIfPresent(for session: Session) throws {
-        guard let signalError = session.observedProcessGroupCleanupError() else { return }
-        throw RuntimeError.terminationFailed(
-            session.id,
-            reason: "automatic descendant cleanup failed: \(String(cString: strerror(signalError)))"
-        )
+        guard let reason = session.observedProcessGroupCleanupFailureReason() else { return }
+        throw RuntimeError.terminationFailed(session.id, reason: reason)
     }
 
     private func signalProcessGroup(
         _ processGroupID: pid_t,
         signal: Int32,
-        sessionID: BrokerSessionID
+        session: Session
     ) throws {
         let signalError = processGroupSignal(processGroupID, signal)
         if signalError != 0, signalError != ESRCH {
-            throw RuntimeError.terminationFailed(
-                sessionID,
-                reason: "signal \(signal) failed: \(String(cString: strerror(signalError)))"
-            )
+            let reason = "signal \(signal) failed: \(String(cString: strerror(signalError)))"
+            session.retireProcessGroup(processGroupID, failureReason: reason)
+            throw RuntimeError.terminationFailed(session.id, reason: reason)
         }
     }
 
