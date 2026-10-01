@@ -199,6 +199,51 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertTrue(formatProcessToolResult(result).contains("processCleanupConfirmed: false"))
     }
 
+    func testIdentityCaptureFailureAfterRootExitKillsRemainingGroup() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-identity-root-exit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let command = """
+        zmodload zsh/zselect
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while true; do zselect -t 100; done
+        """
+
+        do {
+            _ = try await runProcessTool(
+                request(command: command),
+                launcherExecutableURL: launcherExecutableURL,
+                processIdentityProvider: { rootPID in
+                    let childDeadline = DispatchTime.now() + .seconds(1)
+                    while DispatchTime.now() < childDeadline,
+                          !FileManager.default.fileExists(atPath: childPIDURL.path) {
+                        usleep(10_000)
+                    }
+                    _ = Darwin.kill(rootPID, SIGKILL)
+                    let deadline = DispatchTime.now() + .seconds(1)
+                    while DispatchTime.now() < deadline {
+                        errno = 0
+                        if Darwin.kill(rootPID, 0) == -1, errno == ESRCH { break }
+                        usleep(10_000)
+                    }
+                    return nil
+                }
+            )
+            XCTFail("Expected identity capture failure")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed = error else {
+                return XCTFail("Expected launchFailed, got \(error)")
+            }
+        }
+
+        let childPID = try pid(from: childPIDURL)
+        defer { _ = Darwin.kill(childPID, SIGKILL) }
+        assertProcessIsGone(childPID, "Identity failure must clean descendants after root exit")
+    }
+
     func testIdentityCaptureFailureKillsResistantProcessGroupBeforeThrowing() async throws {
         let capturedPID = PIDBox()
 

@@ -366,19 +366,15 @@ func runProcessTool(
             launchedIdentity = identity
         } else {
             guard completion.claim() else { return }
-            if process.isRunning {
-                let cleanupConfirmed = terminateUnidentifiedProcessToolGroup(
-                    processGroupID: process.processIdentifier
-                )
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                let reason = cleanupConfirmed
-                    ? "Could not capture launched process identity"
-                    : "Could not capture launched process identity; process cleanup could not be confirmed"
-                continuation.resume(throwing: ProcessToolError.launchFailed(reason))
-            } else {
-                finishAfterClaim(timedOut: false)
-            }
+            let cleanupConfirmed = terminateUnidentifiedProcessToolGroup(
+                processGroupID: process.processIdentifier
+            )
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let reason = cleanupConfirmed
+                ? "Could not capture launched process identity"
+                : "Could not capture launched process identity; process cleanup could not be confirmed"
+            continuation.resume(throwing: ProcessToolError.launchFailed(reason))
             return
         }
 
