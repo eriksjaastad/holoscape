@@ -233,6 +233,40 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertNotEqual(controller.persistentState, savedState)
     }
 
+    func testRestoreChannelDoesNotReapplyAttentionWhenActivationIsSkipped() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateSkippedAgentAttentionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: RecordingBrokerSessionCoordinator()
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let savedState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .terminalOutput,
+            reason: "Outdated approval prompt"
+        )
+        let metadata = ChannelMetadata(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000008171")!,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/Volumes/TeamShare/project",
+            command: "codex",
+            persistentState: savedState
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+        XCTAssertNotEqual(controller.persistentState, savedState)
+    }
+
     func testRestoreUnmatchedBrokerBackedSessionsAsTabsReattachesAndPersistsRecoveredShell() throws {
         let coordinator = RecordingBrokerSessionCoordinator()
         let brokerSessionID = BrokerSessionID(rawValue: "app-unmatched-shell-broker-session")

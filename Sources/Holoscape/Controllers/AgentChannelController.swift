@@ -328,6 +328,25 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: self.state)
     }
 
+    /// Restore durable agent attention only when a live process can still own
+    /// that state. Preserve the source-specific clearing contract: terminal
+    /// prompts clear on user input, while adapter state remains adapter-owned.
+    func restorePersistentAttentionState(_ restoredState: PersistentChannelState) {
+        guard state == .active else { return }
+        guard restoredState.kind == .needsApproval || restoredState.kind == .error else { return }
+        guard restoredState.kind.displayPriority >= persistentState.kind.displayPriority else { return }
+
+        switch restoredState.source {
+        case .terminalOutput:
+            terminalOutputPersistentState = restoredState
+            delegate?.channelStateDidChange(self, to: state)
+        case .agentAdapter:
+            applyPersistentState(restoredState)
+        case .processLifecycle, .brokerRegistry, .userAction, .plugin:
+            break
+        }
+    }
+
     static func launchInvocation(for command: String) -> (executable: String, args: [String], execName: String) {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

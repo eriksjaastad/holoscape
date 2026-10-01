@@ -250,18 +250,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             controller.activate()
         }
         // Runtime activation establishes the truthful process lifecycle first.
-        // Reapply only saved agent attention afterward so activation cannot
-        // flatten needs-approval/error presentation back to merely running.
-        // Runtime-owned ready/running/disconnected/stale truth is recomputed on
-        // every launch and must never be replaced by an older saved snapshot.
+        // The controller restores only source-aware attention that still has a
+        // live process owner; skipped or failed activation remains disconnected.
         if let persistentState = metadata.persistentState,
            let agentController = controller as? AgentChannelController {
-            switch persistentState.kind {
-            case .needsApproval, .error:
-                agentController.applyPersistentState(persistentState)
-            case .ready, .running, .disconnected, .stale:
-                break
-            }
+            agentController.restorePersistentAttentionState(persistentState)
         }
         return controller
     }

@@ -302,6 +302,61 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .active, "adapter state must not fake a process lifecycle transition")
     }
 
+    func testRestoredTerminalOutputAttentionClearsOnUserInput() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let restoredState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .terminalOutput,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_021),
+            reason: "Codex awaiting approval"
+        )
+
+        controller.restorePersistentAttentionState(restoredState)
+        XCTAssertEqual(controller.persistentState, restoredState)
+
+        terminal.userInputHandler?(ArraySlice(Array("1".utf8)))
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+    }
+
+    func testRestoredAttentionIsIgnoredAfterProcessActivationFails() {
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "launch failed"
+        terminal.startFailureKind = .failed
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let restoredState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            reason: "Outdated approval prompt"
+        )
+
+        controller.restorePersistentAttentionState(restoredState)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+    }
+
     func testAgentAdapterStateClearsAfterBrokerFailureTakesOver() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(
