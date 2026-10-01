@@ -36,6 +36,12 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertFalse(completion.claim())
     }
 
+    func testProcessGroupPresenceTreatsPermissionDeniedAsExisting() {
+        XCTAssertEqual(processToolGroupPresence(killResult: -1, error: EPERM), true)
+        XCTAssertEqual(processToolGroupPresence(killResult: -1, error: ESRCH), false)
+        XCTAssertNil(processToolGroupPresence(killResult: -1, error: EINVAL))
+    }
+
     func testRunProcessToolPreservesOutputBelowLimit() async throws {
         let result = try await runProcessTool(
             request(command: "printf holoscape; printf warning >&2"),

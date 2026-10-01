@@ -163,15 +163,22 @@ private func processToolState(of identity: ProcessToolProcessIdentity) -> Proces
     }
 }
 
+func processToolGroupPresence(killResult: Int32, error: Int32) -> Bool? {
+    if killResult == 0 || error == EPERM { return true }
+    return error == ESRCH ? false : nil
+}
+
 private func processToolGroupExists(_ processGroupID: pid_t) -> Bool? {
     errno = 0
-    if Darwin.kill(-processGroupID, 0) == 0 { return true }
-    return errno == ESRCH ? false : nil
+    let result = Darwin.kill(-processGroupID, 0)
+    let error = errno
+    return processToolGroupPresence(killResult: result, error: error)
 }
 
 private func terminateProcessToolGroup(
     rootedAt root: ProcessToolProcessIdentity,
-    gracePeriodMilliseconds: Int = 250
+    gracePeriodMilliseconds: Int = 250,
+    killConfirmationMilliseconds: Int = 1_000
 ) -> Bool {
     switch processToolState(of: root) {
     case .matching:
@@ -191,7 +198,7 @@ private func terminateProcessToolGroup(
     }
 
     if Darwin.kill(-root.pid, SIGKILL) == -1, errno != ESRCH { return false }
-    let killDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    let killDeadline = DispatchTime.now() + .milliseconds(killConfirmationMilliseconds)
     while DispatchTime.now() < killDeadline {
         guard let exists = processToolGroupExists(root.pid) else { return false }
         guard exists else { return true }
@@ -202,7 +209,8 @@ private func terminateProcessToolGroup(
 
 private func terminateUnidentifiedProcessToolGroup(
     processGroupID: pid_t,
-    gracePeriodMilliseconds: Int = 250
+    gracePeriodMilliseconds: Int = 250,
+    killConfirmationMilliseconds: Int = 1_000
 ) -> Bool {
     _ = Darwin.kill(-processGroupID, SIGTERM)
     let termDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
@@ -211,7 +219,7 @@ private func terminateUnidentifiedProcessToolGroup(
         usleep(10_000)
     }
     _ = Darwin.kill(-processGroupID, SIGKILL)
-    let killDeadline = DispatchTime.now() + .milliseconds(gracePeriodMilliseconds)
+    let killDeadline = DispatchTime.now() + .milliseconds(killConfirmationMilliseconds)
     while DispatchTime.now() < killDeadline {
         if processToolGroupExists(processGroupID) == false { return true }
         usleep(10_000)
@@ -379,11 +387,10 @@ func runProcessTool(
             case .unclaimed:
                 return
             case .processExited:
-                process.terminationHandler = nil
                 finishAfterClaim(timedOut: false)
                 return
             case .timedOut:
-                process.terminationHandler = nil
+                break
             }
             let terminated = terminateProcessTree?(process.processIdentifier)
                 ?? terminateProcessToolGroup(rootedAt: launchedIdentity)
