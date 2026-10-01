@@ -76,15 +76,14 @@ final class ProcessToolTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let launcher = directory.appendingPathComponent("launcher")
         let sideEffect = directory.appendingPathComponent("side-effect")
-        try Data("#!/bin/zsh\n/bin/zsh -lc \"$2\"\n".utf8).write(to: launcher)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher.path)
-
         do {
             _ = try await runProcessTool(
-                request(command: "printf completed > \(sideEffect.path)"),
-                launcherExecutableURL: launcher
+                request(
+                    command: "printf completed > \(sideEffect.path)",
+                    environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_STATUS_WRITE_FAILURE": "1"]
+                ),
+                launcherExecutableURL: launcherExecutableURL
             )
             XCTFail("Missing status must not be reported as success")
         } catch let error as ProcessToolError {
@@ -96,6 +95,38 @@ final class ProcessToolTests: XCTestCase {
         }
 
         XCTAssertEqual(try String(contentsOf: sideEffect, encoding: .utf8), "completed")
+    }
+
+    func testCompletedCleanupSignalFailurePropagatesAsMCPError() async throws {
+        let result = try await runProcessTool(
+            request(
+                command: "printf completed",
+                environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_SIGNAL_FAILURE": "1"]
+            ),
+            launcherExecutableURL: launcherExecutableURL
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.processGroupCleanupSucceeded, false)
+        XCTAssertTrue(formatProcessToolResult(result).contains("processGroupCleanupSucceeded: false"))
+        XCTAssertTrue(processToolResultIsError(result))
+    }
+
+    func testTimeoutEnumerationFailureFailsClosedThroughMCPErrorContract() async throws {
+        let result = try await runProcessTool(
+            request(
+                command: "while true; do sleep 1; done",
+                environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_ENUMERATION_FAILURE": "1"],
+                timeoutSeconds: 0.1
+            ),
+            launcherExecutableURL: launcherExecutableURL
+        )
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processGroupCleanupSucceeded, false)
+        XCTAssertTrue(formatProcessToolResult(result).contains("processGroupCleanupSucceeded: false"))
+        XCTAssertTrue(processToolResultIsError(result))
     }
 
     func testShellRunnerInfrastructureFailureIsNotCommandExit127() async throws {

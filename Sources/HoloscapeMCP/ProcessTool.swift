@@ -135,6 +135,12 @@ func parseProcessToolControllerStatus(_ text: String) -> ProcessToolControllerSt
 }
 
 private func writeProcessToolStatus(_ status: String, to path: String) {
+#if DEBUG
+    if ProcessInfo.processInfo.environment["HOLOSCAPE_PROCESS_TOOL_TEST_STATUS_WRITE_FAILURE"] == "1" {
+        FileHandle.standardError.write(Data("Injected process status write failure\n".utf8))
+        return
+    }
+#endif
     do {
         try Data(status.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
     } catch {
@@ -333,6 +339,11 @@ private func processToolChildHasExited(_ pid: pid_t) -> Result<Bool, ProcessTool
 /// Returns true only when the owned, unreaped group leader is the group's sole
 /// remaining member. Enumeration failure or any descendant is uncertainty.
 private func processToolGroupContainsOnlyLeader(_ processGroupID: pid_t) -> Bool {
+#if DEBUG
+    if ProcessInfo.processInfo.environment["HOLOSCAPE_PROCESS_TOOL_TEST_ENUMERATION_FAILURE"] == "1" {
+        return false
+    }
+#endif
     errno = 0
     let capacity = proc_listpgrppids(processGroupID, nil, 0)
     guard capacity > 0, errno == 0 else { return false }
@@ -354,6 +365,11 @@ private func processToolGroupContainsOnlyLeader(_ processGroupID: pid_t) -> Bool
 /// reserves the numeric process-group ID. This proves signals target the owned
 /// group; it does not claim to contain descendants that deliberately call setsid.
 private func terminateProcessToolGroup(_ processGroupID: pid_t) -> Bool {
+#if DEBUG
+    if ProcessInfo.processInfo.environment["HOLOSCAPE_PROCESS_TOOL_TEST_SIGNAL_FAILURE"] == "1" {
+        return false
+    }
+#endif
     func absentOrOnlyLeaderAfterPermissionFailure() -> Bool {
         errno == ESRCH || (errno == EPERM && processToolGroupContainsOnlyLeader(processGroupID))
     }
@@ -397,8 +413,12 @@ private func drainProcessToolPipe(
             continue
         }
         if count == 0 {
-            try? handle.close()
-            return true
+            do {
+                try handle.close()
+                return true
+            } catch {
+                return false
+            }
         }
         let readError = errno
         if readError == EINTR { continue }
@@ -721,4 +741,10 @@ func formatProcessToolResult(_ result: ProcessToolResult) -> String {
     lines.append("stderr:")
     lines.append(result.stderr.isEmpty ? "(empty)" : result.stderr)
     return lines.joined(separator: "\n")
+}
+
+func processToolResultIsError(_ result: ProcessToolResult) -> Bool {
+    result.timedOut
+        || (result.exitCode ?? 0) != 0
+        || result.processGroupCleanupSucceeded == false
 }
