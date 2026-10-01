@@ -46,7 +46,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
             recoveryAction: recoveryAction
         )
-        return ([runtimeState] + persistentStatesBySource.values)
+        let sourceStates = persistentStatesBySource.values.filter { state in
+            // Supplemental healthy/busy plugin presentation must never make a
+            // process-less channel look usable. Attention states remain visible
+            // so plugin failures are not silently discarded on process teardown.
+            self.state == .active || state.source != .plugin || state.kind.requiresOperatorAttention
+        }
+        return ([runtimeState] + sourceStates)
             .max { lhs, rhs in
                 if lhs.kind.displayPriority != rhs.kind.displayPriority {
                     return lhs.kind.displayPriority < rhs.kind.displayPriority
@@ -352,7 +358,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if requiresAdapterOwnerToken {
             return ownerToken == adapterOwnerToken
         }
-        return ownerToken == nil || ownerToken == adapterOwnerToken
+        // A freshly restored controller may reattach a broker process launched
+        // by the previous app instance, whose inherited token is not persisted
+        // in tab metadata. Its first scoped event adopts that live owner.
+        return true
     }
 
     func applyPersistentState(_ state: PersistentChannelState, adapterOwnerToken ownerToken: String?) {
@@ -363,7 +372,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             guard acceptsAdapterEvent(ownerToken: ownerToken) else { return }
             // Once a process exits, unscoped legacy events can no longer prove
             // they belong to its replacement. A matching launch-owned token is
-            // required, and an explicitly wrong token is always rejected.
+            // required. A restored controller may adopt the first scoped token
+            // from its already-running broker process; later mismatches reject.
+            if !requiresAdapterOwnerToken, let ownerToken, !ownerToken.isEmpty {
+                adapterOwnerToken = ownerToken
+                requiresAdapterOwnerToken = true
+            }
             adapterPersistentState = state
             delegate?.channelStateDidChange(self, to: self.state)
             return
@@ -446,6 +460,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             // guidance and tab metadata survive relaunch.
             brokerSessionID = nil
             staleBrokerSessionID = terminal.staleBrokerSessionID
+            invalidateAdapterOwner()
         case .failed, .none:
             // Hard failures leave whatever durable identity the tab already had;
             // only a successful attach clears it.
@@ -505,11 +520,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         persistentStatesBySource[.processLifecycle] = nil
         persistentStatesBySource[.brokerRegistry] = nil
         if invalidateAdapterOwner {
-            adapterOwnerToken = UUID().uuidString
-            requiresAdapterOwnerToken = true
+            self.invalidateAdapterOwner()
         }
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
+    }
+
+    private func invalidateAdapterOwner() {
+        adapterOwnerToken = UUID().uuidString
+        requiresAdapterOwnerToken = true
     }
 
     private func recordBrokerStart(

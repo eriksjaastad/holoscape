@@ -214,7 +214,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         }
 
         try validatePTYGridSize(request.initialSize)
-        let resolvedEnvironment = try environment(for: request.environmentProfile)
+        var resolvedEnvironment = try environment(for: request.environmentProfile)
+        if let ownerToken = request.agentStatusOwnerToken, !ownerToken.isEmpty {
+            resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
+        }
 
         var masterFD: Int32 = -1
         var slaveFD: Int32 = -1

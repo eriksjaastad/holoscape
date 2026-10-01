@@ -656,6 +656,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             command: "/usr/bin/env",
             workingDirectory: "/tmp",
             environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "native-runtime-owner-token",
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
 
@@ -665,6 +666,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         _ = try waitForTerminationStatus(from: runtime, id: id)
         let output = try collectOutput(from: runtime, id: id)
         XCTAssertTrue(output.contains("TERM=xterm-256color"), output)
+        XCTAssertTrue(
+            output.contains("HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=native-runtime-owner-token"),
+            output
+        )
         XCTAssertFalse(output.contains("ANTHROPIC_API_KEY="), output)
     }
 

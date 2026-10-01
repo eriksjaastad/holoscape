@@ -96,11 +96,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
 
+        let ownerTokenPrefix = "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="
+        let ownerToken = environment?
+            .first(where: { $0.hasPrefix(ownerTokenPrefix) })
+            .map { String($0.dropFirst(ownerTokenPrefix.count)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
         let request = BrokerSessionLaunchRequest(
             command: executable,
             arguments: args,
             workingDirectory: currentDirectory,
             environmentProfile: environmentProfile,
+            agentStatusOwnerToken: ownerToken,
             initialSize: currentGridSize
         )
 

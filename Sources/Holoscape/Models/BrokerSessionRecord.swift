@@ -57,6 +57,10 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
     let arguments: [String]
     let workingDirectory: String?
     let environmentProfile: BrokerEnvironmentProfile
+    /// Ephemeral, non-secret generation token used to associate agent status
+    /// hooks with the exact process launch that emitted them. It crosses broker
+    /// IPC but is intentionally not copied into the durable session record.
+    let agentStatusOwnerToken: String?
     let initialSize: TerminalGridSize
 
     init(
@@ -64,6 +68,7 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
         arguments: [String] = [],
         workingDirectory: String?,
         environmentProfile: BrokerEnvironmentProfile,
+        agentStatusOwnerToken: String? = nil,
         initialSize: TerminalGridSize
     ) {
         precondition(!command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Broker launch command cannot be empty")
@@ -71,6 +76,7 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.environmentProfile = environmentProfile
+        self.agentStatusOwnerToken = agentStatusOwnerToken
         self.initialSize = initialSize
     }
 }

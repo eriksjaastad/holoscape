@@ -456,6 +456,28 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.kind, .needsApproval)
     }
 
+    func testFirstScopedEventAdoptsOwnerFromReattachedBrokerProcess() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter),
+            adapterOwnerToken: "owner-from-previous-app-instance"
+        )
+
+        XCTAssertEqual(controller.adapterOwnerToken, "owner-from-previous-app-instance")
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: "owner-from-previous-app-instance"))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+    }
+
     func testDirectProcessTerminationClearsAttentionAndRejectsLateAdapterEvent() async {
         let controller = AgentChannelController(
             id: UUID(),
@@ -639,6 +661,27 @@ final class AgentChannelControllerTests: XCTestCase {
         )
     }
 
+    func testRecoveredPluginStatusCannotMakeDisconnectedProcessLookReady() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .ready, source: .plugin, reason: "Plugin recovered")
+        )
+
+        controller.deactivate()
+
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+    }
+
     func testAgentActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentChannelControllerTests-")
@@ -708,6 +751,7 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(call.request.arguments, ["codex"])
         XCTAssertEqual(call.request.workingDirectory, "/tmp/agent-broker-backed")
         XCTAssertEqual(call.request.environmentProfile, .agentOAuth)
+        XCTAssertEqual(call.request.agentStatusOwnerToken, controller.adapterOwnerToken)
         XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "recording-agent-broker-session"))
     }
 
@@ -864,6 +908,7 @@ final class AgentChannelControllerTests: XCTestCase {
             terminal: terminal
         )
         controller.activate()
+        let exitedOwnerToken = controller.adapterOwnerToken
         terminal.brokerOwnedSessionID = deadID
         terminal.staleBrokerSessionID = deadID
 
@@ -873,6 +918,13 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertNil(controller.brokerSessionID)
         XCTAssertEqual(controller.staleBrokerSessionID, deadID)
         XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+        XCTAssertNotEqual(controller.adapterOwnerToken, exitedOwnerToken)
+
+        controller.retry()
+
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: exitedOwnerToken))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: controller.adapterOwnerToken))
     }
 
     func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {

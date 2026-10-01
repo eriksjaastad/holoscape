@@ -264,7 +264,6 @@ class HoloscapeAPIServer {
                 reason: reason
             )
             if let agentChannel = channel as? AgentChannelController,
-               persistentState != nil,
                !agentChannel.acceptsAdapterEvent(ownerToken: ownerToken) {
                 return .json(["status": "ignored", "type": type])
             }
