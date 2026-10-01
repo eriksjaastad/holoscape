@@ -7,6 +7,11 @@ func log(_ msg: String) {
     FileHandle.standardError.write(Data("[HoloscapeMCP] \(msg)\n".utf8))
 }
 
+if CommandLine.arguments.count == 3,
+   CommandLine.arguments[1] == "--holoscape-process-shell-runner" {
+    runProcessToolShellRunner(command: CommandLine.arguments[2])
+}
+
 if CommandLine.arguments.count == 5,
    CommandLine.arguments[1] == "--holoscape-process-controller",
    let timeoutSeconds = Double(CommandLine.arguments[3]) {

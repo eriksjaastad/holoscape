@@ -155,17 +155,19 @@ final class ProcessToolTests: XCTestCase {
         }
     }
 
-    func testExitedGroupLeaderStillReservesGroupForCleanup() async throws {
+    func testKillingDirectParentCannotDisableGroupCleanup() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-parent-kill-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
         let command = """
-        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
-        while [[ ! -f \(childPIDURL.path) ]]; do sleep 0.01; done
-        kill -KILL $$
+        zmodload zsh/zselect
+        echo $$ > \(shellPIDURL.path)
+        kill -KILL $PPID
+        trap '' TERM
+        while true; do zselect -t 100; done
         """
 
         let result = try await runProcessTool(
@@ -173,11 +175,38 @@ final class ProcessToolTests: XCTestCase {
             launcherExecutableURL: launcherExecutableURL
         )
 
-        let childPID = try pid(from: childPIDURL)
-        defer { _ = Darwin.kill(childPID, SIGKILL) }
+        let shellPID = try pid(from: shellPIDURL)
+        defer { _ = Darwin.kill(shellPID, SIGKILL) }
         XCTAssertEqual(result.exitCode, SIGKILL)
         XCTAssertFalse(result.timedOut)
-        assertProcessIsGone(childPID, "An exited group leader must keep its group ID reserved through cleanup")
+        assertProcessIsGone(shellPID, "Killing $PPID must not strand the command group")
+    }
+
+    func testStoppingDirectParentCannotDisableTimeout() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-parent-stop-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
+        let command = """
+        zmodload zsh/zselect
+        echo $$ > \(shellPIDURL.path)
+        kill -STOP $PPID
+        trap '' TERM
+        while true; do zselect -t 100; done
+        """
+
+        let result = try await runProcessTool(
+            request(command: command, timeoutSeconds: 0.5),
+            launcherExecutableURL: launcherExecutableURL
+        )
+
+        let shellPID = try pid(from: shellPIDURL)
+        defer { _ = Darwin.kill(shellPID, SIGKILL) }
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processGroupCleanupSucceeded, true)
+        assertProcessIsGone(shellPID, "Stopping $PPID must not disable timeout cleanup")
     }
 
     func testDetachedDescendantIsOutsideProcessGroupCleanupContract() async throws {

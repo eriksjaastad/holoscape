@@ -134,10 +134,7 @@ private func writeProcessToolStatus(_ status: String, to path: String) {
     }
 }
 
-/// Launches the shell as the leader of a fresh process group. The controller
-/// deliberately leaves this direct child waitable until cleanup signals have
-/// been sent, so its PID cannot be reused as an unrelated process-group ID.
-private func spawnProcessToolShell(command: String) throws -> pid_t {
+private func spawnProcessToolShell(command: String, processGroupID: pid_t) throws -> pid_t {
     var fileActions: posix_spawn_file_actions_t?
     var attributes: posix_spawnattr_t?
     guard posix_spawn_file_actions_init(&fileActions) == 0,
@@ -157,7 +154,7 @@ private func spawnProcessToolShell(command: String) throws -> pid_t {
         0
     ) == 0,
     posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
-    posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
+    posix_spawnattr_setpgroup(&attributes, processGroupID) == 0 else {
         throw ProcessToolError.launchFailed("Could not configure shell process group")
     }
 
@@ -190,6 +187,51 @@ private func spawnProcessToolShell(command: String) throws -> pid_t {
     return spawnedPID
 }
 
+/// Launches a sacrificial direct parent for the command as leader of a fresh
+/// process group. The timeout controller keeps this child waitable until cleanup
+/// signals are sent, so its PID cannot be reused as an unrelated group ID.
+private func spawnProcessToolGroupLeader(command: String) throws -> pid_t {
+    var attributes: posix_spawnattr_t?
+    guard posix_spawnattr_init(&attributes) == 0 else {
+        throw ProcessToolError.launchFailed("Could not initialize group leader launch attributes")
+    }
+    defer { posix_spawnattr_destroy(&attributes) }
+
+    guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
+          posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
+        throw ProcessToolError.launchFailed("Could not configure group leader process group")
+    }
+
+    var spawnedPID: pid_t = 0
+    let executablePath = CommandLine.arguments[0]
+    let result = executablePath.withCString { executablePointer in
+        "--holoscape-process-shell-runner".withCString { modePointer in
+            command.withCString { commandPointer in
+                var arguments: [UnsafeMutablePointer<CChar>?] = [
+                    UnsafeMutablePointer(mutating: executablePointer),
+                    UnsafeMutablePointer(mutating: modePointer),
+                    UnsafeMutablePointer(mutating: commandPointer),
+                    nil,
+                ]
+                return arguments.withUnsafeMutableBufferPointer { buffer in
+                    posix_spawn(
+                        &spawnedPID,
+                        executablePointer,
+                        nil,
+                        &attributes,
+                        buffer.baseAddress!,
+                        environ
+                    )
+                }
+            }
+        }
+    }
+    guard result == 0 else {
+        throw ProcessToolError.launchFailed(String(cString: strerror(result)))
+    }
+    return spawnedPID
+}
+
 private func processToolExitCode(from waitStatus: Int32) -> Int32 {
     let signal = waitStatus & 0x7f
     return signal == 0 ? (waitStatus >> 8) & 0xff : signal
@@ -207,12 +249,37 @@ private func waitForProcessToolChild(_ pid: pid_t) -> Result<Int32, ProcessToolE
     }
 }
 
+/// Keeps the timeout controller outside the command's group. `$PPID` therefore
+/// identifies this sacrificial runner; stopping or killing it cannot disable the
+/// controller, and its unreaped PID continues to reserve the group ID.
+func runProcessToolShellRunner(command: String) -> Never {
+    let shellPID: pid_t
+    do {
+        shellPID = try spawnProcessToolShell(command: command, processGroupID: getpgrp())
+    } catch {
+        FileHandle.standardError.write(Data("Failed to launch process shell: \(error.localizedDescription)\n".utf8))
+        Darwin.exit(127)
+    }
+
+    switch waitForProcessToolChild(shellPID) {
+    case .success(let exitCode):
+        Darwin.exit(exitCode)
+    case .failure(let error):
+        FileHandle.standardError.write(Data("Failed to wait for process shell: \(error.localizedDescription)\n".utf8))
+        Darwin.exit(127)
+    }
+}
+
 private func processToolChildHasExited(_ pid: pid_t) -> Result<Bool, ProcessToolError> {
     var information = siginfo_t()
     while true {
         let result = waitid(P_PID, id_t(pid), &information, WEXITED | WNOHANG | WNOWAIT)
         if result == 0 {
-            return .success(information.si_pid == pid)
+            let exited = information.si_pid == pid
+                && (information.si_code == CLD_EXITED
+                    || information.si_code == CLD_KILLED
+                    || information.si_code == CLD_DUMPED)
+            return .success(exited)
         }
         if errno != EINTR {
             return .failure(.launchFailed("Could not inspect child process: \(String(cString: strerror(errno)))"))
@@ -283,9 +350,9 @@ func runProcessToolController(
     timeoutSeconds: Double,
     statusPath: String
 ) -> Never {
-    let shellPID: pid_t
+    let groupLeaderPID: pid_t
     do {
-        shellPID = try spawnProcessToolShell(command: command)
+        groupLeaderPID = try spawnProcessToolGroupLeader(command: command)
     } catch {
         writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
         Darwin.exit(127)
@@ -295,7 +362,7 @@ func runProcessToolController(
     var timedOut = false
     var inspectionFailure: ProcessToolError?
     while true {
-        switch processToolChildHasExited(shellPID) {
+        switch processToolChildHasExited(groupLeaderPID) {
         case .success(true):
             break
         case .success(false):
@@ -311,8 +378,8 @@ func runProcessToolController(
         break
     }
 
-    let groupCleanupSucceeded = terminateProcessToolGroup(shellPID)
-    let childResult = waitForProcessToolChild(shellPID)
+    let groupCleanupSucceeded = terminateProcessToolGroup(groupLeaderPID)
+    let childResult = waitForProcessToolChild(groupLeaderPID)
 
     if let inspectionFailure {
         writeProcessToolStatus("launchFailed:\(inspectionFailure.localizedDescription)", to: statusPath)
