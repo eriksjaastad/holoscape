@@ -202,7 +202,7 @@ final class ProcessToolTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let detachedPIDURL = directory.appendingPathComponent("detached.pid")
-        let python = "import os,time; os.setsid(); open('\(detachedPIDURL.path)','w').write(str(os.getpid())); time.sleep(30)"
+        let python = "import os; os.setsid(); open('\(detachedPIDURL.path)','w').write(str(os.getpid())); [os.write(1,b'x'*8192) for _ in iter(int,1)]"
         let command = """
         /usr/bin/python3 -c \(shellQuote(python)) &
         while [[ ! -f \(detachedPIDURL.path) ]]; do sleep 0.01; done

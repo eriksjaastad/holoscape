@@ -236,7 +236,9 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 let result = try await runProcessTool(request)
                 return CallTool.Result(
                     content: [.text(text: formatProcessToolResult(result), annotations: nil, _meta: nil)],
-                    isError: result.timedOut || (result.exitCode ?? 0) != 0
+                    isError: result.timedOut
+                        || (result.exitCode ?? 0) != 0
+                        || result.processCleanupConfirmed == false
                 )
 
             case "holoscape_run_applescript":

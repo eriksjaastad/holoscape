@@ -311,16 +311,24 @@ private func drainProcessToolPipe(
     }
 
     var bytes = [UInt8](repeating: 0, count: 8_192)
-    while true {
+    let deadline = DispatchTime.now() + .milliseconds(100)
+    while DispatchTime.now() < deadline {
         let count = Darwin.read(descriptor, &bytes, bytes.count)
         if count > 0 {
             buffer.append(Data(bytes.prefix(count)))
             continue
         }
+        if count == 0 {
+            try? handle.close()
+            return true
+        }
+        let readError = errno
+        if readError == EINTR { continue }
         try? handle.close()
-        if count == 0 { return true }
-        return errno != EAGAIN && errno != EWOULDBLOCK
+        return false
     }
+    try? handle.close()
+    return false
 }
 
 /// Keeps the command's direct parent separate from the process-group anchor.
