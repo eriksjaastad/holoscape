@@ -18,7 +18,56 @@ final class ProcessToolTests: XCTestCase {
             parseProcessToolControllerStatus("completed:17"),
             .completed(exitCode: 17)
         )
+        XCTAssertEqual(
+            parseProcessToolControllerStatus("completedCleanupFailed:17"),
+            .completedCleanupFailed(exitCode: 17)
+        )
         XCTAssertNil(parseProcessToolControllerStatus("timedOut:maybe"))
+    }
+
+    func testBoundedChildWaitReturnsWhileChildIsStillRunning() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        let child = process.processIdentifier
+        defer {
+            _ = Darwin.kill(child, SIGKILL)
+            process.waitUntilExit()
+        }
+
+        let startedAt = DispatchTime.now()
+        let result = waitForProcessToolChild(child, timeoutSeconds: 0.05)
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000_000
+
+        XCTAssertNil(result)
+        XCTAssertLessThan(elapsed, 0.5, "Cleanup failure must not turn a timeout into an unbounded wait")
+    }
+
+    func testPipeReaderWaitsForInFlightAppendBeforeSnapshot() throws {
+        let pipe = Pipe()
+        let buffer = ProcessToolOutputBuffer(maxBytes: 32)
+        let handlerEntered = DispatchSemaphore(value: 0)
+        let allowAppend = DispatchSemaphore(value: 0)
+        let reader = ProcessToolPipeReader(handle: pipe.fileHandleForReading, buffer: buffer) {
+            handlerEntered.signal()
+            _ = allowAppend.wait(timeout: .now() + 2)
+        }
+        reader.start()
+        try pipe.fileHandleForWriting.write(contentsOf: Data("holoscape".utf8))
+        XCTAssertEqual(handlerEntered.wait(timeout: .now() + 2), .success)
+
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = reader.finish()
+            finished.signal()
+        }
+        XCTAssertEqual(finished.wait(timeout: .now() + 0.05), .timedOut)
+        allowAppend.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        try pipe.fileHandleForWriting.close()
+
+        XCTAssertEqual(buffer.snapshot().string, "holoscape")
     }
 
     func testRunProcessToolPreservesOutputBelowLimit() async throws {

@@ -104,6 +104,7 @@ final class ProcessToolCompletion: @unchecked Sendable {
 
 enum ProcessToolControllerStatus: Equatable {
     case completed(exitCode: Int32)
+    case completedCleanupFailed(exitCode: Int32)
     case timedOut(groupCleanupSucceeded: Bool)
     case launchFailed(String)
 }
@@ -113,6 +114,10 @@ func parseProcessToolControllerStatus(_ text: String) -> ProcessToolControllerSt
     if status.hasPrefix("completed:"),
        let exitCode = Int32(status.dropFirst("completed:".count)) {
         return .completed(exitCode: exitCode)
+    }
+    if status.hasPrefix("completedCleanupFailed:"),
+       let exitCode = Int32(status.dropFirst("completedCleanupFailed:".count)) {
+        return .completedCleanupFailed(exitCode: exitCode)
     }
     if status == "timedOut:groupSignaled" {
         return .timedOut(groupCleanupSucceeded: true)
@@ -249,6 +254,30 @@ private func waitForProcessToolChild(_ pid: pid_t) -> Result<Int32, ProcessToolE
     }
 }
 
+/// Reaps a child if it exits before the deadline. Returning nil leaves the
+/// still-running child to the OS when the controller exits instead of allowing
+/// a failed cleanup signal to defeat the caller's timeout indefinitely.
+func waitForProcessToolChild(
+    _ pid: pid_t,
+    timeoutSeconds: Double
+) -> Result<Int32, ProcessToolError>? {
+    let deadline = DispatchTime.now() + timeoutSeconds
+    var waitStatus: Int32 = 0
+    while true {
+        let result = waitpid(pid, &waitStatus, WNOHANG)
+        if result == pid {
+            return .success(processToolExitCode(from: waitStatus))
+        }
+        if result == -1, errno != EINTR {
+            return .failure(.launchFailed("Could not wait for child process: \(String(cString: strerror(errno)))"))
+        }
+        if DispatchTime.now() >= deadline {
+            return nil
+        }
+        usleep(5_000)
+    }
+}
+
 /// Keeps the timeout controller outside the command's group. `$PPID` therefore
 /// identifies this sacrificial runner; stopping or killing it cannot disable the
 /// controller, and its unreaped PID continues to reserve the group ID.
@@ -290,20 +319,21 @@ private func processToolChildHasExited(_ pid: pid_t) -> Result<Bool, ProcessTool
 /// Returns true only when the owned, unreaped group leader is the group's sole
 /// remaining member. Enumeration failure or any descendant is uncertainty.
 private func processToolGroupContainsOnlyLeader(_ processGroupID: pid_t) -> Bool {
+    errno = 0
     let capacity = proc_listpgrppids(processGroupID, nil, 0)
-    guard capacity >= 0 else { return false }
-    if capacity == 0 { return true }
+    guard capacity > 0, errno == 0 else { return false }
 
     var processIDs = [pid_t](repeating: 0, count: Int(capacity))
+    errno = 0
     let count = proc_listpgrppids(
         processGroupID,
         &processIDs,
         Int32(processIDs.count * MemoryLayout<pid_t>.size)
     )
-    guard count >= 0 else { return false }
+    guard count > 0, errno == 0 else { return false }
 
     let members = processIDs.prefix(Int(count)).filter { $0 > 0 }
-    return members.allSatisfy { $0 == processGroupID }
+    return members.count == 1 && members[0] == processGroupID
 }
 
 /// Sends bounded TERM-to-KILL escalation while the unreaped group leader still
@@ -322,8 +352,14 @@ private func terminateProcessToolGroup(_ processGroupID: pid_t) -> Bool {
     if Darwin.kill(-processGroupID, SIGKILL) == -1 {
         return absentOrOnlyLeaderAfterPermissionFailure()
     }
-    usleep(50_000)
-    return true
+    let deadline = DispatchTime.now() + .seconds(1)
+    while DispatchTime.now() < deadline {
+        if processToolGroupContainsOnlyLeader(processGroupID) {
+            return true
+        }
+        usleep(5_000)
+    }
+    return false
 }
 
 private func drainProcessToolPipe(
@@ -363,6 +399,67 @@ private func drainProcessToolPipe(
     return false
 }
 
+/// Serializes asynchronous readability callbacks with final draining and
+/// snapshotting. Clearing FileHandle's handler does not join an invocation that
+/// is already running, so the explicit lock is the ownership boundary.
+final class ProcessToolPipeReader: @unchecked Sendable {
+    typealias Output = (string: String, truncated: Bool)
+
+    struct Outcome {
+        let output: Output
+        let closedCleanly: Bool
+    }
+
+    private let handle: FileHandle
+    private let buffer: ProcessToolOutputBuffer
+    private let beforeAppend: (() -> Void)?
+    private let lock = NSLock()
+    private var active = true
+
+    init(
+        handle: FileHandle,
+        buffer: ProcessToolOutputBuffer,
+        beforeAppend: (() -> Void)? = nil
+    ) {
+        self.handle = handle
+        self.buffer = buffer
+        self.beforeAppend = beforeAppend
+    }
+
+    func start() {
+        handle.readabilityHandler = { [weak self] handle in
+            self?.consumeAvailableData(from: handle)
+        }
+    }
+
+    private func consumeAvailableData(from handle: FileHandle) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active else { return }
+        let data = handle.availableData
+        beforeAppend?()
+        buffer.append(data)
+    }
+
+    func finish() -> Outcome {
+        handle.readabilityHandler = nil
+        lock.lock()
+        active = false
+        let closedCleanly = drainProcessToolPipe(handle, into: buffer)
+        let output = buffer.snapshot()
+        lock.unlock()
+        return Outcome(output: output, closedCleanly: closedCleanly)
+    }
+
+    func cancel() {
+        handle.readabilityHandler = nil
+        lock.lock()
+        active = false
+        try? handle.close()
+        lock.unlock()
+    }
+}
+
 /// Owns timeout arbitration outside the command's process group. The direct
 /// shell remains an unreaped child until cleanup finishes, preventing PGID reuse
 /// between timeout detection and group signaling.
@@ -400,10 +497,20 @@ func runProcessToolController(
     }
 
     let groupCleanupSucceeded = terminateProcessToolGroup(groupLeaderPID)
-    let childResult = waitForProcessToolChild(groupLeaderPID)
+    let childResult = waitForProcessToolChild(
+        groupLeaderPID,
+        timeoutSeconds: groupCleanupSucceeded ? 2 : 0.1
+    )
 
     if let inspectionFailure {
         writeProcessToolStatus("launchFailed:\(inspectionFailure.localizedDescription)", to: statusPath)
+        Darwin.exit(125)
+    }
+    guard let childResult else {
+        writeProcessToolStatus(
+            timedOut ? "timedOut:groupSignalFailed" : "launchFailed:Child process did not exit after cleanup signaling",
+            to: statusPath
+        )
         Darwin.exit(125)
     }
     guard case .success(let exitCode) = childResult else {
@@ -425,7 +532,7 @@ func runProcessToolController(
     } else if groupCleanupSucceeded {
         writeProcessToolStatus("completed:\(exitCode)", to: statusPath)
     } else {
-        writeProcessToolStatus("launchFailed:Completed command process-group cleanup signaling failed", to: statusPath)
+        writeProcessToolStatus("completedCleanupFailed:\(exitCode)", to: statusPath)
     }
     Darwin.exit(0)
 }
@@ -497,23 +604,18 @@ func runProcessTool(
 
     let stdout = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let stderr = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-        stdout.append(handle.availableData)
-    }
-    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-        stderr.append(handle.availableData)
-    }
+    let stdoutReader = ProcessToolPipeReader(handle: stdoutPipe.fileHandleForReading, buffer: stdout)
+    let stderrReader = ProcessToolPipeReader(handle: stderrPipe.fileHandleForReading, buffer: stderr)
+    stdoutReader.start()
+    stderrReader.start()
 
     return try await withCheckedThrowingContinuation { continuation in
         process.terminationHandler = { _ in
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            let stdoutClosed = drainProcessToolPipe(stdoutPipe.fileHandleForReading, into: stdout)
-            let stderrClosed = drainProcessToolPipe(stderrPipe.fileHandleForReading, into: stderr)
-            let outputPipesClosed = stdoutClosed && stderrClosed
-            let standardOutput = stdout.snapshot()
-            let standardError = stderr.snapshot()
+            let stdoutOutcome = stdoutReader.finish()
+            let stderrOutcome = stderrReader.finish()
+            let outputPipesClosed = stdoutOutcome.closedCleanly && stderrOutcome.closedCleanly
+            let standardOutput = stdoutOutcome.output
+            let standardError = stderrOutcome.output
             let status = try? String(contentsOf: statusURL, encoding: .utf8)
             try? FileManager.default.removeItem(at: statusURL)
             guard let status, let parsed = parseProcessToolControllerStatus(status) else {
@@ -533,6 +635,18 @@ func runProcessTool(
                     stdoutTruncated: standardOutput.truncated,
                     stderrTruncated: standardError.truncated,
                     processGroupCleanupSucceeded: outputPipesClosed ? nil : false
+                ))
+            case .completedCleanupFailed(let exitCode):
+                continuation.resume(returning: ProcessToolResult(
+                    command: request.command,
+                    workingDirectory: request.workingDirectory,
+                    exitCode: exitCode,
+                    timedOut: false,
+                    stdout: standardOutput.string,
+                    stderr: standardError.string,
+                    stdoutTruncated: standardOutput.truncated,
+                    stderrTruncated: standardError.truncated,
+                    processGroupCleanupSucceeded: false
                 ))
             case .timedOut(let groupCleanupSucceeded):
                 continuation.resume(returning: ProcessToolResult(
@@ -555,8 +669,8 @@ func runProcessTool(
             try process.run()
         } catch {
             process.terminationHandler = nil
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            stdoutReader.cancel()
+            stderrReader.cancel()
             try? FileManager.default.removeItem(at: statusURL)
             continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
         }
