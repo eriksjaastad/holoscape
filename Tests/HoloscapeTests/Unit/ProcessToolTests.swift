@@ -3,6 +3,16 @@ import XCTest
 @testable import HoloscapeMCP
 
 final class ProcessToolTests: XCTestCase {
+    func testTimeoutClaimTreatsExitBeforeClaimAsNormalCompletion() {
+        let completion = ProcessToolCompletion()
+        var states = [true, false]
+
+        let claim = completion.claimTimeout { states.removeFirst() }
+
+        XCTAssertEqual(claim, .processExited)
+        XCTAssertFalse(completion.claim())
+    }
+
     func testRunProcessToolPreservesOutputBelowLimit() async throws {
         let result = try await runProcessTool(
             request(command: "printf holoscape; printf warning >&2"),
@@ -15,6 +25,7 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertEqual(result.stderr, "warning")
         XCTAssertFalse(result.stdoutTruncated)
         XCTAssertFalse(result.stderrTruncated)
+        XCTAssertNil(result.processCleanupConfirmed)
         XCTAssertFalse(formatProcessToolResult(result).contains("Truncated"))
     }
 
@@ -58,10 +69,11 @@ final class ProcessToolTests: XCTestCase {
         let parentPIDURL = directory.appendingPathComponent("parent.pid")
         let childPIDURL = directory.appendingPathComponent("child.pid")
         let command = """
+        zmodload zsh/zselect
         echo $$ > \(parentPIDURL.path)
         trap '' TERM
-        /bin/zsh -c 'echo $$ > \(childPIDURL.path); trap "" TERM; while true; do sleep 1; done' &
-        while true; do sleep 1; done
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while true; do zselect -t 100; done
         """
 
         let result = try await runProcessTool(
@@ -70,6 +82,7 @@ final class ProcessToolTests: XCTestCase {
         )
 
         XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processCleanupConfirmed, true)
         let parentPID = try pid(from: parentPIDURL)
         let childPID = try pid(from: childPIDURL)
         defer {
@@ -78,6 +91,31 @@ final class ProcessToolTests: XCTestCase {
         }
         assertProcessIsGone(parentPID, "Timed-out shell must be gone before returning")
         assertProcessIsGone(childPID, "Timed-out descendants must be gone before returning")
+    }
+
+    func testRunProcessToolReportsUnconfirmedCleanupOutsideCappedStderr() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-cleanup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidURL = directory.appendingPathComponent("process.pid")
+        let result = try await runProcessTool(
+            request(
+                command: "zmodload zsh/zselect; echo $$ > \(pidURL.path); printf 123456789 >&2; while true; do zselect -t 100; done",
+                timeoutSeconds: 0.25
+            ),
+            maxOutputBytes: 5,
+            terminateProcessTree: { _ in false }
+        )
+        let processPID = try pid(from: pidURL)
+        defer { _ = Darwin.kill(processPID, SIGKILL) }
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.processCleanupConfirmed, false)
+        XCTAssertEqual(result.stderr, "12345")
+        XCTAssertTrue(result.stderrTruncated)
+        XCTAssertTrue(formatProcessToolResult(result).contains("processCleanupConfirmed: false"))
     }
 
     private func request(command: String, timeoutSeconds: Double = 2) -> ProcessToolRequest {
