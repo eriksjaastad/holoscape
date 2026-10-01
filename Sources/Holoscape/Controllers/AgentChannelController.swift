@@ -320,6 +320,18 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     func applyPersistentState(_ state: PersistentChannelState) {
         if state.source == .agentAdapter {
+            // Adapter events describe only the currently running agent process.
+            // Delayed hooks from an exited process must not overwrite truthful
+            // disconnected/stale lifecycle state.
+            guard self.state == .active else { return }
+            // A new adapter event supersedes an older adapter event (including
+            // completion clearing restored approval), but it remains subordinate
+            // to a higher-priority state owned by another source such as a plugin.
+            if let current = adapterPersistentState,
+               current.source != .agentAdapter,
+               state.kind.displayPriority < current.kind.displayPriority {
+                return
+            }
             adapterPersistentState = state
             delegate?.channelStateDidChange(self, to: self.state)
             return

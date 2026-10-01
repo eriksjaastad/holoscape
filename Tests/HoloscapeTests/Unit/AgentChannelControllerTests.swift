@@ -377,6 +377,69 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertNil(controller.terminalOutputPersistentState)
     }
 
+    func testLateAgentAdapterAttentionCannotOverwriteDisconnectedLifecycle() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.reportTermination(exitCode: 0)
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .needsApproval,
+                source: .agentAdapter,
+                reason: "Delayed approval event from the exited process"
+            )
+        )
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+        XCTAssertNil(controller.adapterPersistentState)
+
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
+    func testDirectProcessTerminationClearsAttentionAndRejectsLateAdapterEvent() async {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        controller.processTerminated(
+            source: HoloscapeTerminalView(frame: .zero),
+            exitCode: 0
+        )
+        await Task.yield()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .error, source: .agentAdapter)
+        )
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
     func testControllerSendInputClearsRestoredTerminalOutputAttention() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(
@@ -479,6 +542,39 @@ final class AgentChannelControllerTests: XCTestCase {
             controller.persistentState,
             awaitingApproval,
             "Plugin status is supplemental and must not hide higher-priority agent/operator states"
+        )
+    }
+
+    func testAgentAdapterCompletionCannotOverwriteHigherPriorityPluginError() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        let pluginError = PersistentChannelState(
+            kind: .error,
+            source: .plugin,
+            reason: "Project Tracker unavailable"
+        )
+        controller.applyPersistentState(pluginError)
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .ready,
+                source: .agentAdapter,
+                reason: "Agent response completed"
+            )
+        )
+
+        XCTAssertEqual(
+            controller.persistentState,
+            pluginError,
+            "A lower-priority agent completion must not erase a plugin-owned failure"
         )
     }
 
