@@ -287,19 +287,40 @@ private func processToolChildHasExited(_ pid: pid_t) -> Result<Bool, ProcessTool
     }
 }
 
+/// Returns true only when the owned, unreaped group leader is the group's sole
+/// remaining member. Enumeration failure or any descendant is uncertainty.
+private func processToolGroupContainsOnlyLeader(_ processGroupID: pid_t) -> Bool {
+    let capacity = proc_listpgrppids(processGroupID, nil, 0)
+    guard capacity >= 0 else { return false }
+    if capacity == 0 { return true }
+
+    var processIDs = [pid_t](repeating: 0, count: Int(capacity))
+    let count = proc_listpgrppids(
+        processGroupID,
+        &processIDs,
+        Int32(processIDs.count * MemoryLayout<pid_t>.size)
+    )
+    guard count >= 0 else { return false }
+
+    let members = processIDs.prefix(Int(count)).filter { $0 > 0 }
+    return members.allSatisfy { $0 == processGroupID }
+}
+
 /// Sends bounded TERM-to-KILL escalation while the unreaped group leader still
 /// reserves the numeric process-group ID. This proves signals target the owned
 /// group; it does not claim to contain descendants that deliberately call setsid.
 private func terminateProcessToolGroup(_ processGroupID: pid_t) -> Bool {
+    func absentOrOnlyLeaderAfterPermissionFailure() -> Bool {
+        errno == ESRCH || (errno == EPERM && processToolGroupContainsOnlyLeader(processGroupID))
+    }
+
     if Darwin.kill(-processGroupID, SIGTERM) == -1 {
-        // With an owned, unreaped leader, EPERM means the group has no
-        // signalable live members (the remaining member is the zombie leader).
-        return errno == ESRCH || errno == EPERM
+        return absentOrOnlyLeaderAfterPermissionFailure()
     }
 
     usleep(250_000)
     if Darwin.kill(-processGroupID, SIGKILL) == -1 {
-        return errno == ESRCH || errno == EPERM
+        return absentOrOnlyLeaderAfterPermissionFailure()
     }
     usleep(50_000)
     return true
