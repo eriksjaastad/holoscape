@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 @MainActor
 class ProjectDiscoveryService {
@@ -96,45 +97,232 @@ class ProjectDiscoveryService {
     }
 
     private func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                process.arguments = [
-                    "-o", "ConnectTimeout=10",
-                    "\(user)@\(host)",
-                    "ls", "-1", root
-                ]
-
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
-
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                process.waitUntilExit()
-
-                guard process.terminationStatus == 0 else {
-                    continuation.resume(throwing: DiscoveryError.sshFailed(exitCode: process.terminationStatus))
-                    return
-                }
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                let dirs = output.components(separatedBy: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                    .sorted()
-                continuation.resume(returning: dirs)
-            }
-        }
+        try await Self.listDirectories(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "\(user)@\(host)",
+                "ls", "-1", root,
+            ],
+            timeout: 15
+        )
     }
 
-    enum DiscoveryError: Error {
-        case sshFailed(exitCode: Int32)
+    typealias ProcessOutputReader = @Sendable (FileHandle, Int) throws -> Data?
+
+    nonisolated static func listDirectories(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        maxOutputBytes: Int = 1_048_576,
+        readChunk: @escaping ProcessOutputReader = { handle, count in
+            try handle.read(upToCount: count)
+        }
+    ) async throws -> [String] {
+        let result = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result {
+                    try runProcess(
+                        executableURL: executableURL,
+                        arguments: arguments,
+                        timeout: timeout,
+                        maxOutputBytes: maxOutputBytes,
+                        readChunk: readChunk
+                    )
+                })
+            }
+        }
+
+        guard result.exitCode == 0 else {
+            let stderr = String(decoding: result.stderr, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw DiscoveryError.processFailed(exitCode: result.exitCode, stderr: stderr)
+        }
+
+        return String(decoding: result.stdout, as: UTF8.self)
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .sorted()
+    }
+
+    private nonisolated static func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        maxOutputBytes: Int,
+        readChunk: @escaping ProcessOutputReader
+    ) throws -> ProcessResult {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let termination = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in termination.signal() }
+        try process.run()
+
+        let stdout = ProcessOutputBox()
+        let stderr = ProcessOutputBox()
+        let readers = DispatchGroup()
+        for (pipe, destination) in [(stdoutPipe, stdout), (stderrPipe, stderr)] {
+            readers.enter()
+            DispatchQueue.global(qos: .utility).async {
+                destination.read(
+                    from: pipe.fileHandleForReading,
+                    maxBytes: max(0, maxOutputBytes),
+                    readChunk: readChunk,
+                    onLimitExceeded: { process.terminate() }
+                )
+                readers.leave()
+            }
+        }
+
+        let boundedTimeout = max(0, timeout)
+        let operationDeadline = DispatchTime.now() + boundedTimeout
+        if termination.wait(timeout: operationDeadline) == .timedOut {
+            let stdoutReadFailure = stdout.readFailure
+            let stderrReadFailure = stderr.readFailure
+            process.terminate()
+            if termination.wait(timeout: .now() + 0.5) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = termination.wait(timeout: .now() + 0.5)
+            }
+            stdoutPipe.fileHandleForReading.closeFile()
+            stderrPipe.fileHandleForReading.closeFile()
+            _ = readers.wait(timeout: .now() + 0.5)
+            if stdout.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+            }
+            if stderr.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+            }
+            if let readFailure = stdoutReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+            }
+            if let readFailure = stderrReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
+            }
+            throw DiscoveryError.processTimedOut
+        }
+
+        if readers.wait(timeout: operationDeadline) == .timedOut {
+            // Preserve failures observed before forcing inherited descriptors closed.
+            // Closing a FileHandle that another queue is reading can itself produce
+            // an NSCocoaErrorDomain read error, which is cleanup noise rather than
+            // the subprocess failure that ended the parent process.
+            let stdoutReadFailure = stdout.readFailure
+            let stderrReadFailure = stderr.readFailure
+            stdoutPipe.fileHandleForReading.closeFile()
+            stderrPipe.fileHandleForReading.closeFile()
+            _ = readers.wait(timeout: .now() + 0.5)
+            if stdout.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+            }
+            if stderr.limitExceeded {
+                throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+            }
+            if let readFailure = stdoutReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+            }
+            if let readFailure = stderrReadFailure {
+                throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
+            }
+            if process.terminationStatus != 0 {
+                return ProcessResult(
+                    exitCode: process.terminationStatus,
+                    stdout: stdout.value,
+                    stderr: stderr.value
+                )
+            }
+            throw DiscoveryError.processTimedOut
+        }
+        if stdout.limitExceeded {
+            throw DiscoveryError.outputLimitExceeded(stream: "stdout", maxBytes: max(0, maxOutputBytes))
+        }
+        if stderr.limitExceeded {
+            throw DiscoveryError.outputLimitExceeded(stream: "stderr", maxBytes: max(0, maxOutputBytes))
+        }
+        if let readFailure = stdout.readFailure {
+            throw DiscoveryError.outputReadFailed(stream: "stdout", message: readFailure)
+        }
+        if let readFailure = stderr.readFailure {
+            throw DiscoveryError.outputReadFailed(stream: "stderr", message: readFailure)
+        }
+        return ProcessResult(
+            exitCode: process.terminationStatus,
+            stdout: stdout.value,
+            stderr: stderr.value
+        )
+    }
+
+    enum DiscoveryError: Error, Equatable {
+        case processFailed(exitCode: Int32, stderr: String)
+        case processTimedOut
+        case outputLimitExceeded(stream: String, maxBytes: Int)
+        case outputReadFailed(stream: String, message: String)
+    }
+}
+
+private struct ProcessResult: Sendable {
+    let exitCode: Int32
+    let stdout: Data
+    let stderr: Data
+}
+
+private final class ProcessOutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var didExceedLimit = false
+    private var failure: String?
+
+    var value: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    var limitExceeded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didExceedLimit
+    }
+
+    var readFailure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+
+    func read(
+        from handle: FileHandle,
+        maxBytes: Int,
+        readChunk: @escaping ProjectDiscoveryService.ProcessOutputReader,
+        onLimitExceeded: () -> Void
+    ) {
+        do {
+            while let chunk = try readChunk(handle, 64 * 1024), !chunk.isEmpty {
+                lock.lock()
+                let remaining = max(0, maxBytes - data.count)
+                if chunk.count > remaining {
+                    data.append(chunk.prefix(remaining))
+                    didExceedLimit = true
+                    lock.unlock()
+                    onLimitExceeded()
+                    return
+                }
+                data.append(chunk)
+                lock.unlock()
+            }
+        } catch {
+            lock.lock()
+            failure = String(describing: error)
+            lock.unlock()
+        }
     }
 }
