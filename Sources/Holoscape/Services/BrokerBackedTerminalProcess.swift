@@ -30,6 +30,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
+    private(set) var agentStatusOwnerToken: String?
     /// Identity of the broker session this terminal failed to reattach because
     /// the broker no longer owns it. Kept separate from `brokerSessionID` so a
     /// retry spawns the replacement the stale guidance promises instead of
@@ -118,12 +119,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 attachedChannelID: channelID
             )
             brokerSessionID = record.id
+            agentStatusOwnerToken = record.agentStatusOwnerToken
+            didNotifyTermination = false
             inputWriteLane.open(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
             }
         } catch {
             brokerSessionID = nil
+            agentStatusOwnerToken = nil
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
@@ -139,6 +143,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
+            agentStatusOwnerToken = record.agentStatusOwnerToken
+            didNotifyTermination = false
             inputWriteLane.open(for: record.id)
             restoreScrollbackReplay(for: record.id)
             if outputHandler != nil {
@@ -161,6 +167,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             case .failed, .none:
                 brokerSessionID = nil
             }
+            agentStatusOwnerToken = nil
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
     }
@@ -420,6 +427,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } else {
             _ = try coordinator.markErrored(brokerSessionID)
         }
+        self.brokerSessionID = nil
+        agentStatusOwnerToken = nil
         terminationHandler?(exitCode)
     }
 

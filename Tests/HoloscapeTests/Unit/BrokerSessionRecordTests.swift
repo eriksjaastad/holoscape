@@ -31,6 +31,7 @@ final class BrokerSessionRecordTests: XCTestCase {
             arguments: ["--login"],
             workingDirectory: "/Users/test/project",
             environmentProfile: .shell,
+            agentStatusOwnerToken: "persisted-owner-token",
             lifecycle: .detached,
             exitCode: nil,
             createdAt: createdAt,
@@ -46,11 +47,38 @@ final class BrokerSessionRecordTests: XCTestCase {
         XCTAssertEqual(decoded.label, "holoscape")
         XCTAssertEqual(decoded.lifecycle, .detached)
         XCTAssertEqual(decoded.environmentProfile, .shell)
+        XCTAssertEqual(decoded.agentStatusOwnerToken, "persisted-owner-token")
         XCTAssertEqual(decoded.workingDirectory, "/Users/test/project")
         XCTAssertNil(decoded.exitCode)
         XCTAssertEqual(decoded.createdAt, createdAt)
         XCTAssertEqual(decoded.updatedAt, updatedAt)
         XCTAssertEqual(decoded.lastAttachedChannelID?.uuidString, "00000000-0000-0000-0000-000000000001")
+    }
+
+    func testLegacySessionRecordWithoutOwnerTokenStillDecodes() throws {
+        let record = BrokerSessionRecord(
+            id: BrokerSessionID(rawValue: "legacy-session"),
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/project",
+            environmentProfile: .agentOAuth,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: nil
+        )
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        json.removeValue(forKey: "agentStatusOwnerToken")
+
+        let decoded = try JSONDecoder().decode(
+            BrokerSessionRecord.self,
+            from: JSONSerialization.data(withJSONObject: json)
+        )
+
+        XCTAssertNil(decoded.agentStatusOwnerToken)
     }
 
     func testExitedSessionRequiresExitCode() {

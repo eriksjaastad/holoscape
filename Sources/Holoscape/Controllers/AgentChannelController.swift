@@ -37,7 +37,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         set { persistentStatesBySource[.terminalOutput] = newValue }
     }
     private(set) var adapterOwnerToken = UUID().uuidString
-    private var requiresAdapterOwnerToken = false
+    private var requiresAdapterOwnerToken = true
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var persistentState: PersistentChannelState {
@@ -311,6 +311,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
             brokerSessionID = terminalBrokerSessionID
+            if let restoredOwnerToken = terminal.agentStatusOwnerToken,
+               !restoredOwnerToken.isEmpty {
+                adapterOwnerToken = restoredOwnerToken
+                requiresAdapterOwnerToken = true
+            } else {
+                // Records written before owner-token persistence can only prove
+                // ownership through an unscoped legacy hook. Never adopt an
+                // arbitrary scoped token after reattach.
+                requiresAdapterOwnerToken = false
+            }
         }
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
@@ -350,7 +360,17 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {
-        applyPersistentState(state, adapterOwnerToken: nil)
+        if state.source == .agentAdapter {
+            // Internal producers and persisted restore already target this exact
+            // controller. Only the explicit owner-token overload is an external
+            // hook trust boundary.
+            guard self.state == .active else { return }
+            adapterPersistentState = state
+            delegate?.channelStateDidChange(self, to: self.state)
+            return
+        }
+        persistentStatesBySource[state.source] = state
+        delegate?.channelStateDidChange(self, to: self.state)
     }
 
     func acceptsAdapterEvent(ownerToken: String?) -> Bool {
@@ -358,10 +378,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if requiresAdapterOwnerToken {
             return ownerToken == adapterOwnerToken
         }
-        // A freshly restored controller may reattach a broker process launched
-        // by the previous app instance, whose inherited token is not persisted
-        // in tab metadata. Its first scoped event adopts that live owner.
-        return true
+        return ownerToken == nil
     }
 
     func applyPersistentState(_ state: PersistentChannelState, adapterOwnerToken ownerToken: String?) {
@@ -370,14 +387,6 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             // Delayed hooks from an exited process must not overwrite truthful
             // disconnected/stale lifecycle state.
             guard acceptsAdapterEvent(ownerToken: ownerToken) else { return }
-            // Once a process exits, unscoped legacy events can no longer prove
-            // they belong to its replacement. A matching launch-owned token is
-            // required. A restored controller may adopt the first scoped token
-            // from its already-running broker process; later mismatches reject.
-            if !requiresAdapterOwnerToken, let ownerToken, !ownerToken.isEmpty {
-                adapterOwnerToken = ownerToken
-                requiresAdapterOwnerToken = true
-            }
             adapterPersistentState = state
             delegate?.channelStateDidChange(self, to: self.state)
             return
@@ -402,7 +411,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             terminalOutputPersistentState = restoredState
             delegate?.channelStateDidChange(self, to: state)
         case .agentAdapter:
-            applyPersistentState(restoredState)
+            // This state came from this tab's persisted metadata rather than an
+            // external hook request, so process-owner validation does not apply.
+            adapterPersistentState = restoredState
+            delegate?.channelStateDidChange(self, to: state)
         case .processLifecycle, .brokerRegistry, .userAction, .plugin:
             break
         }

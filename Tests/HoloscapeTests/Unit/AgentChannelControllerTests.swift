@@ -456,7 +456,7 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.kind, .needsApproval)
     }
 
-    func testFirstScopedEventAdoptsOwnerFromReattachedBrokerProcess() {
+    func testFreshProcessRejectsForeignScopedOwnerBeforeFirstEvent() {
         let controller = AgentChannelController(
             id: UUID(),
             authType: .oauth,
@@ -467,15 +467,59 @@ final class AgentChannelControllerTests: XCTestCase {
             terminal: MockTerminalProcess()
         )
         controller.activate()
+        let launchOwner = controller.adapterOwnerToken
 
         controller.applyPersistentState(
             PersistentChannelState(kind: .needsApproval, source: .agentAdapter),
             adapterOwnerToken: "owner-from-previous-app-instance"
         )
 
-        XCTAssertEqual(controller.adapterOwnerToken, "owner-from-previous-app-instance")
-        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: "owner-from-previous-app-instance"))
+        XCTAssertEqual(controller.adapterOwnerToken, launchOwner)
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "owner-from-previous-app-instance"))
         XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: launchOwner))
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
+    func testReattachedBrokerProcessRestoresPersistedOwnerToken() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "restored-owned-session")
+        terminal.agentStatusOwnerToken = "persisted-process-owner"
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertEqual(controller.adapterOwnerToken, "persisted-process-owner")
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: "persisted-process-owner"))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "foreign-owner"))
+    }
+
+    func testLegacyReattachedBrokerProcessAcceptsOnlyTokenlessEvents() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "legacy-restored-session")
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "untrusted-adopted-owner"))
     }
 
     func testDirectProcessTerminationClearsAttentionAndRejectsLateAdapterEvent() async {

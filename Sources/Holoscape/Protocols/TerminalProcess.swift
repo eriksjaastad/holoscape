@@ -42,6 +42,9 @@ protocol TerminalProcess: AnyObject {
     var terminalContentView: NSView { get }
     var currentGridSize: TerminalGridSize { get }
     var brokerOwnedSessionID: BrokerSessionID? { get }
+    /// Generation token owned by the currently attached broker process. Direct
+    /// terminals return nil; broker terminals restore it from durable metadata.
+    var agentStatusOwnerToken: String? { get }
     /// Most recent failure observed on the live session, cleared by the next
     /// successful start/reattach. `nil` means the session is healthy.
     var sessionFailure: TerminalSessionFailure? { get }
@@ -76,6 +79,7 @@ extension TerminalProcess {
     func detachBrokerSession() {}
     func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
+    var agentStatusOwnerToken: String? { nil }
     var sessionFailure: TerminalSessionFailure? { nil }
     var staleBrokerSessionID: BrokerSessionID? { nil }
     var startFailureDescription: String? { nil }

@@ -35,9 +35,12 @@ Existing Claude hook posts still work:
 ```
 
 Holoscape-launched agents also inherit `HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN`.
-Status hooks must echo it as `ownerToken`; after a process exits, Holoscape rejects
-unscoped or stale-token events so delayed hooks cannot contaminate a replacement
-process. Tokenless posts remain compatible until that channel's first process exit.
+Status hooks must echo it as `ownerToken`. Holoscape persists this non-secret
+generation token with broker session metadata, so reattached tabs retain exact
+process ownership after an app relaunch. Fresh processes reject unscoped, stale,
+or foreign-token events. Legacy broker records created before token persistence
+accept only tokenless hooks and only when the working directory identifies one
+eligible channel unambiguously; they never adopt an arbitrary scoped token.
 
 Codex/OpenClaw-style callers can use the same endpoint and add the tool/reason fields:
 
@@ -51,9 +54,11 @@ Codex/OpenClaw-style callers can use the same endpoint and add the tool/reason f
 }
 ```
 
-`HoloscapeAPIServer` resolves the channel by `cwd`, updates the legacy notification
-color path, applies the adapter state to agent channels, and lets `ChannelManager`
-persist that state without changing the underlying process lifecycle.
+`HoloscapeAPIServer` resolves scoped events by `cwd` plus exact process owner,
+updates the legacy notification color path, applies the adapter state to agent
+channels, and lets `ChannelManager` persist that state without changing the
+underlying process lifecycle. A scoped event never falls back to a shell or a
+different same-directory agent.
 
 ## Clearing precedence
 

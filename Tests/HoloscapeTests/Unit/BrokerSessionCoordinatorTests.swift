@@ -127,6 +127,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             arguments: ["codex"],
             workingDirectory: nil,
             environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "reattached-owner-token",
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let started = try coordinator.start(
@@ -144,6 +145,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(detached.command, started.command)
         XCTAssertEqual(detached.arguments, started.arguments)
         XCTAssertEqual(detached.environmentProfile, started.environmentProfile)
+        XCTAssertEqual(detached.agentStatusOwnerToken, "reattached-owner-token")
         XCTAssertEqual(detached.createdAt, started.createdAt)
         XCTAssertEqual(detached.updatedAt, now)
 
@@ -152,6 +154,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(reattached.lifecycle, .running)
         XCTAssertEqual(reattached.lastAttachedChannelID, secondChannel)
+        XCTAssertEqual(reattached.agentStatusOwnerToken, "reattached-owner-token")
         XCTAssertEqual(reattached.createdAt, started.createdAt)
         XCTAssertEqual(reattached.updatedAt, now)
     }
@@ -180,6 +183,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(exited.exitCode, 0)
         XCTAssertEqual(exited.updatedAt, now)
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertThrowsError(try coordinator.reattach(record.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .staleSession(record.id)
+            )
+        }
+        XCTAssertEqual(try coordinator.reconcileRuntimeStatus(record.id), exited)
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {

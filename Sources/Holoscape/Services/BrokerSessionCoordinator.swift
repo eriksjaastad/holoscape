@@ -111,6 +111,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
+            agentStatusOwnerToken: request.agentStatusOwnerToken,
             lifecycle: .running,
             exitCode: nil,
             createdAt: timestamp,
@@ -160,6 +161,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
+        let existing = try record(for: id)
+        guard existing.lifecycle != .exited,
+              existing.lifecycle != .errored,
+              existing.lifecycle != .stale else {
+            throw CoordinatorError.staleSession(id)
+        }
         do {
             return try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
                 record.withLifecycle(
@@ -376,6 +383,7 @@ private extension BrokerSessionRecord {
             arguments: arguments,
             workingDirectory: workingDirectory,
             environmentProfile: environmentProfile,
+            agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
             createdAt: createdAt,
