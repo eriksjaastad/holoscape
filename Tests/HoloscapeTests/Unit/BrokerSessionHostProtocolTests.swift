@@ -343,10 +343,11 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             guard case .waitForOutputAvailability = try codec.decodeRequest(frame) else {
                 throw NSError(domain: "BrokerSessionHostProtocolTests", code: 4)
             }
-            if attempts.increment() == 1 {
+            let attempt = attempts.increment()
+            if attempt == 1 {
                 throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("test")
             }
-            return try codec.encodeResponse(.outputAvailable(true))
+            return try codec.encodeResponse(.outputAvailable(attempt == 2))
         }
         let sessionID = BrokerSessionID(rawValue: "client-output-retry")
         let signaled = expectation(description: "client output monitor recovered after transient failure")
