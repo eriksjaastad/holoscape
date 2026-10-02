@@ -29,6 +29,35 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data("holoscape-native-pty".utf8)))
     }
 
+    func testShellProfileStripsInheritedAgentOwnerToken() throws {
+        let runtime = NativePTYBrokerSessionRuntime(processEnvironment: [
+            "PATH": "/usr/bin:/bin",
+            "HOME": NSHomeDirectory(),
+            "SHELL": "/bin/zsh",
+            "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN": "parent-agent-token",
+        ])
+        let id = BrokerSessionID(rawValue: "shell-owner-token-isolation-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-lc",
+                "if [ -z \"${HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN+x}\" ]; then printf token-absent; else printf token-present; fi",
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            agentStatusOwnerToken: "request-agent-token",
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        _ = try waitForTerminationStatus(from: runtime, id: id)
+        let output = try collectOutput(from: runtime, id: id)
+        XCTAssertTrue(output.contains("token-absent"), output)
+        XCTAssertFalse(output.contains("token-present"), output)
+    }
+
     func testPTYSessionReportsARealTTYInsteadOfAPlainPipe() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "tty-smoke-native-pty-runtime-test")

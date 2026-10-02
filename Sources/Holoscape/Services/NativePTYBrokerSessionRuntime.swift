@@ -215,7 +215,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
         try validatePTYGridSize(request.initialSize)
         var resolvedEnvironment = try environment(for: request.environmentProfile)
-        if let ownerToken = request.agentStatusOwnerToken, !ownerToken.isEmpty {
+        if request.environmentProfile == .agentOAuth || request.environmentProfile == .agentAPI,
+           let ownerToken = request.agentStatusOwnerToken,
+           !ownerToken.isEmpty {
             resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
         }
 
@@ -315,7 +317,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         request: BrokerSessionLaunchRequest
     ) throws -> Bool {
         try createSession(id: id, request: request)
-        return request.agentStatusOwnerToken?.isEmpty == false
+        let profileAcceptsOwnerToken = request.environmentProfile == .agentOAuth
+            || request.environmentProfile == .agentAPI
+        return profileAcceptsOwnerToken && request.agentStatusOwnerToken?.isEmpty == false
     }
 
     func detachSession(id: BrokerSessionID) throws {
@@ -508,6 +512,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         switch profile {
         case .shell:
             var environment = processEnvironment
+            environment.removeValue(forKey: "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN")
             environment["TERM"] = "xterm-256color"
             if environment["LANG"]?.range(of: "utf", options: [.caseInsensitive]) == nil {
                 environment["LANG"] = "en_US.UTF-8"
