@@ -11,8 +11,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
-    private var apiServer: HoloscapeAPIServer?
-    private var launchRecoveryComplete = false
+    var apiServer: HoloscapeAPIServer?
+    var launchRecoveryComplete = false
     private var terminationTeardownStarted = false
     private var terminationTeardownComplete = false
     private var terminationTeardownGeneration: UInt = 0
@@ -231,7 +231,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             self.terminationTeardownStarted = false
             self.terminationTeardownGeneration &+= 1
             NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
-            self.startAPIServerIfNeeded(channelManager: channelManager)
+            self.apiServer?.start()
             reply(false)
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem
@@ -319,8 +319,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     private func stopAPIServerForTermination() {
         apiServer?.stop()
-        apiServer = nil
-        windowController?.apiServer = nil
     }
 
     private func showMainWindow() {

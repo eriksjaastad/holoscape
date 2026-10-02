@@ -114,6 +114,25 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             return Data(scrollback.suffix(maxBytes))
         }
 
+        /// Snapshot retained scrollback and consume the corresponding unread
+        /// live-output generation under one lock. Bytes appended after the
+        /// snapshot remain unread, so replay followed by the output pump emits
+        /// every byte exactly once across detach/reattach.
+        func readScrollbackReplay(maxBytes: Int) -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            let replay: Data
+            if maxBytes <= 0 {
+                replay = Data()
+            } else if scrollback.count > maxBytes {
+                replay = Data(scrollback.suffix(maxBytes))
+            } else {
+                replay = scrollback
+            }
+            output.removeAll(keepingCapacity: true)
+            return replay
+        }
+
         func writeInput(_ data: Data) throws {
             lock.lock()
             defer { lock.unlock() }
@@ -442,13 +461,19 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
-        try readScrollbackReplay(id: id, maxBytes: maxBytes).data
+        if let session = existingSession(for: id) {
+            return session.readScrollbackTail(maxBytes: maxBytes)
+        }
+        if let scrollbackStore {
+            return try scrollbackStore.readTail(for: id, maxBytes: maxBytes)
+        }
+        throw RuntimeError.missingSession(id)
     }
 
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         if let session = existingSession(for: id) {
             return ScrollbackReplay(
-                data: session.readScrollbackTail(maxBytes: maxBytes),
+                data: session.readScrollbackReplay(maxBytes: maxBytes),
                 source: .liveBrokerMemory,
                 maxBytes: maxBytes
             )

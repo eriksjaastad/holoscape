@@ -557,6 +557,54 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
+    func testLiveScrollbackReplayConsumesOnlyTheReplayedUnreadGeneration() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "live-replay-consumes-unread-generation-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf detached-replay-marker; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let replay = try runtime.readScrollbackReplay(id: id, maxBytes: 4096)
+
+        XCTAssertEqual(replay.source, .liveBrokerMemory)
+        XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("detached-replay-marker"))
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+    }
+
+    func testLiveScrollbackTailDoesNotConsumeUnreadOutput() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "live-tail-preserves-unread-output-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf tail-preserves-output-marker; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let tail = try runtime.readScrollbackTail(id: id, maxBytes: 4096)
+        let unreadOutput = try runtime.readAvailableOutput(id: id)
+
+        XCTAssertTrue(String(decoding: tail, as: UTF8.self).contains("tail-preserves-output-marker"))
+        XCTAssertTrue(String(decoding: unreadOutput, as: UTF8.self).contains("tail-preserves-output-marker"))
+    }
+
     func testScrollbackPersistenceFailureDefersOutputWithoutBlockingPollingReads() throws {
         let appender = BlockingScrollbackAppender(shouldFail: true)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)

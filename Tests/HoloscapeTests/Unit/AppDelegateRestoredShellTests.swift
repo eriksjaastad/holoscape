@@ -4,6 +4,57 @@ import XCTest
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    private final class RecordingAPIServer: HoloscapeAPIServer {
+        var startCallCount = 0
+        var stopCallCount = 0
+
+        override func start() { startCallCount += 1 }
+        override func stop() { stopCallCount += 1 }
+    }
+
+    func testTerminationDeadlineRestartsSameAPIServerWithMuteStateIntact() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIRestartTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = RecordingAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.setNotificationMuted(true, for: channel.channelId)
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.launchRecoveryComplete = true
+        appDelegate.apiServer = apiServer
+        appDelegate.terminationTeardownTimeout = 0.01
+
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        let deadline = Date().addingTimeInterval(1)
+        while apiServer.startCallCount == 0, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(apiServer.stopCallCount, 1)
+        XCTAssertEqual(apiServer.startCallCount, 1)
+        XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
+        XCTAssertTrue(appDelegate.apiServer === apiServer)
+    }
+
     func testTerminationTeardownDeadlineDeniesQuitInsteadOfWaitingForever() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateTerminationDeadlineTests-")
