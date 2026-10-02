@@ -54,10 +54,17 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     func run(maxConnections: Int? = nil) throws {
         let socketHadBrokerLockMarker = FileManager.default.fileExists(atPath: socketPath + ".lock")
         let brokerLockFD = try acquireBrokerLock()
-        defer { Darwin.close(brokerLockFD) }
+        var shouldRemoveNewLockMarker = !socketHadBrokerLockMarker
+        defer {
+            if shouldRemoveNewLockMarker {
+                unlink(socketPath + ".lock")
+            }
+            Darwin.close(brokerLockFD)
+        }
         let serverFD = try makeListeningSocket(
             socketHadBrokerLockMarker: socketHadBrokerLockMarker
         )
+        shouldRemoveNewLockMarker = false
         let group = DispatchGroup()
         let errorBox = BrokerSocketServerErrorBox()
         let handlerSlots = DispatchSemaphore(value: maxConcurrentHandlers)
@@ -258,15 +265,22 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
     }
 
-    private func handleConnection(_ clientFD: Int32, deadline: UInt64) throws {
+    private func handleConnection(_ clientFD: Int32, deadline acceptanceDeadline: UInt64) throws {
         defer { Darwin.close(clientFD) }
-        let requestFrame = try readFrame(from: clientFD, deadline: deadline)
+        let requestFrame = try readFrame(from: clientFD, deadline: acceptanceDeadline)
+        let deadline = min(
+            acceptanceDeadline,
+            BrokerSessionHostUnixSocketTransport.requestDeadline(from: requestFrame)
+                ?? acceptanceDeadline
+        )
         guard DispatchTime.now().uptimeNanoseconds < deadline else {
             throw ServerError.timedOut(socketPath)
         }
         let responseFrame: Data
         do {
-            responseFrame = try host.handle(requestFrame)
+            responseFrame = try host.handle(requestFrame) {
+                DispatchTime.now().uptimeNanoseconds < deadline
+            }
         } catch {
             let failure = BrokerSessionHostResponse.failure(
                 BrokerSessionHostFailure(code: "protocol-error", message: String(describing: error))
@@ -350,8 +364,10 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         case readFailed(String)
         case timedOut(String)
         case emptyResponse
+        case invalidRequestFrame(String)
     }
 
+    private static let requestDeadlineKey = "_holoscapeRequestDeadlineUptimeNanoseconds"
     private let socketPath: String
     private let readChunkSize: Int
     private let requestTimeoutMilliseconds: Int
@@ -369,13 +385,48 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     func sendFrame(_ frame: Data) throws -> Data {
         let deadline = DispatchTime.now().uptimeNanoseconds
             + UInt64(requestTimeoutMilliseconds) * 1_000_000
+        let requestFrame = try Self.addingRequestDeadline(deadline, to: frame)
         let fd = try connectSocket(deadline: deadline)
         defer { Darwin.close(fd) }
-        try writeAll(frame, to: fd, deadline: deadline)
+        try writeAll(requestFrame, to: fd, deadline: deadline)
         shutdown(fd, SHUT_WR)
         let response = try readFrame(from: fd, deadline: deadline)
         guard !response.isEmpty else { throw TransportError.emptyResponse }
         return response
+    }
+
+    private static func addingRequestDeadline(_ deadline: UInt64, to frame: Data) throws -> Data {
+        var payload = frame
+        if payload.last == 0x0A {
+            payload.removeLast()
+        }
+        do {
+            guard var object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+                throw TransportError.invalidRequestFrame("request frame must be a JSON object")
+            }
+            object[requestDeadlineKey] = String(deadline)
+            var encoded = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            encoded.append(0x0A)
+            return encoded
+        } catch let error as TransportError {
+            throw error
+        } catch {
+            throw TransportError.invalidRequestFrame(String(describing: error))
+        }
+    }
+
+    static func requestDeadline(from frame: Data) -> UInt64? {
+        var payload = frame
+        if payload.last == 0x0A {
+            payload.removeLast()
+        }
+        guard
+            let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+            let rawDeadline = object[requestDeadlineKey] as? String
+        else {
+            return nil
+        }
+        return UInt64(rawDeadline)
     }
 
     private func connectSocket(deadline: UInt64) throws -> Int32 {

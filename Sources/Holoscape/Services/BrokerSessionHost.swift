@@ -8,6 +8,10 @@ import Foundation
 /// fail loudly with a broker-specific message instead of losing the connection
 /// context.
 struct BrokerSessionHost {
+    private enum RequestError: Error {
+        case expiredBeforeDispatch
+    }
+
     private let runtime: any BrokerSessionRuntime
     private let codec: BrokerSessionHostCodec
     private let scheduler: BrokerSessionOperationScheduler
@@ -22,12 +26,18 @@ struct BrokerSessionHost {
         self.scheduler = scheduler
     }
 
-    func handle(_ frame: Data) throws -> Data {
+    func handle(
+        _ frame: Data,
+        executionIsAllowed: () -> Bool = { true }
+    ) throws -> Data {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
         do {
             response = try scheduler.perform(request) {
-                try dispatch(request)
+                guard executionIsAllowed() else {
+                    throw RequestError.expiredBeforeDispatch
+                }
+                return try dispatch(request)
             }
         } catch {
             response = .failure(

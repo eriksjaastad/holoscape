@@ -1400,11 +1400,126 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(runtime.events, ["readAvailableOutput deadline-blocking-session"])
     }
 
+    func testUnixSocketServerDoesNotDispatchBackloggedRequestsAfterClientsDisconnect() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        let blockingID = BrokerSessionID(rawValue: "backlog-blocking-session")
+        runtime.delayReadOutput(for: blockingID, seconds: 0.35)
+        let socketPath = "/tmp/hs-server-backlog-expiry-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime),
+            maxConcurrentHandlers: 1,
+            requestTimeoutMilliseconds: 1_000
+        )
+        let serverFinished = expectation(description: "server drained disconnected backlog")
+        let blockingClientFinished = expectation(description: "blocking backlog request returned")
+        let expiredClientsFinished = expectation(description: "expired backlog requests returned")
+        expiredClientsFinished.expectedFulfillmentCount = 2
+        let expiredClientErrors = LockedCounter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? server.run(maxConnections: 3)
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let blockingStarted = runtime.expectReadStarted(for: blockingID)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let transport = BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: 1_000
+            )
+            let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+            _ = try? client.readAvailableOutput(id: blockingID)
+            blockingClientFinished.fulfill()
+        }
+        wait(for: [blockingStarted], timeout: 1)
+
+        for index in 1...2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let transport = BrokerSessionHostUnixSocketTransport(
+                    socketPath: socketPath,
+                    requestTimeoutMilliseconds: 100
+                )
+                let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+                do {
+                    try client.sendInput(
+                        id: BrokerSessionID(rawValue: "backlog-expired-\(index)"),
+                        bytes: Array("must-not-run-\(index)\n".utf8)
+                    )
+                } catch {
+                    _ = expiredClientErrors.increment()
+                }
+                expiredClientsFinished.fulfill()
+            }
+        }
+
+        wait(for: [expiredClientsFinished], timeout: 1)
+        wait(for: [blockingClientFinished, serverFinished], timeout: 2)
+        XCTAssertEqual(expiredClientErrors.value, 2)
+        XCTAssertEqual(runtime.events, ["readAvailableOutput backlog-blocking-session"])
+    }
+
+    func testUnixSocketServerRechecksDisconnectedClientInsideSameSessionLane() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        let sessionID = BrokerSessionID(rawValue: "lane-expiry-session")
+        runtime.delaySendInput(containing: "first", seconds: 0.35)
+        let socketPath = "/tmp/hs-server-lane-expiry-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime),
+            maxConcurrentHandlers: 2,
+            requestTimeoutMilliseconds: 1_000
+        )
+        let serverFinished = expectation(description: "server drained same-session lane")
+        let firstClientFinished = expectation(description: "first lane request returned")
+        let expiredClientFinished = expectation(description: "expired lane request returned")
+        let expiredClientError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? server.run(maxConnections: 2)
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let firstStarted = runtime.expectSendStarted(containing: "first")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let transport = BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: 1_000
+            )
+            let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+            try? client.sendInput(id: sessionID, bytes: Array("first\n".utf8))
+            firstClientFinished.fulfill()
+        }
+        wait(for: [firstStarted], timeout: 1)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let transport = BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: 100
+            )
+            let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+            do {
+                try client.sendInput(id: sessionID, bytes: Array("second-must-not-run\n".utf8))
+            } catch {
+                expiredClientError.set(error)
+            }
+            expiredClientFinished.fulfill()
+        }
+
+        wait(for: [expiredClientFinished], timeout: 1)
+        wait(for: [firstClientFinished, serverFinished], timeout: 2)
+        XCTAssertNotNil(expiredClientError.value)
+        XCTAssertEqual(runtime.events, ["sendInput lane-expiry-session first\\n"])
+    }
+
     func testUnixSocketReachabilityPreservesPreLockSocketWhenConnectIsRefused() throws {
         let socketPath = "/tmp/hs-pre-lock-refused-\(UUID().uuidString).sock"
         let legacyServerFD = try makeListeningUnixSocket(at: socketPath)
         Darwin.close(legacyServerFD)
-        defer { unlink(socketPath) }
+        defer {
+            unlink(socketPath)
+            unlink(socketPath + ".lock")
+        }
 
         XCTAssertEqual(
             BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(
@@ -1425,6 +1540,15 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             XCTAssertTrue(message.contains("may have a reachable broker"), message)
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+
+        XCTAssertThrowsError(try replacement.run(maxConnections: 0)) { error in
+            guard case BrokerSessionHostUnixSocketServer.ServerError.bindFailed = error else {
+                return XCTFail("Expected a second bindFailed, got \(error)")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
     }
 
     func testUnixSocketReachabilityRecoversCurrentBrokerStaleSocketWithLockMarker() throws {
