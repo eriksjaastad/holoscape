@@ -1051,6 +1051,40 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testUnixSocketTransportTimesOutWhenAcceptedServerNeverResponds() throws {
+        let socketPath = "/tmp/hs-silent-broker-\(UUID().uuidString).sock"
+        let serverFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(serverFD)
+            unlink(socketPath)
+        }
+
+        let serverFinished = expectation(description: "silent socket server released client")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(serverFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                usleep(500_000)
+                Darwin.close(clientFD)
+            }
+            serverFinished.fulfill()
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 100
+        )
+        let startedAt = Date()
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case BrokerSessionHostUnixSocketTransport.TransportError.timedOut = error else {
+                return XCTFail("Expected timedOut, got \(error)")
+            }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.3)
+        wait(for: [serverFinished], timeout: 1)
+    }
+
     func testUnixSocketServerDoesNotBlockUnrelatedSessionBehindSlowRequest() throws {
         let runtime = DelayedBrokerSessionRuntime()
         runtime.isRunning = true
@@ -1456,6 +1490,37 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "listSessions",
             "isRunning original-broker-still-active",
         ])
+    }
+
+    private func makeListeningUnixSocket(at path: String) throws -> Int32 {
+        let pathBytes = Array(path.utf8)
+        var address = sockaddr_un()
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw NSError(domain: "BrokerSessionHostProtocolTests", code: 2)
+        }
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+            for index in pathBytes.indices {
+                rawBuffer[index] = pathBytes[index]
+            }
+            rawBuffer[pathBytes.count] = 0
+        }
+
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.bind(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bindResult == 0, listen(descriptor, 1) == 0 else {
+            let savedErrno = errno
+            Darwin.close(descriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(savedErrno))
+        }
+        return descriptor
     }
 
     private func waitForSocket(at path: String) throws {

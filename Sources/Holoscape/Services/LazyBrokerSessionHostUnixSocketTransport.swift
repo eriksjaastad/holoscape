@@ -17,6 +17,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let socketPath: String
     private let environment: [String: String]?
     private let socketWaitTimeoutMilliseconds: Int
+    private let requestTimeoutMilliseconds: Int
     private let lock = NSLock()
     private var launchedProcess: Process?
 
@@ -24,17 +25,22 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         executableURL: URL,
         socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(),
         environment: [String: String]? = nil,
-        socketWaitTimeoutMilliseconds: Int = 5_000
+        socketWaitTimeoutMilliseconds: Int = 5_000,
+        requestTimeoutMilliseconds: Int = 10_000
     ) {
         self.executableURL = executableURL
         self.socketPath = socketPath
         self.environment = environment
         self.socketWaitTimeoutMilliseconds = socketWaitTimeoutMilliseconds
+        self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
         try ensureBrokerIsReachable()
-        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: requestTimeoutMilliseconds
+        )
         return try transport.sendFrame(frame)
     }
 

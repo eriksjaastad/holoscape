@@ -129,11 +129,17 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         return fd
     }
 
-    static func socketPathHasReachableBroker(_ socketPath: String) -> Bool {
+    static func socketPathHasReachableBroker(
+        _ socketPath: String,
+        timeoutMilliseconds: Int = 250
+    ) -> Bool {
         do {
             let codec = BrokerSessionHostCodec()
             let probeFrame = try codec.encodeRequest(.listSessions)
-            let responseFrame = try BrokerSessionHostUnixSocketTransport(socketPath: socketPath).sendFrame(probeFrame)
+            let responseFrame = try BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: timeoutMilliseconds
+            ).sendFrame(probeFrame)
             _ = try codec.decodeResponse(responseFrame)
             return true
         } catch {
@@ -200,28 +206,37 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         case connectFailed(String)
         case writeFailed(String)
         case readFailed(String)
+        case timedOut(String)
         case emptyResponse
     }
 
     private let socketPath: String
     private let readChunkSize: Int
+    private let requestTimeoutMilliseconds: Int
 
-    init(socketPath: String, readChunkSize: Int = 4096) {
+    init(
+        socketPath: String,
+        readChunkSize: Int = 4096,
+        requestTimeoutMilliseconds: Int = 10_000
+    ) {
         self.socketPath = socketPath
         self.readChunkSize = readChunkSize
+        self.requestTimeoutMilliseconds = max(1, requestTimeoutMilliseconds)
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
-        let fd = try connectSocket()
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(requestTimeoutMilliseconds) * 1_000_000
+        let fd = try connectSocket(deadline: deadline)
         defer { Darwin.close(fd) }
-        try writeAll(frame, to: fd)
+        try writeAll(frame, to: fd, deadline: deadline)
         shutdown(fd, SHUT_WR)
-        let response = try readFrame(from: fd)
+        let response = try readFrame(from: fd, deadline: deadline)
         guard !response.isEmpty else { throw TransportError.emptyResponse }
         return response
     }
 
-    private func connectSocket() throws -> Int32 {
+    private func connectSocket(deadline: UInt64) throws -> Int32 {
         let pathBytes = Array(socketPath.utf8)
         guard pathBytes.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
             throw TransportError.socketPathTooLong(socketPath)
@@ -230,6 +245,13 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw TransportError.socketFailed(String(cString: strerror(errno)))
+        }
+
+        let currentFlags = fcntl(fd, F_GETFL)
+        guard currentFlags >= 0, fcntl(fd, F_SETFL, currentFlags | O_NONBLOCK) == 0 else {
+            let message = String(cString: strerror(errno))
+            Darwin.close(fd)
+            throw TransportError.socketFailed(message)
         }
 
         var address = sockaddr_un()
@@ -246,22 +268,44 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                 Darwin.connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 else {
-            let message = String(cString: strerror(errno))
-            Darwin.close(fd)
-            throw TransportError.connectFailed(message)
+        if result != 0 {
+            guard errno == EINPROGRESS else {
+                let message = String(cString: strerror(errno))
+                Darwin.close(fd)
+                throw TransportError.connectFailed(message)
+            }
+            do {
+                try waitUntilReady(fd: fd, events: Int16(POLLOUT), deadline: deadline)
+            } catch {
+                Darwin.close(fd)
+                throw error
+            }
+
+            var socketError: Int32 = 0
+            var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) == 0 else {
+                let message = String(cString: strerror(errno))
+                Darwin.close(fd)
+                throw TransportError.connectFailed(message)
+            }
+            guard socketError == 0 else {
+                let message = String(cString: strerror(socketError))
+                Darwin.close(fd)
+                throw TransportError.connectFailed(message)
+            }
         }
         return fd
     }
 
-    private func readFrame(from fd: Int32) throws -> Data {
+    private func readFrame(from fd: Int32, deadline: UInt64) throws -> Data {
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: readChunkSize)
         while true {
+            try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
             if count == 0 { return buffer }
             if count < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw TransportError.readFailed(String(cString: strerror(errno)))
             }
             buffer.append(contentsOf: chunk.prefix(count))
@@ -269,21 +313,48 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     }
 
-    private func writeAll(_ data: Data, to fd: Int32) throws {
+    private func writeAll(_ data: Data, to fd: Int32, deadline: UInt64) throws {
         try data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             var bytesWritten = 0
             while bytesWritten < rawBuffer.count {
+                try waitUntilReady(fd: fd, events: Int16(POLLOUT), deadline: deadline)
                 let result = Darwin.write(
                     fd,
                     baseAddress.advanced(by: bytesWritten),
                     rawBuffer.count - bytesWritten
                 )
                 if result < 0 {
-                    if errno == EINTR { continue }
+                    if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                     throw TransportError.writeFailed(String(cString: strerror(errno)))
                 }
                 bytesWritten += result
+            }
+        }
+    }
+
+    private func waitUntilReady(fd: Int32, events: Int16, deadline: UInt64) throws {
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { throw TransportError.timedOut(socketPath) }
+            let remainingNanoseconds = deadline - now
+            let remainingMilliseconds = max(1, (remainingNanoseconds + 999_999) / 1_000_000)
+            let timeout = Int32(min(UInt64(Int32.max), remainingMilliseconds))
+            var descriptor = pollfd(fd: fd, events: events, revents: 0)
+            let result = Darwin.poll(&descriptor, 1, timeout)
+            if result == 0 { throw TransportError.timedOut(socketPath) }
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw TransportError.readFailed(String(cString: strerror(errno)))
+            }
+            if descriptor.revents & (events | Int16(POLLHUP)) != 0 {
+                return
+            }
+            if descriptor.revents & Int16(POLLNVAL) != 0 {
+                throw TransportError.readFailed("invalid socket descriptor")
+            }
+            if descriptor.revents & Int16(POLLERR) != 0 {
+                return
             }
         }
     }
