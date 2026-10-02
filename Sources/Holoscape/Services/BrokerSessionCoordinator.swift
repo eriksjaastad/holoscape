@@ -58,6 +58,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case missingSession(BrokerSessionID)
         case staleSession(BrokerSessionID)
         case brokerHostUnavailable(BrokerSessionID, String)
+        case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case concurrentSessionTransition(BrokerSessionID)
     }
 
     private let registry: BrokerSessionRegistry
@@ -235,17 +237,48 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Persist intent before the irreversible runtime action. If the
             // final write or host response is lost, durable state never claims
             // that the retired child is still running.
-            try registry.upsert(retiring)
+            guard try registry.replace(retiring, ifUnchangedFrom: existing) else {
+                return try markErrored(id)
+            }
         }
         do {
             try runtime.markSessionErrored(id: id)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
             // Retirement is idempotent. A prior request may have removed the
             // runtime session before its response or metadata write was lost.
+        } catch let error as BrokerSessionHostClientRuntime.ClientError {
+            if case .transportFailed = error {
+                // The host may have retired the child before its response was
+                // lost. Preserve the durable intent so retry can finish the
+                // idempotent transition instead of reviving a dead session.
+                throw error
+            }
+            do {
+                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+            } catch let registryError {
+                throw CoordinatorError.retirementRollbackFailed(
+                    id,
+                    runtimeFailure: String(describing: error),
+                    registryFailure: String(describing: registryError)
+                )
+            }
+            throw error
         } catch {
             // Runtime retirement did not complete. Restore the prior lifecycle
             // when possible so a live child remains reattachable.
-            try? registry.upsert(existing)
+            do {
+                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+            } catch let registryError {
+                throw CoordinatorError.retirementRollbackFailed(
+                    id,
+                    runtimeFailure: String(describing: error),
+                    registryFailure: String(describing: registryError)
+                )
+            }
             throw error
         }
         let updated = retiring.withLifecycle(
@@ -254,15 +287,21 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             updatedAt: now(),
             lastAttachedChannelID: nil
         )
-        try registry.upsert(updated)
+        guard try registry.replace(updated, ifUnchangedFrom: retiring) else {
+            let current = try record(for: id)
+            if current.lifecycle == .errored { return current }
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
         return updated
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
-        let existing = try record(for: id)
-        guard existing.workingDirectory != directory else { return existing }
-        let updated = existing.withWorkingDirectory(directory, updatedAt: now())
-        try registry.upsert(updated)
+        guard let updated = try registry.update(id, transform: { existing in
+            guard existing.workingDirectory != directory else { return existing }
+            return existing.withWorkingDirectory(directory, updatedAt: now())
+        }) else {
+            throw CoordinatorError.missingSession(id)
+        }
         return updated
     }
 
@@ -389,7 +428,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
         try runtimeAction()
         let updated = transform(existing)
-        try registry.upsert(updated)
+        guard try registry.replace(updated, ifUnchangedFrom: existing) else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
         return updated
     }
 

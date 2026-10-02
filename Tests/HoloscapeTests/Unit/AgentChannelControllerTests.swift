@@ -828,7 +828,7 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
     }
 
-    func testCoordinatorBackedAgentExitWithBrokerHostOutageKeepsRecordReattachable() throws {
+    func testCoordinatorBackedAgentExitWithLostBrokerResponseKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }
         let terminal = MockTerminalProcess()
@@ -856,7 +856,11 @@ final class AgentChannelControllerTests: XCTestCase {
             [sessionID],
             "A nil exit code must still attempt the errored transition"
         )
-        XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
+        XCTAssertEqual(
+            try fixture.singleRecord().lifecycle,
+            .terminating,
+            "A lost response cannot prove whether retirement ran, so durable state must not revive the session"
+        )
     }
 
     func testActivationMarksAgentStaleWhenRestoredBrokerSessionIsMissing() {

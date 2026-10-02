@@ -186,6 +186,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let lock = NSLock()
         private var remainingPayloads: [Data]
         private(set) var readThreads: [Bool] = []
+        private(set) var livenessThreads: [Bool] = []
 
         init(payloads: [Data]) {
             self.remainingPayloads = payloads
@@ -193,6 +194,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         var didReadOnMainThread: Bool {
             lock.withLock { readThreads.contains(true) }
+        }
+
+        var didCheckLivenessOnMainThread: Bool {
+            lock.withLock { livenessThreads.contains(true) }
         }
 
         func listSessions() throws -> [BrokerSessionID] { [] }
@@ -211,8 +216,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
-        func isRunning(id: BrokerSessionID) throws -> Bool { true }
-        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+        func isRunning(id: BrokerSessionID) throws -> Bool {
+            lock.withLock { livenessThreads.append(Thread.isMainThread) }
+            return true
+        }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            lock.withLock { livenessThreads.append(Thread.isMainThread) }
+            return nil
+        }
     }
 
     private final class SignaledOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
@@ -467,6 +478,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.pollOutputOnce()
         fixture.terminal.pollOutputOnce()
         fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable], "Repeated polls during an outage must report once, not storm")
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID, "A host outage must keep the session handle for retry")
@@ -510,6 +522,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         wait(for: [outputHandled], timeout: 1)
 
         XCTAssertFalse(runtime.didReadOnMainThread, "Broker output reads should run on the output read lane, not the main actor")
+        XCTAssertFalse(
+            runtime.didCheckLivenessOnMainThread,
+            "Broker liveness and termination RPCs must run on the output lane, not the main actor"
+        )
     }
 
     func testOutputPumpWakesFromBrokerAvailabilitySignalInsteadOfFixedFastPolling() throws {
@@ -618,7 +634,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         runtime.isHostAvailable = false
         fixture.terminal.pollOutputOnce()
-        XCTAssertEqual(failures.count, 1)
+        try waitUntil { failures.count == 1 }
 
         runtime.isHostAvailable = true
         fixture.terminal.startProcess(
@@ -650,6 +666,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         runtime.isHostAvailable = false
         fixture.terminal.pollOutputOnce()
+        try waitUntil { fixture.terminal.sessionFailure != nil }
         runtime.isHostAvailable = true
         fixture.terminal.startProcess(
             executable: "/bin/zsh",
@@ -673,6 +690,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
 
         fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
         XCTAssertNil(fixture.terminal.brokerSessionID, "A dropped session must not stay attached")
@@ -753,7 +771,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(started)
 
         XCTAssertLessThan(elapsed, 0.05, "Persistence recovery must leave the main actor without waiting for broker retirement")
-        XCTAssertTrue(runtime.waitForRetirement(), "The recovery lane should attempt retirement off-main")
+        try waitUntil {
+            runtime.waitForRetirement(timeout: 0.01)
+        }
         XCTAssertTrue(failures.isEmpty, "Failure truth is not final until retirement completes")
 
         runtime.unblockRetirement()

@@ -20,6 +20,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var createError: Error?
         var attachError: Error?
         var terminateError: Error?
+        var markErroredError: Error?
         var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
@@ -56,6 +57,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         func markSessionErrored(id: BrokerSessionID) throws {
             events.append(.markErrored(id))
+            if let markErroredError { throw markErroredError }
         }
 
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
@@ -302,6 +304,38 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(errored.exitCode)
         XCTAssertEqual(errored.updatedAt, now)
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
+    }
+
+    func testMarkErroredKeepsTerminatingStateWhenBrokerResponseIsLost() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 202) })
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            guard case BrokerSessionHostClientRuntime.ClientError.transportFailed = error else {
+                return XCTFail("Expected ambiguous transport failure, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(
+            try XCTUnwrap(coordinator.loadAll().first).lifecycle,
+            .terminating,
+            "A lost broker response must not restore durable state to running after retirement may have completed"
+        )
+
+        runtime.markErroredError = nil
+        XCTAssertEqual(try coordinator.markErrored(record.id).lifecycle, .errored)
     }
 
     func testUpdatingMissingSessionFailsLoudly() throws {

@@ -13,43 +13,85 @@ struct BrokerSessionRegistry {
     }
 
     let fileURL: URL
+    /// Registry mutations are load-modify-save transactions shared by every
+    /// terminal and coordinator instance. Atomic replacement protects the file
+    /// bytes, while this recursive lock protects the transaction from lost
+    /// updates across independent broker recovery queues.
+    private static let transactionLock = NSRecursiveLock()
 
     init(fileURL: URL = BrokerSessionRegistry.defaultFileURL()) {
         self.fileURL = fileURL
     }
 
     func load() throws -> [BrokerSessionRecord] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return []
-        }
+        try Self.transactionLock.withLock {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                return []
+            }
 
-        let data = try Data(contentsOf: fileURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let records = try decoder.decode([BrokerSessionRecord].self, from: data)
-        try validate(records)
-        return records.sortedBySessionID()
+            let data = try Data(contentsOf: fileURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let records = try decoder.decode([BrokerSessionRecord].self, from: data)
+            try validate(records)
+            return records.sortedBySessionID()
+        }
     }
 
     func save(_ records: [BrokerSessionRecord]) throws {
-        try validate(records)
+        try Self.transactionLock.withLock {
+            try validate(records)
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(records.sortedBySessionID())
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(records.sortedBySessionID())
 
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: fileURL, options: [.atomic])
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: fileURL, options: [.atomic])
+        }
     }
 
     func upsert(_ record: BrokerSessionRecord) throws {
-        var records = try load().filter { $0.id != record.id }
-        records.append(record)
-        try save(records)
+        try Self.transactionLock.withLock {
+            var records = try load().filter { $0.id != record.id }
+            records.append(record)
+            try save(records)
+        }
+    }
+
+    /// Replace one record only when the caller's snapshot is still current.
+    /// This prevents a delayed lifecycle operation from reviving state that a
+    /// concurrent recovery already advanced to terminating or final.
+    func replace(
+        _ record: BrokerSessionRecord,
+        ifUnchangedFrom expected: BrokerSessionRecord
+    ) throws -> Bool {
+        try Self.transactionLock.withLock {
+            var records = try load()
+            guard let index = records.firstIndex(where: { $0.id == expected.id }),
+                  records[index] == expected else { return false }
+            records[index] = record
+            try save(records)
+            return true
+        }
+    }
+
+    func update(
+        _ id: BrokerSessionID,
+        transform: (BrokerSessionRecord) -> BrokerSessionRecord
+    ) throws -> BrokerSessionRecord? {
+        try Self.transactionLock.withLock {
+            var records = try load()
+            guard let index = records.firstIndex(where: { $0.id == id }) else { return nil }
+            let updated = transform(records[index])
+            records[index] = updated
+            try save(records)
+            return updated
+        }
     }
 
     /// Removes records that are both terminal and older than the caller-owned cutoff.
@@ -59,19 +101,21 @@ struct BrokerSessionRegistry {
     /// durable regardless of age so Holoscape never silently loses resumable sessions.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        let records = try load()
-        let removed = records.filter { record in
-            record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+        try Self.transactionLock.withLock {
+            let records = try load()
+            let removed = records.filter { record in
+                record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+            }
+            guard !removed.isEmpty else {
+                return []
+            }
+            let removedIDs = Set(removed.map(\.id))
+            let retained = records.filter { record in
+                !removedIDs.contains(record.id)
+            }
+            try save(retained)
+            return removed.sortedBySessionID()
         }
-        guard !removed.isEmpty else {
-            return []
-        }
-        let removedIDs = Set(removed.map(\.id))
-        let retained = records.filter { record in
-            !removedIDs.contains(record.id)
-        }
-        try save(retained)
-        return removed.sortedBySessionID()
     }
 
     private func validate(_ records: [BrokerSessionRecord]) throws {

@@ -2,6 +2,17 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerSessionRegistryTests: XCTestCase {
+    private final class ErrorRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Error] = []
+
+        var errors: [Error] { lock.withLock { storage } }
+
+        func append(_ error: Error) {
+            lock.withLock { storage.append(error) }
+        }
+    }
+
     private var tempDirectory: URL!
 
     override func setUpWithError() throws {
@@ -40,6 +51,44 @@ final class BrokerSessionRegistryTests: XCTestCase {
         try registry.upsert(replacement)
 
         XCTAssertEqual(try registry.load(), [first, replacement])
+    }
+
+    func testConcurrentUpsertsPreserveEverySessionRecord() throws {
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let records = (0..<40).map { index in
+            makeRecord(id: "session-\(index)", lifecycle: .running, updatedAt: TimeInterval(index + 1))
+        }
+        let queue = DispatchQueue(label: "BrokerSessionRegistryTests.concurrent", attributes: .concurrent)
+        let group = DispatchGroup()
+        let failures = ErrorRecorder()
+
+        for record in records {
+            group.enter()
+            queue.async {
+                defer { group.leave() }
+                do {
+                    try registry.upsert(record)
+                } catch {
+                    failures.append(error)
+                }
+            }
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(failures.errors.isEmpty, "Concurrent registry writes failed: \(failures.errors)")
+        XCTAssertEqual(Set(try registry.load().map(\.id)), Set(records.map(\.id)))
+    }
+
+    func testConditionalReplaceDoesNotOverwriteNewerLifecycle() throws {
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let running = makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1)
+        let terminating = makeRecord(id: "session-race", lifecycle: .terminating, updatedAt: 2)
+        let staleDetach = makeRecord(id: "session-race", lifecycle: .detached, updatedAt: 3)
+        try registry.save([running])
+        XCTAssertTrue(try registry.replace(terminating, ifUnchangedFrom: running))
+
+        XCTAssertFalse(try registry.replace(staleDetach, ifUnchangedFrom: running))
+        XCTAssertEqual(try registry.load(), [terminating])
     }
 
     func testLoadMissingRegistryReturnsEmptyList() throws {

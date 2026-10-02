@@ -327,17 +327,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func pollOutputOnce() {
         guard sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
-        do {
-            let data = try coordinator.readAvailableOutput(brokerSessionID)
-            if !data.isEmpty {
-                let bytes = Array(data)
-                terminalView.feed(byteArray: bytes[...])
-                outputHandler?()
-            }
-            try notifyTerminationIfNeeded(for: brokerSessionID)
-        } catch {
-            reportSessionFailure(error, for: brokerSessionID)
-        }
+        outputReadLane.pollOnce(
+            sessionID: brokerSessionID,
+            read: { [outputCoordinator] id in
+                try outputCoordinator.readAvailableOutput(id)
+            },
+            afterDelivery: { [outputCoordinator] id in
+                try outputCoordinator.finishTerminationIfNeeded(id)
+            },
+            onSample: outputSampleHandler(),
+            onTermination: outputTerminationHandler(),
+            onFailure: outputFailureHandler()
+        )
     }
 
     func resizeToCurrentGrid() {
@@ -370,24 +371,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             read: { [outputCoordinator] id in
                 try outputCoordinator.readAvailableOutput(id)
             },
-            onSample: { [weak self] id, data in
-                // Do not let the serial read lane sample termination again until
-                // the main actor has consumed the bytes from this sample. This
-                // makes final-byte delivery and exit notification one ordered
-                // consumer path instead of independently scheduled tasks.
-                let delivered = DispatchSemaphore(value: 0)
-                DispatchQueue.main.async { [weak self] in
-                    defer { delivered.signal() }
-                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
-                    self.handleOutputPumpSample(data, for: id)
-                }
-                delivered.wait()
+            afterDelivery: { [outputCoordinator] id in
+                try outputCoordinator.finishTerminationIfNeeded(id)
             },
-            onFailure: { [weak self] id, error in
-                Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error, for: id)
-                }
-            }
+            onSample: outputSampleHandler(),
+            onTermination: outputTerminationHandler(),
+            onFailure: outputFailureHandler()
         )
         do {
             try coordinator.setOutputAvailabilityHandler(brokerSessionID) { [outputReadLane] id in
@@ -404,10 +393,43 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             terminalView.feed(byteArray: bytes[...])
             outputHandler?()
         }
-        do {
-            try notifyTerminationIfNeeded(for: brokerSessionID)
-        } catch {
-            reportSessionFailure(error, for: brokerSessionID)
+    }
+
+    private func outputSampleHandler() -> @Sendable (BrokerSessionID, Data) -> Void {
+        { [weak self] id, data in
+            // The serial lane does not perform liveness/exit RPCs until the main
+            // actor has consumed this sample, preserving final-byte ordering
+            // without making the main actor call the broker.
+            let delivered = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { [weak self] in
+                defer { delivered.signal() }
+                guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
+                self.handleOutputPumpSample(data, for: id)
+            }
+            delivered.wait()
+        }
+    }
+
+    private func outputTerminationHandler() -> @Sendable (BrokerSessionID, Int32) -> Void {
+        { [weak self] id, exitCode in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.brokerSessionID == id,
+                      !self.didNotifyTermination else { return }
+                self.didNotifyTermination = true
+                self.outputReadLane.stop()
+                self.brokerSessionID = nil
+                self.agentStatusOwnerToken = nil
+                self.terminationHandler?(exitCode)
+            }
+        }
+    }
+
+    private func outputFailureHandler() -> @Sendable (BrokerSessionID, Error) -> Void {
+        { [weak self] id, error in
+            Task { @MainActor [weak self] in
+                self?.reportSessionFailure(error, for: id)
+            }
         }
     }
 
@@ -507,22 +529,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         return false
     }
 
-    private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {
-        guard !didNotifyTermination else { return }
-        guard try !coordinator.isRunning(brokerSessionID) else { return }
-        guard let exitCode = try coordinator.terminationStatus(brokerSessionID) else {
-            // The child has exited, but its final PTY bytes or persistence result
-            // are not authoritative yet. A later output-availability wake retries.
-            return
-        }
-        didNotifyTermination = true
-        outputReadLane.stop()
-        _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
-        self.brokerSessionID = nil
-        agentStatusOwnerToken = nil
-        terminationHandler?(exitCode)
-    }
-
     private func classifyStartFailure(_ error: Error) -> TerminalStartFailureKind {
         if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError {
             switch coordinatorError {
@@ -530,6 +536,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
+            case .retirementRollbackFailed:
+                return .failed
+            case .concurrentSessionTransition:
+                return .failed
             }
         }
         if case BrokerSessionHostClientRuntime.ClientError.transportFailed = error {
@@ -602,6 +612,19 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
         try coordinator.readAvailableOutput(id)
     }
+
+    /// Check and durably finalize process exit on the same serial lane as output
+    /// reads. The lane calls this only after SwiftTerm has consumed the preceding
+    /// sample, so final bytes remain visible before exit becomes authoritative.
+    func finishTerminationIfNeeded(_ id: BrokerSessionID) throws -> Int32? {
+        guard try !coordinator.isRunning(id) else { return nil }
+        guard let exitCode = try coordinator.terminationStatus(id) else {
+            // Final PTY bytes or their persistence result are still in flight.
+            return nil
+        }
+        _ = try coordinator.exit(id, exitCode: exitCode)
+        return exitCode
+    }
 }
 
 private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
@@ -649,7 +672,9 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         sessionID: BrokerSessionID,
         mode: Mode,
         read: @escaping @Sendable (BrokerSessionID) throws -> Data,
+        afterDelivery: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         stop()
@@ -674,11 +699,42 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     let data = try read(sessionID)
                     guard self.isOpen(for: sessionID) else { return }
                     onSample(sessionID, data)
+                    guard self.isOpen(for: sessionID) else { return }
+                    if let exitCode = try afterDelivery(sessionID) {
+                        self.closeIfCurrent(sessionID)
+                        onTermination(sessionID, exitCode)
+                        return
+                    }
                 } catch {
                     self.closeIfCurrent(sessionID)
                     onFailure(sessionID, error)
                     return
                 }
+            }
+        }
+    }
+
+    func pollOnce(
+        sessionID: BrokerSessionID,
+        read: @escaping @Sendable (BrokerSessionID) throws -> Data,
+        afterDelivery: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+    ) {
+        if isOpen(for: sessionID) {
+            wake(sessionID: sessionID)
+            return
+        }
+        queue.async {
+            do {
+                let data = try read(sessionID)
+                onSample(sessionID, data)
+                if let exitCode = try afterDelivery(sessionID) {
+                    onTermination(sessionID, exitCode)
+                }
+            } catch {
+                onFailure(sessionID, error)
             }
         }
     }
