@@ -109,6 +109,26 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
     }
 
+    func testShellReplacementLaunchUsesPersistedDirectoryNotTypedHeuristic() {
+        let terminal = MockTerminalProcess()
+        let originalDirectory = NSHomeDirectory()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: originalDirectory,
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        terminal.reportSessionFailure(kind: .brokerSessionStale)
+
+        controller.retry()
+
+        XCTAssertEqual(terminal.lastCurrentDirectory, originalDirectory)
+        XCTAssertEqual(controller.workingDirectory, originalDirectory)
+        XCTAssertEqual(controller.persistedWorkingDirectory, originalDirectory)
+    }
+
     func testShellRetriesHostCWDTruthAfterBrokerMetadataUpdateFails() {
         let terminal = MockTerminalProcess()
         terminal.workingDirectoryUpdateError = CocoaError(.fileWriteNoPermission)

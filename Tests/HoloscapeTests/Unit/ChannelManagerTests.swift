@@ -1290,6 +1290,13 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, NSHomeDirectory())
 
+        terminal.workingDirectoryUpdateError = CocoaError(.fileWriteNoPermission)
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, NSHomeDirectory())
+
+        terminal.workingDirectoryUpdateError = nil
         terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
         manager.saveState()
 

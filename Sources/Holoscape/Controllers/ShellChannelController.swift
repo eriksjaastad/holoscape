@@ -22,13 +22,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var customDisplayLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
-    /// Last directory confirmed by the live shell. Channel metadata persists
-    /// this value rather than speculative presentation state inferred from typed
-    /// input before the shell reports OSC 7 truth.
+    /// Last directory durably acknowledged by the process owner. Channel metadata
+    /// and replacement launches use this value rather than speculative presentation
+    /// state inferred from typed input before the shell reports OSC 7 truth.
     private(set) var persistedWorkingDirectory: String?
-    /// Last directory successfully written to process-owner metadata. Kept
-    /// separately so repeated host confirmation can retry a failed broker write.
-    private var brokerPersistedWorkingDirectory: String?
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
     private var lastStartFailureKind: TerminalStartFailureKind?
@@ -136,7 +133,6 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.workingDirectory = directoryTracker.currentDirectory
         self.directoryTracker = directoryTracker
         self.persistedWorkingDirectory = directoryTracker.currentDirectory
-        self.brokerPersistedWorkingDirectory = directoryTracker.currentDirectory
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
@@ -184,6 +180,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)
 
+        let launchDirectory = persistedWorkingDirectory
+        if terminal.brokerOwnedSessionID == nil, workingDirectory != launchDirectory {
+            let tracker = ShellDirectoryTracker(currentDirectory: launchDirectory)
+            directoryTracker = tracker
+            workingDirectory = tracker.currentDirectory
+        }
+
         let shell = "/bin/zsh"
         let env = Self.launchEnvironment(from: ProcessInfo.processInfo.environment)
         let envPairs = env.map { "\($0.key)=\($0.value)" }
@@ -200,7 +203,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             arguments: ["-o", "nopromptsp", "--login"],
             environmentProfile: .shell,
             label: explicitLabel,
-            workingDirectory: workingDirectory
+            workingDirectory: launchDirectory
         ) else {
             state = .disconnected
             delegate?.channelStateDidChange(self, to: .disconnected)
@@ -212,7 +215,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             args: ["-o", "nopromptsp", "--login"],
             environment: envPairs,
             execName: "zsh",
-            currentDirectory: workingDirectory
+            currentDirectory: launchDirectory
         )
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
@@ -364,23 +367,20 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             workingDirectory = nextDirectory
         }
 
-        let confirmedDirectoryChanged = persistConfirmedDirectory && nextDirectory != persistedWorkingDirectory
-        if confirmedDirectoryChanged {
-            persistedWorkingDirectory = nextDirectory
-        }
-
-        if persistConfirmedDirectory, nextDirectory != brokerPersistedWorkingDirectory {
+        var durableDirectoryChanged = false
+        if persistConfirmedDirectory, nextDirectory != persistedWorkingDirectory {
             do {
                 try terminal.updateWorkingDirectory(nextDirectory)
-                brokerPersistedWorkingDirectory = nextDirectory
+                persistedWorkingDirectory = nextDirectory
+                durableDirectoryChanged = true
             } catch {
-                // Keep confirmed shell truth for channel persistence while leaving
-                // broker acknowledgement unchanged so a repeated confirmation retries.
+                // Keep durable launch/config truth unchanged so a failed broker
+                // write cannot be presented as persisted. Repeated host truth retries.
                 NSLog("Shell broker working-directory update failed: \(error)")
             }
         }
 
-        if presentationChanged || confirmedDirectoryChanged {
+        if presentationChanged || durableDirectoryChanged {
             delegate?.channelStateDidChange(self, to: state)
         }
     }
