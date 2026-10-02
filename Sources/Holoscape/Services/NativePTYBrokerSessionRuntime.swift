@@ -177,6 +177,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             return status
         }
 
+        func throwScrollbackPersistenceErrorIfPresent() throws {
+            lock.lock()
+            let reason = scrollbackPersistenceFailureReason
+            lock.unlock()
+            if let reason {
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+        }
+
         func markOutputMonitoringComplete() {
             lock.lock()
             outputMonitoringComplete = true
@@ -471,6 +480,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     func isRunning(id: BrokerSessionID) throws -> Bool {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
+        try session.throwScrollbackPersistenceErrorIfPresent()
         return session.process.isRunning
     }
 

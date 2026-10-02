@@ -626,7 +626,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [reconciled])
     }
 
-    func testReconcileRuntimeStatusMarksScrollbackPersistenceFailureStale() throws {
+    func testReconcileRuntimeStatusRetiresScrollbackPersistenceFailureAndMarksErrored() throws {
         let runtime = RecordingBrokerSessionRuntime()
         var now = Date(timeIntervalSince1970: 780)
         let coordinator = makeCoordinator(runtime: runtime, now: { now })
@@ -649,10 +649,11 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
         let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
 
-        XCTAssertEqual(reconciled.lifecycle, .stale)
+        XCTAssertEqual(reconciled.lifecycle, .errored)
         XCTAssertNil(reconciled.exitCode)
         XCTAssertNil(reconciled.lastAttachedChannelID)
         XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertTrue(runtime.events.contains(.markErrored(started.id)))
     }
 
     func testReconcileRuntimeStatusRequiresTypedHostMissingSessionFailureBeforeMarkingStale() throws {

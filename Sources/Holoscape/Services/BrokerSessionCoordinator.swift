@@ -173,6 +173,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
+        if existing.lifecycle == .terminating {
+            // A prior retirement may have removed the runtime session before its
+            // final metadata write or response completed. Finish that idempotent
+            // retirement before allowing the caller to replace this generation.
+            _ = try markErrored(id)
+            throw CoordinatorError.staleSession(id)
+        }
         guard existing.lifecycle != .exited,
               existing.lifecycle != .errored,
               existing.lifecycle != .stale else {
@@ -214,14 +221,41 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.markSessionErrored(id: id) }) { record in
-            record.withLifecycle(
-                .errored,
+        let existing = try record(for: id)
+        let retiring: BrokerSessionRecord
+        if existing.lifecycle == .terminating {
+            retiring = existing
+        } else {
+            retiring = existing.withLifecycle(
+                .terminating,
                 exitCode: nil,
                 updatedAt: now(),
                 lastAttachedChannelID: nil
             )
+            // Persist intent before the irreversible runtime action. If the
+            // final write or host response is lost, durable state never claims
+            // that the retired child is still running.
+            try registry.upsert(retiring)
         }
+        do {
+            try runtime.markSessionErrored(id: id)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            // Retirement is idempotent. A prior request may have removed the
+            // runtime session before its response or metadata write was lost.
+        } catch {
+            // Runtime retirement did not complete. Restore the prior lifecycle
+            // when possible so a live child remains reattachable.
+            try? registry.upsert(existing)
+            throw error
+        }
+        let updated = retiring.withLifecycle(
+            .errored,
+            exitCode: nil,
+            updatedAt: now(),
+            lastAttachedChannelID: nil
+        )
+        try registry.upsert(updated)
+        return updated
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
@@ -338,14 +372,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 )
             }
         } catch let error where isUnrecoverableRuntimeSessionError(error, id: id) {
-            return try updateMetadataOnly(id) { record in
-                record.withLifecycle(
-                    .stale,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: nil
-                )
-            }
+            // A persistence-broken runtime is still owned, unlike a missing
+            // session. Retire it before publishing a final lifecycle record.
+            return try markErrored(id)
         }
     }
 

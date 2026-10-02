@@ -320,10 +320,21 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
-    private final class ScrollbackPersistenceFailureRuntime: BrokerSessionRuntime {
+    private final class ScrollbackPersistenceFailureRuntime: BrokerSessionRuntime, @unchecked Sendable {
+        private let retirementEntered = DispatchSemaphore(value: 0)
+        private let retirementRelease = DispatchSemaphore(value: 0)
         private(set) var createdIDs: [BrokerSessionID] = []
         private(set) var retiredIDs: [BrokerSessionID] = []
         var retirementError: Error?
+        var blocksRetirement = false
+
+        func waitForRetirement(timeout: TimeInterval = 1) -> Bool {
+            retirementEntered.wait(timeout: .now() + timeout) == .success
+        }
+
+        func unblockRetirement() {
+            retirementRelease.signal()
+        }
 
         func listSessions() throws -> [BrokerSessionID] { createdIDs.filter { !retiredIDs.contains($0) } }
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { createdIDs.append(id) }
@@ -331,6 +342,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
         func markSessionErrored(id: BrokerSessionID) throws {
+            retirementEntered.signal()
+            if blocksRetirement {
+                _ = retirementRelease.wait(timeout: .now() + 2)
+            }
             if let retirementError { throw retirementError }
             retiredIDs.append(id)
         }
@@ -673,6 +688,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.setSessionFailureHandler { failures.append($0) }
 
         fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
         XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
@@ -703,6 +719,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.setSessionFailureHandler { failures.append($0) }
 
         fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.failed])
         XCTAssertTrue(failures[0].description.contains("failed to retire persistence-broken broker session"))
@@ -721,6 +738,27 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertEqual(runtime.createdIDs, [failedSessionID])
         XCTAssertEqual(fixture.terminal.brokerSessionID, failedSessionID)
+    }
+
+    func testScrollbackPersistenceRecoveryDoesNotBlockMainActor() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        runtime.blocksRetirement = true
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008023")
+        defer { fixture.cleanup() }
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        let started = Date()
+        fixture.terminal.pollOutputOnce()
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertLessThan(elapsed, 0.05, "Persistence recovery must leave the main actor without waiting for broker retirement")
+        XCTAssertTrue(runtime.waitForRetirement(), "The recovery lane should attempt retirement off-main")
+        XCTAssertTrue(failures.isEmpty, "Failure truth is not final until retirement completes")
+
+        runtime.unblockRetirement()
+        try waitUntil { failures.count == 1 }
+        XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
     }
 
     func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {

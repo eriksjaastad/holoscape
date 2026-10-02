@@ -21,6 +21,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let coordinator: any BrokerSessionCoordinating
     private let inputCoordinator: BrokerInputCoordinator
     private let outputCoordinator: BrokerOutputCoordinator
+    private let failureRecoveryCoordinator: BrokerFailureRecoveryCoordinator
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
@@ -37,6 +38,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// reattaching the dead session, while the owning tab can still persist the
     /// dead identity for the next launch.
     private(set) var staleBrokerSessionID: BrokerSessionID?
+    private var recoveringBrokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
     /// Most recent failure observed while operating the live session. `nil` means
     /// the session is healthy (or has not started yet).
@@ -68,6 +70,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.coordinator = coordinator
         self.inputCoordinator = BrokerInputCoordinator(coordinator)
         self.outputCoordinator = BrokerOutputCoordinator(coordinator)
+        self.failureRecoveryCoordinator = BrokerFailureRecoveryCoordinator(coordinator)
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -86,6 +89,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        guard recoveringBrokerSessionID == nil else {
+            NSLog("Broker-backed terminal retry ignored while session recovery is still running")
+            return
+        }
         inputWriteLane.closeAndDrain()
         startFailureDescription = nil
         startFailureKind = nil
@@ -264,9 +271,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // bytes were drained off-main but not yet delivered to SwiftTerm.
                 outputReadLane.wake(sessionID: id)
             },
-            onFailure: { [weak self] _, error in
+            onFailure: { [weak self] id, error in
                 Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error)
+                    self?.reportSessionFailure(error, for: id)
                 }
             }
         )
@@ -329,7 +336,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             try notifyTerminationIfNeeded(for: brokerSessionID)
         } catch {
-            reportSessionFailure(error)
+            reportSessionFailure(error, for: brokerSessionID)
         }
     }
 
@@ -342,7 +349,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             try coordinator.resize(brokerSessionID, size: currentGridSize)
         } catch {
-            reportSessionFailure(error)
+            reportSessionFailure(error, for: brokerSessionID)
         }
     }
 
@@ -376,9 +383,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 }
                 delivered.wait()
             },
-            onFailure: { [weak self] _, error in
+            onFailure: { [weak self] id, error in
                 Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error)
+                    self?.reportSessionFailure(error, for: id)
                 }
             }
         )
@@ -387,7 +394,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 outputReadLane.wake(sessionID: id)
             }
         } catch {
-            reportSessionFailure(error)
+            reportSessionFailure(error, for: brokerSessionID)
         }
     }
 
@@ -400,7 +407,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             try notifyTerminationIfNeeded(for: brokerSessionID)
         } catch {
-            reportSessionFailure(error)
+            reportSessionFailure(error, for: brokerSessionID)
         }
     }
 
@@ -419,26 +426,19 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// instead of trapping. The durable broker handle is preserved for the
     /// retryable cases so retry reattaches the same session rather than starting
     /// a replacement.
-    private func reportSessionFailure(_ error: Error) {
-        var kind = classifyStartFailure(error)
-        var description = String(describing: error)
+    private func reportSessionFailure(_ error: Error, for sessionID: BrokerSessionID) {
+        guard brokerSessionID == sessionID else {
+            NSLog("Ignoring delayed broker failure for inactive session \(sessionID.rawValue): \(error)")
+            return
+        }
+        let kind = classifyStartFailure(error)
+        let description = String(describing: error)
         inputWriteLane.close()
         stopOutputPump()
 
-        if kind == .brokerSessionStale,
-           isScrollbackPersistenceFailure(error),
-           let sessionID = brokerSessionID {
-            do {
-                // Unlike a missing session, a persistence failure leaves the
-                // child alive. Retire this generation and durably mark it errored
-                // before allowing retry to create a replacement.
-                _ = try coordinator.markErrored(sessionID)
-            } catch {
-                // Cleanup failure means ownership is still indeterminate. Keep
-                // the handle and fail closed rather than spawning a duplicate.
-                kind = .failed
-                description += "; failed to retire persistence-broken broker session: \(error)"
-            }
+        if kind == .brokerSessionStale, isScrollbackPersistenceFailure(error) {
+            beginScrollbackFailureRecovery(error, for: sessionID)
+            return
         }
 
         switch kind {
@@ -449,13 +449,44 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         case .brokerSessionStale:
             // The broker no longer owns the session: hand the dead identity to the
             // tab and drop the live handle so retry starts a replacement.
-            if let sessionID = brokerSessionID {
-                brokerSessionID = nil
-                staleBrokerSessionID = sessionID
-            }
+            brokerSessionID = nil
+            staleBrokerSessionID = sessionID
         }
 
-        let failure = TerminalSessionFailure(kind: kind, description: description)
+        publishSessionFailure(TerminalSessionFailure(kind: kind, description: description))
+    }
+
+    private func beginScrollbackFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
+        guard recoveringBrokerSessionID == nil else { return }
+        recoveringBrokerSessionID = sessionID
+        let originalDescription = String(describing: error)
+        failureRecoveryCoordinator.markErrored(sessionID) { [weak self] recoveryError in
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.recoveringBrokerSessionID == sessionID,
+                      self.brokerSessionID == sessionID else { return }
+                self.recoveringBrokerSessionID = nil
+
+                if let recoveryError {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(
+                            kind: .failed,
+                            description: originalDescription
+                                + "; failed to retire persistence-broken broker session: \(recoveryError)"
+                        )
+                    )
+                } else {
+                    self.brokerSessionID = nil
+                    self.staleBrokerSessionID = sessionID
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .brokerSessionStale, description: originalDescription)
+                    )
+                }
+            }
+        }
+    }
+
+    private func publishSessionFailure(_ failure: TerminalSessionFailure) {
         guard sessionFailure != failure else {
             NSLog("Broker-backed terminal session still failing: \(failure.description)")
             return
@@ -570,6 +601,29 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
 
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
         try coordinator.readAvailableOutput(id)
+    }
+}
+
+private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+    private let queue = DispatchQueue(label: "holoscape.broker.failure-recovery", qos: .userInitiated)
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func markErrored(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                _ = try coordinator.markErrored(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
     }
 }
 
