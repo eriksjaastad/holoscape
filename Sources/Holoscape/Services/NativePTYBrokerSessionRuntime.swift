@@ -25,7 +25,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         let id: BrokerSessionID
         let process: Process
         let masterHandle: FileHandle
-        let scrollbackStore: DiskBackedScrollbackStore?
+        let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
         private var processGroupCleanupFailureReason: String?
         let lock = NSLock()
@@ -33,19 +33,24 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         var output = Data()
         var scrollback = Data()
         private var scrollbackPersistenceFailureReason: String?
+        private var pendingScrollbackPersistenceWrites = 0
         var terminationStatus: Int32?
         var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
 
-        init(id: BrokerSessionID, process: Process, masterHandle: FileHandle, scrollbackStore: DiskBackedScrollbackStore?) {
+        init(
+            id: BrokerSessionID,
+            process: Process,
+            masterHandle: FileHandle,
+            scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
+        ) {
             self.id = id
             self.process = process
             self.masterHandle = masterHandle
-            self.scrollbackStore = scrollbackStore
+            self.scrollbackAppender = scrollbackAppender
         }
 
         func appendOutput(_ data: Data) {
-            let handler: (@Sendable (BrokerSessionID) -> Void)?
             let shouldPersist: Bool
             lock.lock()
             output.append(data)
@@ -53,15 +58,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             if scrollback.count > maxScrollbackBytes {
                 scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
             }
-            handler = outputAvailabilityHandler
-            shouldPersist = scrollbackPersistenceFailureReason == nil
-            lock.unlock()
+            shouldPersist = scrollbackAppender != nil && scrollbackPersistenceFailureReason == nil
             if shouldPersist {
+                pendingScrollbackPersistenceWrites += 1
+            }
+            lock.unlock()
+            if shouldPersist, let scrollbackAppender {
                 do {
-                    try scrollbackStore?.append(data, for: id)
+                    try scrollbackAppender(data, id)
+                    lock.lock()
+                    pendingScrollbackPersistenceWrites -= 1
+                    lock.unlock()
                 } catch {
                     let reason = String(describing: error)
                     lock.lock()
+                    pendingScrollbackPersistenceWrites -= 1
                     if scrollbackPersistenceFailureReason == nil {
                         scrollbackPersistenceFailureReason = reason
                     }
@@ -72,6 +83,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             // Wake readers only after persistence has either succeeded or its
             // failure has been retained, so the first awakened read cannot race
             // past a durability failure and leave the terminal looking healthy.
+            lock.lock()
+            let handler = outputAvailabilityHandler
+            lock.unlock()
             handler?(id)
         }
 
@@ -80,6 +94,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+            guard pendingScrollbackPersistenceWrites == 0 else {
+                lock.unlock()
+                return Data()
             }
             let snapshot = output
             output.removeAll(keepingCapacity: true)
@@ -197,21 +215,28 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
     private let scrollbackStore: DiskBackedScrollbackStore?
+    private let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
     private let processEnvironment: [String: String]
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
         scrollbackDirectory: URL? = nil,
+        scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
     ) {
         if let scrollbackDirectory {
-            self.scrollbackStore = DiskBackedScrollbackStore(directory: scrollbackDirectory)
+            let store = DiskBackedScrollbackStore(directory: scrollbackDirectory)
+            self.scrollbackStore = store
+            self.scrollbackAppender = scrollbackAppender ?? { data, id in
+                try store.append(data, for: id)
+            }
         } else {
             self.scrollbackStore = nil
+            self.scrollbackAppender = scrollbackAppender
         }
         self.processEnvironment = processEnvironment
         self.processGroupSignal = processGroupSignal
@@ -269,7 +294,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         process.standardError = slaveError
 
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
-        let session = Session(id: id, process: process, masterHandle: masterHandle, scrollbackStore: scrollbackStore)
+        let session = Session(
+            id: id,
+            process: process,
+            masterHandle: masterHandle,
+            scrollbackAppender: scrollbackAppender
+        )
         let processGroupSignal = self.processGroupSignal
         process.terminationHandler = { [weak session] process in
             session?.handleProcessTermination(

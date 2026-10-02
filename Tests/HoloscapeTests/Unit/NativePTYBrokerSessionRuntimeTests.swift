@@ -557,13 +557,9 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
-    func testScrollbackPersistenceFailureIsRetainedAndSignaledBeforeOutputAvailability() throws {
-        let invalidDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NativePTYBrokerSessionRuntimeInvalidScrollbackDirectory-\(UUID().uuidString)")
-        try Data("not-a-directory".utf8).write(to: invalidDirectory)
-        defer { try? FileManager.default.removeItem(at: invalidDirectory) }
-
-        let runtime = NativePTYBrokerSessionRuntime(scrollbackDirectory: invalidDirectory)
+    func testScrollbackPersistenceFailureBlocksPollingReadsUntilFailureIsRetained() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: true)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
         let id = BrokerSessionID(rawValue: "failed-disk-scrollback-native-pty-runtime-test")
         let request = BrokerSessionLaunchRequest(
             command: "/bin/cat",
@@ -572,25 +568,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let outputAvailable = DispatchSemaphore(value: 0)
-        let capturedError = LockedRuntimeErrorBox()
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
-        try runtime.setOutputAvailabilityHandler(id: id) { signaledID in
-            do {
-                _ = try runtime.readAvailableOutput(id: signaledID)
-            } catch {
-                capturedError.store(error)
-            }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
             outputAvailable.signal()
         }
 
         try runtime.sendInput(id: id, bytes: Array("unpersisted-scrollback-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
 
+        // Production socket clients poll independently of output-availability
+        // signals. A poll while the disk append is in flight must not consume
+        // bytes before the append's outcome is known.
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+
+        appender.release()
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
-        guard case let .scrollbackPersistenceFailed(failedID, reason) =
-            capturedError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
-            return XCTFail("Expected retained scrollback persistence failure, got \(String(describing: capturedError.value))")
+
+        let capturedError: NativePTYBrokerSessionRuntime.RuntimeError
+        do {
+            _ = try runtime.readAvailableOutput(id: id)
+            return XCTFail("Expected retained scrollback persistence failure")
+        } catch let error as NativePTYBrokerSessionRuntime.RuntimeError {
+            capturedError = error
+        }
+        guard case let .scrollbackPersistenceFailed(failedID, reason) = capturedError else {
+            return XCTFail("Expected retained scrollback persistence failure, got \(capturedError)")
         }
         XCTAssertEqual(failedID, id)
         XCTAssertFalse(reason.isEmpty)
@@ -603,6 +607,34 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
                 .scrollbackPersistenceFailed(failedID, reason: reason)
             )
         }
+    }
+
+    func testPollingReadDefersUntilScrollbackPersistenceSucceedsWithoutLosingOutput() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "delayed-disk-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            outputAvailable.signal()
+        }
+
+        try runtime.sendInput(id: id, bytes: Array("persisted-scrollback-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
+        XCTAssertTrue(output.contains("persisted-scrollback-marker"), output)
     }
 
     func testDiskBackedScrollbackCanBeReadAfterRuntimeInstanceLoss() throws {
@@ -927,6 +959,34 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+}
+
+private final class BlockingScrollbackAppender: @unchecked Sendable {
+    private let shouldFail: Bool
+    private let entered = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+
+    init(shouldFail: Bool) {
+        self.shouldFail = shouldFail
+    }
+
+    func append(_ data: Data, for id: BrokerSessionID) throws {
+        entered.signal()
+        guard proceed.wait(timeout: .now() + 3) == .success else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        if shouldFail {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
+    func waitUntilEntered() -> DispatchTimeoutResult {
+        entered.wait(timeout: .now() + 3)
+    }
+
+    func release() {
+        proceed.signal()
     }
 }
 
