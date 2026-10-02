@@ -28,6 +28,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var hostCurrentDirectoryHandler: ((String?) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
+    private var startCompletionHandler: (() -> Void)?
+    private var startCompletionPending = false
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
@@ -45,12 +47,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var sessionFailure: TerminalSessionFailure?
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
+    private(set) var untrackedBrokerSessionID: BrokerSessionID?
     private(set) var lastScrollbackReplay: ScrollbackReplay?
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
     var brokerOwnedSessionID: BrokerSessionID? { brokerSessionID }
+    var completesStartAsynchronously: Bool { startCompletionPending }
 
     init(
         channelID: UUID,
@@ -93,9 +97,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             NSLog("Broker-backed terminal retry ignored while session recovery is still running")
             return
         }
+        if let untrackedBrokerSessionID {
+            do {
+                try coordinator.retireUntrackedSession(untrackedBrokerSessionID)
+                self.untrackedBrokerSessionID = nil
+            } catch {
+                startFailureDescription = String(describing: error)
+                startFailureKind = .failed
+                NSLog("Broker-backed terminal refused replacement until untracked session \(untrackedBrokerSessionID.rawValue) is retired: \(error)")
+                return
+            }
+        }
         inputWriteLane.closeAndDrain()
         startFailureDescription = nil
         startFailureKind = nil
+        untrackedBrokerSessionID = nil
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
@@ -132,6 +148,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 startOutputPump()
             }
         } catch {
+            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+                untrackedBrokerSessionID = id
+            }
             brokerSessionID = nil
             agentStatusOwnerToken = nil
             startFailureDescription = String(describing: error)
@@ -166,20 +185,33 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let coordinator = self.coordinator
         let channelID = self.channelID
         guard coordinator.requiresOffMainBrokerWork else {
-            finishReattach(sessionID: sessionID, result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) })
+            finishReattach(
+                sessionID: sessionID,
+                result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) },
+                replay: nil,
+                notifyStartCompletion: false
+            )
             return
         }
+        startCompletionPending = true
         failureRecoveryCoordinator.reattach(sessionID, attachedChannelID: channelID) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.finishReattach(sessionID: sessionID, result: result)
+                self.finishReattach(
+                    sessionID: sessionID,
+                    result: result.record,
+                    replay: result.replay,
+                    notifyStartCompletion: true
+                )
             }
         }
     }
 
     private func finishReattach(
         sessionID: BrokerSessionID,
-        result: Result<BrokerSessionRecord, Error>
+        result: Result<BrokerSessionRecord, Error>,
+        replay: ScrollbackReplayResult?,
+        notifyStartCompletion: Bool
     ) {
         do {
             let record = try result.get()
@@ -191,7 +223,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // publish it through the same host-truth seam as OSC 7 so the owning
             // shell replaces any stale channel metadata before saving again.
             hostCurrentDirectoryHandler?(record.workingDirectory)
-            restoreScrollbackReplay(for: record.id)
+            if let replay {
+                applyScrollbackReplay(replay, for: record.id)
+            } else {
+                restoreScrollbackReplay(for: record.id)
+            }
             if outputHandler != nil {
                 startOutputPump()
             }
@@ -209,6 +245,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             agentStatusOwnerToken = nil
             NSLog("Broker-backed terminal reattach failed: \(error)")
+        }
+        if notifyStartCompletion {
+            startCompletionPending = false
+            startCompletionHandler?()
         }
     }
 
@@ -232,6 +272,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             feedStatusLine(
                 "Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally."
             )
+            outputHandler?()
+            NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
+        }
+    }
+
+    private func applyScrollbackReplay(_ result: ScrollbackReplayResult, for sessionID: BrokerSessionID) {
+        if let replay = result.replay {
+            lastScrollbackReplay = replay
+            guard !replay.data.isEmpty else { return }
+            feedStatusLine(scrollbackReplayStatus(for: replay))
+            terminalView.feed(byteArray: Array(replay.data)[...])
+            outputHandler?()
+        } else if let error = result.error {
+            lastScrollbackReplay = nil
+            feedStatusLine("Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally.")
             outputHandler?()
             NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
         }
@@ -299,6 +354,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
         sessionFailureHandler = handler
+    }
+
+    func setStartCompletionHandler(_ handler: (() -> Void)?) {
+        startCompletionHandler = handler
     }
 
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
@@ -547,7 +606,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerHostUnavailable
             case .retirementRollbackFailed, .detachRollbackFailed:
                 return .failed
-            case .concurrentSessionTransition:
+            case .concurrentSessionTransition, .untrackedSession:
                 return .failed
             }
         }
@@ -636,6 +695,16 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     }
 }
 
+private struct ScrollbackReplayResult: Sendable {
+    let replay: ScrollbackReplay?
+    let error: String?
+}
+
+private struct ReattachResult: Sendable {
+    let record: Result<BrokerSessionRecord, Error>
+    let replay: ScrollbackReplayResult?
+}
+
 private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     private let coordinator: any BrokerSessionCoordinating
     private let queue = DispatchQueue(label: "holoscape.broker.failure-recovery", qos: .userInitiated)
@@ -647,10 +716,24 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     func reattach(
         _ id: BrokerSessionID,
         attachedChannelID: UUID,
-        completion: @escaping @Sendable (Result<BrokerSessionRecord, Error>) -> Void
+        completion: @escaping @Sendable (ReattachResult) -> Void
     ) {
         queue.async { [self] in
-            completion(Result { try coordinator.reattach(id, attachedChannelID: attachedChannelID) })
+            do {
+                let record = try coordinator.reattach(id, attachedChannelID: attachedChannelID)
+                let replay: ScrollbackReplayResult
+                do {
+                    replay = ScrollbackReplayResult(
+                        replay: try coordinator.readScrollbackReplay(id, maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach),
+                        error: nil
+                    )
+                } catch {
+                    replay = ScrollbackReplayResult(replay: nil, error: String(describing: error))
+                }
+                completion(ReattachResult(record: .success(record), replay: replay))
+            } catch {
+                completion(ReattachResult(record: .failure(error), replay: nil))
+            }
         }
     }
 

@@ -23,6 +23,8 @@ class MockTerminalProcess: TerminalProcess {
     var sessionFailure: TerminalSessionFailure?
     var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     var terminationHandler: ((Int32?) -> Void)?
+    var startCompletionHandler: (() -> Void)?
+    var completesStartAsynchronously = false
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
     var resizeToCurrentGridCallCount = 0
@@ -52,6 +54,15 @@ class MockTerminalProcess: TerminalProcess {
 
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {
         terminationHandler = handler
+    }
+
+    func setStartCompletionHandler(_ handler: (() -> Void)?) {
+        startCompletionHandler = handler
+    }
+
+    func completeStart() {
+        completesStartAsynchronously = false
+        startCompletionHandler?()
     }
 
     /// Deliver a process termination the way a real terminal process does, so

@@ -55,6 +55,8 @@ final class AgentChannelControllerTests: XCTestCase {
             )
         }
 
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -89,6 +91,90 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(terminal.lastExecName, "codex")
         XCTAssertEqual(terminal.lastCurrentDirectory, "/tmp")
         XCTAssertEqual(controller.state, .active)
+    }
+
+    func testAsynchronousReattachPublishesRestoredOwnerOnlyAtCompletion() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .connecting)
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "restored-owner"))
+
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "restored-agent")
+        terminal.agentStatusOwnerToken = "restored-owner"
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "restored-agent"))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: "restored-owner"))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "foreign-owner"))
+    }
+
+    func testAsynchronousReattachDefersSavedAttentionUntilOwnerIsEstablished() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        let sessionID = BrokerSessionID(rawValue: "restored-attention-agent")
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        let restored = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            reason: "saved approval"
+        )
+
+        controller.activate()
+        controller.restorePersistentAttentionState(restored, afterReattaching: sessionID)
+
+        XCTAssertEqual(controller.state, .connecting)
+        XCTAssertNotEqual(controller.persistentState, restored)
+
+        terminal.brokerOwnedSessionID = sessionID
+        terminal.agentStatusOwnerToken = "restored-owner"
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.persistentState, restored)
+    }
+
+    func testAsynchronousReattachFailureCorrectsAgentState() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.startFailureDescription = "missing broker session"
+        terminal.startFailureKind = .brokerSessionStale
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.persistentState.kind, .stale)
+        XCTAssertEqual(controller.persistentState.recoveryAction, .recreateBrokerSession)
     }
 
     func testAgentTabIdentityIndicatorFollowsLaunchCommand() {

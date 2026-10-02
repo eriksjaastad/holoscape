@@ -148,6 +148,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setSessionFailureHandler { [weak self] failure in
             self?.handleSessionFailure(failure)
         }
+        self.terminal.setStartCompletionHandler { [weak self] in
+            self?.finishActivation()
+        }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
@@ -217,6 +220,11 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: "zsh",
             currentDirectory: launchDirectory
         )
+        if terminal.completesStartAsynchronously { return }
+        finishActivation()
+    }
+
+    private func finishActivation() {
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
             let failedState = applyBrokerFailure(kind: terminal.startFailureKind)

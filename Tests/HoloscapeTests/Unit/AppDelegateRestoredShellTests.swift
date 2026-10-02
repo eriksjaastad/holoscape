@@ -31,6 +31,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         }
 
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             reattachCalls.append((id: id, attachedChannelID: attachedChannelID))

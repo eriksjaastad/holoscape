@@ -51,6 +51,47 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .active)
     }
 
+    func testAsynchronousReattachDoesNotPublishActiveUntilCompletion() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertEqual(controller.state, .connecting)
+
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "restored-shell")
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "restored-shell"))
+    }
+
+    func testAsynchronousReattachFailureCorrectsControllerState() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.startFailureDescription = "broker host unavailable"
+        terminal.startFailureKind = .brokerHostUnavailable
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .stale)
+        XCTAssertEqual(controller.persistentState.kind, .stale)
+        XCTAssertEqual(controller.persistentState.recoveryAction, .retryBrokerHost)
+    }
+
     func testShellLaunchEnvironmentStripsInheritedAgentOwnerToken() {
         let environment = ShellChannelController.launchEnvironment(from: [
             "PATH": "/usr/bin",

@@ -62,6 +62,8 @@ final class ChannelManagerTests: XCTestCase {
             )
         }
 
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }

@@ -10,6 +10,8 @@ protocol BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+    /// Retire a runtime session whose registry write never succeeded.
+    func retireUntrackedSession(_ id: BrokerSessionID) throws
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
     func reattachableSessions() throws -> [BrokerSessionRecord]
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
@@ -64,6 +66,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case concurrentSessionTransition(BrokerSessionID)
+        case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
 
     private let registry: BrokerSessionRegistry
@@ -146,34 +149,34 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         )
         do {
             try registry.upsert(record)
-        } catch {
+        } catch let registryFailure {
             // The runtime session exists but Holoscape could not record it, so it
             // could never be reattached, exited, or recovered: roll it back before
             // surfacing the failure, otherwise the broker is left owning an
             // untracked process.
-            rollbackUnrecordedStart(id, registryFailure: error)
-            throw error
+            do {
+                try runtime.terminateSession(id: id, exitCode: nil)
+                NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
+            } catch {
+                throw CoordinatorError.untrackedSession(
+                    id,
+                    registryFailure: String(describing: registryFailure),
+                    rollbackFailure: String(describing: error)
+                )
+            }
+            throw registryFailure
         }
         return record
     }
 
-    /// Terminate the session created by a start whose registry write failed.
-    ///
-    /// A rollback failure is reported loudly and never replaces the original start
-    /// failure: the caller must see why the start failed, and the orphaned session
-    /// id is only visible in this log because nothing else can find it.
-    private func rollbackUnrecordedStart(_ id: BrokerSessionID, registryFailure: Error) {
+    func retireUntrackedSession(_ id: BrokerSessionID) throws {
         do {
             try runtime.terminateSession(id: id, exitCode: nil)
-            NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
-        } catch {
-            NSLog(
-                "Broker session rollback failed for \(id.rawValue): \(error). "
-                    + "The session created by the failed start may still be running untracked "
-                    + "(registry failure: \(registryFailure))"
-            )
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return
         }
     }
+
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         // Publish the reversible metadata transition before contacting the

@@ -528,9 +528,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try registry.load(), [], "A rolled-back start must not persist a record")
     }
 
-    /// #7377 — when the rollback itself fails, the original registry failure still
-    /// surfaces instead of being masked by the cleanup attempt.
-    func testStartRollbackFailureStillSurfacesTheRegistryFailure() throws {
+    /// #7377 — when rollback fails, the typed error preserves both the registry
+    /// failure and the runtime identity required for a safe retry.
+    func testStartRollbackFailureSurfacesUntrackedIdentityAndRegistryFailure() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.terminateError = RuntimeError.failed
         let registry = try makeUnwritableRegistry()
@@ -544,8 +544,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertThrowsError(
             try coordinator.start(request, channelType: .shell, label: "unrecordable", attachedChannelID: nil)
         ) { error in
-            XCTAssertNotEqual(error as? RuntimeError, .failed, "The rollback failure must not replace the registry failure")
-            XCTAssertFalse(error is BrokerSessionCoordinator.CoordinatorError, "Unexpected coordinator error: \(error)")
+            guard case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, registryFailure, rollbackFailure) = error else {
+                return XCTFail("Expected typed untracked-session failure, got \(error)")
+            }
+            XCTAssertEqual(rollbackFailure, "failed")
+            XCTAssertFalse(registryFailure.isEmpty)
+            guard case let .create(createdID, _) = runtime.events.first else { return XCTFail("Missing create") }
+            XCTAssertEqual(id, createdID)
         }
 
         guard case let .create(createdID, _) = runtime.events.first else {
@@ -555,6 +560,14 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             runtime.events,
             [.create(createdID, request), .terminate(createdID, nil)],
             "The rollback must still be attempted when it is going to fail"
+        )
+
+        runtime.terminateError = nil
+        try coordinator.retireUntrackedSession(createdID)
+        XCTAssertEqual(
+            runtime.events,
+            [.create(createdID, request), .terminate(createdID, nil), .terminate(createdID, nil)],
+            "Retry must retire the known untracked generation before any replacement can start"
         )
     }
 

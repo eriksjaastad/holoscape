@@ -283,7 +283,7 @@ class ChannelManager {
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         for metadata in config.channels {
-            if let controller = factory(metadata) {
+            if let controller = factory(metadata), channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)

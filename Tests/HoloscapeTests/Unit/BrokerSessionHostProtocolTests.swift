@@ -1853,7 +1853,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 12)
+                try server.run(maxConnections: 15)
             } catch {
                 serverError.set(error)
             }
@@ -1915,15 +1915,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(appDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 0)
         XCTAssertEqual(secondLaunchManager.count, 1)
         let restoredShell = try XCTUnwrap(secondLaunchManager.allChannels().first as? ShellChannelController)
+        let reattachDeadline = Date().addingTimeInterval(1)
+        while Date() < reattachDeadline, restoredShell.brokerSessionID != brokerSessionID {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
         XCTAssertEqual(restoredShell.workingDirectory, tempDirectory.path)
         XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
         try secondCoordinator.sendInput(brokerSessionID, bytes: Array("hosted-shell-relaunch-reattach\n".utf8))
-        let output = try waitForCoordinatorOutput(
-            from: secondCoordinator,
-            id: brokerSessionID,
-            containing: "hosted-shell-relaunch-reattach"
-        )
+        let outputDeadline = Date().addingTimeInterval(3)
+        while Date() < outputDeadline,
+              !restoredShell.lastLines(20).joined(separator: "\n").contains("hosted-shell-relaunch-reattach") {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        let output = restoredShell.lastLines(20).joined(separator: "\n")
         XCTAssertTrue(output.contains("hosted-shell-relaunch-reattach"), output)
 
         let records = try registry.load()

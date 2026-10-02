@@ -12,6 +12,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
     private var apiServer: HoloscapeAPIServer?
+    private var launchRecoveryComplete = false
+    private var pendingExternalURLs: [URL] = []
 
     private var isUITesting: Bool {
         CommandLine.arguments.contains("--ui-testing")
@@ -47,18 +49,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             windowController?.setNotificationService(notificationService!)
         }
 
-        // Start API server for MCP integration
-        if let wc = windowController {
-            var apiPort: UInt16 = 7865
-            if let idx = CommandLine.arguments.firstIndex(of: "--api-port"),
-               idx + 1 < CommandLine.arguments.count,
-               let p = UInt16(CommandLine.arguments[idx + 1]) {
-                apiPort = p
-            }
-            apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
-            apiServer?.start()
-            wc.apiServer = apiServer
-        }
 
         // Apply appearance
         applyAppearance(config.appearance)
@@ -73,9 +63,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 restoreSavedChannelsAndRecoveredBrokerSessions()
                 ensureInitialChannelIfNeeded()
                 windowController?.refreshAllTabs()
+                launchRecoveryComplete = true
+                startAPIServerIfNeeded(channelManager: channelManager)
+                showMainWindow()
+                drainPendingExternalURLs()
             }
         } else {
             ensureInitialChannelIfNeeded()
+            launchRecoveryComplete = true
+            startAPIServerIfNeeded(channelManager: channelManager)
         }
 
         windowController?.refreshAllTabs()
@@ -84,7 +80,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if isUITesting, let window = windowController?.window, let screen = NSScreen.main {
             window.setFrame(screen.visibleFrame, display: true)
         }
-        windowController?.window.makeKeyAndOrderFront(nil)
+        if launchRecoveryComplete { showMainWindow() }
 
         if !isUITesting {
             // Retry any pending reports from previous failed submissions
@@ -101,6 +97,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard launchRecoveryComplete else {
+            pendingExternalURLs.append(contentsOf: urls)
+            NSLog("Queued \(urls.count) external URL(s) until launch recovery completes")
+            return
+        }
         for url in urls {
             handleURL(url)
         }
@@ -130,9 +131,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldSave {
+        if shouldSave && launchRecoveryComplete {
             windowController?.channelManager.saveState()
             windowController?.channelManager.detachAllChannelsForAppTermination()
+        } else if shouldSave {
+            NSLog("Skipping channel save during incomplete launch recovery")
         }
         if let result = windowController?.historyBuffer.flush(),
            case let .failure(error) = result {
@@ -192,6 +195,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     // MARK: - Private
+
+    private func startAPIServerIfNeeded(channelManager: ChannelManager) {
+        guard apiServer == nil, let wc = windowController else { return }
+        var apiPort: UInt16 = 7865
+        if let idx = CommandLine.arguments.firstIndex(of: "--api-port"),
+           idx + 1 < CommandLine.arguments.count,
+           let p = UInt16(CommandLine.arguments[idx + 1]) {
+            apiPort = p
+        }
+        apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
+        apiServer?.start()
+        wc.apiServer = apiServer
+    }
+
+    private func showMainWindow() {
+        guard let window = windowController?.window else { return }
+        if isUITesting, let screen = NSScreen.main { window.setFrame(screen.visibleFrame, display: true) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func drainPendingExternalURLs() {
+        let urls = pendingExternalURLs
+        pendingExternalURLs.removeAll()
+        for url in urls { handleURL(url) }
+    }
 
     private func ensureInitialChannelIfNeeded() {
         guard let channelManager = channelManagerRef else { return }
@@ -260,9 +288,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // starts a replacement and must not transfer the old process's attention.
         if let persistentState = metadata.persistentState,
            let savedBrokerSessionID = metadata.brokerSessionID,
-           let agentController = controller as? AgentChannelController,
-           agentController.brokerSessionID == savedBrokerSessionID {
-            agentController.restorePersistentAttentionState(persistentState)
+           let agentController = controller as? AgentChannelController {
+            agentController.restorePersistentAttentionState(
+                persistentState,
+                afterReattaching: savedBrokerSessionID
+            )
         }
         return controller
     }
