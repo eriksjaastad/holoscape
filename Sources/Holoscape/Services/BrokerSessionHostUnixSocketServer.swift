@@ -52,9 +52,12 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     }
 
     func run(maxConnections: Int? = nil) throws {
+        let socketHadBrokerLockMarker = FileManager.default.fileExists(atPath: socketPath + ".lock")
         let brokerLockFD = try acquireBrokerLock()
         defer { Darwin.close(brokerLockFD) }
-        let serverFD = try makeListeningSocket()
+        let serverFD = try makeListeningSocket(
+            socketHadBrokerLockMarker: socketHadBrokerLockMarker
+        )
         let group = DispatchGroup()
         let errorBox = BrokerSocketServerErrorBox()
         let handlerSlots = DispatchSemaphore(value: maxConcurrentHandlers)
@@ -71,13 +74,20 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 throw ServerError.acceptFailed(String(cString: strerror(errno)))
             }
+            let deadline = DispatchTime.now().uptimeNanoseconds
+                + UInt64(requestTimeoutMilliseconds) * 1_000_000
             do {
                 try Self.configureAcceptedClientSocket(clientFD)
             } catch {
                 Darwin.close(clientFD)
                 throw error
             }
-            handlerSlots.wait()
+            if handlerSlots.wait(timeout: DispatchTime(uptimeNanoseconds: deadline)) == .timedOut {
+                Darwin.close(clientFD)
+                errorBox.setIfEmpty(ServerError.timedOut(socketPath))
+                handledConnections += 1
+                continue
+            }
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
                 defer {
@@ -85,7 +95,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                     group.leave()
                 }
                 do {
-                    try handleConnection(clientFD)
+                    try handleConnection(clientFD, deadline: deadline)
                 } catch {
                     errorBox.setIfEmpty(error)
                 }
@@ -125,7 +135,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         return true
     }
 
-    private func makeListeningSocket() throws -> Int32 {
+    private func makeListeningSocket(socketHadBrokerLockMarker: Bool) throws -> Int32 {
         let pathBytes = Array(socketPath.utf8)
         guard pathBytes.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
             throw ServerError.socketPathTooLong(socketPath)
@@ -137,7 +147,10 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
 
         if FileManager.default.fileExists(atPath: socketPath) {
-            switch Self.socketPathBrokerReachability(socketPath) {
+            switch Self.socketPathBrokerReachability(
+                socketPath,
+                hasBrokerLockMarker: socketHadBrokerLockMarker
+            ) {
             case .reachable:
                 Darwin.close(fd)
                 throw ServerError.bindFailed("socket path already has a reachable broker: \(socketPath)")
@@ -191,7 +204,8 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
     static func socketPathBrokerReachability(
         _ socketPath: String,
-        timeoutMilliseconds: Int = 250
+        timeoutMilliseconds: Int = 250,
+        hasBrokerLockMarker: Bool? = nil
     ) -> Reachability {
         let codec = BrokerSessionHostCodec()
         let probeFrame: Data
@@ -208,6 +222,11 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 requestTimeoutMilliseconds: timeoutMilliseconds
             ).sendFrame(probeFrame)
         } catch BrokerSessionHostUnixSocketTransport.TransportError.connectFailed {
+            let lockMarkerExists = hasBrokerLockMarker
+                ?? FileManager.default.fileExists(atPath: socketPath + ".lock")
+            if FileManager.default.fileExists(atPath: socketPath), !lockMarkerExists {
+                return .indeterminate
+            }
             return .unreachable
         } catch {
             return .indeterminate
@@ -239,11 +258,12 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
     }
 
-    private func handleConnection(_ clientFD: Int32) throws {
+    private func handleConnection(_ clientFD: Int32, deadline: UInt64) throws {
         defer { Darwin.close(clientFD) }
-        let deadline = DispatchTime.now().uptimeNanoseconds
-            + UInt64(requestTimeoutMilliseconds) * 1_000_000
         let requestFrame = try readFrame(from: clientFD, deadline: deadline)
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            throw ServerError.timedOut(socketPath)
+        }
         let responseFrame: Data
         do {
             responseFrame = try host.handle(requestFrame)
