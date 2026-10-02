@@ -147,6 +147,53 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testHostDoesNotAcknowledgeOwnerTokenForRuntimeWithoutCapability() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-unacknowledged-owner-token")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp",
+            environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "owner-token",
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.create(id: sessionID, request: request)))
+        )
+
+        XCTAssertEqual(response, .created(agentStatusOwnerTokenApplied: false))
+        XCTAssertEqual(runtime.events.count, 1)
+        XCTAssertTrue(runtime.events[0].hasPrefix("create host-unacknowledged-owner-token "))
+    }
+
+    func testHostReportsOwnerTokenAcknowledgementFromCapableRuntime() throws {
+        let runtime = AcknowledgingRecordingBrokerSessionRuntime()
+        runtime.ownerTokenWasApplied = true
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-acknowledged-owner-token")
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp",
+            environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "owner-token",
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.create(id: sessionID, request: request)))
+        )
+
+        XCTAssertEqual(response, .created(agentStatusOwnerTokenApplied: true))
+        XCTAssertEqual(runtime.events.count, 1)
+        XCTAssertTrue(runtime.events[0].hasPrefix("create host-acknowledged-owner-token "))
+    }
+
     func testHostTurnsRuntimeErrorsIntoFailureFrames() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.error = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(BrokerSessionID(rawValue: "missing-host-session"))
@@ -1761,7 +1808,7 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
     }
 }
 
-private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
+private class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
     var events: [String] = []
     var output = Data()
     var isRunning = false
@@ -1842,5 +1889,20 @@ private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
         if let error {
             throw error
         }
+    }
+}
+
+private final class AcknowledgingRecordingBrokerSessionRuntime:
+    RecordingBrokerSessionRuntime,
+    BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime
+{
+    var ownerTokenWasApplied = false
+
+    func createSessionAcknowledgingAgentStatusOwnerToken(
+        id: BrokerSessionID,
+        request: BrokerSessionLaunchRequest
+    ) throws -> Bool {
+        try createSession(id: id, request: request)
+        return ownerTokenWasApplied
     }
 }
