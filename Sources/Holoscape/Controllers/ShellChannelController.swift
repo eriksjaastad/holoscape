@@ -22,6 +22,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var customDisplayLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
+    /// Last directory confirmed in process-owner metadata. This intentionally
+    /// differs from presentation state, which may advance speculatively from a
+    /// simple typed `cd` before the shell confirms the command through OSC 7.
+    private var persistedWorkingDirectory: String?
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
     private var lastStartFailureKind: TerminalStartFailureKind?
@@ -125,8 +129,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.channelId = id
         self.instanceNumber = instanceNumber
         self.explicitLabel = label
-        self.workingDirectory = workingDirectory
-        self.directoryTracker = ShellDirectoryTracker(currentDirectory: workingDirectory)
+        let directoryTracker = ShellDirectoryTracker(currentDirectory: workingDirectory)
+        self.workingDirectory = directoryTracker.currentDirectory
+        self.directoryTracker = directoryTracker
+        self.persistedWorkingDirectory = directoryTracker.currentDirectory
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
@@ -278,13 +284,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
 
     private func handleHostCurrentDirectoryUpdate(_ directory: String?) {
         guard let nextDirectory = directoryTracker.applyHostDirectoryUpdate(directory) else { return }
-        updateWorkingDirectory(nextDirectory)
+        updateWorkingDirectory(nextDirectory, persistConfirmedDirectory: true)
     }
 
     private func handleUserInput(_ data: ArraySlice<UInt8>) {
         recordUserInteraction()
         guard let nextDirectory = directoryTracker.consume(data: data) else { return }
-        updateWorkingDirectory(nextDirectory)
+        updateWorkingDirectory(nextDirectory, persistConfirmedDirectory: false)
     }
 
     func recordUserInteraction(at date: Date = Date()) {
@@ -345,18 +351,29 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: downgradedState)
     }
 
-    private func updateWorkingDirectory(_ nextDirectory: String) {
-        guard nextDirectory != workingDirectory else { return }
-        workingDirectory = nextDirectory
-        do {
-            try terminal.updateWorkingDirectory(nextDirectory)
-        } catch {
-            // The live shell has already reported authoritative cwd truth. Keep
-            // presenting it, but report that durable broker metadata could not
-            // be advanced rather than pretending persistence succeeded.
-            NSLog("Shell broker working-directory update failed: \(error)")
+    private func updateWorkingDirectory(
+        _ nextDirectory: String,
+        persistConfirmedDirectory: Bool
+    ) {
+        let presentationChanged = nextDirectory != workingDirectory
+        if presentationChanged {
+            workingDirectory = nextDirectory
         }
-        delegate?.channelStateDidChange(self, to: state)
+
+        if persistConfirmedDirectory, nextDirectory != persistedWorkingDirectory {
+            do {
+                try terminal.updateWorkingDirectory(nextDirectory)
+                persistedWorkingDirectory = nextDirectory
+            } catch {
+                // Keep presentation truth while leaving persistedWorkingDirectory
+                // unchanged so a repeated host confirmation retries the write.
+                NSLog("Shell broker working-directory update failed: \(error)")
+            }
+        }
+
+        if presentationChanged {
+            delegate?.channelStateDidChange(self, to: state)
+        }
     }
 
     private func recordBrokerStart(

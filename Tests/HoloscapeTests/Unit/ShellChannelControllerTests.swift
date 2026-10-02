@@ -75,7 +75,7 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.outputCount, 1)
     }
 
-    func testShellUserInputHandlerRoutesThroughTerminalProcessSeam() {
+    func testShellUserInputHeuristicUpdatesPresentationWithoutPersistingUnconfirmedCWD() {
         let terminal = MockTerminalProcess()
         let controller = ShellChannelController(
             id: UUID(),
@@ -89,10 +89,27 @@ final class ShellChannelControllerTests: XCTestCase {
         terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertTrue(terminal.workingDirectoryUpdates.isEmpty)
+    }
+
+    func testShellHostCWDConfirmationPersistsAfterMatchingInputHeuristic() {
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: NSHomeDirectory(),
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+
+        XCTAssertEqual(controller.workingDirectory, "/tmp")
         XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
     }
 
-    func testShellKeepsHostCWDTruthWhenBrokerMetadataUpdateFails() {
+    func testShellRetriesHostCWDTruthAfterBrokerMetadataUpdateFails() {
         let terminal = MockTerminalProcess()
         terminal.workingDirectoryUpdateError = CocoaError(.fileWriteNoPermission)
         let controller = ShellChannelController(
@@ -104,10 +121,12 @@ final class ShellChannelControllerTests: XCTestCase {
 
         controller.activate()
         terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        terminal.workingDirectoryUpdateError = nil
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
         XCTAssertEqual(controller.displayBaseLabel, "tmp")
-        XCTAssertTrue(terminal.workingDirectoryUpdates.isEmpty)
+        XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
     }
 
     func testShellHostCurrentDirectoryHandlerRoutesThroughTerminalProcessSeam() {

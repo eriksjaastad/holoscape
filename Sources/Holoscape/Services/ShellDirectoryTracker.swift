@@ -51,7 +51,11 @@ struct ShellDirectoryTracker {
             rawPath = directory
         }
         guard let standardized = standardizedDirectory(path: rawPath) else { return nil }
-        return setCurrentDirectory(standardized)
+        // Host reports are confirmations, not merely presentation changes. Return
+        // valid repeated values so the owner can retry durable persistence after
+        // a transient write failure or confirm a matching typed-input heuristic.
+        _ = setCurrentDirectory(standardized)
+        return standardized
     }
 
     mutating func resolveSubmittedCommand(_ command: String) -> String? {
