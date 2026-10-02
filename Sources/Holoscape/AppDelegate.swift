@@ -15,6 +15,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var launchRecoveryComplete = false
     private var terminationTeardownStarted = false
     private var terminationTeardownComplete = false
+    private var terminationTeardownGeneration: UInt = 0
+    private var terminationTeardownTimeoutWorkItem: DispatchWorkItem?
+    /// Test seam and hard upper bound for app-owned teardown authority. A timed
+    /// out quit is denied while the live app keeps retrying cleanup.
+    var terminationTeardownTimeout: TimeInterval = 30
     private var pendingExternalURLs: [URL] = []
     private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
 
@@ -170,9 +175,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldSave && launchRecoveryComplete && !terminationTeardownStarted {
-            windowController?.channelManager.saveState()
-            windowController?.channelManager.detachAllChannelsForAppTermination()
+        if shouldSave && launchRecoveryComplete {
+            if !terminationTeardownStarted {
+                windowController?.channelManager.saveState()
+                windowController?.channelManager.detachAllChannelsForAppTermination()
+            }
         } else if shouldSave {
             NSLog("Skipping channel save during incomplete launch recovery")
         }
@@ -196,15 +203,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             return .terminateLater
         }
 
-        terminationTeardownStarted = true
         apiServer?.stop()
-        channelManager.saveState()
-        channelManager.detachAllChannelsForAppTermination { [weak self, weak sender] in
-            guard let self else { return }
-            self.terminationTeardownComplete = true
-            sender?.reply(toApplicationShouldTerminate: true)
+        beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
+            sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
+    }
+
+    /// Start a bounded quit transaction. Broker cleanup may keep retrying after
+    /// the deadline, but the application denies that quit request instead of
+    /// remaining in AppKit's `.terminateLater` state forever. A later quit joins
+    /// the still-live controllers and can succeed once cleanup finishes.
+    func beginTerminationTeardown(
+        using channelManager: ChannelManager,
+        reply: @escaping @MainActor (Bool) -> Void
+    ) {
+        terminationTeardownStarted = true
+        terminationTeardownGeneration &+= 1
+        let generation = terminationTeardownGeneration
+        terminationTeardownTimeoutWorkItem?.cancel()
+
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.terminationTeardownStarted,
+                  !self.terminationTeardownComplete,
+                  self.terminationTeardownGeneration == generation else { return }
+            self.terminationTeardownStarted = false
+            self.terminationTeardownGeneration &+= 1
+            NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
+            reply(false)
+        }
+        terminationTeardownTimeoutWorkItem = timeoutWorkItem
+
+        channelManager.saveState()
+        channelManager.detachAllChannelsForAppTermination { [weak self] in
+            guard let self,
+                  self.terminationTeardownStarted,
+                  self.terminationTeardownGeneration == generation else { return }
+            self.terminationTeardownTimeoutWorkItem?.cancel()
+            self.terminationTeardownTimeoutWorkItem = nil
+            self.terminationTeardownComplete = true
+            reply(true)
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + terminationTeardownTimeout,
+            execute: timeoutWorkItem
+        )
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

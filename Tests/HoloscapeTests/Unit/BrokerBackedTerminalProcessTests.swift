@@ -17,6 +17,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private(set) var markErroredCalls: [BrokerSessionID] = []
         private(set) var teardownRanOnMainThread: [Bool] = []
         private(set) var startRanOnMainThread: [Bool] = []
+        private(set) var outputReadCount = 0
         private var shouldBlockTeardown = false
         private var shouldBlockStart = false
         var untrackedStartID: BrokerSessionID?
@@ -42,6 +43,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func waitForStart(timeout: TimeInterval = 1) -> Bool {
             startEntered.wait(timeout: .now() + timeout) == .success
         }
+        var startCallCount: Int { lock.withLock { startRanOnMainThread.count } }
         func finishStart() { startRelease.signal() }
 
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
@@ -100,7 +102,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
-        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
+            lock.withLock { outputReadCount += 1 }
+            return Data()
+        }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
@@ -1287,6 +1292,32 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.agentStatusOwnerToken, "A completion after detach must not reactivate the session")
     }
 
+    func testRestoredSessionDoesNotConsumeOutputBeforeReattachCommits() throws {
+        let sessionID = BrokerSessionID(rawValue: "pending-output-reattach")
+        let coordinator = BlockingReattachCoordinator()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "restored",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(coordinator.outputReadCount, 0)
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForReattach())
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(coordinator.outputReadCount, 0, "Live output must not be drained ahead of replay")
+
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+        try waitUntil { coordinator.outputReadCount > 0 }
+        terminal.detachBrokerSession()
+    }
+
     func testTrackedTeardownBrokerRPCDoesNotBlockMainActor() throws {
         let sessionID = BrokerSessionID(rawValue: "tracked-teardown")
         let coordinator = BlockingReattachCoordinator()
@@ -1329,6 +1360,37 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.startRanOnMainThread, [false])
         coordinator.finishStart()
         try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertEqual(terminal.brokerOwnedSessionID, BrokerSessionID(rawValue: "started-off-main"))
+    }
+
+    func testUntrackedRetryWaitsForOffMainReplacementBeforeCompletingStart() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.untrackedStartID = BrokerSessionID(rawValue: "untracked-retry")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "retry",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        var completionCount = 0
+        terminal.setStartCompletionHandler { completionCount += 1 }
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        try waitUntil { terminal.untrackedBrokerSessionID != nil }
+        XCTAssertEqual(completionCount, 1)
+
+        coordinator.untrackedStartID = nil
+        coordinator.blockStart()
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        try waitUntil { coordinator.startCallCount == 2 }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+        XCTAssertEqual(completionCount, 1, "Retirement is not the replacement start commit point")
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+
+        coordinator.finishStart()
+        try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertEqual(completionCount, 2)
         XCTAssertEqual(terminal.brokerOwnedSessionID, BrokerSessionID(rawValue: "started-off-main"))
     }
 

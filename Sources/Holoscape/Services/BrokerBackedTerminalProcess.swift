@@ -30,6 +30,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var terminationHandler: ((Int32?) -> Void)?
     private var startCompletionHandler: (() -> Void)?
     private var startCompletionPending = false
+    /// A restored identity is not safe for I/O until reattach and scrollback
+    /// replay commit. Keeping this separate from `brokerSessionID` prevents an
+    /// installed output handler from draining live bytes ahead of replay.
+    private var sessionIOReady = false
     private var freshStartPending = false
     private var freshStartCancelled = false
     private var freshStartTeardownCompletions: [@MainActor () -> Void] = []
@@ -116,17 +120,24 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.startFailureDescription = String(describing: error)
                         self.startFailureKind = .failed
                         NSLog("Broker-backed terminal refused replacement until untracked session \(untrackedBrokerSessionID.rawValue) is retired: \(error)")
+                        self.startCompletionPending = false
+                        self.startCompletionHandler?()
                     } else {
                         self.untrackedBrokerSessionID = nil
+                        // Retirement is only the prerequisite. The replacement
+                        // start owns completion so controllers cannot publish a
+                        // transient active state with no broker identity.
+                        self.startCompletionPending = false
                         self.continueStartProcess(
                             executable: executable,
                             args: args,
                             environment: environment,
                             currentDirectory: currentDirectory
                         )
+                        if !self.startCompletionPending {
+                            self.startCompletionHandler?()
+                        }
                     }
-                    self.startCompletionPending = false
-                    self.startCompletionHandler?()
                 }
             }
             return
@@ -152,6 +163,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
+        sessionIOReady = false
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -212,6 +224,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
+            sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
             }
@@ -221,6 +234,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             brokerSessionID = nil
             agentStatusOwnerToken = nil
+            sessionIOReady = false
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
@@ -366,6 +380,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             } else {
                 restoreScrollbackReplay(for: record.id)
             }
+            sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
             }
@@ -382,6 +397,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 brokerSessionID = sessionID
             }
             agentStatusOwnerToken = nil
+            sessionIOReady = false
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
         if notifyStartCompletion {
@@ -485,7 +501,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         outputHandler = handler
         if handler == nil {
             stopOutputPump()
-        } else if brokerSessionID != nil, sessionFailure == nil {
+        } else if brokerSessionID != nil, sessionIOReady, sessionFailure == nil {
             startOutputPump()
         }
     }
@@ -519,6 +535,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
         reattachGeneration &+= 1
+        sessionIOReady = false
         stopOutputPump()
         inputWriteLane.close()
         if freshStartPending {
@@ -555,7 +572,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func pollOutputOnce() {
-        guard sessionFailure == nil else { return }
+        guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
@@ -572,7 +589,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func resizeToCurrentGrid() {
-        guard sessionFailure == nil else { return }
+        guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else {
             NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
@@ -593,7 +610,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func startOutputPump() {
-        guard let brokerSessionID else { return }
+        guard sessionIOReady, let brokerSessionID else { return }
         let supportsOutputAvailabilityMonitoring = (try? coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)) == true
         outputReadLane.start(
             sessionID: brokerSessionID,
@@ -649,6 +666,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.didNotifyTermination = true
                 self.outputReadLane.stop()
                 self.brokerSessionID = nil
+                self.sessionIOReady = false
                 self.agentStatusOwnerToken = nil
                 self.terminationHandler?(exitCode)
             }
@@ -702,6 +720,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // The broker no longer owns the session: hand the dead identity to the
             // tab and drop the live handle so retry starts a replacement.
             brokerSessionID = nil
+            sessionIOReady = false
             staleBrokerSessionID = sessionID
         }
 
@@ -729,6 +748,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     )
                 } else {
                     self.brokerSessionID = nil
+                    self.sessionIOReady = false
                     self.staleBrokerSessionID = sessionID
                     self.publishSessionFailure(
                         TerminalSessionFailure(kind: .brokerSessionStale, description: originalDescription)

@@ -4,6 +4,35 @@ import XCTest
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    func testTerminationTeardownDeadlineDeniesQuitInsteadOfWaitingForever() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationDeadlineTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let appDelegate = AppDelegate()
+        appDelegate.terminationTeardownTimeout = 0.01
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        let deadline = Date().addingTimeInterval(1)
+        while replies.isEmpty, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(replies, [false])
+        XCTAssertEqual(channel.deactivateCallCount, 1)
+    }
+
     func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
         let mainMenu = NSMenu(title: "Main")
         let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")
