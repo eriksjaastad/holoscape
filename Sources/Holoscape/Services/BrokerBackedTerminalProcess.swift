@@ -258,11 +258,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             write: { [inputCoordinator] id, queuedBytes in
                 try inputCoordinator.sendInput(id, bytes: queuedBytes)
             },
-            onSuccess: { [weak self] id in
-                Task { @MainActor [weak self] in
-                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
-                    self.pollOutputOnce()
-                }
+            onSuccess: { [outputReadLane] id in
+                // Keep every production output read on the single output lane.
+                // A direct main-actor poll can otherwise overtake a sample whose
+                // bytes were drained off-main but not yet delivered to SwiftTerm.
+                outputReadLane.wake(sessionID: id)
             },
             onFailure: { [weak self] _, error in
                 Task { @MainActor [weak self] in
@@ -364,10 +364,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 try outputCoordinator.readAvailableOutput(id)
             },
             onSample: { [weak self] id, data in
-                Task { @MainActor [weak self] in
+                // Do not let the serial read lane sample termination again until
+                // the main actor has consumed the bytes from this sample. This
+                // makes final-byte delivery and exit notification one ordered
+                // consumer path instead of independently scheduled tasks.
+                let delivered = DispatchSemaphore(value: 0)
+                DispatchQueue.main.async { [weak self] in
+                    defer { delivered.signal() }
                     guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
                     self.handleOutputPumpSample(data, for: id)
                 }
+                delivered.wait()
             },
             onFailure: { [weak self] _, error in
                 Task { @MainActor [weak self] in
@@ -413,8 +420,27 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// retryable cases so retry reattaches the same session rather than starting
     /// a replacement.
     private func reportSessionFailure(_ error: Error) {
-        let kind = classifyStartFailure(error)
+        var kind = classifyStartFailure(error)
+        var description = String(describing: error)
         inputWriteLane.close()
+        stopOutputPump()
+
+        if kind == .brokerSessionStale,
+           isScrollbackPersistenceFailure(error),
+           let sessionID = brokerSessionID {
+            do {
+                // Unlike a missing session, a persistence failure leaves the
+                // child alive. Retire this generation and durably mark it errored
+                // before allowing retry to create a replacement.
+                _ = try coordinator.markErrored(sessionID)
+            } catch {
+                // Cleanup failure means ownership is still indeterminate. Keep
+                // the handle and fail closed rather than spawning a duplicate.
+                kind = .failed
+                description += "; failed to retire persistence-broken broker session: \(error)"
+            }
+        }
+
         switch kind {
         case .brokerHostUnavailable, .failed:
             // The host is unreachable (or the failure is unclassified) but the
@@ -429,15 +455,25 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         }
 
-        let failure = TerminalSessionFailure(kind: kind, description: String(describing: error))
+        let failure = TerminalSessionFailure(kind: kind, description: description)
         guard sessionFailure != failure else {
             NSLog("Broker-backed terminal session still failing: \(failure.description)")
             return
         }
         sessionFailure = failure
-        stopOutputPump()
         NSLog("Broker-backed terminal session failed (\(failure.kind)): \(failure.description)")
         sessionFailureHandler?(failure)
+    }
+
+    private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .scrollbackPersistenceFailed = runtimeError {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "scrollback-persistence-failed"
+        }
+        return false
     }
 
     private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {

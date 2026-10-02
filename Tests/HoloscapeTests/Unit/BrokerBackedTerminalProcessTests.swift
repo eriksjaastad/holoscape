@@ -320,6 +320,71 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class ScrollbackPersistenceFailureRuntime: BrokerSessionRuntime {
+        private(set) var createdIDs: [BrokerSessionID] = []
+        private(set) var retiredIDs: [BrokerSessionID] = []
+        var retirementError: Error?
+
+        func listSessions() throws -> [BrokerSessionID] { createdIDs.filter { !retiredIDs.contains($0) } }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws { createdIDs.append(id) }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {
+            if let retirementError { throw retirementError }
+            retiredIDs.append(id)
+        }
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            throw NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(id, reason: "disk full")
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { !retiredIDs.contains(id) }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
+    private final class FinalOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+        private let lock = NSLock()
+        private var createdIDs: [BrokerSessionID] = []
+        private var output = Data()
+        private var running = true
+        private var handler: (@Sendable (BrokerSessionID) -> Void)?
+
+        func triggerFinalOutput(_ text: String, for id: BrokerSessionID) {
+            let currentHandler: (@Sendable (BrokerSessionID) -> Void)? = lock.withLock {
+                output.append(Data(text.utf8))
+                running = false
+                return handler
+            }
+            currentHandler?(id)
+        }
+
+        func listSessions() throws -> [BrokerSessionID] { lock.withLock { createdIDs } }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            lock.withLock { createdIDs.append(id) }
+        }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {}
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            lock.withLock {
+                let data = output
+                output.removeAll(keepingCapacity: true)
+                return data
+            }
+        }
+        func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
+            lock.withLock { self.handler = handler }
+        }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { lock.withLock { running } }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { lock.withLock { running ? nil : 0 } }
+    }
+
     /// Broker terminal wired to a temp registry so mid-session failures can be
     /// driven directly.
     private struct MidSessionFixture {
@@ -458,6 +523,23 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertGreaterThan(runtime.readCount, readsAfterInitialWake)
     }
 
+    func testOutputPumpDeliversFinalBytesBeforeReportingTermination() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008020")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var events: [String] = []
+        fixture.terminal.setOutputHandler { events.append("output") }
+        fixture.terminal.setTerminationHandler { _ in events.append("termination") }
+
+        runtime.triggerFinalOutput("final-lane-output\n", for: sessionID)
+
+        try waitUntil { events.count == 2 }
+        XCTAssertEqual(events, ["output", "termination"])
+        XCTAssertTrue(fixture.terminal.lastLines(5).joined(separator: "\n").contains("final-lane-output"))
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+    }
+
     func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {
         let runtime = BlockingInputRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008016")
@@ -580,6 +662,65 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
         XCTAssertNil(fixture.terminal.brokerSessionID, "A dropped session must not stay attached")
         XCTAssertEqual(fixture.terminal.staleBrokerSessionID, sessionID)
+    }
+
+    func testScrollbackPersistenceFailureRetiresSessionBeforeRetryCreatesReplacement() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008021")
+        defer { fixture.cleanup() }
+        let failedSessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        fixture.terminal.pollOutputOnce()
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
+        XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(fixture.terminal.staleBrokerSessionID, failedSessionID)
+
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertEqual(runtime.createdIDs.count, 2)
+        XCTAssertNotEqual(runtime.createdIDs[1], failedSessionID)
+        XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
+    }
+
+    func testScrollbackPersistenceCleanupFailureKeepsHandleAndPreventsDuplicateRetry() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        runtime.retirementError = RuntimeError.createFailed
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008022")
+        defer { fixture.cleanup() }
+        let failedSessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        fixture.terminal.pollOutputOnce()
+
+        XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertTrue(failures[0].description.contains("failed to retire persistence-broken broker session"))
+        XCTAssertEqual(fixture.terminal.brokerSessionID, failedSessionID)
+        XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+        XCTAssertTrue(runtime.retiredIDs.isEmpty)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .running)
+
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertEqual(runtime.createdIDs, [failedSessionID])
+        XCTAssertEqual(fixture.terminal.brokerSessionID, failedSessionID)
     }
 
     func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {
