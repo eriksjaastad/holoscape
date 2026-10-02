@@ -557,6 +557,54 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
+    func testScrollbackPersistenceFailureIsRetainedAndSignaledBeforeOutputAvailability() throws {
+        let invalidDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NativePTYBrokerSessionRuntimeInvalidScrollbackDirectory-\(UUID().uuidString)")
+        try Data("not-a-directory".utf8).write(to: invalidDirectory)
+        defer { try? FileManager.default.removeItem(at: invalidDirectory) }
+
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackDirectory: invalidDirectory)
+        let id = BrokerSessionID(rawValue: "failed-disk-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+        let capturedError = LockedRuntimeErrorBox()
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { signaledID in
+            do {
+                _ = try runtime.readAvailableOutput(id: signaledID)
+            } catch {
+                capturedError.store(error)
+            }
+            outputAvailable.signal()
+        }
+
+        try runtime.sendInput(id: id, bytes: Array("unpersisted-scrollback-marker\n".utf8))
+
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        guard case let .scrollbackPersistenceFailed(failedID, reason) =
+            capturedError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected retained scrollback persistence failure, got \(String(describing: capturedError.value))")
+        }
+        XCTAssertEqual(failedID, id)
+        XCTAssertFalse(reason.isEmpty)
+
+        let liveTail = String(decoding: try runtime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+        XCTAssertTrue(liveTail.contains("unpersisted-scrollback-marker"), liveTail)
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .scrollbackPersistenceFailed(failedID, reason: reason)
+            )
+        }
+    }
+
     func testDiskBackedScrollbackCanBeReadAfterRuntimeInstanceLoss() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("NativePTYBrokerSessionRuntimeScrollbackTests-")

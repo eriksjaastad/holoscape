@@ -17,6 +17,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         case resizeFailed(errno: Int32)
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case terminationFailed(BrokerSessionID, reason: String)
+        case scrollbackPersistenceFailed(BrokerSessionID, reason: String)
         case unsupportedEnvironmentProfile(BrokerEnvironmentProfile, reason: String)
     }
 
@@ -31,6 +32,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         private let terminationLock = NSLock()
         var output = Data()
         var scrollback = Data()
+        private var scrollbackPersistenceFailureReason: String?
         var terminationStatus: Int32?
         var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
@@ -44,6 +46,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
         func appendOutput(_ data: Data) {
             let handler: (@Sendable (BrokerSessionID) -> Void)?
+            let shouldPersist: Bool
             lock.lock()
             output.append(data)
             scrollback.append(data)
@@ -51,17 +54,33 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                 scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
             }
             handler = outputAvailabilityHandler
+            shouldPersist = scrollbackPersistenceFailureReason == nil
             lock.unlock()
-            handler?(id)
-            do {
-                try scrollbackStore?.append(data, for: id)
-            } catch {
-                NSLog("Broker scrollback persistence failed for \(id.rawValue): \(error)")
+            if shouldPersist {
+                do {
+                    try scrollbackStore?.append(data, for: id)
+                } catch {
+                    let reason = String(describing: error)
+                    lock.lock()
+                    if scrollbackPersistenceFailureReason == nil {
+                        scrollbackPersistenceFailureReason = reason
+                    }
+                    lock.unlock()
+                    NSLog("Broker scrollback persistence failed for \(id.rawValue): \(reason)")
+                }
             }
+            // Wake readers only after persistence has either succeeded or its
+            // failure has been retained, so the first awakened read cannot race
+            // past a durability failure and leave the terminal looking healthy.
+            handler?(id)
         }
 
-        func readOutput() -> Data {
+        func readOutput() throws -> Data {
             lock.lock()
+            if let reason = scrollbackPersistenceFailureReason {
+                lock.unlock()
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
             let snapshot = output
             output.removeAll(keepingCapacity: true)
             lock.unlock()
