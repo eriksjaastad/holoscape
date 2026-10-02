@@ -16,6 +16,9 @@ class ChannelManager {
     private let configService: ConfigService
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
+    private let brokerRecoveryCoordinator: BrokerRecoveryCoordinator
+    private var didPrepareBrokerRecovery = false
+    private var preparedBrokerRecoverySessions: [BrokerSessionRecord]?
 
     var brokerBackedTerminalCoordinator: any BrokerSessionCoordinating {
         brokerBackedShellCoordinator
@@ -28,8 +31,10 @@ class ChannelManager {
     ) {
         self.configService = configService
         self.brokerSessionCoordinator = brokerSessionCoordinator
-        self.brokerBackedShellCoordinator = brokerBackedShellCoordinator
+        let shellCoordinator = brokerBackedShellCoordinator
             ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
+        self.brokerBackedShellCoordinator = shellCoordinator
+        self.brokerRecoveryCoordinator = BrokerRecoveryCoordinator(shellCoordinator)
     }
 
     /// Create a new channel and add it to the registry (V1 factory pattern).
@@ -316,7 +321,29 @@ class ChannelManager {
     /// identity instead of replacing the session, and the failure is recorded in
     /// `brokerRegistryReadFailure` so the launch fails loudly instead of silently
     /// discarding what it could not read.
+    /// Prepare broker recovery before any restore code performs synchronous
+    /// record classification. All socket/status/retirement RPCs happen off-main.
+    func prepareBrokerRecovery() async {
+        didPrepareBrokerRecovery = true
+        do {
+            let sessions = try await withCheckedThrowingContinuation { continuation in
+                brokerRecoveryCoordinator.load { result in
+                    continuation.resume(with: result)
+                }
+            }
+            preparedBrokerRecoverySessions = sessions
+            brokerRegistryReadFailure = nil
+        } catch {
+            preparedBrokerRecoverySessions = nil
+            brokerRegistryReadFailure = String(describing: error)
+            NSLog("ChannelManager could not read broker sessions during launch recovery: \(error)")
+        }
+    }
+
     private func reattachableBrokerSessions(context: String) -> [BrokerSessionRecord]? {
+        if didPrepareBrokerRecovery {
+            return preparedBrokerRecoverySessions
+        }
         do {
             let sessions = try brokerBackedShellCoordinator.reattachableSessions()
             brokerRegistryReadFailure = nil
@@ -548,5 +575,22 @@ class ChannelManager {
             }
         }
         return ""
+    }
+}
+
+final class BrokerRecoveryCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+    private let queue = DispatchQueue(label: "holoscape.broker.launch-recovery", qos: .userInitiated)
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func load(
+        completion: @escaping @Sendable (Result<[BrokerSessionRecord], Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result { try coordinator.reattachableSessions() })
+        }
     }
 }

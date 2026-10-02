@@ -20,10 +20,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var createError: Error?
         var attachError: Error?
         var terminateError: Error?
+        var onTerminate: (() throws -> Void)?
         var markErroredError: Error?
+        var onMarkErrored: (() throws -> Void)?
         var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
+        var statusCalledOnMainActor = false
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
 
         func listSessions() throws -> [BrokerSessionID] { [] }
@@ -52,11 +55,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
             events.append(.terminate(id, exitCode))
+            try onTerminate?()
             if let terminateError { throw terminateError }
         }
 
         func markSessionErrored(id: BrokerSessionID) throws {
             events.append(.markErrored(id))
+            try onMarkErrored?()
             if let markErroredError { throw markErroredError }
         }
 
@@ -69,6 +74,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             events.append(.resize(id, size))
         }
         func isRunning(id: BrokerSessionID) throws -> Bool {
+            statusCalledOnMainActor = Thread.isMainThread
             if let statusError { throw statusError }
             return running
         }
@@ -204,6 +210,31 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(persisted.agentStatusOwnerToken)
     }
 
+    func testDetachPreservesDurableRetirementIntentDuringTeardown() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 42) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/retiring"),
+            channelType: .shell,
+            label: "retiring",
+            attachedChannelID: nil
+        )
+        var teardownRecord: BrokerSessionRecord?
+        runtime.onMarkErrored = {
+            // Force teardown to run after `.terminating` is durable but before
+            // retirement's runtime RPC completes—the exact race that previously
+            // rewrote the record to `.detached`.
+            teardownRecord = try coordinator.detach(started.id)
+        }
+
+        let errored = try coordinator.markErrored(started.id)
+
+        XCTAssertEqual(teardownRecord?.lifecycle, .terminating)
+        XCTAssertEqual(errored.lifecycle, .errored)
+        XCTAssertEqual(try coordinator.loadAll().first?.lifecycle, .errored)
+        XCTAssertFalse(runtime.events.contains(.detach(started.id)))
+    }
+
     func testDetachAndReattachUpdateLifecycleWithoutChangingLaunchIntent() throws {
         var now = Date(timeIntervalSince1970: 10)
         let runtime = RecordingBrokerSessionRuntime()
@@ -280,6 +311,30 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reconcileRuntimeStatus(record.id), exited)
     }
 
+    func testExitRebasesFinalStateAfterConcurrentMetadataUpdate() throws {
+        var now = Date(timeIntervalSince1970: 110)
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/before-exit"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.onTerminate = {
+            now = Date(timeIntervalSince1970: 111)
+            _ = try coordinator.updateWorkingDirectory(record.id, to: "/tmp/final-directory")
+        }
+
+        now = Date(timeIntervalSince1970: 112)
+        let exited = try coordinator.exit(record.id, exitCode: 7)
+
+        XCTAssertEqual(exited.lifecycle, .exited)
+        XCTAssertEqual(exited.exitCode, 7)
+        XCTAssertEqual(exited.workingDirectory, "/tmp/final-directory")
+        XCTAssertEqual(try coordinator.loadAll(), [exited])
+    }
+
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {
         var now = Date(timeIntervalSince1970: 200)
         let coordinator = makeCoordinator(now: { now })
@@ -336,6 +391,28 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         runtime.markErroredError = nil
         XCTAssertEqual(try coordinator.markErrored(record.id).lifecycle, .errored)
+    }
+
+    func testRelaunchDiscoveryIsDispatchedOffMainActor() async throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 700) })
+        _ = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/off-main"),
+            channelType: .shell,
+            label: "off-main",
+            attachedChannelID: nil
+        )
+        let recovery = BrokerRecoveryCoordinator(coordinator)
+
+        let sessions = try await withCheckedThrowingContinuation { continuation in
+            recovery.load { result in
+                continuation.resume(with: result)
+            }
+        }
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertFalse(runtime.statusCalledOnMainActor)
     }
 
     func testRelaunchDiscoveryFinishesPendingRetirementBeforeAllowingReplacement() throws {

@@ -65,44 +65,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldRestore {
-            // Restore channels from saved state.
-            //
-            // Order matters: we MUST set `controller.delegate` before calling
-            // `controller.activate()`. `activate()` fires `channelStateDidChange`
-            // delegate callbacks for .connecting and .active, and for shell
-            // channels drives `terminalView.startProcess(...)`. If the delegate
-            // is nil at that point (as it was when activate() lived inside
-            // `createChannelFromMetadata`), the state-change calls silently
-            // vanish — the restored shell runs but the tab bar / sidebar /
-            // splitPaneManager never learns about it, which is how the
-            // "restored shell's terminal buffer appears empty" bug reproduced
-            // in DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory.
-            // This mirrors the default-channel fix in PR #57.
-            restoreSavedChannelsAndRecoveredBrokerSessions()
-        }
-
-        // If no channels restored, create a default shell
-        if channelManager.count == 0 {
-            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
-            let defaultDir = DefaultWorkingDirectory.preferredURL
-            let channel = channelManager.createChannel(
-                type: .shell,
-                role: existingBrokerSession?.label,
-                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
-            ) { id, _, _, instanceNum, workDir in
-                ShellChannelController.brokerBacked(
-                    id: id,
-                    instanceNumber: instanceNum,
-                    label: existingBrokerSession?.label,
-                    workingDirectory: workDir?.path,
-                    existingBrokerSessionID: existingBrokerSession?.id
-                )
+            // Broker discovery can include bounded Unix-socket RPCs. Prepare it
+            // off-main before restore classification and initial tab creation.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await channelManagerRef?.prepareBrokerRecovery()
+                restoreSavedChannelsAndRecoveredBrokerSessions()
+                ensureInitialChannelIfNeeded()
+                windowController?.refreshAllTabs()
             }
-            channel.delegate = windowController
-            channel.activate()
-            windowController?.switchToChannel(channel.channelId)
-        } else if let first = channelManager.allChannels().first {
-            windowController?.switchToChannel(first.channelId)
+        } else {
+            ensureInitialChannelIfNeeded()
         }
 
         windowController?.refreshAllTabs()
@@ -219,6 +192,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     // MARK: - Private
+
+    private func ensureInitialChannelIfNeeded() {
+        guard let channelManager = channelManagerRef else { return }
+        if channelManager.count == 0 {
+            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
+            let defaultDir = DefaultWorkingDirectory.preferredURL
+            let channel = channelManager.createChannel(
+                type: .shell,
+                role: existingBrokerSession?.label,
+                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
+            ) { id, _, _, instanceNum, workDir in
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    label: existingBrokerSession?.label,
+                    workingDirectory: workDir?.path,
+                    existingBrokerSessionID: existingBrokerSession?.id
+                )
+            }
+            channel.delegate = windowController
+            channel.activate()
+            windowController?.switchToChannel(channel.channelId)
+        } else if let first = channelManager.allChannels().first {
+            windowController?.switchToChannel(first.channelId)
+        }
+    }
 
     /// Restore the saved tab list, then surface broker sessions that survived a
     /// hard crash without a saved tab entry.

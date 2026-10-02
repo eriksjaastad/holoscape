@@ -1,6 +1,7 @@
 import Foundation
 
 protocol BrokerSessionCoordinating {
+    var requiresOffMainBrokerWork: Bool { get }
     func start(
         _ request: BrokerSessionLaunchRequest,
         channelType: ChannelType,
@@ -30,6 +31,8 @@ protocol BrokerSessionCoordinating {
 }
 
 extension BrokerSessionCoordinating {
+    var requiresOffMainBrokerWork: Bool { false }
+
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -59,6 +62,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case staleSession(BrokerSessionID)
         case brokerHostUnavailable(BrokerSessionID, String)
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case concurrentSessionTransition(BrokerSessionID)
     }
 
@@ -75,6 +79,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         self.runtime = runtime
         self.now = now
     }
+
+    var requiresOffMainBrokerWork: Bool { runtime is BrokerSessionHostClientRuntime }
 
     func loadAll() throws -> [BrokerSessionRecord] {
         try registry.load()
@@ -170,14 +176,56 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.detachSession(id: id) }) { record in
-            record.withLifecycle(
-                .detached,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: nil
-            )
+        // Publish the reversible metadata transition before contacting the
+        // runtime. A concurrent retirement either wins first (and detach becomes
+        // a no-op) or observes `.detached` and advances it to `.terminating`.
+        // In neither ordering can teardown erase durable retirement intent.
+        var transitionToRollback: (existing: BrokerSessionRecord, detached: BrokerSessionRecord)?
+        detachTransition: while true {
+            let existing = try record(for: id)
+            switch existing.lifecycle {
+            case .terminating, .exited, .errored, .stale:
+                return existing
+            case .detached:
+                break detachTransition
+            case .creating, .running, .reattaching:
+                let candidate = existing.withLifecycle(
+                    .detached,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(candidate, ifUnchangedFrom: existing) {
+                    transitionToRollback = (existing, candidate)
+                    break detachTransition
+                }
+                continue
+            }
         }
+
+        do {
+            try runtime.detachSession(id: id)
+        } catch {
+            // Detach is advisory in the native runtime. Restore the attached
+            // claim only if no concurrent transition has advanced the record;
+            // notably, a retirement that won the race remains authoritative.
+            if let transitionToRollback {
+                do {
+                    _ = try registry.replace(
+                        transitionToRollback.existing,
+                        ifUnchangedFrom: transitionToRollback.detached
+                    )
+                } catch let registryError {
+                    throw CoordinatorError.detachRollbackFailed(
+                        id,
+                        runtimeFailure: String(describing: error),
+                        registryFailure: String(describing: registryError)
+                    )
+                }
+            }
+            throw error
+        }
+        return try record(for: id)
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
@@ -219,13 +267,31 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.terminateSession(id: id, exitCode: exitCode) }) { record in
-            record.withLifecycle(
-                .exited,
-                exitCode: exitCode,
-                updatedAt: now(),
-                lastAttachedChannelID: nil
-            )
+        _ = try record(for: id)
+        try runtime.terminateSession(id: id, exitCode: exitCode)
+
+        // The runtime action is irreversible. Rebase the final state on any
+        // concurrent metadata-only mutation so a successful termination cannot
+        // be left durably `.running` or `.detached` after a lost CAS.
+        while true {
+            let current = try record(for: id)
+            switch current.lifecycle {
+            case .exited:
+                return current
+            case .terminating, .errored:
+                // Persistence-failure retirement owns the stronger final truth.
+                return current
+            case .creating, .running, .detached, .reattaching, .stale:
+                let candidate = current.withLifecycle(
+                    .exited,
+                    exitCode: exitCode,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(candidate, ifUnchangedFrom: current) {
+                    return candidate
+                }
+            }
         }
     }
 
@@ -288,16 +354,27 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             }
             throw error
         }
-        let updated = retiring.withLifecycle(
-            .errored,
-            exitCode: nil,
-            updatedAt: now(),
-            lastAttachedChannelID: nil
-        )
-        guard try registry.replace(updated, ifUnchangedFrom: retiring) else {
+        let updated: BrokerSessionRecord
+        // Runtime retirement may overlap metadata-only mutations (for example a
+        // working-directory update). Rebase the final lifecycle transition on
+        // the current record instead of losing the truthful `.errored` state
+        // merely because an unrelated field changed.
+        while true {
             let current = try record(for: id)
-            if current.lifecycle == .errored { return current }
-            throw CoordinatorError.concurrentSessionTransition(id)
+            guard current.lifecycle == .terminating else {
+                if current.lifecycle == .errored { return current }
+                throw CoordinatorError.concurrentSessionTransition(id)
+            }
+            let candidate = current.withLifecycle(
+                .errored,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
+            )
+            if try registry.replace(candidate, ifUnchangedFrom: current) {
+                updated = candidate
+                break
+            }
         }
         return updated
     }

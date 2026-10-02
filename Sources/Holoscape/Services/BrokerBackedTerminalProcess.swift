@@ -163,8 +163,26 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
+        let coordinator = self.coordinator
+        let channelID = self.channelID
+        guard coordinator.requiresOffMainBrokerWork else {
+            finishReattach(sessionID: sessionID, result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) })
+            return
+        }
+        failureRecoveryCoordinator.reattach(sessionID, attachedChannelID: channelID) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.finishReattach(sessionID: sessionID, result: result)
+            }
+        }
+    }
+
+    private func finishReattach(
+        sessionID: BrokerSessionID,
+        result: Result<BrokerSessionRecord, Error>
+    ) {
         do {
-            let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
+            let record = try result.get()
             brokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
@@ -182,20 +200,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             startFailureKind = classifyStartFailure(error)
             switch startFailureKind {
             case .brokerHostUnavailable:
-                // The host is unreachable but the session may still be alive:
-                // keep the handle so retry reattaches instead of replacing it.
                 brokerSessionID = sessionID
             case .brokerSessionStale:
-                // The broker no longer owns this session. Drop the live handle so
-                // retry spawns a replacement, and report the dead identity so the
-                // tab can keep its recreate guidance across relaunch.
                 brokerSessionID = nil
                 staleBrokerSessionID = sessionID
             case .failed, .none:
-                // An unclassified failure (including a temporarily unreadable
-                // registry) does not prove the session is gone. Keep the handle
-                // so an in-place retry reattaches this generation rather than
-                // silently spawning a second process.
                 brokerSessionID = sessionID
             }
             agentStatusOwnerToken = nil
@@ -536,7 +545,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
-            case .retirementRollbackFailed:
+            case .retirementRollbackFailed, .detachRollbackFailed:
                 return .failed
             case .concurrentSessionTransition:
                 return .failed
@@ -633,6 +642,16 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
 
     init(_ coordinator: any BrokerSessionCoordinating) {
         self.coordinator = coordinator
+    }
+
+    func reattach(
+        _ id: BrokerSessionID,
+        attachedChannelID: UUID,
+        completion: @escaping @Sendable (Result<BrokerSessionRecord, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result { try coordinator.reattach(id, attachedChannelID: attachedChannelID) })
+        }
     }
 
     func markErrored(

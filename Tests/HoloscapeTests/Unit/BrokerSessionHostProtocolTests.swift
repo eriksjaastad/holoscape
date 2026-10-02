@@ -2012,6 +2012,11 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             currentDirectory: tempDirectory.path
         )
 
+        let reattachDeadline = Date().addingTimeInterval(1)
+        while Date() < reattachDeadline {
+            if (try? registry.load().first?.lifecycle) == .running { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         XCTAssertEqual(restoredTerminal.brokerSessionID, brokerSessionID)
         XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
         let records = try registry.load()
