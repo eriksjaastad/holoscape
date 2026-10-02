@@ -542,6 +542,29 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testRetryAfterBrokerHostLossPublishesAuthoritativeReattachedWorkingDirectory() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008019")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        _ = try fixture.coordinator.updateWorkingDirectory(sessionID, to: "/tmp/live-broker-cwd")
+        var reportedDirectories: [String?] = []
+        fixture.terminal.setHostCurrentDirectoryHandler { reportedDirectories.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.pollOutputOnce()
+        runtime.isHostAvailable = true
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp/stale-channel-metadata"
+        )
+
+        XCTAssertEqual(reportedDirectories, ["/tmp/live-broker-cwd"])
+    }
+
     func testMidSessionBrokerLossReportsStaleFailureAndKeepsDeadIdentity() throws {
         let runtime = MidSessionLossRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008014")

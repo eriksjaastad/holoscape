@@ -1272,6 +1272,30 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
     }
 
+    func testSaveStatePersistsOnlyHostConfirmedShellWorkingDirectory() throws {
+        let terminal = MockTerminalProcess()
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                workingDirectory: NSHomeDirectory(),
+                terminal: terminal
+            )
+        }
+        channel.activate()
+
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, NSHomeDirectory())
+
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, "/tmp")
+    }
+
     func testSaveStatePersistsAgentLaunchIntentAndBrokerSessionIDForRestore() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerAgentBrokerSaveTests-")

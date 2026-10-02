@@ -22,10 +22,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var customDisplayLabel: String?
     private(set) var workingDirectory: String?
     private var directoryTracker: ShellDirectoryTracker
-    /// Last directory confirmed in process-owner metadata. This intentionally
-    /// differs from presentation state, which may advance speculatively from a
-    /// simple typed `cd` before the shell confirms the command through OSC 7.
-    private var persistedWorkingDirectory: String?
+    /// Last directory confirmed by the live shell. Channel metadata persists
+    /// this value rather than speculative presentation state inferred from typed
+    /// input before the shell reports OSC 7 truth.
+    private(set) var persistedWorkingDirectory: String?
+    /// Last directory successfully written to process-owner metadata. Kept
+    /// separately so repeated host confirmation can retry a failed broker write.
+    private var brokerPersistedWorkingDirectory: String?
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
     private var lastStartFailureKind: TerminalStartFailureKind?
@@ -133,6 +136,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.workingDirectory = directoryTracker.currentDirectory
         self.directoryTracker = directoryTracker
         self.persistedWorkingDirectory = directoryTracker.currentDirectory
+        self.brokerPersistedWorkingDirectory = directoryTracker.currentDirectory
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.brokerSessionCoordinator = brokerSessionCoordinator
         super.init()
@@ -360,18 +364,23 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             workingDirectory = nextDirectory
         }
 
-        if persistConfirmedDirectory, nextDirectory != persistedWorkingDirectory {
+        let confirmedDirectoryChanged = persistConfirmedDirectory && nextDirectory != persistedWorkingDirectory
+        if confirmedDirectoryChanged {
+            persistedWorkingDirectory = nextDirectory
+        }
+
+        if persistConfirmedDirectory, nextDirectory != brokerPersistedWorkingDirectory {
             do {
                 try terminal.updateWorkingDirectory(nextDirectory)
-                persistedWorkingDirectory = nextDirectory
+                brokerPersistedWorkingDirectory = nextDirectory
             } catch {
-                // Keep presentation truth while leaving persistedWorkingDirectory
-                // unchanged so a repeated host confirmation retries the write.
+                // Keep confirmed shell truth for channel persistence while leaving
+                // broker acknowledgement unchanged so a repeated confirmation retries.
                 NSLog("Shell broker working-directory update failed: \(error)")
             }
         }
 
-        if presentationChanged {
+        if presentationChanged || confirmedDirectoryChanged {
             delegate?.channelStateDidChange(self, to: state)
         }
     }

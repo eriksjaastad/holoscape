@@ -162,6 +162,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
+            // The durable broker record is authoritative after a delayed retry;
+            // publish it through the same host-truth seam as OSC 7 so the owning
+            // shell replaces any stale channel metadata before saving again.
+            hostCurrentDirectoryHandler?(record.workingDirectory)
             restoreScrollbackReplay(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
