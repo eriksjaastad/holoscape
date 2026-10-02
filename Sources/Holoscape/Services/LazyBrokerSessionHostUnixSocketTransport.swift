@@ -52,6 +52,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        guard !BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) else {
+            throw LaunchError.socketTimedOut(socketPath)
+        }
+
         switch socketReachability() {
         case .reachable:
             return

@@ -336,6 +336,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         try client.setOutputAvailabilityHandler(id: sessionID, handler: nil)
     }
 
+    func testClientRuntimeOutputMonitorRetriesTransientTransportFailure() throws {
+        let codec = BrokerSessionHostCodec()
+        let attempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime { frame in
+            guard case .waitForOutputAvailability = try codec.decodeRequest(frame) else {
+                throw NSError(domain: "BrokerSessionHostProtocolTests", code: 4)
+            }
+            if attempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("test")
+            }
+            return try codec.encodeResponse(.outputAvailable(true))
+        }
+        let sessionID = BrokerSessionID(rawValue: "client-output-retry")
+        let signaled = expectation(description: "client output monitor recovered after transient failure")
+
+        try client.setOutputAvailabilityHandler(id: sessionID) { _ in signaled.fulfill() }
+        wait(for: [signaled], timeout: 3)
+        try client.setOutputAvailabilityHandler(id: sessionID, handler: nil)
+        XCTAssertGreaterThanOrEqual(attempts.value, 2)
+    }
+
     func testClientRuntimeOutputAvailabilityCanBeDisabledForFiniteSocketHarnesses() throws {
         let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { _ in
             XCTFail("disabled output monitoring must not touch the transport")
@@ -1035,6 +1056,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
         try waitForSocket(at: socketPath)
 
+        XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
         XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath))
 
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
@@ -1044,6 +1066,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         XCTAssertTrue(try client.isRunning(id: BrokerSessionID(rawValue: "existing-broker-session")))
         wait(for: [serverFinished], timeout: 2)
+        XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
         XCTAssertNil(serverError.value.map(String.init(describing:)))
         XCTAssertEqual(runtime.events, [
             "listSessions",
@@ -1692,7 +1715,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 3)
+                try server.run(maxConnections: 2)
             } catch {
                 serverError.set(error)
             }
@@ -1708,7 +1731,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             guard case let BrokerSessionHostUnixSocketServer.ServerError.bindFailed(message) = error else {
                 return XCTFail("Expected bindFailed, got \(error)")
             }
-            XCTAssertTrue(message.contains("already has a reachable broker"), message)
+            XCTAssertTrue(message.contains("broker lock is already held"), message)
         }
 
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
@@ -1721,7 +1744,6 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         wait(for: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
         XCTAssertEqual(runtime.events, [
-            "listSessions",
             "listSessions",
             "isRunning original-broker-still-active",
         ])
@@ -1921,6 +1943,22 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 /// `Sendable`.
 private struct TestSendableValue<Value>: @unchecked Sendable {
     let value: Value
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() -> Int {
+        lock.withLock {
+            storedValue += 1
+            return storedValue
+        }
+    }
 }
 
 private final class LockedErrorBox: @unchecked Sendable {

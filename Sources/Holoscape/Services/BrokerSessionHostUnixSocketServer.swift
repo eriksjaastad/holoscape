@@ -52,6 +52,8 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     }
 
     func run(maxConnections: Int? = nil) throws {
+        let brokerLockFD = try acquireBrokerLock()
+        defer { Darwin.close(brokerLockFD) }
         let serverFD = try makeListeningSocket()
         let group = DispatchGroup()
         let errorBox = BrokerSocketServerErrorBox()
@@ -94,6 +96,33 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         if let error = errorBox.value {
             throw error
         }
+    }
+
+    private func acquireBrokerLock() throws -> Int32 {
+        let lockPath = socketPath + ".lock"
+        let fd = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else {
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
+        }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            let message = errno == EWOULDBLOCK
+                ? "broker lock is already held: \(lockPath)"
+                : String(cString: strerror(errno))
+            Darwin.close(fd)
+            throw ServerError.bindFailed(message)
+        }
+        return fd
+    }
+
+    static func socketPathHasActiveBrokerLock(_ socketPath: String) -> Bool {
+        let fd = open(socketPath + ".lock", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return true }
+        defer { Darwin.close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            flock(fd, LOCK_UN)
+            return false
+        }
+        return true
     }
 
     private func makeListeningSocket() throws -> Int32 {

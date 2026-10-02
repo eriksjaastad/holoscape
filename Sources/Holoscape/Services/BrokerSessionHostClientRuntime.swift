@@ -245,8 +245,8 @@ private final class BrokerSessionHostClientOutputMonitor: @unchecked Sendable {
                         handler(id)
                     }
                 } catch {
-                    self?.stopIfCurrent(id: id, generation: generation)
-                    return
+                    guard self?.isActive(id: id, generation: generation) == true else { return }
+                    Thread.sleep(forTimeInterval: 0.25)
                 }
             }
         }
@@ -262,13 +262,6 @@ private final class BrokerSessionHostClientOutputMonitor: @unchecked Sendable {
         lock.withLock { monitors[id]?.generation == generation }
     }
 
-    private func stopIfCurrent(id: BrokerSessionID, generation: UUID) {
-        lock.withLock {
-            if monitors[id]?.generation == generation {
-                monitors[id] = nil
-            }
-        }
-    }
 }
 
 private extension NSLock {
