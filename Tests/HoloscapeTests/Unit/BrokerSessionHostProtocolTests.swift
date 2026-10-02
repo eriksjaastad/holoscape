@@ -1153,19 +1153,74 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let transport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: helperURL,
             socketPath: socketPath,
-            socketWaitTimeoutMilliseconds: 100
+            socketWaitTimeoutMilliseconds: 100,
+            requestTimeoutMilliseconds: 100
         )
         let startedAt = DispatchTime.now().uptimeNanoseconds
         XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
-            XCTAssertEqual(
-                error as? LazyBrokerSessionHostUnixSocketTransport.LaunchError,
-                .socketTimedOut(socketPath)
-            )
+            guard case BrokerSessionHostUnixSocketTransport.TransportError.timedOut = error else {
+                return XCTFail("Expected timedOut, got \(error)")
+            }
         }
         let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startedAt
         XCTAssertLessThan(Double(elapsedNanoseconds) / 1_000_000_000, 0.2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: launchMarkerURL.path))
         wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testLazyUnixSocketTransportSendsRequestWithoutProbeWhenBrokerIsBusy() throws {
+        let runtime = DelayedBrokerSessionRuntime()
+        runtime.isRunning = true
+        let slowID = BrokerSessionID(rawValue: "busy-broker-slow-session")
+        let fastID = BrokerSessionID(rawValue: "busy-broker-fast-session")
+        runtime.delayReadOutput(for: slowID, seconds: 0.35)
+        let socketPath = "/tmp/hs-lazy-busy-broker-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime),
+            maxConcurrentHandlers: 1
+        )
+        let serverFinished = expectation(description: "busy broker served both real requests")
+        let slowFinished = expectation(description: "slow broker request finished")
+        let errorBox = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 2)
+            } catch {
+                errorBox.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let slowStarted = runtime.expectReadStarted(for: slowID)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let directTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+                let client = BrokerSessionHostClientRuntime { frame in try directTransport.sendFrame(frame) }
+                _ = try client.readAvailableOutput(id: slowID)
+            } catch {
+                errorBox.set(error)
+            }
+            slowFinished.fulfill()
+        }
+        wait(for: [slowStarted], timeout: 1)
+
+        let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: URL(fileURLWithPath: "/unused-broker-helper"),
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 100,
+            requestTimeoutMilliseconds: 1_000
+        )
+        let client = BrokerSessionHostClientRuntime { frame in try lazyTransport.sendFrame(frame) }
+        XCTAssertTrue(try client.isRunning(id: fastID))
+
+        wait(for: [slowFinished, serverFinished], timeout: 2)
+        XCTAssertNil(errorBox.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "readAvailableOutput busy-broker-slow-session",
+            "isRunning busy-broker-fast-session",
+        ])
     }
 
     func testUnixSocketServerRefusesToReplaceBrokerWithMalformedProbeResponse() throws {
@@ -1262,6 +1317,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             0
         )
         XCTAssertEqual(noSigPipe, 1)
+        XCTAssertNotEqual(fcntl(descriptors[0], F_GETFL) & O_NONBLOCK, 0)
     }
 
     func testUnixSocketServerDoesNotBlockUnrelatedSessionBehindSlowRequest() throws {

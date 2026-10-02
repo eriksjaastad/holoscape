@@ -36,15 +36,19 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
-        try ensureBrokerIsReachable()
         let transport = BrokerSessionHostUnixSocketTransport(
             socketPath: socketPath,
             requestTimeoutMilliseconds: requestTimeoutMilliseconds
         )
-        return try transport.sendFrame(frame)
+        do {
+            return try transport.sendFrame(frame)
+        } catch BrokerSessionHostUnixSocketTransport.TransportError.connectFailed {
+            try ensureBrokerIsReachableAfterConnectionFailure()
+            return try transport.sendFrame(frame)
+        }
     }
 
-    private func ensureBrokerIsReachable() throws {
+    private func ensureBrokerIsReachableAfterConnectionFailure() throws {
         lock.lock()
         defer { lock.unlock() }
 

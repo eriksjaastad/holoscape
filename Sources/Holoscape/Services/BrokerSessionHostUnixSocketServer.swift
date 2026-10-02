@@ -203,6 +203,11 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         ) == 0 else {
             throw ServerError.socketFailed(String(cString: strerror(errno)))
         }
+
+        let currentFlags = fcntl(clientFD, F_GETFL)
+        guard currentFlags >= 0, fcntl(clientFD, F_SETFL, currentFlags | O_NONBLOCK) == 0 else {
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
+        }
     }
 
     private func handleConnection(_ clientFD: Int32) throws {
