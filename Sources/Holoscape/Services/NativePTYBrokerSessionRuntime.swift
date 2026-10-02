@@ -28,7 +28,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
         private var processGroupCleanupFailureReason: String?
-        let lock = NSLock()
+        let lock = NSCondition()
         private let terminationLock = NSLock()
         var output = Data()
         var scrollback = Data()
@@ -68,6 +68,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                     try scrollbackAppender(data, id)
                     lock.lock()
                     pendingScrollbackPersistenceWrites -= 1
+                    lock.broadcast()
                     lock.unlock()
                 } catch {
                     let reason = String(describing: error)
@@ -76,6 +77,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                     if scrollbackPersistenceFailureReason == nil {
                         scrollbackPersistenceFailureReason = reason
                     }
+                    lock.broadcast()
                     lock.unlock()
                     NSLog("Broker scrollback persistence failed for \(id.rawValue): \(reason)")
                 }
@@ -91,13 +93,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
         func readOutput() throws -> Data {
             lock.lock()
+            while pendingScrollbackPersistenceWrites > 0,
+                  scrollbackPersistenceFailureReason == nil {
+                lock.wait()
+            }
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
-            }
-            guard pendingScrollbackPersistenceWrites == 0 else {
-                lock.unlock()
-                return Data()
             }
             let snapshot = output
             output.removeAll(keepingCapacity: true)

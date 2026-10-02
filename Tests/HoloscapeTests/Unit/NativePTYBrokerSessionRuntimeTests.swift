@@ -568,6 +568,9 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let outputAvailable = DispatchSemaphore(value: 0)
+        let readCompleted = DispatchSemaphore(value: 0)
+        let capturedOutput = LockedDataBox()
+        let capturedError = LockedRuntimeErrorBox()
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
@@ -579,22 +582,27 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(appender.waitUntilEntered(), .success)
 
         // Production socket clients poll independently of output-availability
-        // signals. A poll while the disk append is in flight must not consume
-        // bytes before the append's outcome is known.
-        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+        // signals. A poll while the disk append is in flight must wait rather
+        // than consume bytes or let termination checks run ahead of persistence.
+        DispatchQueue.global().async {
+            do {
+                capturedOutput.store(try runtime.readAvailableOutput(id: id))
+            } catch {
+                capturedError.store(error)
+            }
+            readCompleted.signal()
+        }
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
 
         appender.release()
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
 
-        let capturedError: NativePTYBrokerSessionRuntime.RuntimeError
-        do {
-            _ = try runtime.readAvailableOutput(id: id)
-            return XCTFail("Expected retained scrollback persistence failure")
-        } catch let error as NativePTYBrokerSessionRuntime.RuntimeError {
-            capturedError = error
-        }
-        guard case let .scrollbackPersistenceFailed(failedID, reason) = capturedError else {
-            return XCTFail("Expected retained scrollback persistence failure, got \(capturedError)")
+        XCTAssertNil(capturedOutput.value)
+        guard case let .scrollbackPersistenceFailed(failedID, reason) =
+            capturedError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected retained scrollback persistence failure, got \(String(describing: capturedError.value))")
         }
         XCTAssertEqual(failedID, id)
         XCTAssertFalse(reason.isEmpty)
@@ -609,7 +617,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
     }
 
-    func testPollingReadDefersUntilScrollbackPersistenceSucceedsWithoutLosingOutput() throws {
+    func testPollingReadWaitsUntilScrollbackPersistenceSucceedsWithoutLosingOutput() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
         let id = BrokerSessionID(rawValue: "delayed-disk-scrollback-native-pty-runtime-test")
@@ -620,6 +628,9 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let outputAvailable = DispatchSemaphore(value: 0)
+        let readCompleted = DispatchSemaphore(value: 0)
+        let capturedOutput = LockedDataBox()
+        let capturedError = LockedRuntimeErrorBox()
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
@@ -629,12 +640,60 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         try runtime.sendInput(id: id, bytes: Array("persisted-scrollback-marker\n".utf8))
         XCTAssertEqual(appender.waitUntilEntered(), .success)
-        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+        DispatchQueue.global().async {
+            do {
+                capturedOutput.store(try runtime.readAvailableOutput(id: id))
+            } catch {
+                capturedError.store(error)
+            }
+            readCompleted.signal()
+        }
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
 
         appender.release()
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
-        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
+        XCTAssertNil(capturedError.value)
+        let output = String(decoding: try XCTUnwrap(capturedOutput.value), as: UTF8.self)
         XCTAssertTrue(output.contains("persisted-scrollback-marker"), output)
+    }
+
+    func testTerminatedSessionReadWaitsForPersistenceBeforeDeliveringFinalOutput() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "terminated-delayed-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf final-persisted-scrollback"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let readCompleted = DispatchSemaphore(value: 0)
+        let capturedOutput = LockedDataBox()
+        let capturedError = LockedRuntimeErrorBox()
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+
+        DispatchQueue.global().async {
+            do {
+                capturedOutput.store(try runtime.readAvailableOutput(id: id))
+            } catch {
+                capturedError.store(error)
+            }
+            readCompleted.signal()
+        }
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+
+        appender.release()
+        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(capturedError.value)
+        let output = String(decoding: try XCTUnwrap(capturedOutput.value), as: UTF8.self)
+        XCTAssertTrue(output.contains("final-persisted-scrollback"), output)
     }
 
     func testDiskBackedScrollbackCanBeReadAfterRuntimeInstanceLoss() throws {
@@ -945,6 +1004,23 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     }
 }
 
+private final class LockedDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedData: Data?
+
+    var value: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedData
+    }
+
+    func store(_ data: Data) {
+        lock.lock()
+        storedData = data
+        lock.unlock()
+    }
+}
+
 private final class LockedRuntimeErrorBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storedError: Error?
@@ -965,7 +1041,8 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
 private final class BlockingScrollbackAppender: @unchecked Sendable {
     private let shouldFail: Bool
     private let entered = DispatchSemaphore(value: 0)
-    private let proceed = DispatchSemaphore(value: 0)
+    private let releaseCondition = NSCondition()
+    private var isReleased = false
 
     init(shouldFail: Bool) {
         self.shouldFail = shouldFail
@@ -973,9 +1050,15 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
         entered.signal()
-        guard proceed.wait(timeout: .now() + 3) == .success else {
-            throw CocoaError(.fileWriteUnknown)
+        releaseCondition.lock()
+        let deadline = Date().addingTimeInterval(3)
+        while !isReleased {
+            guard releaseCondition.wait(until: deadline) else {
+                releaseCondition.unlock()
+                throw CocoaError(.fileWriteUnknown)
+            }
         }
+        releaseCondition.unlock()
         if shouldFail {
             throw CocoaError(.fileWriteNoPermission)
         }
@@ -986,7 +1069,10 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
     }
 
     func release() {
-        proceed.signal()
+        releaseCondition.lock()
+        isReleased = true
+        releaseCondition.broadcast()
+        releaseCondition.unlock()
     }
 }
 
