@@ -340,6 +340,20 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         let replacementSessionID = BrokerSessionID(rawValue: "live-agent-replacement")
         coordinator.reattachableSessionRecords = [
             BrokerSessionRecord(
+                id: staleSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/live-agent-replacement",
+                environmentProfile: .agentOAuth,
+                lifecycle: .stale,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
                 id: replacementSessionID,
                 channelType: .agentDirect,
                 label: "Codex",
@@ -377,6 +391,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
                 reason: "Saved before replacement identity was persisted",
                 recoveryAction: .recreateBrokerSession
             ),
+            brokerSessionID: staleSessionID,
             staleBrokerSessionID: staleSessionID
         )
 
@@ -396,6 +411,20 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         let staleSessionID = BrokerSessionID(rawValue: "stale-shell-generation")
         let replacementSessionID = BrokerSessionID(rawValue: "live-shell-replacement")
         coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: staleSessionID,
+                channelType: .shell,
+                label: "Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/live-shell-replacement",
+                environmentProfile: .shell,
+                lifecycle: .stale,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            ),
             BrokerSessionRecord(
                 id: replacementSessionID,
                 channelType: .shell,
@@ -427,6 +456,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             type: .shell,
             role: "Shell",
             workingDirectory: "/tmp/live-shell-replacement",
+            brokerSessionID: staleSessionID,
             staleBrokerSessionID: staleSessionID
         )
 

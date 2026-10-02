@@ -334,11 +334,12 @@ class ChannelManager {
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
         guard let sessions = reattachableBrokerSessions(context: "shell tab restore") else { return nil }
+        let liveSessions = sessions.filter { $0.lifecycle == .running || $0.lifecycle == .detached }
         if let brokerSessionID,
-           let exactMatch = sessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
+           let exactMatch = liveSessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
             return exactMatch
         }
-        return sessions.first { record in
+        return liveSessions.first { record in
             record.channelType == .shell && record.lastAttachedChannelID == channelID
         }
     }
@@ -349,11 +350,12 @@ class ChannelManager {
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
         guard let sessions = reattachableBrokerSessions(context: "agent tab restore") else { return nil }
+        let liveSessions = sessions.filter { $0.lifecycle == .running || $0.lifecycle == .detached }
         if let brokerSessionID,
-           let exactMatch = sessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
+           let exactMatch = liveSessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
             return exactMatch
         }
-        return sessions.first { record in
+        return liveSessions.first { record in
             record.channelType == channelType && record.lastAttachedChannelID == channelID
         }
     }

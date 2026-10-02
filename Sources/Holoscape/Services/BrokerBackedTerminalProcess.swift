@@ -97,11 +97,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
 
-        let ownerTokenPrefix = "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="
-        let ownerToken = environment?
-            .first(where: { $0.hasPrefix(ownerTokenPrefix) })
-            .map { String($0.dropFirst(ownerTokenPrefix.count)) }
-            .flatMap { $0.isEmpty ? nil : $0 }
+        let ownerToken = Self.agentStatusOwnerToken(
+            from: environment,
+            channelType: channelType
+        )
         let request = BrokerSessionLaunchRequest(
             command: executable,
             arguments: args,
@@ -132,6 +131,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
         }
+    }
+
+    static func agentStatusOwnerToken(
+        from environment: [String]?,
+        channelType: ChannelType
+    ) -> String? {
+        guard channelType == .agentDirect || channelType == .agentAPI else { return nil }
+        let prefix = "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="
+        return environment?
+            .first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {

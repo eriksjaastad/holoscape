@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
+    func testOwnerTokenExtractionIsRestrictedToAgentChannels() {
+        let environment = ["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=agent-owner"]
+
+        XCTAssertEqual(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: environment,
+                channelType: .agentDirect
+            ),
+            "agent-owner"
+        )
+        XCTAssertNil(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: environment,
+                channelType: .shell
+            )
+        )
+        XCTAssertNil(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: ["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="],
+                channelType: .agentDirect
+            )
+        )
+    }
     private enum RuntimeError: Error, Equatable {
         case createFailed
     }

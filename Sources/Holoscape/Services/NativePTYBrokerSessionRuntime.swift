@@ -315,7 +315,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         request: BrokerSessionLaunchRequest
     ) throws -> Bool {
         try createSession(id: id, request: request)
-        return request.agentStatusOwnerToken != nil
+        return request.agentStatusOwnerToken?.isEmpty == false
     }
 
     func detachSession(id: BrokerSessionID) throws {

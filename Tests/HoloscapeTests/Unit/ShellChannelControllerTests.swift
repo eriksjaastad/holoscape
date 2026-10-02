@@ -51,6 +51,18 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .active)
     }
 
+    func testShellLaunchEnvironmentStripsInheritedAgentOwnerToken() {
+        let environment = ShellChannelController.launchEnvironment(from: [
+            "PATH": "/usr/bin",
+            "TERM_PROGRAM": "Holoscape",
+            "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN": "parent-agent-token",
+        ])
+
+        XCTAssertNil(environment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"])
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["TERM_PROGRAM"], "Apple_Terminal")
+    }
+
     func testShellOutputHandlerRoutesThroughTerminalProcessSeam() {
         let terminal = MockTerminalProcess()
         let delegate = MockChannelDelegate()
