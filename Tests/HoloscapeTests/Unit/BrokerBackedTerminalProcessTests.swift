@@ -12,14 +12,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let teardownRelease = DispatchSemaphore(value: 0)
         private let startEntered = DispatchSemaphore(value: 0)
         private let startRelease = DispatchSemaphore(value: 0)
+        private let resizeEntered = DispatchSemaphore(value: 0)
+        private let resizeRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
         private(set) var markErroredCalls: [BrokerSessionID] = []
         private(set) var teardownRanOnMainThread: [Bool] = []
         private(set) var startRanOnMainThread: [Bool] = []
         private(set) var outputReadCount = 0
+        private(set) var resizeRanOnMainThread: [Bool] = []
         private var shouldBlockTeardown = false
         private var shouldBlockStart = false
+        private var shouldBlockResize = false
         var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
 
@@ -45,6 +49,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         var startCallCount: Int { lock.withLock { startRanOnMainThread.count } }
         func finishStart() { startRelease.signal() }
+
+        func blockResize() { lock.withLock { shouldBlockResize = true } }
+        func waitForResize(timeout: TimeInterval = 1) -> Bool {
+            resizeEntered.wait(timeout: .now() + timeout) == .success
+        }
+        func finishResize() { resizeRelease.signal() }
 
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
             let shouldBlock = lock.withLock { () -> Bool in
@@ -107,7 +117,16 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return Data()
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
-        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {
+            let shouldBlock = lock.withLock { () -> Bool in
+                resizeRanOnMainThread.append(Thread.isMainThread)
+                return shouldBlockResize
+            }
+            if shouldBlock {
+                resizeEntered.signal()
+                _ = resizeRelease.wait(timeout: .now() + 2)
+            }
+        }
         func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
         func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
         func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -737,7 +756,11 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         defer { fixture.cleanup() }
         let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
         var events: [String] = []
-        fixture.terminal.setOutputHandler { events.append("output") }
+        var outputLifecycles: [BrokerSessionLifecycle?] = []
+        fixture.terminal.setOutputHandler {
+            events.append("output")
+            outputLifecycles.append(try? fixture.registry.load().first?.lifecycle)
+        }
         fixture.terminal.setTerminationHandler { _ in events.append("termination") }
 
         runtime.triggerFinalOutput(
@@ -748,6 +771,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         try waitUntil { events.last == "termination" }
         XCTAssertEqual(events, ["output", "output", "termination"])
+        XCTAssertEqual(outputLifecycles, [.running, .running], "Durable exit must follow delivery of the final drain")
         let finalLines = fixture.terminal.lastLines(5).joined(separator: "\n")
         XCTAssertTrue(finalLines.contains("first-final-lane-output"))
         XCTAssertTrue(finalLines.contains("raced-final-lane-output"))
@@ -1361,6 +1385,28 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         coordinator.finishStart()
         try waitUntil { !terminal.completesStartAsynchronously }
         XCTAssertEqual(terminal.brokerOwnedSessionID, BrokerSessionID(rawValue: "started-off-main"))
+    }
+
+    func testProductionResizeBrokerRPCDoesNotBlockMainActor() throws {
+        let coordinator = BlockingReattachCoordinator()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "resize",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        try waitUntil { !terminal.completesStartAsynchronously }
+        coordinator.blockResize()
+
+        let started = Date()
+        terminal.resizeToCurrentGrid()
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        XCTAssertTrue(coordinator.waitForResize())
+        XCTAssertEqual(coordinator.resizeRanOnMainThread, [false])
+        coordinator.finishResize()
     }
 
     func testUntrackedRetryWaitsForOffMainReplacementBeforeCompletingStart() throws {

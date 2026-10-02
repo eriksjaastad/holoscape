@@ -579,8 +579,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             read: { [outputCoordinator] id in
                 try outputCoordinator.readAvailableOutput(id)
             },
-            afterDelivery: { [outputCoordinator] id in
-                try outputCoordinator.finishTerminationIfNeeded(id)
+            terminationStatus: { [outputCoordinator] id in
+                try outputCoordinator.terminationStatusIfStopped(id)
+            },
+            finishTermination: { [outputCoordinator] id, exitCode in
+                try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
             onSample: outputSampleHandler(),
             onTermination: outputTerminationHandler(),
@@ -594,10 +597,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
         }
-        do {
-            try coordinator.resize(brokerSessionID, size: currentGridSize)
-        } catch {
-            reportSessionFailure(error, for: brokerSessionID)
+        let size = currentGridSize
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.resize(brokerSessionID, size: size) { [weak self] error in
+                guard let error else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.reportSessionFailure(error, for: brokerSessionID)
+                }
+            }
+        } else {
+            do {
+                try coordinator.resize(brokerSessionID, size: size)
+            } catch {
+                reportSessionFailure(error, for: brokerSessionID)
+            }
         }
     }
 
@@ -618,8 +631,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             read: { [outputCoordinator] id in
                 try outputCoordinator.readAvailableOutput(id)
             },
-            afterDelivery: { [outputCoordinator] id in
-                try outputCoordinator.finishTerminationIfNeeded(id)
+            terminationStatus: { [outputCoordinator] id in
+                try outputCoordinator.terminationStatusIfStopped(id)
+            },
+            finishTermination: { [outputCoordinator] id, exitCode in
+                try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
             onSample: outputSampleHandler(),
             onTermination: outputTerminationHandler(),
@@ -866,14 +882,13 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     /// Check and durably finalize process exit on the same serial lane as output
     /// reads. The lane calls this only after SwiftTerm has consumed the preceding
     /// sample, so final bytes remain visible before exit becomes authoritative.
-    func finishTerminationIfNeeded(_ id: BrokerSessionID) throws -> Int32? {
+    func terminationStatusIfStopped(_ id: BrokerSessionID) throws -> Int32? {
         guard try !coordinator.isRunning(id) else { return nil }
-        guard let exitCode = try coordinator.terminationStatus(id) else {
-            // Final PTY bytes or their persistence result are still in flight.
-            return nil
-        }
+        return try coordinator.terminationStatus(id)
+    }
+
+    func finishTermination(_ id: BrokerSessionID, exitCode: Int32) throws {
         _ = try coordinator.exit(id, exitCode: exitCode)
-        return exitCode
     }
 }
 
@@ -979,6 +994,21 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
             }
         }
     }
+
+    func resize(
+        _ id: BrokerSessionID,
+        size: TerminalGridSize,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.resize(id, size: size)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
 }
 
 private final class BrokerOutputReadLane: @unchecked Sendable {
@@ -1003,7 +1033,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         sessionID: BrokerSessionID,
         mode: Mode,
         read: @escaping @Sendable (BrokerSessionID) throws -> Data,
-        afterDelivery: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -1031,7 +1062,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     guard self.isOpen(for: sessionID) else { return }
                     onSample(sessionID, data)
                     guard self.isOpen(for: sessionID) else { return }
-                    if let exitCode = try afterDelivery(sessionID) {
+                    if let exitCode = try terminationStatus(sessionID) {
                         // Termination observation and the PTY readability callback
                         // can race. Once termination is observable, monitoring is
                         // complete, so one final drain captures bytes appended
@@ -1039,6 +1070,9 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         let finalData = try read(sessionID)
                         guard self.isOpen(for: sessionID) else { return }
                         onSample(sessionID, finalData)
+                        // The final sample is synchronously consumed by the main
+                        // actor before durable exit authority is published.
+                        try finishTermination(sessionID, exitCode)
                         self.closeIfCurrent(sessionID)
                         onTermination(sessionID, exitCode)
                         return
@@ -1055,7 +1089,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     func pollOnce(
         sessionID: BrokerSessionID,
         read: @escaping @Sendable (BrokerSessionID) throws -> Data,
-        afterDelivery: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -1068,8 +1103,9 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             do {
                 let data = try read(sessionID)
                 onSample(sessionID, data)
-                if let exitCode = try afterDelivery(sessionID) {
+                if let exitCode = try terminationStatus(sessionID) {
                     onSample(sessionID, try read(sessionID))
+                    try finishTermination(sessionID, exitCode)
                     onTermination(sessionID, exitCode)
                 }
             } catch {

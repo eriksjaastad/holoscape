@@ -203,7 +203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             return .terminateLater
         }
 
-        apiServer?.stop()
+        stopAPIServerForTermination()
         beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
             sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
@@ -231,6 +231,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             self.terminationTeardownStarted = false
             self.terminationTeardownGeneration &+= 1
             NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
+            self.startAPIServerIfNeeded(channelManager: channelManager)
             reply(false)
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem
@@ -314,6 +315,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
         apiServer?.start()
         wc.apiServer = apiServer
+    }
+
+    private func stopAPIServerForTermination() {
+        apiServer?.stop()
+        apiServer = nil
+        windowController?.apiServer = nil
     }
 
     private func showMainWindow() {
