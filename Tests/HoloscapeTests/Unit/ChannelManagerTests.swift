@@ -1167,6 +1167,15 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(manager.allChannels().map(\.channelId), [first.channelId, second.channelId])
     }
 
+    func testDetachAllChannelsForAppTerminationAlsoDeactivatesDisconnectedTabs() {
+        let disconnected = createMockChannel(type: .shell, role: "Failed Start") as! MockChannelController
+
+        manager.detachAllChannelsForAppTermination()
+
+        XCTAssertEqual(disconnected.deactivateCallCount, 1)
+        XCTAssertEqual(manager.allChannels().map(\.channelId), [disconnected.channelId])
+    }
+
     // MARK: - Close Confirmation
 
     func testNeedsCloseConfirmationWhenActive() {

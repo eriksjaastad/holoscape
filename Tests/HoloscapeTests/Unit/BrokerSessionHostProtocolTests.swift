@@ -1853,7 +1853,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 15)
+                try server.run(maxConnections: 16)
             } catch {
                 serverError.set(error)
             }
@@ -1890,6 +1890,16 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
         firstLaunchManager.saveState()
         firstLaunchManager.detachAllChannelsForAppTermination()
+        let detachDeadline = Date().addingTimeInterval(1)
+        while Date() < detachDeadline,
+              try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle != .detached {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(
+            try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle,
+            .detached,
+            "The asynchronous host detach must commit before simulating the relaunched UI"
+        )
 
         XCTAssertEqual(configService.load().channels.count, 1)
         XCTAssertEqual(configService.load().channels.first?.brokerSessionID, brokerSessionID)

@@ -29,8 +29,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var observedTerminationStatus: Int32? = 0
         var statusCalledOnMainActor = false
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
+        var listedSessionIDs: [BrokerSessionID] = []
 
-        func listSessions() throws -> [BrokerSessionID] { [] }
+        func listSessions() throws -> [BrokerSessionID] { listedSessionIDs }
 
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
@@ -703,6 +704,46 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(discovered[0].lifecycle, .detached)
         XCTAssertNil(discovered[0].lastAttachedChannelID)
         XCTAssertEqual(try registry.load(), discovered)
+    }
+
+    func testRelaunchDiscoveryRetiresRuntimeSessionsMissingFromRegistry() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let orphan = BrokerSessionID(rawValue: "failed-start-orphan")
+        runtime.listedSessionIDs = [orphan]
+        let coordinator = makeCoordinator(runtime: runtime, now: Date.init)
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(runtime.events, [.markErrored(orphan)])
+    }
+
+    func testReattachRevokesRuntimeOwnershipWhenRegistryFailsAfterAttach() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let registryURL = tempDirectory.appendingPathComponent("reattach-registry-failure.json")
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+        let coordinator = makeCoordinator(runtime: runtime, registry: registry, now: Date.init)
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-registry-failure"),
+            channelType: .shell,
+            label: "registry-failure",
+            attachedChannelID: UUID()
+        )
+        runtime.events.removeAll()
+        runtime.onAttach = {
+            try FileManager.default.removeItem(at: registryURL)
+            try FileManager.default.createDirectory(at: registryURL, withIntermediateDirectories: false)
+        }
+
+        XCTAssertThrowsError(try coordinator.reattach(started.id, attachedChannelID: UUID())) { error in
+            guard case BrokerSessionCoordinator.CoordinatorError.reattachRollbackFailed = error else {
+                return XCTFail("Expected typed reattach rollback failure, got \(error)")
+            }
+        }
+        XCTAssertEqual(runtime.events.count, 2)
+        guard case .attach(started.id, _) = runtime.events[0] else {
+            return XCTFail("Expected attach before registry failure: \(runtime.events)")
+        }
+        XCTAssertEqual(runtime.events[1], .detach(started.id))
     }
 
     func testResizeForwardsExactGridSizeToRuntimeWithoutMutatingRecord() throws {

@@ -8,8 +8,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let entered = DispatchSemaphore(value: 0)
         private let release = DispatchSemaphore(value: 0)
         private let returned = DispatchSemaphore(value: 0)
+        private let teardownEntered = DispatchSemaphore(value: 0)
+        private let teardownRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
+        private(set) var teardownRanOnMainThread: [Bool] = []
+        private var shouldBlockTeardown = false
+        var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
 
         func waitForReattach(timeout: TimeInterval = 1) -> Bool {
@@ -22,12 +27,45 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             returned.wait(timeout: .now() + timeout) == .success
         }
 
-        func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func blockTeardown() { lock.withLock { shouldBlockTeardown = true } }
+        func waitForTeardown(timeout: TimeInterval = 1) -> Bool {
+            teardownEntered.wait(timeout: .now() + timeout) == .success
+        }
+        func finishTeardown() { teardownRelease.signal() }
+
+        func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
+            if let untrackedStartID {
+                throw BrokerSessionCoordinator.CoordinatorError.untrackedSession(
+                    untrackedStartID,
+                    registryFailure: "registry failed",
+                    rollbackFailure: "rollback failed"
+                )
+            }
+            throw XCTSkip("unused")
+        }
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-            lock.withLock { detachCalls.append(id) }
+            let shouldBlock = lock.withLock { () -> Bool in
+                detachCalls.append(id)
+                teardownRanOnMainThread.append(Thread.isMainThread)
+                return shouldBlockTeardown
+            }
+            if shouldBlock {
+                teardownEntered.signal()
+                _ = teardownRelease.wait(timeout: .now() + 2)
+            }
             return record(id: id, ownerToken: nil, lifecycle: .detached)
         }
-        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {
+            let shouldBlock = lock.withLock { () -> Bool in
+                detachCalls.append(id)
+                teardownRanOnMainThread.append(Thread.isMainThread)
+                return shouldBlockTeardown
+            }
+            if shouldBlock {
+                teardownEntered.signal()
+                _ = teardownRelease.wait(timeout: .now() + 2)
+            }
+        }
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             lock.withLock { reattachCallCount += 1 }
             entered.signal()
@@ -1210,6 +1248,52 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(terminal.completesStartAsynchronously)
         XCTAssertEqual(completionCount, 0)
         XCTAssertNil(terminal.agentStatusOwnerToken, "A completion after detach must not reactivate the session")
+    }
+
+    func testTrackedTeardownBrokerRPCDoesNotBlockMainActor() throws {
+        let sessionID = BrokerSessionID(rawValue: "tracked-teardown")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockTeardown()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "tracked",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        let started = Date()
+        terminal.detachBrokerSession()
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        XCTAssertTrue(coordinator.waitForTeardown())
+        XCTAssertEqual(coordinator.teardownRanOnMainThread, [false])
+        coordinator.finishTeardown()
+    }
+
+    func testUntrackedTeardownBrokerRPCDoesNotBlockMainActor() throws {
+        let sessionID = BrokerSessionID(rawValue: "untracked-teardown")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.untrackedStartID = sessionID
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "untracked",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertEqual(terminal.untrackedBrokerSessionID, sessionID)
+        coordinator.blockTeardown()
+
+        let started = Date()
+        terminal.detachBrokerSession()
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        XCTAssertTrue(coordinator.waitForTeardown())
+        XCTAssertEqual(coordinator.teardownRanOnMainThread, [false])
+        coordinator.finishTeardown()
     }
 
     func testStartReattachesExistingBrokerSessionInsteadOfCreatingReplacement() throws {

@@ -424,6 +424,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         stopOutputPump()
         inputWriteLane.close()
         if let brokerSessionID, !didNotifyTermination {
+            if coordinator.requiresOffMainBrokerWork {
+                failureRecoveryCoordinator.detach(brokerSessionID) { error in
+                    if let error {
+                        NSLog("Broker-backed terminal detach failed: \(error)")
+                    }
+                }
+                return
+            }
             do {
                 _ = try coordinator.detach(brokerSessionID)
             } catch {
@@ -435,6 +443,19 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 NSLog("Broker-backed terminal detach failed: \(error)")
             }
         } else if let untrackedBrokerSessionID {
+            if coordinator.requiresOffMainBrokerWork {
+                failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [weak self] error in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.untrackedBrokerSessionID == untrackedBrokerSessionID else { return }
+                        if let error {
+                            NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
+                        } else {
+                            self.untrackedBrokerSessionID = nil
+                        }
+                    }
+                }
+                return
+            }
             do {
                 try coordinator.retireUntrackedSession(untrackedBrokerSessionID)
                 self.untrackedBrokerSessionID = nil
@@ -796,6 +817,20 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
         queue.async { [self] in
             do {
                 _ = try coordinator.markErrored(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func detach(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                _ = try coordinator.detach(id)
                 completion(nil)
             } catch {
                 completion(error)

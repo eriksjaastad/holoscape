@@ -92,7 +92,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattachableSessions() throws -> [BrokerSessionRecord] {
-        try registry.load().compactMap { record in
+        let records = try registry.load()
+        let recordedIDs = Set(records.map(\.id))
+        // A failed-start generation may outlive the UI controller that knew its
+        // ID (for example after tab close or app termination). The broker's live
+        // inventory is the durable fallback authority: retire any generation
+        // that has no registry record before offering sessions for restore.
+        for orphanID in try runtime.listSessions() where !recordedIDs.contains(orphanID) {
+            try retireUntrackedSession(orphanID)
+        }
+        return try records.compactMap { record in
             switch record.lifecycle {
             case .running, .detached, .reattaching, .stale:
                 let reconciled = try reconcileRuntimeStatus(record.id)
@@ -311,28 +320,51 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             throw error
         }
 
-        while true {
-            let current = try record(for: id)
-            guard current.lifecycle == .reattaching else {
-                do {
-                    try runtime.detachSession(id: id)
-                } catch {
-                    throw CoordinatorError.reattachCleanupFailed(
-                        id,
-                        runtimeFailure: String(describing: error)
-                    )
+        do {
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else {
+                    do {
+                        try runtime.detachSession(id: id)
+                    } catch {
+                        throw CoordinatorError.reattachCleanupFailed(
+                            id,
+                            runtimeFailure: String(describing: error)
+                        )
+                    }
+                    throw CoordinatorError.concurrentSessionTransition(id)
                 }
-                throw CoordinatorError.concurrentSessionTransition(id)
+                let attached = current.withLifecycle(
+                    .running,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: attachedChannelID
+                )
+                if try registry.replace(attached, ifUnchangedFrom: current) {
+                    return attached
+                }
             }
-            let attached = current.withLifecycle(
-                .running,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: attachedChannelID
+        } catch let error as CoordinatorError {
+            throw error
+        } catch let registryFailure {
+            // Runtime attach already succeeded, but durable ownership could not
+            // be published. Revoke runtime ownership before returning so the tab
+            // cannot remain invisibly attached behind a failed completion. The
+            // durable lease is left for relaunch discovery to revoke once
+            // registry I/O is healthy again.
+            do {
+                try runtime.detachSession(id: id)
+            } catch {
+                throw CoordinatorError.reattachCleanupFailed(
+                    id,
+                    runtimeFailure: "registry failure: \(registryFailure); detach failure: \(error)"
+                )
+            }
+            throw CoordinatorError.reattachRollbackFailed(
+                id,
+                runtimeFailure: "runtime attach succeeded; runtime ownership was revoked",
+                registryFailure: String(describing: registryFailure)
             )
-            if try registry.replace(attached, ifUnchangedFrom: current) {
-                return attached
-            }
         }
     }
 

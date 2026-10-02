@@ -148,7 +148,11 @@ class ChannelManager {
     /// reattachable after the UI process exits; this is intentionally different
     /// from `closeChannel`, which removes a tab from Holoscape's model.
     func detachAllChannelsForAppTermination() {
-        for channel in allChannels() where channel.state != .disconnected {
+        // A disconnected tab can still own an untracked broker generation when
+        // startup created the process but registry persistence and rollback both
+        // failed. Give every controller its teardown opportunity; deactivate is
+        // idempotent for ordinary disconnected channels.
+        for channel in allChannels() {
             channel.deactivate()
         }
     }
