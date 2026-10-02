@@ -167,8 +167,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 try runtime.createSession(id: id, request: request)
                 ownerTokenWasApplied = false
             }
-        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
-            // A lost response does not prove create failed: the broker may own a
+        } catch let clientError as BrokerSessionHostClientRuntime.ClientError
+            where clientError.ambiguousCreateFailureReason != nil {
+            let message = clientError.ambiguousCreateFailureReason!
+            // A lost or malformed response does not prove create failed: the
+            // broker may own a
             // live process under this generated ID. Retire that exact generation
             // before returning, or preserve its identity in a typed failure so a
             // retry cannot create a duplicate while the outcome is uncertain.

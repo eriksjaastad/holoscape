@@ -415,6 +415,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testClientRuntimeTreatsMalformedResponseAsAmbiguousTransportFailure() {
+        let client = BrokerSessionHostClientRuntime { _ in Data("not-json\n".utf8) }
+
+        XCTAssertThrowsError(
+            try client.createSession(
+                id: BrokerSessionID(rawValue: "malformed-create-response"),
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/zsh",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.transportFailed(message) = error else {
+                return XCTFail("Expected ambiguous transport failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("responseDecodeFailed"))
+        }
+    }
+
     func testClientRuntimeFailsLoudlyWhenListSessionsReturnsUnexpectedResponseShape() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime { _ in

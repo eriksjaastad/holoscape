@@ -230,23 +230,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func finishCancelledFreshStart(_ result: Result<BrokerSessionRecord, Error>) {
         switch result {
         case .success(let record):
-            failureRecoveryCoordinator.markErrored(record.id) { [self] error in
-                DispatchQueue.main.async { [self] in
-                    if let error {
-                        NSLog("Broker-backed terminal could not retire cancelled fresh session \(record.id.rawValue): \(error)")
-                    }
-                    completeCancelledFreshStart()
-                }
+            retireTrackedForTeardown(record.id) { [self] in
+                completeCancelledFreshStart()
             }
         case .failure(let error):
             if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
-                failureRecoveryCoordinator.retireUntrackedSession(id) { [self] retirementError in
-                    DispatchQueue.main.async { [self] in
-                        if let retirementError {
-                            NSLog("Broker-backed terminal could not retire cancelled untracked session \(id.rawValue): \(retirementError)")
-                        }
-                        completeCancelledFreshStart()
-                    }
+                retireUntrackedForTeardown(id) { [self] in
+                    completeCancelledFreshStart()
                 }
             } else {
                 completeCancelledFreshStart()
@@ -261,6 +251,45 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let completions = freshStartTeardownCompletions
         freshStartTeardownCompletions.removeAll()
         completions.forEach { $0() }
+    }
+
+    private func retireTrackedForTeardown(
+        _ id: BrokerSessionID,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        failureRecoveryCoordinator.markErrored(id) { [self] error in
+            DispatchQueue.main.async { [self] in
+                guard let error else {
+                    completion()
+                    return
+                }
+                NSLog("Broker-backed terminal could not retire tracked session \(id.rawValue) during teardown; retrying: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+                    retireTrackedForTeardown(id, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func retireUntrackedForTeardown(
+        _ id: BrokerSessionID,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        failureRecoveryCoordinator.retireUntrackedSession(id) { [self] error in
+            DispatchQueue.main.async { [self] in
+                guard let error else {
+                    if untrackedBrokerSessionID == id {
+                        untrackedBrokerSessionID = nil
+                    }
+                    completion()
+                    return
+                }
+                NSLog("Broker-backed terminal could not retire untracked session \(id.rawValue) during teardown; retrying: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+                    retireUntrackedForTeardown(id, completion: completion)
+                }
+            }
+        }
     }
 
     static func agentStatusOwnerToken(
@@ -519,27 +548,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 NSLog("Broker-backed terminal detach failed: \(error)")
             }
         } else if let untrackedBrokerSessionID {
-            if coordinator.requiresOffMainBrokerWork {
-                failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [weak self] error in
-                    DispatchQueue.main.async { [weak self] in
-                        if let self, self.untrackedBrokerSessionID == untrackedBrokerSessionID {
-                            if let error {
-                                NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
-                            } else {
-                                self.untrackedBrokerSessionID = nil
-                            }
-                        }
-                        completion()
-                    }
-                }
-                return
-            }
-            do {
-                try coordinator.retireUntrackedSession(untrackedBrokerSessionID)
-                self.untrackedBrokerSessionID = nil
-            } catch {
-                NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
-            }
+            retireUntrackedForTeardown(untrackedBrokerSessionID, completion: completion)
+            return
         }
         completion()
     }
@@ -1002,6 +1012,13 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     onSample(sessionID, data)
                     guard self.isOpen(for: sessionID) else { return }
                     if let exitCode = try afterDelivery(sessionID) {
+                        // Termination observation and the PTY readability callback
+                        // can race. Once termination is observable, monitoring is
+                        // complete, so one final drain captures bytes appended
+                        // after the first read and before exit authority.
+                        let finalData = try read(sessionID)
+                        guard self.isOpen(for: sessionID) else { return }
+                        onSample(sessionID, finalData)
                         self.closeIfCurrent(sessionID)
                         onTermination(sessionID, exitCode)
                         return
@@ -1032,6 +1049,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 let data = try read(sessionID)
                 onSample(sessionID, data)
                 if let exitCode = try afterDelivery(sessionID) {
+                    onSample(sessionID, try read(sessionID))
                     onTermination(sessionID, exitCode)
                 }
             } catch {

@@ -210,11 +210,32 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         } catch {
             throw ClientError.transportFailed(String(describing: error))
         }
-        let response = try codec.decodeResponse(responseFrame)
+        let response: BrokerSessionHostResponse
+        do {
+            response = try codec.decodeResponse(responseFrame)
+        } catch {
+            // A malformed or partial response does not prove a mutating request
+            // failed before the broker applied it. Preserve that uncertainty as
+            // transport failure so callers retain the request's exact identity.
+            throw ClientError.transportFailed("responseDecodeFailed(\(error))")
+        }
         if case let .failure(failure) = response {
             throw ClientError.hostFailure(code: failure.code, message: failure.message)
         }
         return response
+    }
+}
+
+extension BrokerSessionHostClientRuntime.ClientError {
+    var ambiguousCreateFailureReason: String? {
+        switch self {
+        case .transportFailed(let reason):
+            return reason
+        case .unexpectedResponse(let expected, let actual):
+            return "unexpected response; expected \(expected), got \(actual)"
+        case .hostFailure:
+            return nil
+        }
     }
 }
 

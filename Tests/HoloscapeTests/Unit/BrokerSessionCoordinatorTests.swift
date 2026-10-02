@@ -632,6 +632,30 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
     }
 
+    func testStartWithUnexpectedCreateResponseRetiresGeneratedIdentityBeforeReportingHostFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.unexpectedResponse(
+            expected: "created",
+            actual: .ok
+        )
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 603) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/unexpected-create-response"),
+                channelType: .shell,
+                label: "unexpected",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, message) = error else {
+                return XCTFail("Expected typed broker-host failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("unexpected response"))
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
+    }
+
     func testStartWithLostCreateResponsePreservesIdentityWhenRetirementIsUncertain() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")

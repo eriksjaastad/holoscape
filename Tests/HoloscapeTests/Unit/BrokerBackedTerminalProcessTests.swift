@@ -538,11 +538,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var createdIDs: [BrokerSessionID] = []
         private var output = Data()
         private var running = true
+        private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
 
-        func triggerFinalOutput(_ text: String, for id: BrokerSessionID) {
+        func triggerFinalOutput(_ text: String, afterTerminationCheck lateText: String = "", for id: BrokerSessionID) {
             let currentHandler: (@Sendable (BrokerSessionID) -> Void)? = lock.withLock {
                 output.append(Data(text.utf8))
+                outputAfterTerminationCheck = Data(lateText.utf8)
                 running = false
                 return handler
             }
@@ -571,7 +573,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(id: BrokerSessionID) throws -> Bool { lock.withLock { running } }
-        func terminationStatus(id: BrokerSessionID) throws -> Int32? { lock.withLock { running ? nil : 0 } }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            lock.withLock {
+                guard !running else { return nil }
+                output.append(outputAfterTerminationCheck)
+                outputAfterTerminationCheck.removeAll()
+                return 0
+            }
+        }
     }
 
     /// Broker terminal wired to a temp registry so mid-session failures can be
@@ -726,11 +735,17 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.setOutputHandler { events.append("output") }
         fixture.terminal.setTerminationHandler { _ in events.append("termination") }
 
-        runtime.triggerFinalOutput("final-lane-output\n", for: sessionID)
+        runtime.triggerFinalOutput(
+            "first-final-lane-output\n",
+            afterTerminationCheck: "raced-final-lane-output\n",
+            for: sessionID
+        )
 
-        try waitUntil { events.count == 2 }
-        XCTAssertEqual(events, ["output", "termination"])
-        XCTAssertTrue(fixture.terminal.lastLines(5).joined(separator: "\n").contains("final-lane-output"))
+        try waitUntil { events.last == "termination" }
+        XCTAssertEqual(events, ["output", "output", "termination"])
+        let finalLines = fixture.terminal.lastLines(5).joined(separator: "\n")
+        XCTAssertTrue(finalLines.contains("first-final-lane-output"))
+        XCTAssertTrue(finalLines.contains("raced-final-lane-output"))
         XCTAssertNil(fixture.terminal.brokerSessionID)
     }
 
@@ -1007,7 +1022,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let untrackedID = try XCTUnwrap(terminal.untrackedBrokerSessionID)
         terminal.detachBrokerSession()
 
-        XCTAssertNil(terminal.untrackedBrokerSessionID)
+        try waitUntil { terminal.untrackedBrokerSessionID == nil }
         XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
     }
 
