@@ -333,6 +333,112 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertTrue(coordinator.reattachCalls.isEmpty)
     }
 
+    func testRestoreChannelPrefersLiveReplacementOverSavedStaleAgentIdentity() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008175")!
+        let staleSessionID = BrokerSessionID(rawValue: "stale-agent-generation")
+        let replacementSessionID = BrokerSessionID(rawValue: "live-agent-replacement")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: replacementSessionID,
+                channelType: .agentDirect,
+                label: "Codex",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp/live-agent-replacement",
+                environmentProfile: .agentOAuth,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 20),
+                updatedAt: Date(timeIntervalSince1970: 21),
+                lastAttachedChannelID: channelID
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateLiveAgentReplacementTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .agentDirect,
+            role: "Codex",
+            workingDirectory: "/tmp/live-agent-replacement",
+            command: "codex",
+            persistentState: PersistentChannelState(
+                kind: .stale,
+                source: .brokerRegistry,
+                reason: "Saved before replacement identity was persisted",
+                recoveryAction: .recreateBrokerSession
+            ),
+            staleBrokerSessionID: staleSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? AgentChannelController)
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, replacementSessionID)
+        XCTAssertNil(controller.staleBrokerSessionID)
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertEqual(coordinator.reattachCalls.map(\.id), [replacementSessionID])
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
+    func testRestoreChannelPrefersLiveReplacementOverSavedStaleShellIdentity() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008176")!
+        let staleSessionID = BrokerSessionID(rawValue: "stale-shell-generation")
+        let replacementSessionID = BrokerSessionID(rawValue: "live-shell-replacement")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: replacementSessionID,
+                channelType: .shell,
+                label: "Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/live-shell-replacement",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 20),
+                updatedAt: Date(timeIntervalSince1970: 21),
+                lastAttachedChannelID: channelID
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateLiveShellReplacementTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let metadata = ChannelMetadata(
+            id: channelID,
+            type: .shell,
+            role: "Shell",
+            workingDirectory: "/tmp/live-shell-replacement",
+            staleBrokerSessionID: staleSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: metadata) as? ShellChannelController)
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.brokerSessionID, replacementSessionID)
+        XCTAssertNil(controller.staleBrokerSessionID)
+        XCTAssertEqual(coordinator.reattachCalls.map(\.id), [replacementSessionID])
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
     func testRetryAfterRegistryReadFailureReattachesSavedProcessGenerationInPlace() throws {
         let coordinator = RecordingBrokerSessionCoordinator()
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008174")!
@@ -647,6 +753,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             from: metadata,
             authType: .apiKey("test-key"),
             existingBrokerSessionID: nil,
+            restoredStaleBrokerSessionID: metadata.staleBrokerSessionID,
             coordinator: RecordingBrokerSessionCoordinator()
         )
 

@@ -246,7 +246,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // The same activation ordering comment from applicationDidFinishLaunching
         // applies here: delegate first, then activate, so state-change callbacks
         // are not dropped on restore.
-        if Self.shouldAutoActivateRestoredChannel(metadata), controller.state != .stale {
+        if Self.shouldAutoActivateRestoredChannel(
+            metadata,
+            hasResolvedBrokerSession: metadata.staleBrokerSessionID != nil && controller.state != .stale
+        ), controller.state != .stale {
             controller.activate()
         }
         // Runtime activation establishes the truthful process lifecycle first.
@@ -262,9 +265,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         return controller
     }
 
-    static func shouldAutoActivateRestoredChannel(_ metadata: ChannelMetadata) -> Bool {
+    static func shouldAutoActivateRestoredChannel(
+        _ metadata: ChannelMetadata,
+        hasResolvedBrokerSession: Bool = false
+    ) -> Bool {
         guard metadata.type != .agentAPI else { return false }
-        guard metadata.staleBrokerSessionID == nil else { return false }
+        // A live registry record matched by channel ownership is newer truth than
+        // stale metadata left behind before the replacement identity was saved.
+        guard metadata.staleBrokerSessionID == nil || hasResolvedBrokerSession else {
+            return false
+        }
 
         switch metadata.type {
         case .shell, .agentDirect:
@@ -408,7 +418,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         from metadata: ChannelMetadata,
         authType: AgentAuthType,
         existingBrokerSessionID: BrokerSessionID?,
-        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
+        restoredStaleBrokerSessionID: BrokerSessionID?,
         coordinator: (any BrokerSessionCoordinating)?
     ) -> AgentChannelController {
         AgentChannelController.brokerBacked(
@@ -420,7 +430,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             useRawLabel: metadata.useRawLabel ?? true,
             command: metadata.command ?? "claude",
             existingBrokerSessionID: existingBrokerSessionID,
-            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID ?? metadata.staleBrokerSessionID,
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
             coordinator: coordinator
         )
     }
@@ -434,7 +444,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         resolvedSession: BrokerSessionRecord?
     ) -> (existing: BrokerSessionID?, stale: BrokerSessionID?) {
         if let resolvedSession {
-            return (resolvedSession.id, metadata.staleBrokerSessionID)
+            // A reattachable live record, including a replacement found by the
+            // saved channel ID, supersedes stale identity from an older process
+            // generation. Never initialize a controller with both identities.
+            return (resolvedSession.id, nil)
         }
         if let stale = metadata.staleBrokerSessionID {
             return (nil, stale)
