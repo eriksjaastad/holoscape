@@ -16,6 +16,12 @@ struct BrokerSessionHostCommand {
     static let modeFlag = "--broker-host"
     static let socketModeFlag = "--broker-host-socket"
 
+    static func makeDefaultRuntime(
+        scrollbackDirectory: URL = ScrollbackPersistencePolicy.defaultDiskDirectory
+    ) -> any BrokerSessionRuntime {
+        NativePTYBrokerSessionRuntime(scrollbackDirectory: scrollbackDirectory)
+    }
+
     private let arguments: [String]
     private let input: FileHandle
     private let output: FileHandle
@@ -26,7 +32,9 @@ struct BrokerSessionHostCommand {
         arguments: [String],
         input: FileHandle = .standardInput,
         output: FileHandle = .standardOutput,
-        runtimeFactory: @escaping () -> any BrokerSessionRuntime = { NativePTYBrokerSessionRuntime() },
+        runtimeFactory: @escaping () -> any BrokerSessionRuntime = {
+            BrokerSessionHostCommand.makeDefaultRuntime()
+        },
         socketMaxConnections: Int? = nil
     ) {
         self.arguments = arguments

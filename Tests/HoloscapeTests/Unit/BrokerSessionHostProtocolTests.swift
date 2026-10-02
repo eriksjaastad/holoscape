@@ -859,6 +859,51 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(try command.runIfRequested())
     }
 
+    func testBrokerHostDefaultRuntimePersistsScrollbackAcrossRuntimeReplacement() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostCommandScrollbackTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sessionID = BrokerSessionID(rawValue: "broker-host-default-runtime-scrollback")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf broker-host-durable-scrollback; exit 0"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        var firstRuntime: (any BrokerSessionRuntime)? = BrokerSessionHostCommand.makeDefaultRuntime(
+            scrollbackDirectory: directory
+        )
+        try firstRuntime?.createSession(id: sessionID, request: request)
+
+        var observedOutput = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while !String(decoding: observedOutput, as: UTF8.self).contains("broker-host-durable-scrollback"),
+              Date() < deadline {
+            observedOutput.append(try firstRuntime?.readAvailableOutput(id: sessionID) ?? Data())
+            usleep(20_000)
+        }
+        XCTAssertTrue(
+            String(decoding: observedOutput, as: UTF8.self).contains("broker-host-durable-scrollback"),
+            String(decoding: observedOutput, as: UTF8.self)
+        )
+        firstRuntime = nil
+
+        let replacementRuntime = BrokerSessionHostCommand.makeDefaultRuntime(
+            scrollbackDirectory: directory
+        )
+        let restored = try replacementRuntime.readScrollbackTail(id: sessionID, maxBytes: 4096)
+
+        XCTAssertTrue(
+            String(decoding: restored, as: UTF8.self).contains("broker-host-durable-scrollback"),
+            String(decoding: restored, as: UTF8.self)
+        )
+    }
+
     func testBrokerHostCommandRejectsUnexpectedArgumentsInsteadOfLaunchingGUIFallback() throws {
         let command = BrokerSessionHostCommand(arguments: ["Holoscape", "--broker-host", "--unknown"])
 
