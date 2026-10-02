@@ -19,6 +19,7 @@ protocol ChannelController: AnyObject {
     func sendInput(_ text: String)
     func activate()
     func deactivate()
+    func deactivate(completion: @escaping @MainActor () -> Void)
     func retry()
     func lastLines(_ count: Int) -> [String]
     func applyPersistentState(_ state: PersistentChannelState)
@@ -48,6 +49,10 @@ extension ChannelController {
 
     func applyPersistentState(_ state: PersistentChannelState) {}
     func recordUserInteraction(at date: Date) {}
+    func deactivate(completion: @escaping @MainActor () -> Void) {
+        deactivate()
+        completion()
+    }
 }
 
 enum ChannelCustomDisplayLabel {

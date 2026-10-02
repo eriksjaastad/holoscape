@@ -1853,7 +1853,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 16)
+                try server.run(maxConnections: 64)
             } catch {
                 serverError.set(error)
             }
@@ -1887,6 +1887,11 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             )
         }
         firstShell.activate()
+        let firstStartDeadline = Date().addingTimeInterval(1)
+        while Date() < firstStartDeadline,
+              (firstShell as? ShellChannelController)?.brokerSessionID == nil {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
         firstLaunchManager.saveState()
         firstLaunchManager.detachAllChannelsForAppTermination()
@@ -1949,6 +1954,13 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(records[0].lastAttachedChannelID, restoredShell.channelId)
         XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
 
+        // The terminal's off-main start/reattach lanes make the exact number of
+        // background output polls scheduling-dependent. Drain the bounded test
+        // server deterministically instead of coupling this integration test to
+        // one incidental connection count.
+        for _ in 0..<64 {
+            guard (try? secondCoordinator.isRunning(brokerSessionID)) != nil else { break }
+        }
         wait(for: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
@@ -2001,6 +2013,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             execName: "cat",
             currentDirectory: tempDirectory.path
         )
+        let firstStartDeadline = Date().addingTimeInterval(1)
+        while Date() < firstStartDeadline, firstTerminal.brokerSessionID == nil {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         let brokerSessionID = try XCTUnwrap(firstTerminal.brokerSessionID)
         firstTerminal.detachBrokerSession()
 

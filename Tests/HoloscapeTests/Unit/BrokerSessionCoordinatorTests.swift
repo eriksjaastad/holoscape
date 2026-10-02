@@ -611,6 +611,50 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testStartWithLostCreateResponseRetiresGeneratedIdentityBeforeReportingHostFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 601) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/uncertain-create"),
+                channelType: .shell,
+                label: "uncertain",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, message) = error else {
+                return XCTFail("Expected typed broker-host failure, got \(error)")
+            }
+            XCTAssertEqual(message, "response lost")
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
+    }
+
+    func testStartWithLostCreateResponsePreservesIdentityWhenRetirementIsUncertain() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.markErroredError = RuntimeError.failed
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 602) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/uncertain-create-retirement"),
+                channelType: .shell,
+                label: "uncertain",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, registryFailure, rollbackFailure) = error else {
+                return XCTFail("Expected typed untracked-session failure, got \(error)")
+            }
+            XCTAssertTrue(registryFailure.contains("response lost"))
+            XCTAssertEqual(rollbackFailure, "failed")
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
+    }
+
     func testReadScrollbackTailRequiresDurableRecordAndUsesRuntimeTail() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 450) })

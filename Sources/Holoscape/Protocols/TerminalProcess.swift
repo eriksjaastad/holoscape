@@ -37,7 +37,7 @@ protocol TerminalProcess: AnyObject {
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?)
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
-    func detachBrokerSession()
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void)
     /// Persist host-reported cwd truth with the process owner. Direct terminals
     /// do not own durable metadata and therefore use the default no-op.
     func updateWorkingDirectory(_ directory: String) throws
@@ -86,7 +86,8 @@ extension TerminalProcess {
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func setStartCompletionHandler(_ handler: (() -> Void)?) {}
     var completesStartAsynchronously: Bool { false }
-    func detachBrokerSession() {}
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void) { completion() }
+    func detachBrokerSession() { detachBrokerSession(completion: {}) }
     func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }

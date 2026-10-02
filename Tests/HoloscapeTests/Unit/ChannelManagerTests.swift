@@ -1176,6 +1176,25 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(manager.allChannels().map(\.channelId), [disconnected.channelId])
     }
 
+    func testDetachAllChannelsForAppTerminationCompletesAfterEveryChannelFinishesTeardown() {
+        let immediate = createMockChannel(type: .shell, role: "Immediate") as! MockChannelController
+        let deferred = createMockChannel(type: .agentDirect, role: "Deferred") as! MockChannelController
+        deferred.defersDeactivationCompletion = true
+        var didComplete = false
+
+        manager.detachAllChannelsForAppTermination {
+            didComplete = true
+        }
+
+        XCTAssertEqual(immediate.deactivateCallCount, 1)
+        XCTAssertEqual(deferred.deactivateCallCount, 1)
+        XCTAssertFalse(didComplete, "App termination must remain deferred while any channel still owns teardown")
+
+        deferred.finishDeactivation()
+
+        XCTAssertTrue(didComplete)
+    }
+
     // MARK: - Close Confirmation
 
     func testNeedsCloseConfirmationWhenActive() {

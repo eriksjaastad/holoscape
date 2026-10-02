@@ -10,10 +10,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let returned = DispatchSemaphore(value: 0)
         private let teardownEntered = DispatchSemaphore(value: 0)
         private let teardownRelease = DispatchSemaphore(value: 0)
+        private let startEntered = DispatchSemaphore(value: 0)
+        private let startRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
+        private(set) var markErroredCalls: [BrokerSessionID] = []
         private(set) var teardownRanOnMainThread: [Bool] = []
+        private(set) var startRanOnMainThread: [Bool] = []
         private var shouldBlockTeardown = false
+        private var shouldBlockStart = false
         var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
 
@@ -33,7 +38,21 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func finishTeardown() { teardownRelease.signal() }
 
+        func blockStart() { lock.withLock { shouldBlockStart = true } }
+        func waitForStart(timeout: TimeInterval = 1) -> Bool {
+            startEntered.wait(timeout: .now() + timeout) == .success
+        }
+        func finishStart() { startRelease.signal() }
+
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
+            let shouldBlock = lock.withLock { () -> Bool in
+                startRanOnMainThread.append(Thread.isMainThread)
+                return shouldBlockStart
+            }
+            if shouldBlock {
+                startEntered.signal()
+                _ = startRelease.wait(timeout: .now() + 2)
+            }
             if let untrackedStartID {
                 throw BrokerSessionCoordinator.CoordinatorError.untrackedSession(
                     untrackedStartID,
@@ -41,7 +60,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                     rollbackFailure: "rollback failed"
                 )
             }
-            throw XCTSkip("unused")
+            return record(id: BrokerSessionID(rawValue: "started-off-main"), ownerToken: nil, lifecycle: .running)
         }
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
             let shouldBlock = lock.withLock { () -> Bool in
@@ -75,7 +94,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
-        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+            lock.withLock { markErroredCalls.append(id) }
+            return record(id: id, ownerToken: nil, lifecycle: .errored)
+        }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
@@ -1272,6 +1294,54 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         coordinator.finishTeardown()
     }
 
+    func testFreshStartBrokerRPCDoesNotBlockMainActor() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "new",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+
+        let started = Date()
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+        XCTAssertTrue(coordinator.waitForStart())
+        XCTAssertEqual(coordinator.startRanOnMainThread, [false])
+        coordinator.finishStart()
+        try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertEqual(terminal.brokerOwnedSessionID, BrokerSessionID(rawValue: "started-off-main"))
+    }
+
+    func testTeardownWaitsForPendingFreshStartAndRetiresItsSession() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "new",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForStart())
+        var teardownCompleted = false
+
+        terminal.detachBrokerSession {
+            teardownCompleted = true
+        }
+
+        XCTAssertFalse(teardownCompleted)
+        coordinator.finishStart()
+        try waitUntil { teardownCompleted }
+        XCTAssertEqual(coordinator.markErroredCalls, [BrokerSessionID(rawValue: "started-off-main")])
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+    }
+
     func testUntrackedTeardownBrokerRPCDoesNotBlockMainActor() throws {
         let sessionID = BrokerSessionID(rawValue: "untracked-teardown")
         let coordinator = BlockingReattachCoordinator()
@@ -1284,7 +1354,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             coordinator: coordinator
         )
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
-        XCTAssertEqual(terminal.untrackedBrokerSessionID, sessionID)
+        try waitUntil { terminal.untrackedBrokerSessionID == sessionID }
         coordinator.blockTeardown()
 
         let started = Date()

@@ -156,15 +156,32 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         let timestamp = now()
         let id = BrokerSessionID()
         let ownerTokenWasApplied: Bool
-        if request.agentStatusOwnerToken != nil,
-           let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
-            ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
-                id: id,
-                request: request
-            )
-        } else {
-            try runtime.createSession(id: id, request: request)
-            ownerTokenWasApplied = false
+        do {
+            if request.agentStatusOwnerToken != nil,
+               let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+                ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
+                    id: id,
+                    request: request
+                )
+            } else {
+                try runtime.createSession(id: id, request: request)
+                ownerTokenWasApplied = false
+            }
+        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
+            // A lost response does not prove create failed: the broker may own a
+            // live process under this generated ID. Retire that exact generation
+            // before returning, or preserve its identity in a typed failure so a
+            // retry cannot create a duplicate while the outcome is uncertain.
+            do {
+                try retireUntrackedSession(id)
+            } catch let rollbackFailure {
+                throw CoordinatorError.untrackedSession(
+                    id,
+                    registryFailure: "broker create outcome uncertain: \(message)",
+                    rollbackFailure: String(describing: rollbackFailure)
+                )
+            }
+            throw CoordinatorError.brokerHostUnavailable(id, message)
         }
         let record = BrokerSessionRecord(
             id: id,

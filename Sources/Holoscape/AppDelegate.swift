@@ -13,6 +13,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
     private var apiServer: HoloscapeAPIServer?
     private var launchRecoveryComplete = false
+    private var terminationTeardownStarted = false
+    private var terminationTeardownComplete = false
     private var pendingExternalURLs: [URL] = []
     private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
 
@@ -168,7 +170,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldSave && launchRecoveryComplete {
+        if shouldSave && launchRecoveryComplete && !terminationTeardownStarted {
             windowController?.channelManager.saveState()
             windowController?.channelManager.detachAllChannelsForAppTermination()
         } else if shouldSave {
@@ -179,6 +181,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             NSLog("HistoryBuffer final flush failed during app termination: %@", error.localizedDescription)
         }
         windowController?.historyBuffer.stopPeriodicFlush()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
+        guard shouldSave, launchRecoveryComplete,
+              let channelManager = windowController?.channelManager ?? channelManagerRef else {
+            return .terminateNow
+        }
+        if terminationTeardownComplete {
+            return .terminateNow
+        }
+        if terminationTeardownStarted {
+            return .terminateLater
+        }
+
+        terminationTeardownStarted = true
+        apiServer?.stop()
+        channelManager.saveState()
+        channelManager.detachAllChannelsForAppTermination { [weak self, weak sender] in
+            guard let self else { return }
+            self.terminationTeardownComplete = true
+            sender?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

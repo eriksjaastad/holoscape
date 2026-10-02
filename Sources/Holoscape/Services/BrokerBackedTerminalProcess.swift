@@ -30,6 +30,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var terminationHandler: ((Int32?) -> Void)?
     private var startCompletionHandler: (() -> Void)?
     private var startCompletionPending = false
+    private var freshStartPending = false
+    private var freshStartCancelled = false
+    private var freshStartTeardownCompletions: [@MainActor () -> Void] = []
     private var reattachGeneration: UInt = 0
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
@@ -167,13 +170,44 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             initialSize: currentGridSize
         )
 
-        do {
-            let record = try coordinator.start(
+        if coordinator.requiresOffMainBrokerWork {
+            startCompletionPending = true
+            freshStartPending = true
+            freshStartCancelled = false
+            failureRecoveryCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelID
+            ) { [self] result in
+                DispatchQueue.main.async { [self] in
+                    guard freshStartPending else { return }
+                    if freshStartCancelled {
+                        finishCancelledFreshStart(result)
+                        return
+                    }
+                    finishNewSessionStart(result)
+                    freshStartPending = false
+                    startCompletionPending = false
+                    startCompletionHandler?()
+                }
+            }
+            return
+        }
+
+        finishNewSessionStart(Result {
+            try coordinator.start(
                 request,
                 channelType: channelType,
                 label: label,
                 attachedChannelID: channelID
             )
+        })
+    }
+
+    private func finishNewSessionStart(_ result: Result<BrokerSessionRecord, Error>) {
+        do {
+            let record = try result.get()
             brokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
@@ -191,6 +225,42 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
         }
+    }
+
+    private func finishCancelledFreshStart(_ result: Result<BrokerSessionRecord, Error>) {
+        switch result {
+        case .success(let record):
+            failureRecoveryCoordinator.markErrored(record.id) { [self] error in
+                DispatchQueue.main.async { [self] in
+                    if let error {
+                        NSLog("Broker-backed terminal could not retire cancelled fresh session \(record.id.rawValue): \(error)")
+                    }
+                    completeCancelledFreshStart()
+                }
+            }
+        case .failure(let error):
+            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+                failureRecoveryCoordinator.retireUntrackedSession(id) { [self] retirementError in
+                    DispatchQueue.main.async { [self] in
+                        if let retirementError {
+                            NSLog("Broker-backed terminal could not retire cancelled untracked session \(id.rawValue): \(retirementError)")
+                        }
+                        completeCancelledFreshStart()
+                    }
+                }
+            } else {
+                completeCancelledFreshStart()
+            }
+        }
+    }
+
+    private func completeCancelledFreshStart() {
+        freshStartPending = false
+        freshStartCancelled = false
+        startCompletionPending = false
+        let completions = freshStartTeardownCompletions
+        freshStartTeardownCompletions.removeAll()
+        completions.forEach { $0() }
     }
 
     static func agentStatusOwnerToken(
@@ -415,20 +485,26 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         terminalView.lastLines(count)
     }
 
-    func detachBrokerSession() {
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
         // A host reattach may still be executing off-main. Invalidate its token
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
         reattachGeneration &+= 1
-        startCompletionPending = false
         stopOutputPump()
         inputWriteLane.close()
+        if freshStartPending {
+            freshStartCancelled = true
+            freshStartTeardownCompletions.append(completion)
+            return
+        }
+        startCompletionPending = false
         if let brokerSessionID, !didNotifyTermination {
             if coordinator.requiresOffMainBrokerWork {
                 failureRecoveryCoordinator.detach(brokerSessionID) { error in
                     if let error {
                         NSLog("Broker-backed terminal detach failed: \(error)")
                     }
+                    DispatchQueue.main.async { completion() }
                 }
                 return
             }
@@ -446,12 +522,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             if coordinator.requiresOffMainBrokerWork {
                 failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [weak self] error in
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, self.untrackedBrokerSessionID == untrackedBrokerSessionID else { return }
-                        if let error {
-                            NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
-                        } else {
-                            self.untrackedBrokerSessionID = nil
+                        if let self, self.untrackedBrokerSessionID == untrackedBrokerSessionID {
+                            if let error {
+                                NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
+                            } else {
+                                self.untrackedBrokerSessionID = nil
+                            }
                         }
+                        completion()
                     }
                 }
                 return
@@ -463,6 +541,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
             }
         }
+        completion()
     }
 
     func pollOutputOnce() {
@@ -784,6 +863,25 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
 
     init(_ coordinator: any BrokerSessionCoordinating) {
         self.coordinator = coordinator
+    }
+
+    func start(
+        _ request: BrokerSessionLaunchRequest,
+        channelType: ChannelType,
+        label: String?,
+        attachedChannelID: UUID?,
+        completion: @escaping @Sendable (Result<BrokerSessionRecord, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result {
+                try coordinator.start(
+                    request,
+                    channelType: channelType,
+                    label: label,
+                    attachedChannelID: attachedChannelID
+                )
+            })
+        }
     }
 
     func reattach(

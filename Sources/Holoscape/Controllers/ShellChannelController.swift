@@ -255,8 +255,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
+        deactivate(completion: {})
+    }
+
+    func deactivate(completion: @escaping @MainActor () -> Void) {
         terminal.setOutputHandler(nil)
-        terminal.detachBrokerSession()
+        terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
