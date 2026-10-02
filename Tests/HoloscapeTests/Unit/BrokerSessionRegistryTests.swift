@@ -81,14 +81,14 @@ final class BrokerSessionRegistryTests: XCTestCase {
 
     func testConditionalReplaceDoesNotOverwriteNewerLifecycle() throws {
         let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
-        let running = makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1)
-        let terminating = makeRecord(id: "session-race", lifecycle: .terminating, updatedAt: 2)
+        let running = makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1.125)
+        let terminating = makeRecord(id: "session-race", lifecycle: .terminating, updatedAt: 2.875)
         let staleDetach = makeRecord(id: "session-race", lifecycle: .detached, updatedAt: 3)
         try registry.save([running])
         XCTAssertTrue(try registry.replace(terminating, ifUnchangedFrom: running))
 
         XCTAssertFalse(try registry.replace(staleDetach, ifUnchangedFrom: running))
-        XCTAssertEqual(try registry.load(), [terminating])
+        XCTAssertEqual(try registry.load().map(\.lifecycle), [.terminating])
     }
 
     func testLoadMissingRegistryReturnsEmptyList() throws {

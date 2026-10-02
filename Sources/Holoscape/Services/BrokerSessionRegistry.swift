@@ -72,8 +72,9 @@ struct BrokerSessionRegistry {
     ) throws -> Bool {
         try Self.transactionLock.withLock {
             var records = try load()
+            let persistedExpected = try canonicalized(expected)
             guard let index = records.firstIndex(where: { $0.id == expected.id }),
-                  records[index] == expected else { return false }
+                  records[index] == persistedExpected else { return false }
             records[index] = record
             try save(records)
             return true
@@ -126,6 +127,18 @@ struct BrokerSessionRegistry {
                 throw RegistryError.invalidRecord(record.id, error)
             }
         }
+    }
+
+    /// Compare snapshots in the registry's persisted representation. ISO-8601
+    /// encoding rounds `Date` values to whole seconds, so comparing a freshly
+    /// constructed in-memory record directly with its reload would reject the
+    /// caller's own write whenever `Date.init` supplied subsecond precision.
+    private func canonicalized(_ record: BrokerSessionRecord) throws -> BrokerSessionRecord {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(BrokerSessionRecord.self, from: encoder.encode(record))
     }
 
     private static func defaultFileURL() -> URL {

@@ -885,7 +885,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         terminal.startProcess(
             executable: "/bin/sh",
-            args: ["-c", "printf '\\033]7;file://localhost/tmp\\007'"],
+            args: ["-c", "printf '\\033]7;file://localhost/tmp\\007'; sleep 0.1"],
             environment: nil,
             execName: "sh",
             currentDirectory: "/tmp"
