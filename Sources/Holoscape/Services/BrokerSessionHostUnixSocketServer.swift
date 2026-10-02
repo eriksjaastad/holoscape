@@ -16,6 +16,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         case acceptFailed(String)
         case readFailed(String)
         case writeFailed(String)
+        case timedOut(String)
     }
 
     enum Reachability: Equatable {
@@ -30,6 +31,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     private let backlog: Int32
     private let readChunkSize: Int
     private let maxConcurrentHandlers: Int
+    private let requestTimeoutMilliseconds: Int
 
     init(
         socketPath: String,
@@ -37,7 +39,8 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
         backlog: Int32 = 16,
         readChunkSize: Int = 4096,
-        maxConcurrentHandlers: Int = 8
+        maxConcurrentHandlers: Int = 8,
+        requestTimeoutMilliseconds: Int = 10_000
     ) {
         self.socketPath = socketPath
         self.host = host
@@ -45,6 +48,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         self.backlog = backlog
         self.readChunkSize = readChunkSize
         self.maxConcurrentHandlers = max(1, maxConcurrentHandlers)
+        self.requestTimeoutMilliseconds = max(1, requestTimeoutMilliseconds)
     }
 
     func run(maxConnections: Int? = nil) throws {
@@ -160,19 +164,31 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         _ socketPath: String,
         timeoutMilliseconds: Int = 250
     ) -> Reachability {
+        let codec = BrokerSessionHostCodec()
+        let probeFrame: Data
         do {
-            let codec = BrokerSessionHostCodec()
-            let probeFrame = try codec.encodeRequest(.listSessions)
-            let responseFrame = try BrokerSessionHostUnixSocketTransport(
+            probeFrame = try codec.encodeRequest(.listSessions)
+        } catch {
+            return .indeterminate
+        }
+
+        let responseFrame: Data
+        do {
+            responseFrame = try BrokerSessionHostUnixSocketTransport(
                 socketPath: socketPath,
                 requestTimeoutMilliseconds: timeoutMilliseconds
             ).sendFrame(probeFrame)
+        } catch BrokerSessionHostUnixSocketTransport.TransportError.connectFailed {
+            return .unreachable
+        } catch {
+            return .indeterminate
+        }
+
+        do {
             _ = try codec.decodeResponse(responseFrame)
             return .reachable
-        } catch BrokerSessionHostUnixSocketTransport.TransportError.timedOut {
-            return .indeterminate
         } catch {
-            return .unreachable
+            return .indeterminate
         }
     }
 
@@ -191,7 +207,9 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
     private func handleConnection(_ clientFD: Int32) throws {
         defer { Darwin.close(clientFD) }
-        let requestFrame = try readFrame(from: clientFD)
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(requestTimeoutMilliseconds) * 1_000_000
+        let requestFrame = try readFrame(from: clientFD, deadline: deadline)
         let responseFrame: Data
         do {
             responseFrame = try host.handle(requestFrame)
@@ -201,17 +219,18 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
             )
             responseFrame = try codec.encodeResponse(failure)
         }
-        try writeAll(responseFrame, to: clientFD)
+        try writeAll(responseFrame, to: clientFD, deadline: deadline)
     }
 
-    private func readFrame(from fd: Int32) throws -> Data {
+    private func readFrame(from fd: Int32, deadline: UInt64) throws -> Data {
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: readChunkSize)
         while true {
+            try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
             if count == 0 { return buffer }
             if count < 0 {
-                if errno == EINTR { continue }
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw ServerError.readFailed(String(cString: strerror(errno)))
             }
             buffer.append(contentsOf: chunk.prefix(count))
@@ -219,21 +238,48 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
     }
 
-    private func writeAll(_ data: Data, to fd: Int32) throws {
+    private func writeAll(_ data: Data, to fd: Int32, deadline: UInt64) throws {
         try data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             var bytesWritten = 0
             while bytesWritten < rawBuffer.count {
+                try waitUntilReady(fd: fd, events: Int16(POLLOUT), deadline: deadline)
                 let result = Darwin.write(
                     fd,
                     baseAddress.advanced(by: bytesWritten),
                     rawBuffer.count - bytesWritten
                 )
                 if result < 0 {
-                    if errno == EINTR { continue }
+                    if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                     throw ServerError.writeFailed(String(cString: strerror(errno)))
                 }
                 bytesWritten += result
+            }
+        }
+    }
+
+    private func waitUntilReady(fd: Int32, events: Int16, deadline: UInt64) throws {
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else { throw ServerError.timedOut(socketPath) }
+            let remainingNanoseconds = deadline - now
+            let remainingMilliseconds = max(1, (remainingNanoseconds + 999_999) / 1_000_000)
+            let timeout = Int32(min(UInt64(Int32.max), remainingMilliseconds))
+            var descriptor = pollfd(fd: fd, events: events, revents: 0)
+            let result = Darwin.poll(&descriptor, 1, timeout)
+            if result == 0 { throw ServerError.timedOut(socketPath) }
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw ServerError.readFailed(String(cString: strerror(errno)))
+            }
+            if descriptor.revents & (events | Int16(POLLHUP)) != 0 {
+                return
+            }
+            if descriptor.revents & Int16(POLLNVAL) != 0 {
+                throw ServerError.readFailed("invalid socket descriptor")
+            }
+            if descriptor.revents & Int16(POLLERR) != 0 {
+                return
             }
         }
     }

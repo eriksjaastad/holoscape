@@ -1155,14 +1155,94 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             socketPath: socketPath,
             socketWaitTimeoutMilliseconds: 100
         )
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
             XCTAssertEqual(
                 error as? LazyBrokerSessionHostUnixSocketTransport.LaunchError,
                 .socketTimedOut(socketPath)
             )
         }
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startedAt
+        XCTAssertLessThan(Double(elapsedNanoseconds) / 1_000_000_000, 0.2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: launchMarkerURL.path))
         wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testUnixSocketServerRefusesToReplaceBrokerWithMalformedProbeResponse() throws {
+        let socketPath = "/tmp/hs-malformed-existing-broker-\(UUID().uuidString).sock"
+        let existingServerFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(existingServerFD)
+            unlink(socketPath)
+        }
+
+        let existingServerFinished = expectation(description: "malformed existing server answered probe")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(existingServerFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                _ = Data("not-a-broker-response\n".utf8).withUnsafeBytes { bytes in
+                    Darwin.write(clientFD, bytes.baseAddress, bytes.count)
+                }
+                Darwin.close(clientFD)
+            }
+            existingServerFinished.fulfill()
+        }
+
+        let replacement = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime())
+        )
+        XCTAssertThrowsError(try replacement.run(maxConnections: 0)) { error in
+            guard case let BrokerSessionHostUnixSocketServer.ServerError.bindFailed(message) = error else {
+                return XCTFail("Expected bindFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("may have a reachable broker"), message)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+        wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testUnixSocketServerTimesOutSilentClientsAndReleasesHandlerCapacity() throws {
+        let socketPath = "/tmp/hs-server-request-timeout-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime()),
+            maxConcurrentHandlers: 1,
+            requestTimeoutMilliseconds: 100
+        )
+        let serverFinished = expectation(description: "server released silent clients")
+        let serverError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 3)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let firstSilentClient = try makeConnectedUnixSocket(to: socketPath)
+        let secondSilentClient = try makeConnectedUnixSocket(to: socketPath)
+        defer {
+            Darwin.close(firstSilentClient)
+            Darwin.close(secondSilentClient)
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 1_000
+        )
+        let client = BrokerSessionHostClientRuntime { frame in try transport.sendFrame(frame) }
+        XCTAssertEqual(try client.listSessions(), [])
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertEqual(
+            serverError.value as? BrokerSessionHostUnixSocketServer.ServerError,
+            .timedOut(socketPath)
+        )
     }
 
     func testUnixSocketServerDisablesSIGPIPEOnAcceptedDescriptors() throws {
@@ -1615,6 +1695,37 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             }
         }
         guard bindResult == 0, listen(descriptor, 1) == 0 else {
+            let savedErrno = errno
+            Darwin.close(descriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(savedErrno))
+        }
+        return descriptor
+    }
+
+    private func makeConnectedUnixSocket(to path: String) throws -> Int32 {
+        let pathBytes = Array(path.utf8)
+        var address = sockaddr_un()
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw NSError(domain: "BrokerSessionHostProtocolTests", code: 3)
+        }
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+            for index in pathBytes.indices {
+                rawBuffer[index] = pathBytes[index]
+            }
+            rawBuffer[pathBytes.count] = 0
+        }
+
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                Darwin.connect(descriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
             let savedErrno = errno
             Darwin.close(descriptor)
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(savedErrno))

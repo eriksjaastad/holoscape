@@ -31,7 +31,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         self.executableURL = executableURL
         self.socketPath = socketPath
         self.environment = environment
-        self.socketWaitTimeoutMilliseconds = socketWaitTimeoutMilliseconds
+        self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
     }
 
@@ -92,7 +92,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     }
 
     private func socketReachability() -> BrokerSessionHostUnixSocketServer.Reachability {
-        BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath)
+        BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(
+            socketPath,
+            timeoutMilliseconds: min(250, socketWaitTimeoutMilliseconds)
+        )
     }
 
     static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {
