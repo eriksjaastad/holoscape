@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
@@ -84,7 +84,27 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerOutputAv
     }
 
     func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
-        try expectOK(.create(id: id, request: request))
+        let response = try response(for: .create(id: id, request: request))
+        guard response == .ok || response == .created(agentStatusOwnerTokenApplied: true) else {
+            throw ClientError.unexpectedResponse(expected: "ok or created", actual: response)
+        }
+    }
+
+    func createSessionAcknowledgingAgentStatusOwnerToken(
+        id: BrokerSessionID,
+        request: BrokerSessionLaunchRequest
+    ) throws -> Bool {
+        let response = try response(for: .create(id: id, request: request))
+        switch response {
+        case let .created(agentStatusOwnerTokenApplied):
+            return agentStatusOwnerTokenApplied
+        case .ok:
+            // Legacy broker hosts ignore the additive request field and return
+            // their pre-capability response. The child therefore has no token.
+            return false
+        default:
+            throw ClientError.unexpectedResponse(expected: "ok or created", actual: response)
+        }
     }
 
     func detachSession(id: BrokerSessionID) throws {

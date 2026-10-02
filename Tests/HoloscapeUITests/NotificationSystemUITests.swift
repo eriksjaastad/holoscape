@@ -28,7 +28,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     // MARK: - Idle Prompt (Green)
 
     /// Notification matching works by comparing the cwd's last path component against
-    /// the channel's displayLabel (see resolveChannelByCwd in HoloscapeAPIServer).
+    /// the channel's displayLabel (see resolveNotificationChannel in HoloscapeAPIServer).
     /// So the cwd path must end with a component that matches the channel label exactly.
     /// Example: label "notify-green" + cwd "/tmp/notify-green" → match.
 
@@ -38,7 +38,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
         XCTAssertTrue(entry.identifier.contains("sidebar-notify-green") || entry.label.contains("notify-green"))
 
-        // cwd last component must match label for resolveChannelByCwd
+        // cwd last component must match the legacy label fallback
         try apiNotify(type: "idle_prompt", cwd: "/tmp/notify-green")
         Thread.sleep(forTimeInterval: 0.5)
 

@@ -175,9 +175,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: .connecting)
 
         let shell = "/bin/zsh"
-        var env = ProcessInfo.processInfo.environment
-        // Apple_Terminal for OSC 7 directory notifications from zsh
-        env["TERM_PROGRAM"] = "Apple_Terminal"
+        let env = Self.launchEnvironment(from: ProcessInfo.processInfo.environment)
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
         // Wire output notifications so channelDidReceiveOutput fires when the
@@ -223,6 +221,16 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         activatedAt = now
         recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
+    }
+
+    static func launchEnvironment(from parentEnvironment: [String: String]) -> [String: String] {
+        var environment = parentEnvironment
+        // Status ownership belongs only to an agent process launched by its tab.
+        // Never let a shell inherit the token of the process that launched Holoscape.
+        environment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = nil
+        // Apple_Terminal for OSC 7 directory notifications from zsh.
+        environment["TERM_PROGRAM"] = "Apple_Terminal"
+        return environment
     }
 
     func deactivate() {

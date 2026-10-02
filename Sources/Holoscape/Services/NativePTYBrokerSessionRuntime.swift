@@ -7,7 +7,7 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -214,7 +214,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         }
 
         try validatePTYGridSize(request.initialSize)
-        let resolvedEnvironment = try environment(for: request.environmentProfile)
+        var resolvedEnvironment = try environment(for: request.environmentProfile)
+        if request.environmentProfile == .agentOAuth || request.environmentProfile == .agentAPI,
+           let ownerToken = request.agentStatusOwnerToken,
+           !ownerToken.isEmpty {
+            resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
+        }
 
         var masterFD: Int32 = -1
         var slaveFD: Int32 = -1
@@ -305,6 +310,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         slaveWrite.closeFile()
         slaveError.closeFile()
         sessions[id] = session
+    }
+
+    func createSessionAcknowledgingAgentStatusOwnerToken(
+        id: BrokerSessionID,
+        request: BrokerSessionLaunchRequest
+    ) throws -> Bool {
+        try createSession(id: id, request: request)
+        let profileAcceptsOwnerToken = request.environmentProfile == .agentOAuth
+            || request.environmentProfile == .agentAPI
+        return profileAcceptsOwnerToken && request.agentStatusOwnerToken?.isEmpty == false
     }
 
     func detachSession(id: BrokerSessionID) throws {
@@ -497,6 +512,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRepla
         switch profile {
         case .shell:
             var environment = processEnvironment
+            environment.removeValue(forKey: "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN")
             environment["TERM"] = "xterm-256color"
             if environment["LANG"]?.range(of: "utf", options: [.caseInsensitive]) == nil {
                 environment["LANG"] = "en_US.UTF-8"

@@ -30,6 +30,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
+    private(set) var agentStatusOwnerToken: String?
     /// Identity of the broker session this terminal failed to reattach because
     /// the broker no longer owns it. Kept separate from `brokerSessionID` so a
     /// retry spawns the replacement the stale guidance promises instead of
@@ -96,11 +97,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
 
+        let ownerToken = Self.agentStatusOwnerToken(
+            from: environment,
+            channelType: channelType
+        )
         let request = BrokerSessionLaunchRequest(
             command: executable,
             arguments: args,
             workingDirectory: currentDirectory,
             environmentProfile: environmentProfile,
+            agentStatusOwnerToken: ownerToken,
             initialSize: currentGridSize
         )
 
@@ -112,16 +118,31 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 attachedChannelID: channelID
             )
             brokerSessionID = record.id
+            agentStatusOwnerToken = record.agentStatusOwnerToken
+            didNotifyTermination = false
             inputWriteLane.open(for: record.id)
             if outputHandler != nil {
                 startOutputPump()
             }
         } catch {
             brokerSessionID = nil
+            agentStatusOwnerToken = nil
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
         }
+    }
+
+    static func agentStatusOwnerToken(
+        from environment: [String]?,
+        channelType: ChannelType
+    ) -> String? {
+        guard channelType == .agentDirect || channelType == .agentAPI else { return nil }
+        let prefix = "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="
+        return environment?
+            .first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
@@ -133,6 +154,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
             brokerSessionID = record.id
+            agentStatusOwnerToken = record.agentStatusOwnerToken
+            didNotifyTermination = false
             inputWriteLane.open(for: record.id)
             restoreScrollbackReplay(for: record.id)
             if outputHandler != nil {
@@ -153,8 +176,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 brokerSessionID = nil
                 staleBrokerSessionID = sessionID
             case .failed, .none:
-                brokerSessionID = nil
+                // An unclassified failure (including a temporarily unreadable
+                // registry) does not prove the session is gone. Keep the handle
+                // so an in-place retry reattaches this generation rather than
+                // silently spawning a second process.
+                brokerSessionID = sessionID
             }
+            agentStatusOwnerToken = nil
             NSLog("Broker-backed terminal reattach failed: \(error)")
         }
     }
@@ -414,6 +442,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         } else {
             _ = try coordinator.markErrored(brokerSessionID)
         }
+        self.brokerSessionID = nil
+        agentStatusOwnerToken = nil
         terminationHandler?(exitCode)
     }
 

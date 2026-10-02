@@ -255,15 +255,26 @@ class HoloscapeAPIServer {
         let cwd = json["cwd"] as? String
         let tool = json["tool"] as? String ?? json["agent"] as? String
         let reason = json["reason"] as? String
-        // Match notification to a channel by working directory
-        if let cwd, let channel = resolveChannelByCwd(cwd: cwd) {
-            channelNotifications[channel.channelId] = type
-            if let persistentState = agentStatusAdapter.persistentState(
+        let ownerToken = json["ownerToken"] as? String
+        // Match scoped events by launch ownership, not tab order. Tokenless
+        // legacy events remain available only when cwd identifies one eligible
+        // channel unambiguously.
+        if let cwd, let channel = resolveNotificationChannelByCwd(cwd: cwd, ownerToken: ownerToken) {
+            let persistentState = agentStatusAdapter.persistentState(
                 tool: tool,
                 event: type,
                 reason: reason
-            ) {
-                channel.applyPersistentState(persistentState)
+            )
+            channelNotifications[channel.channelId] = type
+            if let persistentState {
+                if let agentChannel = channel as? AgentChannelController {
+                    agentChannel.applyPersistentState(
+                        persistentState,
+                        adapterOwnerToken: ownerToken
+                    )
+                } else {
+                    channel.applyPersistentState(persistentState)
+                }
             }
             // Trigger tab refresh to update colors
             windowController?.refreshAllTabs()
@@ -272,16 +283,29 @@ class HoloscapeAPIServer {
             if shouldRequestOffscreenAttention(for: channel, type: type, tool: tool) {
                 requestOffscreenAttention(type: type, tool: tool, channel: channel)
             }
+            return .json(["status": "received", "type": type])
         }
 
-        return .json(["status": "received", "type": type])
+        return .json(["status": "ignored", "type": type])
     }
 
-    private func resolveChannelByCwd(cwd: String) -> (any ChannelController)? {
+    private func resolveNotificationChannelByCwd(cwd: String, ownerToken: String?) -> (any ChannelController)? {
         guard let cm = channelManager else { return nil }
+        return Self.resolveNotificationChannel(
+            channels: cm.allChannels(),
+            cwd: cwd,
+            ownerToken: ownerToken
+        )
+    }
+
+    static func resolveNotificationChannel(
+        channels: [any ChannelController],
+        cwd: String,
+        ownerToken: String?
+    ) -> (any ChannelController)? {
         let normalizedCwd = normalizePath(cwd)
 
-        if let exactMatch = cm.allChannels().first(where: { channel in
+        let exactMatches = channels.filter { channel in
             switch channel {
             case let shell as ShellChannelController:
                 guard let path = shell.notificationDirectoryPath else { return false }
@@ -292,16 +316,37 @@ class HoloscapeAPIServer {
             default:
                 return false
             }
-        }) {
-            return exactMatch
         }
+
+        let eligibleExactMatches = eligibleNotificationChannels(exactMatches, ownerToken: ownerToken)
+        if eligibleExactMatches.count == 1 { return eligibleExactMatches[0] }
+        if !eligibleExactMatches.isEmpty || !exactMatches.isEmpty { return nil }
 
         let cwdName = URL(fileURLWithPath: normalizedCwd).lastPathComponent.lowercased()
         // Fallback for older tests/callers that still encode the target in the label.
-        return cm.channel(matchingLaunchLabel: cwdName)
+        let labelMatches = channels.filter { $0.displayLabel.lowercased() == cwdName }
+        let eligibleLabelMatches = eligibleNotificationChannels(labelMatches, ownerToken: ownerToken)
+        return eligibleLabelMatches.count == 1 ? eligibleLabelMatches[0] : nil
     }
 
-    private func normalizePath(_ path: String) -> String {
+    private static func eligibleNotificationChannels(
+        _ channels: [any ChannelController],
+        ownerToken: String?
+    ) -> [any ChannelController] {
+        if ownerToken != nil {
+            return channels.compactMap { channel in
+                guard let agent = channel as? AgentChannelController,
+                      agent.acceptsAdapterEvent(ownerToken: ownerToken) else { return nil }
+                return agent
+            }
+        }
+        return channels.filter { channel in
+            guard let agent = channel as? AgentChannelController else { return true }
+            return agent.acceptsAdapterEvent(ownerToken: nil)
+        }
+    }
+
+    private static func normalizePath(_ path: String) -> String {
         let expanded = (path as NSString).expandingTildeInPath
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }

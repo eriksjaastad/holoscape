@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
+    func testOwnerTokenExtractionIsRestrictedToAgentChannels() {
+        let environment = ["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=agent-owner"]
+
+        XCTAssertEqual(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: environment,
+                channelType: .agentDirect
+            ),
+            "agent-owner"
+        )
+        XCTAssertNil(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: environment,
+                channelType: .shell
+            )
+        )
+        XCTAssertNil(
+            BrokerBackedTerminalProcess.agentStatusOwnerToken(
+                from: ["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN="],
+                channelType: .agentDirect
+            )
+        )
+    }
     private enum RuntimeError: Error, Equatable {
         case createFailed
     }
@@ -664,6 +687,19 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(exited.exitCode, 3)
         XCTAssertNil(exited.lastAttachedChannelID)
         XCTAssertEqual(exited.updatedAt, now)
+        XCTAssertNil(terminal.brokerSessionID, "An exited process must release its live handle before retry")
+
+        terminal.startProcess(
+            executable: "/bin/cat",
+            args: [],
+            environment: nil,
+            execName: "cat",
+            currentDirectory: "/tmp"
+        )
+        let replacementID = try XCTUnwrap(terminal.brokerSessionID)
+        defer { _ = try? coordinator.markErrored(replacementID) }
+        XCTAssertNotEqual(replacementID, exited.id, "Retry after normal exit must spawn a replacement process")
+        XCTAssertEqual(try registry.load().filter { $0.lifecycle == .running }.map(\.id), [replacementID])
     }
 
     /// Teardown while the broker host is unreachable must not trap, and must leave

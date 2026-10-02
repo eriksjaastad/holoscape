@@ -27,8 +27,17 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let useRawLabel: Bool
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
-    private(set) var adapterPersistentState: PersistentChannelState?
-    private(set) var terminalOutputPersistentState: PersistentChannelState?
+    private var persistentStatesBySource: [PersistentChannelStateSource: PersistentChannelState] = [:]
+    private(set) var adapterPersistentState: PersistentChannelState? {
+        get { persistentStatesBySource[.agentAdapter] }
+        set { persistentStatesBySource[.agentAdapter] = newValue }
+    }
+    private(set) var terminalOutputPersistentState: PersistentChannelState? {
+        get { persistentStatesBySource[.terminalOutput] }
+        set { persistentStatesBySource[.terminalOutput] = newValue }
+    }
+    private(set) var adapterOwnerToken = UUID().uuidString
+    private var requiresAdapterOwnerToken = true
     private var lastStartFailureKind: TerminalStartFailureKind?
 
     var persistentState: PersistentChannelState {
@@ -37,10 +46,31 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
             recoveryAction: recoveryAction
         )
-        return [runtimeState, adapterPersistentState, terminalOutputPersistentState]
-            .compactMap { $0 }
-            .max { lhs, rhs in lhs.kind.displayPriority < rhs.kind.displayPriority }
+        let sourceStates = persistentStatesBySource.values.filter { state in
+            // Supplemental healthy/busy plugin presentation must never make a
+            // process-less channel look usable. Attention states remain visible
+            // so plugin failures are not silently discarded on process teardown.
+            self.state == .active || state.source != .plugin || state.kind.requiresOperatorAttention
+        }
+        return ([runtimeState] + sourceStates)
+            .max { lhs, rhs in
+                if lhs.kind.displayPriority != rhs.kind.displayPriority {
+                    return lhs.kind.displayPriority < rhs.kind.displayPriority
+                }
+                return Self.sourceDisplayPriority(lhs.source) < Self.sourceDisplayPriority(rhs.source)
+            }
             ?? runtimeState
+    }
+
+    private static func sourceDisplayPriority(_ source: PersistentChannelStateSource) -> Int {
+        switch source {
+        case .brokerRegistry: return 60
+        case .processLifecycle: return 50
+        case .terminalOutput: return 40
+        case .agentAdapter: return 30
+        case .userAction: return 20
+        case .plugin: return 10
+        }
     }
 
     var notificationDirectoryPath: String? {
@@ -204,8 +234,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self.transitionToDisconnected(invalidateAdapterOwner: true)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
         // rangeChanged is too noisy for unread detection (fires on cursor blinks, redraws)
@@ -229,6 +258,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     func sendInput(_ text: String) {
         guard state == .active else { return }
         recordUserInteraction()
+        clearTerminalOutputPersistentState()
         commandHistory.add(text)
         let bytes = Array((text + "\n").utf8)
         terminal.send(bytes)
@@ -239,10 +269,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         delegate?.channelStateDidChange(self, to: .connecting)
 
         // Build clean environment with auth isolation
-        let env = AuthEnvironmentBuilder.buildEnvironment(
+        var env = AuthEnvironmentBuilder.buildEnvironment(
             for: authType,
             workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
         )
+        env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
         let envPairs = env.map { "\($0.key)=\($0.value)" }
 
         let launch = Self.launchInvocation(for: command)
@@ -260,8 +291,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: userLabel,
             workingDirectory: workingDirectory?.path
         ) else {
-            state = .disconnected
-            delegate?.channelStateDidChange(self, to: .disconnected)
+            transitionToDisconnected()
             return
         }
 
@@ -281,6 +311,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
             brokerSessionID = terminalBrokerSessionID
+            if let restoredOwnerToken = terminal.agentStatusOwnerToken,
+               !restoredOwnerToken.isEmpty {
+                adapterOwnerToken = restoredOwnerToken
+                requiresAdapterOwnerToken = true
+            } else {
+                // Records written before owner-token persistence can only prove
+                // ownership through an unscoped legacy hook. Never adopt an
+                // arbitrary scoped token after reattach.
+                requiresAdapterOwnerToken = false
+            }
         }
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
@@ -312,8 +352,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession()
         recordBrokerDetach()
-        state = .disconnected
-        delegate?.channelStateDidChange(self, to: .disconnected)
+        transitionToDisconnected()
     }
 
     func retry() {
@@ -321,11 +360,78 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func applyPersistentState(_ state: PersistentChannelState) {
-        guard state.kind.displayPriority >= persistentState.kind.displayPriority else {
+        if state.source == .agentAdapter {
+            // Internal producers and persisted restore already target this exact
+            // controller. Only the explicit owner-token overload is an external
+            // hook trust boundary.
+            guard self.state == .active else { return }
+            adapterPersistentState = state
+            delegate?.channelStateDidChange(self, to: self.state)
             return
         }
-        adapterPersistentState = state
+        persistentStatesBySource[state.source] = state
         delegate?.channelStateDidChange(self, to: self.state)
+    }
+
+    func acceptsAdapterEvent(ownerToken: String?) -> Bool {
+        guard state == .active else { return false }
+        if requiresAdapterOwnerToken {
+            return ownerToken == adapterOwnerToken
+        }
+        return ownerToken == nil
+    }
+
+    func applyPersistentState(_ state: PersistentChannelState, adapterOwnerToken ownerToken: String?) {
+        if state.source == .agentAdapter {
+            // Adapter events describe only the currently running agent process.
+            // Delayed hooks from an exited process must not overwrite truthful
+            // disconnected/stale lifecycle state.
+            guard acceptsAdapterEvent(ownerToken: ownerToken) else { return }
+            adapterPersistentState = state
+            delegate?.channelStateDidChange(self, to: self.state)
+            return
+        }
+        // Each producer owns and replaces only its own slot. This lets a plugin
+        // report recovery without erasing agent state, and lets process teardown
+        // clear process-owned attention without deleting plugin-owned failures.
+        persistentStatesBySource[state.source] = state
+        delegate?.channelStateDidChange(self, to: self.state)
+    }
+
+    /// Restore durable agent attention only when a live process can still own
+    /// that state. Preserve the source-specific clearing contract: terminal
+    /// prompts clear on user input, while adapter state remains adapter-owned.
+    func restorePersistentAttentionState(_ restoredState: PersistentChannelState) {
+        guard state == .active else { return }
+        switch (restoredState.source, restoredState.kind) {
+        case (.terminalOutput, .needsApproval),
+             (.terminalOutput, .error),
+             (.agentAdapter, .needsApproval),
+             (.agentAdapter, .error),
+             (.agentAdapter, .stale):
+            break
+        case (.terminalOutput, _),
+             (.agentAdapter, _),
+             (.processLifecycle, _),
+             (.brokerRegistry, _),
+             (.userAction, _),
+             (.plugin, _):
+            return
+        }
+        guard restoredState.kind.displayPriority >= persistentState.kind.displayPriority else { return }
+
+        switch restoredState.source {
+        case .terminalOutput:
+            terminalOutputPersistentState = restoredState
+            delegate?.channelStateDidChange(self, to: state)
+        case .agentAdapter:
+            // This state came from this tab's persisted metadata rather than an
+            // external hook request, so process-owner validation does not apply.
+            adapterPersistentState = restoredState
+            delegate?.channelStateDidChange(self, to: state)
+        case .processLifecycle, .brokerRegistry, .userAction, .plugin:
+            break
+        }
     }
 
     static func launchInvocation(for command: String) -> (executable: String, args: [String], execName: String) {
@@ -380,10 +486,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             // guidance and tab metadata survive relaunch.
             brokerSessionID = nil
             staleBrokerSessionID = terminal.staleBrokerSessionID
+            invalidateAdapterOwner()
         case .failed, .none:
-            // Hard failures leave whatever durable identity the tab already had;
-            // only a successful attach clears it.
-            break
+            // An indeterminate reattach failure can still belong to the saved
+            // process generation (for example, a temporarily unreadable registry).
+            // Mirror any retained terminal handle so retry cannot create a second
+            // process merely because the failure was not classifiable.
+            if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
         }
         return channelState(for: kind)
     }
@@ -418,8 +529,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
-            self.state = .disconnected
-            self.delegate?.channelStateDidChange(self, to: .disconnected)
+            self.transitionToDisconnected(invalidateAdapterOwner: true)
         }
     }
 
@@ -432,6 +542,23 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         case .oauth: return .agentOAuth
         case .apiKey: return .agentAPI
         }
+    }
+
+    private func transitionToDisconnected(invalidateAdapterOwner: Bool = false) {
+        adapterPersistentState = nil
+        terminalOutputPersistentState = nil
+        persistentStatesBySource[.processLifecycle] = nil
+        persistentStatesBySource[.brokerRegistry] = nil
+        if invalidateAdapterOwner {
+            self.invalidateAdapterOwner()
+        }
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
+    }
+
+    private func invalidateAdapterOwner() {
+        adapterOwnerToken = UUID().uuidString
+        requiresAdapterOwnerToken = true
     }
 
     private func recordBrokerStart(

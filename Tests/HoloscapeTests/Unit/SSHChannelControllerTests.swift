@@ -18,6 +18,7 @@ class MockTerminalProcess: TerminalProcess {
     var lines: [String] = []
     var currentGridSize = TerminalGridSize(columns: 80, rows: 24)
     var brokerOwnedSessionID: BrokerSessionID?
+    var agentStatusOwnerToken: String?
     var staleBrokerSessionID: BrokerSessionID?
     var sessionFailure: TerminalSessionFailure?
     var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
@@ -61,6 +62,9 @@ class MockTerminalProcess: TerminalProcess {
     /// does when the host disappears under a live tab.
     func reportSessionFailure(kind: TerminalStartFailureKind, description: String = "transportFailed(socketTimedOut)") {
         let failure = TerminalSessionFailure(kind: kind, description: description)
+        if kind == .brokerSessionStale {
+            brokerOwnedSessionID = nil
+        }
         sessionFailure = failure
         sessionFailureHandler?(failure)
     }

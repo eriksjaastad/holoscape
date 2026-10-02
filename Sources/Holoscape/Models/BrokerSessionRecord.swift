@@ -57,6 +57,10 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
     let arguments: [String]
     let workingDirectory: String?
     let environmentProfile: BrokerEnvironmentProfile
+    /// Non-secret generation token used to associate agent status hooks with the
+    /// exact process launch that emitted them. Broker-backed launches persist it
+    /// so a reattached tab can retain ownership after the UI process relaunches.
+    let agentStatusOwnerToken: String?
     let initialSize: TerminalGridSize
 
     init(
@@ -64,6 +68,7 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
         arguments: [String] = [],
         workingDirectory: String?,
         environmentProfile: BrokerEnvironmentProfile,
+        agentStatusOwnerToken: String? = nil,
         initialSize: TerminalGridSize
     ) {
         precondition(!command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Broker launch command cannot be empty")
@@ -71,6 +76,7 @@ struct BrokerSessionLaunchRequest: Codable, Equatable, Sendable {
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.environmentProfile = environmentProfile
+        self.agentStatusOwnerToken = agentStatusOwnerToken
         self.initialSize = initialSize
     }
 }
@@ -89,11 +95,42 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
     let arguments: [String]
     let workingDirectory: String?
     let environmentProfile: BrokerEnvironmentProfile
+    let agentStatusOwnerToken: String?
     let lifecycle: BrokerSessionLifecycle
     let exitCode: Int32?
     let createdAt: Date
     let updatedAt: Date
     let lastAttachedChannelID: UUID?
+
+    init(
+        id: BrokerSessionID,
+        channelType: ChannelType,
+        label: String?,
+        command: String,
+        arguments: [String],
+        workingDirectory: String?,
+        environmentProfile: BrokerEnvironmentProfile,
+        agentStatusOwnerToken: String? = nil,
+        lifecycle: BrokerSessionLifecycle,
+        exitCode: Int32?,
+        createdAt: Date,
+        updatedAt: Date,
+        lastAttachedChannelID: UUID?
+    ) {
+        self.id = id
+        self.channelType = channelType
+        self.label = label
+        self.command = command
+        self.arguments = arguments
+        self.workingDirectory = workingDirectory
+        self.environmentProfile = environmentProfile
+        self.agentStatusOwnerToken = agentStatusOwnerToken
+        self.lifecycle = lifecycle
+        self.exitCode = exitCode
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastAttachedChannelID = lastAttachedChannelID
+    }
 
     func validate() throws {
         if lifecycle == .exited && exitCode == nil {

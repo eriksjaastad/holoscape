@@ -102,7 +102,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord {
         let timestamp = now()
         let id = BrokerSessionID()
-        try runtime.createSession(id: id, request: request)
+        let ownerTokenWasApplied: Bool
+        if request.agentStatusOwnerToken != nil,
+           let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+            ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
+                id: id,
+                request: request
+            )
+        } else {
+            try runtime.createSession(id: id, request: request)
+            ownerTokenWasApplied = false
+        }
         let record = BrokerSessionRecord(
             id: id,
             channelType: channelType,
@@ -111,6 +121,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
+            agentStatusOwnerToken: ownerTokenWasApplied ? request.agentStatusOwnerToken : nil,
             lifecycle: .running,
             exitCode: nil,
             createdAt: timestamp,
@@ -160,6 +171,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
+        let existing = try record(for: id)
+        guard existing.lifecycle != .exited,
+              existing.lifecycle != .errored,
+              existing.lifecycle != .stale else {
+            throw CoordinatorError.staleSession(id)
+        }
         do {
             return try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
                 record.withLifecycle(
@@ -376,6 +393,7 @@ private extension BrokerSessionRecord {
             arguments: arguments,
             workingDirectory: workingDirectory,
             environmentProfile: environmentProfile,
+            agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
             createdAt: createdAt,

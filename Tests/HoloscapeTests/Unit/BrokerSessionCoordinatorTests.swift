@@ -6,7 +6,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
-    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
             case detach(BrokerSessionID)
@@ -30,6 +30,14 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
             events.append(.create(id, request))
+        }
+
+        func createSessionAcknowledgingAgentStatusOwnerToken(
+            id: BrokerSessionID,
+            request: BrokerSessionLaunchRequest
+        ) throws -> Bool {
+            try createSession(id: id, request: request)
+            return request.agentStatusOwnerToken != nil
         }
 
         func detachSession(id: BrokerSessionID) throws {
@@ -117,9 +125,48 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [record])
     }
 
+    func testLegacyBrokerCreateResponseDoesNotPersistUnappliedOwnerToken() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            guard case .create = try codec.decodeRequest(frame) else {
+                return try codec.encodeResponse(
+                    .failure(BrokerSessionHostFailure(code: "unexpected", message: "Expected create"))
+                )
+            }
+            // A pre-capability durable broker ignores the additive launch field
+            // and returns its legacy success response.
+            return try codec.encodeResponse(.ok)
+        }
+        let coordinator = BrokerSessionCoordinator(
+            registry: BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("legacy-host-sessions.json")),
+            runtime: runtime,
+            now: { Date(timeIntervalSince1970: 1_800_000_001) }
+        )
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp",
+            environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "new-app-owner-token",
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        let record = try coordinator.start(
+            request,
+            channelType: .agentDirect,
+            label: "Codex",
+            attachedChannelID: UUID()
+        )
+
+        XCTAssertNil(record.agentStatusOwnerToken, "Legacy host success must not claim an owner token it did not inject")
+        let persisted = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertNil(persisted.agentStatusOwnerToken)
+    }
+
     func testDetachAndReattachUpdateLifecycleWithoutChangingLaunchIntent() throws {
         var now = Date(timeIntervalSince1970: 10)
-        let coordinator = makeCoordinator(now: { now })
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
         let firstChannel = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let secondChannel = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         let request = BrokerSessionLaunchRequest(
@@ -127,6 +174,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             arguments: ["codex"],
             workingDirectory: nil,
             environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "reattached-owner-token",
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let started = try coordinator.start(
@@ -144,6 +192,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(detached.command, started.command)
         XCTAssertEqual(detached.arguments, started.arguments)
         XCTAssertEqual(detached.environmentProfile, started.environmentProfile)
+        XCTAssertEqual(detached.agentStatusOwnerToken, "reattached-owner-token")
         XCTAssertEqual(detached.createdAt, started.createdAt)
         XCTAssertEqual(detached.updatedAt, now)
 
@@ -152,6 +201,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(reattached.lifecycle, .running)
         XCTAssertEqual(reattached.lastAttachedChannelID, secondChannel)
+        XCTAssertEqual(reattached.agentStatusOwnerToken, "reattached-owner-token")
         XCTAssertEqual(reattached.createdAt, started.createdAt)
         XCTAssertEqual(reattached.updatedAt, now)
     }
@@ -180,6 +230,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(exited.exitCode, 0)
         XCTAssertEqual(exited.updatedAt, now)
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertThrowsError(try coordinator.reattach(record.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .staleSession(record.id)
+            )
+        }
+        XCTAssertEqual(try coordinator.reconcileRuntimeStatus(record.id), exited)
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {

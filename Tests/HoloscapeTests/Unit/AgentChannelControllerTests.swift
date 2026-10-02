@@ -302,6 +302,305 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .active, "adapter state must not fake a process lifecycle transition")
     }
 
+    func testRestoredTerminalOutputAttentionClearsOnUserInput() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let restoredState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .terminalOutput,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_021),
+            reason: "Codex awaiting approval"
+        )
+
+        controller.restorePersistentAttentionState(restoredState)
+        XCTAssertEqual(controller.persistentState, restoredState)
+
+        terminal.userInputHandler?(ArraySlice(Array("1".utf8)))
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+    }
+
+    func testRestoredAdapterAttentionClearsOnLaterAdapterCompletion() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .ready, source: .agentAdapter)
+        )
+
+        XCTAssertEqual(controller.adapterPersistentState?.kind, .ready)
+        XCTAssertNotEqual(controller.persistentState.kind, .needsApproval)
+    }
+
+    func testRestoredAttentionClearsWhenProcessTerminates() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        terminal.reportTermination(exitCode: 0)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertNil(controller.adapterPersistentState)
+        XCTAssertNil(controller.terminalOutputPersistentState)
+    }
+
+    func testLateAgentAdapterAttentionCannotOverwriteDisconnectedLifecycle() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.reportTermination(exitCode: 0)
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .needsApproval,
+                source: .agentAdapter,
+                reason: "Delayed approval event from the exited process"
+            )
+        )
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+        XCTAssertNil(controller.adapterPersistentState)
+
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
+    func testLateAgentAdapterAttentionCannotContaminateReplacementProcess() throws {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let exitedOwnerToken = try XCTUnwrap(controller.adapterOwnerToken)
+        XCTAssertTrue(
+            terminal.lastEnvironment.contains("HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=\(exitedOwnerToken)")
+        )
+
+        terminal.reportTermination(exitCode: 0)
+        controller.retry()
+        let replacementOwnerToken = try XCTUnwrap(controller.adapterOwnerToken)
+        XCTAssertNotEqual(replacementOwnerToken, exitedOwnerToken)
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: exitedOwnerToken))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: replacementOwnerToken))
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .needsApproval,
+                source: .agentAdapter,
+                reason: "Delayed approval event from the exited process"
+            ),
+            adapterOwnerToken: exitedOwnerToken
+        )
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.adapterPersistentState)
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter),
+            adapterOwnerToken: replacementOwnerToken
+        )
+
+        XCTAssertEqual(controller.persistentState.kind, .needsApproval)
+    }
+
+    func testFreshProcessRejectsForeignScopedOwnerBeforeFirstEvent() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        let launchOwner = controller.adapterOwnerToken
+
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter),
+            adapterOwnerToken: "owner-from-previous-app-instance"
+        )
+
+        XCTAssertEqual(controller.adapterOwnerToken, launchOwner)
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "owner-from-previous-app-instance"))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: launchOwner))
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
+    func testReattachedBrokerProcessRestoresPersistedOwnerToken() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "restored-owned-session")
+        terminal.agentStatusOwnerToken = "persisted-process-owner"
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertEqual(controller.adapterOwnerToken, "persisted-process-owner")
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: "persisted-process-owner"))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "foreign-owner"))
+    }
+
+    func testLegacyReattachedBrokerProcessAcceptsOnlyTokenlessEvents() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "legacy-restored-session")
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: "untrusted-adopted-owner"))
+    }
+
+    func testDirectProcessTerminationClearsAttentionAndRejectsLateAdapterEvent() async {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        )
+
+        controller.processTerminated(
+            source: HoloscapeTerminalView(frame: .zero),
+            exitCode: 0
+        )
+        await Task.yield()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .error, source: .agentAdapter)
+        )
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertNil(controller.adapterPersistentState)
+    }
+
+    func testControllerSendInputClearsRestoredTerminalOutputAttention() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        controller.restorePersistentAttentionState(
+            PersistentChannelState(kind: .needsApproval, source: .terminalOutput)
+        )
+
+        controller.sendInput("1")
+
+        XCTAssertEqual(controller.persistentState.kind, .running)
+        XCTAssertNil(controller.terminalOutputPersistentState)
+        XCTAssertFalse(terminal.sentBytes.isEmpty)
+    }
+
+    func testRestoredAttentionIsIgnoredAfterProcessActivationFails() {
+        let terminal = MockTerminalProcess()
+        terminal.startFailureDescription = "launch failed"
+        terminal.startFailureKind = .failed
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        let restoredState = PersistentChannelState(
+            kind: .needsApproval,
+            source: .agentAdapter,
+            reason: "Outdated approval prompt"
+        )
+
+        controller.restorePersistentAttentionState(restoredState)
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
+    }
+
     func testAgentAdapterStateClearsAfterBrokerFailureTakesOver() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(
@@ -355,6 +654,76 @@ final class AgentChannelControllerTests: XCTestCase {
             awaitingApproval,
             "Plugin status is supplemental and must not hide higher-priority agent/operator states"
         )
+    }
+
+    func testAgentAdapterCompletionCannotOverwriteHigherPriorityPluginError() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        let pluginError = PersistentChannelState(
+            kind: .error,
+            source: .plugin,
+            reason: "Project Tracker unavailable"
+        )
+        controller.applyPersistentState(pluginError)
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .error,
+                source: .agentAdapter,
+                reason: "Agent request failed"
+            )
+        )
+
+        controller.applyPersistentState(
+            PersistentChannelState(
+                kind: .ready,
+                source: .agentAdapter,
+                reason: "Agent response completed"
+            )
+        )
+
+        XCTAssertEqual(
+            controller.persistentState,
+            pluginError,
+            "A lower-priority agent completion must not erase a plugin-owned failure"
+        )
+
+        controller.deactivate()
+
+        XCTAssertEqual(
+            controller.persistentState,
+            pluginError,
+            "Process exit must clear process-owned attention without deleting plugin-owned state"
+        )
+    }
+
+    func testRecoveredPluginStatusCannotMakeDisconnectedProcessLookReady() {
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: MockTerminalProcess()
+        )
+        controller.activate()
+        controller.applyPersistentState(
+            PersistentChannelState(kind: .ready, source: .plugin, reason: "Plugin recovered")
+        )
+
+        controller.deactivate()
+
+        XCTAssertEqual(controller.persistentState.kind, .disconnected)
+        XCTAssertEqual(controller.persistentState.source, .processLifecycle)
     }
 
     func testAgentActivationRecordsBrokerSessionLifecycleWhenCoordinatorIsInjected() throws {
@@ -426,6 +795,7 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(call.request.arguments, ["codex"])
         XCTAssertEqual(call.request.workingDirectory, "/tmp/agent-broker-backed")
         XCTAssertEqual(call.request.environmentProfile, .agentOAuth)
+        XCTAssertEqual(call.request.agentStatusOwnerToken, controller.adapterOwnerToken)
         XCTAssertEqual(controller.brokerSessionID, BrokerSessionID(rawValue: "recording-agent-broker-session"))
     }
 
@@ -582,6 +952,7 @@ final class AgentChannelControllerTests: XCTestCase {
             terminal: terminal
         )
         controller.activate()
+        let exitedOwnerToken = controller.adapterOwnerToken
         terminal.brokerOwnedSessionID = deadID
         terminal.staleBrokerSessionID = deadID
 
@@ -591,6 +962,13 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertNil(controller.brokerSessionID)
         XCTAssertEqual(controller.staleBrokerSessionID, deadID)
         XCTAssertEqual(controller.recoveryAction, .recreateBrokerSession)
+        XCTAssertNotEqual(controller.adapterOwnerToken, exitedOwnerToken)
+
+        controller.retry()
+
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: nil))
+        XCTAssertFalse(controller.acceptsAdapterEvent(ownerToken: exitedOwnerToken))
+        XCTAssertTrue(controller.acceptsAdapterEvent(ownerToken: controller.adapterOwnerToken))
     }
 
     func testActivationRetainsStaleBrokerIdentityWhenRestoredSessionIsMissing() {

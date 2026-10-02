@@ -2706,6 +2706,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     func channelStateDidChange(_ channel: any ChannelController, to state: ChannelState) {
+        if state != .active {
+            apiServer?.clearNotification(for: channel.channelId)
+        }
         if channel.channelId == activeChannelId {
             publishActiveChannelStateToReactiveSnapshot(channel)
             applyInputPanelChrome()

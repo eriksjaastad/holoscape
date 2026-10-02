@@ -25,6 +25,7 @@ enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
 
 enum BrokerSessionHostResponse: Codable, Equatable, Sendable {
     case ok
+    case created(agentStatusOwnerTokenApplied: Bool)
     case sessionIDs([BrokerSessionID])
     case output(Data)
     case outputAvailable(Bool)
