@@ -17,6 +17,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let socketPath: String
     private let environment: [String: String]?
     private let socketWaitTimeoutMilliseconds: Int
+    private let requestTimeoutMilliseconds: Int
     private let lock = NSLock()
     private var launchedProcess: Process?
 
@@ -24,25 +25,46 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         executableURL: URL,
         socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(),
         environment: [String: String]? = nil,
-        socketWaitTimeoutMilliseconds: Int = 5_000
+        socketWaitTimeoutMilliseconds: Int = 5_000,
+        requestTimeoutMilliseconds: Int = 10_000
     ) {
         self.executableURL = executableURL
         self.socketPath = socketPath
         self.environment = environment
-        self.socketWaitTimeoutMilliseconds = socketWaitTimeoutMilliseconds
+        self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
+        self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
-        try ensureBrokerIsReachable()
-        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        return try transport.sendFrame(frame)
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: requestTimeoutMilliseconds
+        )
+        do {
+            return try transport.sendFrame(frame)
+        } catch BrokerSessionHostUnixSocketTransport.TransportError.connectFailed {
+            try ensureBrokerIsReachableAfterConnectionFailure()
+            return try transport.sendFrame(frame)
+        }
     }
 
-    private func ensureBrokerIsReachable() throws {
+    private func ensureBrokerIsReachableAfterConnectionFailure() throws {
         lock.lock()
         defer { lock.unlock() }
 
-        if isSocketConnectable() {
+        switch socketReachability() {
+        case .reachable:
+            return
+        case .indeterminate:
+            throw LaunchError.socketTimedOut(socketPath)
+        case .unreachable:
+            break
+        }
+
+        if BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) {
+            if !FileManager.default.fileExists(atPath: socketPath) {
+                try waitForSocket()
+            }
             return
         }
 
@@ -70,9 +92,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     }
 
     private func waitForSocket() throws {
-        let deadline = Date().addingTimeInterval(Double(socketWaitTimeoutMilliseconds) / 1_000.0)
-        while Date() < deadline {
-            if isSocketConnectable() {
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(socketWaitTimeoutMilliseconds) * 1_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if socketReachability() == .reachable {
                 return
             }
             usleep(10_000)
@@ -80,8 +103,11 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         throw LaunchError.socketTimedOut(socketPath)
     }
 
-    private func isSocketConnectable() -> Bool {
-        BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath)
+    private func socketReachability() -> BrokerSessionHostUnixSocketServer.Reachability {
+        BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(
+            socketPath,
+            timeoutMilliseconds: min(250, socketWaitTimeoutMilliseconds)
+        )
     }
 
     static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {
