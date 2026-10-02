@@ -1608,6 +1608,27 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(newManager.count, 1)
     }
 
+    func testRestoreStateFailedFactoryDoesNotClaimBrokerSessionIdentity() {
+        let brokerSessionID = BrokerSessionID(rawValue: "surviving-restored-broker-session")
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(id: UUID(), type: .shell, role: "Invalid", brokerSessionID: brokerSessionID),
+            ChannelMetadata(id: UUID(), type: .shell, role: "Survivor", brokerSessionID: brokerSessionID)
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            guard metadata.role == "Survivor" else { return nil }
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["Invalid", "Survivor"])
+        XCTAssertEqual(newManager.allChannels().map(\.displayLabel), ["Survivor"])
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }

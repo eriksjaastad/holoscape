@@ -99,17 +99,50 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
         if let untrackedBrokerSessionID {
-            do {
-                try coordinator.retireUntrackedSession(untrackedBrokerSessionID)
-                self.untrackedBrokerSessionID = nil
-            } catch {
-                startFailureDescription = String(describing: error)
-                startFailureKind = .failed
-                NSLog("Broker-backed terminal refused replacement until untracked session \(untrackedBrokerSessionID.rawValue) is retired: \(error)")
-                return
+            // This generation is outside the durable registry, so replacement
+            // cannot begin until retirement is confirmed. Always perform that
+            // potentially blocking cleanup off-main, including for in-process
+            // runtimes and test doubles that do not otherwise require host work.
+            startCompletionPending = true
+            failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [weak self] error in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.startCompletionPending,
+                          self.untrackedBrokerSessionID == untrackedBrokerSessionID else { return }
+                    if let error {
+                        self.startFailureDescription = String(describing: error)
+                        self.startFailureKind = .failed
+                        NSLog("Broker-backed terminal refused replacement until untracked session \(untrackedBrokerSessionID.rawValue) is retired: \(error)")
+                    } else {
+                        self.untrackedBrokerSessionID = nil
+                        self.continueStartProcess(
+                            executable: executable,
+                            args: args,
+                            environment: environment,
+                            currentDirectory: currentDirectory
+                        )
+                    }
+                    self.startCompletionPending = false
+                    self.startCompletionHandler?()
+                }
             }
+            return
         }
-        inputWriteLane.closeAndDrain()
+        continueStartProcess(
+            executable: executable,
+            args: args,
+            environment: environment,
+            currentDirectory: currentDirectory
+        )
+    }
+
+    private func continueStartProcess(
+        executable: String,
+        args: [String],
+        environment: [String]?,
+        currentDirectory: String?
+    ) {
+        inputWriteLane.close()
         startFailureDescription = nil
         startFailureKind = nil
         untrackedBrokerSessionID = nil
@@ -383,23 +416,31 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func detachBrokerSession() {
-        guard let brokerSessionID, !didNotifyTermination else { return }
         // A host reattach may still be executing off-main. Invalidate its token
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
         reattachGeneration &+= 1
         startCompletionPending = false
         stopOutputPump()
-        inputWriteLane.closeAndDrain()
-        do {
-            _ = try coordinator.detach(brokerSessionID)
-        } catch {
-            // Detach runs on tab teardown and again during app termination. A
-            // broker host outage — or a broker that already dropped the session —
-            // must not trap the app while it is quitting. The durable broker
-            // record from `ChannelManager.saveState` is what the next launch
-            // reads, so report loudly and leave it reattachable for reconcile.
-            NSLog("Broker-backed terminal detach failed: \(error)")
+        inputWriteLane.close()
+        if let brokerSessionID, !didNotifyTermination {
+            do {
+                _ = try coordinator.detach(brokerSessionID)
+            } catch {
+                // Detach runs on tab teardown and again during app termination. A
+                // broker host outage — or a broker that already dropped the session —
+                // must not trap the app while it is quitting. The durable broker
+                // record from `ChannelManager.saveState` is what the next launch
+                // reads, so report loudly and leave it reattachable for reconcile.
+                NSLog("Broker-backed terminal detach failed: \(error)")
+            }
+        } else if let untrackedBrokerSessionID {
+            do {
+                try coordinator.retireUntrackedSession(untrackedBrokerSessionID)
+                self.untrackedBrokerSessionID = nil
+            } catch {
+                NSLog("Broker-backed terminal could not retire untracked session \(untrackedBrokerSessionID.rawValue) during teardown: \(error)")
+            }
         }
     }
 
@@ -615,7 +656,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
-            case .retirementRollbackFailed, .detachRollbackFailed, .reattachCleanupFailed:
+            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed, .reattachCleanupFailed:
                 return .failed
             case .concurrentSessionTransition, .untrackedSession:
                 return .failed
@@ -761,6 +802,20 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
             }
         }
     }
+
+    func retireUntrackedSession(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.retireUntrackedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
 }
 
 private final class BrokerOutputReadLane: @unchecked Sendable {
@@ -897,11 +952,6 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
         lock.withLock {
             openSessionID = nil
         }
-    }
-
-    func closeAndDrain() {
-        close()
-        queue.sync {}
     }
 
     func enqueue(

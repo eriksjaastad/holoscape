@@ -166,6 +166,46 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class BlockingUntrackedRetirementRuntime: BrokerSessionRuntime, @unchecked Sendable {
+        private let retirementEntered = DispatchSemaphore(value: 0)
+        private let retirementRelease = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private(set) var createdIDs: [BrokerSessionID] = []
+        private(set) var retirementAttempts: [BrokerSessionID] = []
+
+        func waitForRetirement(timeout: TimeInterval = 1) -> Bool {
+            retirementEntered.wait(timeout: .now() + timeout) == .success
+        }
+
+        func unblockRetirement() { retirementRelease.signal() }
+
+        func listSessions() throws -> [BrokerSessionID] { lock.withLock { createdIDs } }
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            try lock.withLock {
+                if !createdIDs.isEmpty { throw RuntimeError.createFailed }
+                createdIDs.append(id)
+            }
+        }
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {
+            let attempt = lock.withLock { () -> Int in
+                retirementAttempts.append(id)
+                return retirementAttempts.count
+            }
+            if attempt == 1 { throw RuntimeError.createFailed }
+            retirementEntered.signal()
+            _ = retirementRelease.wait(timeout: .now() + 2)
+        }
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     private final class StaleThenCreateRuntime: BrokerSessionRuntime {
         let staleID: BrokerSessionID
         var createdIDs: [BrokerSessionID] = []
@@ -842,6 +882,73 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         runtime.unblockRetirement()
         try waitUntil { failures.count == 1 }
         XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
+    }
+
+    func testRetryRetiresUntrackedGenerationOffMainBeforeReplacement() throws {
+        let runtime = BlockingUntrackedRetirementRuntime()
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalUntrackedTests-")
+            .appendingPathComponent(UUID().uuidString)
+        let blocker = parent.appendingPathComponent("blocked")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: blocker)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let coordinator = BrokerSessionCoordinator(
+            registry: BrokerSessionRegistry(fileURL: blocker.appendingPathComponent("sessions.json")),
+            runtime: runtime
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "untracked",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        let untrackedID = try XCTUnwrap(terminal.untrackedBrokerSessionID)
+
+        let started = Date()
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
+        XCTAssertTrue(runtime.waitForRetirement(), "Retry must begin retirement on the recovery lane")
+        XCTAssertEqual(terminal.untrackedBrokerSessionID, untrackedID)
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+
+        runtime.unblockRetirement()
+        try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertNil(terminal.untrackedBrokerSessionID)
+        XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
+        XCTAssertEqual(runtime.createdIDs, [untrackedID], "Replacement cannot start before the old generation is retired")
+    }
+
+    func testTeardownRetiresRememberedUntrackedGeneration() throws {
+        let runtime = BlockingUntrackedRetirementRuntime()
+        runtime.unblockRetirement()
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalUntrackedTeardownTests-")
+            .appendingPathComponent(UUID().uuidString)
+        let blocker = parent.appendingPathComponent("blocked")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: blocker)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "untracked",
+            environmentProfile: .shell,
+            coordinator: BrokerSessionCoordinator(
+                registry: BrokerSessionRegistry(fileURL: blocker.appendingPathComponent("sessions.json")),
+                runtime: runtime
+            )
+        )
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        let untrackedID = try XCTUnwrap(terminal.untrackedBrokerSessionID)
+        terminal.detachBrokerSession()
+
+        XCTAssertNil(terminal.untrackedBrokerSessionID)
+        XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
     }
 
     func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {

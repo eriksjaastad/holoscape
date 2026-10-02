@@ -65,6 +65,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case brokerHostUnavailable(BrokerSessionID, String)
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
@@ -93,12 +94,35 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func reattachableSessions() throws -> [BrokerSessionRecord] {
         try registry.load().compactMap { record in
             switch record.lifecycle {
-            case .running, .detached, .stale:
+            case .running, .detached, .reattaching, .stale:
                 let reconciled = try reconcileRuntimeStatus(record.id)
                 switch reconciled.lifecycle {
                 case .running, .detached, .stale:
                     return reconciled
-                case .creating, .reattaching, .exited, .errored, .terminating:
+                case .reattaching:
+                    // A durable reattach lease has no in-process owner after
+                    // relaunch. Revoke it to detached so normal restore can
+                    // safely acquire a fresh lease for the still-live child.
+                    var current = reconciled
+                    while current.lifecycle == .reattaching {
+                        let detached = current.withLifecycle(
+                            .detached,
+                            exitCode: nil,
+                            updatedAt: now(),
+                            lastAttachedChannelID: nil
+                        )
+                        if try registry.replace(detached, ifUnchangedFrom: current) {
+                            return detached
+                        }
+                        current = try reconcileRuntimeStatus(record.id)
+                    }
+                    switch current.lifecycle {
+                    case .running, .detached, .stale:
+                        return current
+                    case .creating, .reattaching, .exited, .errored, .terminating:
+                        return nil
+                    }
+                case .creating, .exited, .errored, .terminating:
                     return nil
                 }
             case .terminating:
@@ -108,7 +132,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // identity as stale and permit a replacement process.
                 _ = try markErrored(record.id)
                 return nil
-            case .creating, .reattaching, .exited, .errored:
+            case .creating, .exited, .errored:
                 return nil
             }
         }
@@ -264,13 +288,32 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
         do {
             try runtime.attachSession(id: id, channelID: attachedChannelID)
-            let attached = lease.withLifecycle(
-                .running,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: attachedChannelID
-            )
-            guard try registry.replace(attached, ifUnchangedFrom: lease) else {
+        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
+            try rollbackReattach(id, lease: lease, to: existing, runtimeFailure: message)
+            throw CoordinatorError.brokerHostUnavailable(id, message)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else {
+                    throw CoordinatorError.staleSession(id)
+                }
+                let stale = current.withLifecycle(
+                    .stale,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(stale, ifUnchangedFrom: current) { break }
+            }
+            throw CoordinatorError.staleSession(id)
+        } catch {
+            try rollbackReattach(id, lease: lease, to: existing, runtimeFailure: String(describing: error))
+            throw error
+        }
+
+        while true {
+            let current = try record(for: id)
+            guard current.lifecycle == .reattaching else {
                 do {
                     try runtime.detachSession(id: id)
                 } catch {
@@ -281,24 +324,44 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 }
                 throw CoordinatorError.concurrentSessionTransition(id)
             }
-            return attached
-        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
-            _ = try? registry.replace(existing, ifUnchangedFrom: lease)
-            throw CoordinatorError.brokerHostUnavailable(id, message)
-        } catch let error where isMissingRuntimeSessionError(error, id: id) {
-            let stale = lease.withLifecycle(
-                .stale,
+            let attached = current.withLifecycle(
+                .running,
                 exitCode: nil,
                 updatedAt: now(),
-                lastAttachedChannelID: nil
+                lastAttachedChannelID: attachedChannelID
             )
-            if try registry.replace(stale, ifUnchangedFrom: lease) {
-                throw CoordinatorError.staleSession(id)
+            if try registry.replace(attached, ifUnchangedFrom: current) {
+                return attached
             }
-            throw CoordinatorError.staleSession(id)
-        } catch {
-            _ = try? registry.replace(existing, ifUnchangedFrom: lease)
-            throw error
+        }
+    }
+
+    private func rollbackReattach(
+        _ id: BrokerSessionID,
+        lease: BrokerSessionRecord,
+        to previous: BrokerSessionRecord,
+        runtimeFailure: String
+    ) throws {
+        do {
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else { return }
+                let rolledBack = current == lease
+                    ? previous
+                    : current.withLifecycle(
+                        previous.lifecycle,
+                        exitCode: previous.exitCode,
+                        updatedAt: current.updatedAt,
+                        lastAttachedChannelID: previous.lastAttachedChannelID
+                    )
+                if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+            }
+        } catch let registryFailure {
+            throw CoordinatorError.reattachRollbackFailed(
+                id,
+                runtimeFailure: runtimeFailure,
+                registryFailure: String(describing: registryFailure)
+            )
         }
     }
 

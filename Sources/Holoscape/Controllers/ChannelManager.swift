@@ -289,7 +289,7 @@ class ChannelManager {
             // discarded duplicate cannot launch or reattach a hidden process.
             guard channels[metadata.id] == nil else { continue }
             if let brokerSessionID = metadata.brokerSessionID {
-                guard claimedBrokerSessionIDs.insert(brokerSessionID).inserted else { continue }
+                guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
             }
             if let controller = factory(metadata), channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
@@ -298,6 +298,7 @@ class ChannelManager {
                 channelLabels[controller.channelId] = metadata.role
                 recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
+                    claimedBrokerSessionIDs.insert(brokerSessionID)
                     restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
                 }
                 if let pinnedAt = metadata.pinnedAt {
@@ -495,11 +496,7 @@ class ChannelManager {
         // session it went stale on. Both count as known so a dead session is
         // never resurrected as an extra "recovered" tab next to the tab that
         // already reports its recreate guidance.
-        let persistedBrokerSessionIDs = Set(
-            configService.load().channels
-                .flatMap { [$0.brokerSessionID, $0.staleBrokerSessionID] }
-                .compactMap { $0 }
-        )
+        let restoredBrokerSessionIdentities = Set(restoredBrokerSessionIDs.values)
         let liveBrokerSessionIDs = Set(allChannels().flatMap { channel -> [BrokerSessionID] in
             switch channel {
             case let shell as ShellChannelController:
@@ -510,7 +507,7 @@ class ChannelManager {
                 return []
             }
         })
-        let knownBrokerSessionIDs = persistedBrokerSessionIDs.union(liveBrokerSessionIDs)
+        let knownBrokerSessionIDs = restoredBrokerSessionIdentities.union(liveBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {

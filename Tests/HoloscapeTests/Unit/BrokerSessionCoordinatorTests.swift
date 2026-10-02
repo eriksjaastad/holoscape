@@ -668,6 +668,43 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         ])
     }
 
+    func testRelaunchDiscoveryRevokesAbandonedReattachLease() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("reattach-lease.json"))
+        let coordinator = makeCoordinator(runtime: runtime, registry: registry, now: { Date(timeIntervalSince1970: 525) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-lease"),
+            channelType: .shell,
+            label: "lease",
+            attachedChannelID: UUID()
+        )
+        let lease = BrokerSessionRecord(
+            id: started.id,
+            channelType: started.channelType,
+            label: started.label,
+            command: started.command,
+            arguments: started.arguments,
+            workingDirectory: started.workingDirectory,
+            environmentProfile: started.environmentProfile,
+            agentStatusOwnerToken: started.agentStatusOwnerToken,
+            lifecycle: .reattaching,
+            exitCode: nil,
+            createdAt: started.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 524),
+            lastAttachedChannelID: nil
+        )
+        try registry.upsert(lease)
+
+        let discovered = try coordinator.reattachableSessions()
+
+        XCTAssertEqual(discovered.count, 1)
+        XCTAssertEqual(discovered[0].id, started.id)
+        XCTAssertEqual(discovered[0].lifecycle, .detached)
+        XCTAssertNil(discovered[0].lastAttachedChannelID)
+        XCTAssertEqual(try registry.load(), discovered)
+    }
+
     func testResizeForwardsExactGridSizeToRuntimeWithoutMutatingRecord() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 550) })
