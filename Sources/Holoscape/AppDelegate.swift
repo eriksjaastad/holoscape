@@ -161,8 +161,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             windowController?.channelManager.saveState()
             windowController?.channelManager.detachAllChannelsForAppTermination()
         }
+        if let result = windowController?.historyBuffer.flush(),
+           case let .failure(error) = result {
+            NSLog("HistoryBuffer final flush failed during app termination: %@", error.localizedDescription)
+        }
         windowController?.historyBuffer.stopPeriodicFlush()
-        windowController?.historyBuffer.flush()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
