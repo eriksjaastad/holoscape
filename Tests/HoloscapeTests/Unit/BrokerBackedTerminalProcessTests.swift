@@ -3,6 +3,69 @@ import XCTest
 
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
+    private final class BlockingReattachCoordinator: BrokerSessionCoordinating, @unchecked Sendable {
+        let requiresOffMainBrokerWork = true
+        private let entered = DispatchSemaphore(value: 0)
+        private let release = DispatchSemaphore(value: 0)
+        private let returned = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private(set) var detachCalls: [BrokerSessionID] = []
+        private(set) var reattachCallCount = 0
+
+        func waitForReattach(timeout: TimeInterval = 1) -> Bool {
+            entered.wait(timeout: .now() + timeout) == .success
+        }
+
+        func finishReattach() { release.signal() }
+
+        func waitForReattachReturn(timeout: TimeInterval = 1) -> Bool {
+            returned.wait(timeout: .now() + timeout) == .success
+        }
+
+        func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+            lock.withLock { detachCalls.append(id) }
+            return record(id: id, ownerToken: nil, lifecycle: .detached)
+        }
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
+            lock.withLock { reattachCallCount += 1 }
+            entered.signal()
+            _ = release.wait(timeout: .now() + 2)
+            returned.signal()
+            return record(id: id, ownerToken: "late-owner", lifecycle: .running)
+        }
+        func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
+        func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+
+        private func record(id: BrokerSessionID, ownerToken: String?, lifecycle: BrokerSessionLifecycle) -> BrokerSessionRecord {
+            BrokerSessionRecord(
+                id: id,
+                channelType: .agentDirect,
+                label: "agent",
+                command: "/usr/bin/env",
+                arguments: ["codex"],
+                workingDirectory: "/tmp",
+                environmentProfile: .agentOAuth,
+                agentStatusOwnerToken: ownerToken,
+                lifecycle: lifecycle,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        }
+    }
+
     func testWorkingDirectoryUpdatePersistsThroughOwnedBrokerSession() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessCWDTests-")
@@ -999,6 +1062,47 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             .running,
             "An unrecorded detach must leave the durable record reattachable for reconcile"
         )
+    }
+
+    func testDetachInvalidatesPendingReattachCompletion() throws {
+        let sessionID = BrokerSessionID(rawValue: "pending-reattach")
+        let coordinator = BlockingReattachCoordinator()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008021")!,
+            channelType: .agentDirect,
+            label: "agent",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        var completionCount = 0
+        terminal.setStartCompletionHandler { completionCount += 1 }
+
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp"
+        )
+        terminal.detachBrokerSession()
+        coordinator.finishReattach()
+        XCTAssertTrue(coordinator.waitForReattachReturn())
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.detachCalls, [sessionID])
+        XCTAssertEqual(coordinator.reattachCallCount, 1, "Retry must not enqueue a competing reattach")
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+        XCTAssertEqual(completionCount, 0)
+        XCTAssertNil(terminal.agentStatusOwnerToken, "A completion after detach must not reactivate the session")
     }
 
     func testStartReattachesExistingBrokerSessionInsteadOfCreatingReplacement() throws {

@@ -283,6 +283,10 @@ class ChannelManager {
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         for metadata in config.channels {
+            // The factory may activate a controller and mutate broker ownership.
+            // Reject duplicate persisted identities before invoking it so a
+            // discarded duplicate cannot launch or reattach a hidden process.
+            guard channels[metadata.id] == nil else { continue }
             if let controller = factory(metadata), channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller

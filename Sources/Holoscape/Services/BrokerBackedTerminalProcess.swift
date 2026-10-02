@@ -30,6 +30,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var terminationHandler: ((Int32?) -> Void)?
     private var startCompletionHandler: (() -> Void)?
     private var startCompletionPending = false
+    private var reattachGeneration: UInt = 0
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
@@ -93,7 +94,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
-        guard recoveringBrokerSessionID == nil else {
+        guard recoveringBrokerSessionID == nil, !startCompletionPending else {
             NSLog("Broker-backed terminal retry ignored while session recovery is still running")
             return
         }
@@ -194,9 +195,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
         startCompletionPending = true
+        reattachGeneration &+= 1
+        let generation = reattachGeneration
         failureRecoveryCoordinator.reattach(sessionID, attachedChannelID: channelID) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self,
+                      self.startCompletionPending,
+                      self.reattachGeneration == generation,
+                      self.brokerSessionID == sessionID else { return }
                 self.finishReattach(
                     sessionID: sessionID,
                     result: result.record,
@@ -378,6 +384,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     func detachBrokerSession() {
         guard let brokerSessionID, !didNotifyTermination else { return }
+        // A host reattach may still be executing off-main. Invalidate its token
+        // before detaching so its late result cannot reopen I/O or publish the
+        // owning controller as active after teardown.
+        reattachGeneration &+= 1
+        startCompletionPending = false
         stopOutputPump()
         inputWriteLane.closeAndDrain()
         do {

@@ -1558,6 +1558,26 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.workingDirectory, "/tmp/context-menu-recreate")
     }
 
+    func testRestoreStateSkipsDuplicateSavedIDBeforeInvokingFactory() {
+        let duplicateID = UUID(uuidString: "00000000-0000-0000-0000-000000000765")!
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(id: duplicateID, type: .shell, role: "First"),
+            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate")
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["First"])
+        XCTAssertEqual(newManager.count, 1)
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }
