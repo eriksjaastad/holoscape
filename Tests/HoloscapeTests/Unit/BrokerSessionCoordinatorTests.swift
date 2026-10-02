@@ -338,6 +338,37 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.markErrored(record.id).lifecycle, .errored)
     }
 
+    func testRelaunchDiscoveryFinishesPendingRetirementBeforeAllowingReplacement() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 203.75) })
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = BrokerSessionHostClientRuntime.ClientError.transportFailed("request delivery unknown")
+        XCTAssertThrowsError(try coordinator.markErrored(record.id))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
+
+        runtime.markErroredError = nil
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertEqual(
+            runtime.events.filter { event in
+                if case .markErrored(record.id) = event { return true }
+                return false
+            }.count,
+            2,
+            "Relaunch discovery must retry the old generation's retirement before replacement"
+        )
+    }
+
     func testUpdatingMissingSessionFailsLoudly() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 1) })

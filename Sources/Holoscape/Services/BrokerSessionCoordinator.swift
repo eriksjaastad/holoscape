@@ -91,7 +91,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 case .creating, .reattaching, .exited, .errored, .terminating:
                     return nil
                 }
-            case .creating, .reattaching, .exited, .errored, .terminating:
+            case .terminating:
+                // A prior retirement may have reached the broker without its
+                // response reaching Holoscape. Relaunch must finish this
+                // idempotent transition before restore can classify the saved
+                // identity as stale and permit a replacement process.
+                _ = try markErrored(record.id)
+                return nil
+            case .creating, .reattaching, .exited, .errored:
                 return nil
             }
         }
