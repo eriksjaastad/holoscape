@@ -59,6 +59,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {

@@ -348,6 +348,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func updateWorkingDirectory(_ nextDirectory: String) {
         guard nextDirectory != workingDirectory else { return }
         workingDirectory = nextDirectory
+        do {
+            try terminal.updateWorkingDirectory(nextDirectory)
+        } catch {
+            // The live shell has already reported authoritative cwd truth. Keep
+            // presenting it, but report that durable broker metadata could not
+            // be advanced rather than pretending persistence succeeded.
+            NSLog("Shell broker working-directory update failed: \(error)")
+        }
         delegate?.channelStateDidChange(self, to: state)
     }
 

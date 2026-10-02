@@ -33,6 +33,9 @@ protocol TerminalProcess: AnyObject {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
     func detachBrokerSession()
+    /// Persist host-reported cwd truth with the process owner. Direct terminals
+    /// do not own durable metadata and therefore use the default no-op.
+    func updateWorkingDirectory(_ directory: String) throws
     /// Forward the terminal view's current grid size to the underlying process
     /// owner. Direct SwiftTerm-backed terminals already resize their child PTY
     /// internally; broker-backed terminals must explicitly resize the broker
@@ -77,6 +80,7 @@ extension TerminalProcess {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func detachBrokerSession() {}
+    func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
     var agentStatusOwnerToken: String? { nil }

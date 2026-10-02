@@ -145,6 +145,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             .flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    func updateWorkingDirectory(_ directory: String) throws {
+        guard let brokerSessionID else { throw TerminalError.sessionNotStarted }
+        _ = try coordinator.updateWorkingDirectory(brokerSessionID, to: directory)
+    }
+
     private func reattachExistingSession(_ sessionID: BrokerSessionID) {
         startFailureDescription = nil
         startFailureKind = nil
