@@ -26,6 +26,8 @@ class MockTerminalProcess: TerminalProcess {
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
     var resizeToCurrentGridCallCount = 0
+    var workingDirectoryUpdates: [String] = []
+    var workingDirectoryUpdateError: Error?
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         startProcessCalled = true
@@ -83,6 +85,11 @@ class MockTerminalProcess: TerminalProcess {
 
     func resizeToCurrentGrid() {
         resizeToCurrentGridCallCount += 1
+    }
+
+    func updateWorkingDirectory(_ directory: String) throws {
+        if let workingDirectoryUpdateError { throw workingDirectoryUpdateError }
+        workingDirectoryUpdates.append(directory)
     }
 }
 

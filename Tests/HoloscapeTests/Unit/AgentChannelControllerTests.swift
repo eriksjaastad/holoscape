@@ -59,6 +59,7 @@ final class AgentChannelControllerTests: XCTestCase {
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }

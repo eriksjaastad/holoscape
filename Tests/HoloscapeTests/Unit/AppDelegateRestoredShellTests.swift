@@ -59,6 +59,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
@@ -662,6 +663,55 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(savedChannels.count, 1)
         XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
         XCTAssertEqual(savedChannels.first?.workingDirectory, "/tmp/app-unmatched-shell")
+    }
+
+    func testRestoredMatchedBrokerShellUsesRegistryWorkingDirectoryTruth() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000008993")!
+        let brokerSessionID = BrokerSessionID(rawValue: "app-restored-updated-cwd-session")
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: brokerSessionID,
+                channelType: .shell,
+                label: "work",
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/Users/test/work/current",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 30),
+                updatedAt: Date(timeIntervalSince1970: 40),
+                lastAttachedChannelID: channelID
+            )
+        ]
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateBrokerCWDTruthTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let staleMetadata = ChannelMetadata(
+            id: channelID,
+            type: .shell,
+            role: "work",
+            workingDirectory: "/Users/test/work/previous",
+            brokerSessionID: brokerSessionID
+        )
+
+        let controller = try XCTUnwrap(appDelegate.restoreChannel(from: staleMetadata) as? ShellChannelController)
+
+        XCTAssertEqual(controller.brokerSessionID, brokerSessionID)
+        XCTAssertEqual(
+            controller.workingDirectory,
+            "/Users/test/work/current",
+            "A matched live broker record is newer cwd truth than the last debounced channel save"
+        )
     }
 
     func testRecoveredUnmatchedBrokerSessionDoesNotDuplicateAcrossRepeatedRelaunches() throws {

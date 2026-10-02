@@ -3,6 +3,43 @@ import XCTest
 
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
+    func testWorkingDirectoryUpdatePersistsThroughOwnedBrokerSession() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessCWDTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        var now = Date(timeIntervalSince1970: 10)
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let coordinator = BrokerSessionCoordinator(registry: registry, now: { now })
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000000993")!,
+            channelType: .shell,
+            label: "work",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/Users/test/work"
+        )
+        let started = try registry.load().single()
+
+        now = Date(timeIntervalSince1970: 20)
+        try terminal.updateWorkingDirectory("/Users/test/work/subdir")
+
+        let updated = try registry.load().single()
+        XCTAssertEqual(updated.id, started.id)
+        XCTAssertEqual(updated.workingDirectory, "/Users/test/work/subdir")
+        XCTAssertEqual(updated.updatedAt, now)
+        XCTAssertEqual(updated.lifecycle, .running)
+        XCTAssertEqual(updated.lastAttachedChannelID, started.lastAttachedChannelID)
+    }
+
     func testOwnerTokenExtractionIsRestrictedToAgentChannels() {
         let environment = ["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN=agent-owner"]
 
@@ -503,6 +540,29 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             [sessionID],
             "Retry after a host outage must reattach, never spawn a replacement"
         )
+    }
+
+    func testRetryAfterBrokerHostLossPublishesAuthoritativeReattachedWorkingDirectory() throws {
+        let runtime = HostLossRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008019")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        _ = try fixture.coordinator.updateWorkingDirectory(sessionID, to: "/tmp/live-broker-cwd")
+        var reportedDirectories: [String?] = []
+        fixture.terminal.setHostCurrentDirectoryHandler { reportedDirectories.append($0) }
+
+        runtime.isHostAvailable = false
+        fixture.terminal.pollOutputOnce()
+        runtime.isHostAvailable = true
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp/stale-channel-metadata"
+        )
+
+        XCTAssertEqual(reportedDirectories, ["/tmp/live-broker-cwd"])
     }
 
     func testMidSessionBrokerLossReportsStaleFailureAndKeepsDeadIdentity() throws {

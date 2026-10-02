@@ -13,6 +13,7 @@ protocol BrokerSessionCoordinating {
     func reattachableSessions() throws -> [BrokerSessionRecord]
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+    func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
     func setOutputAvailabilityHandler(
@@ -223,6 +224,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
+        let existing = try record(for: id)
+        guard existing.workingDirectory != directory else { return existing }
+        let updated = existing.withWorkingDirectory(directory, updatedAt: now())
+        try registry.upsert(updated)
+        return updated
+    }
+
     /// Prune terminal lifecycle records after an explicit caller-owned retention decision.
     ///
     /// This intentionally does not run from coordinator init or app launch. Recovery
@@ -379,6 +388,24 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 }
 
 private extension BrokerSessionRecord {
+    func withWorkingDirectory(_ workingDirectory: String, updatedAt: Date) -> BrokerSessionRecord {
+        BrokerSessionRecord(
+            id: id,
+            channelType: channelType,
+            label: label,
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: environmentProfile,
+            agentStatusOwnerToken: agentStatusOwnerToken,
+            lifecycle: lifecycle,
+            exitCode: exitCode,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            lastAttachedChannelID: lastAttachedChannelID
+        )
+    }
+
     func withLifecycle(
         _ lifecycle: BrokerSessionLifecycle,
         exitCode: Int32?,

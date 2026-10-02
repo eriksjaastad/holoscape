@@ -66,6 +66,7 @@ final class ChannelManagerTests: XCTestCase {
         func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
@@ -1269,6 +1270,37 @@ final class ChannelManagerTests: XCTestCase {
         let savedChannels = configService.load().channels
         XCTAssertEqual(savedChannels.count, 1)
         XCTAssertEqual(savedChannels.first?.brokerSessionID, brokerSessionID)
+    }
+
+    func testSaveStatePersistsOnlyHostConfirmedShellWorkingDirectory() throws {
+        let terminal = MockTerminalProcess()
+        let channel = manager.createChannel(type: .shell, role: "Shell", workingDirectory: nil) { id, _, _, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: "Shell",
+                workingDirectory: NSHomeDirectory(),
+                terminal: terminal
+            )
+        }
+        channel.activate()
+
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, NSHomeDirectory())
+
+        terminal.workingDirectoryUpdateError = CocoaError(.fileWriteNoPermission)
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, NSHomeDirectory())
+
+        terminal.workingDirectoryUpdateError = nil
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        manager.saveState()
+
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).workingDirectory, "/tmp")
     }
 
     func testSaveStatePersistsAgentLaunchIntentAndBrokerSessionIDForRestore() throws {

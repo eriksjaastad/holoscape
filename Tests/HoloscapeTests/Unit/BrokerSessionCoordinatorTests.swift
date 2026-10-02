@@ -125,6 +125,45 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [record])
     }
 
+    func testUpdateWorkingDirectoryPreservesSessionIdentityAndSkipsDuplicateWrites() throws {
+        var now = Date(timeIntervalSince1970: 10)
+        let coordinator = makeCoordinator(now: { now })
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/Users/test/project",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 120, rows: 40)
+            ),
+            channelType: .shell,
+            label: "project",
+            attachedChannelID: channelID
+        )
+
+        now = Date(timeIntervalSince1970: 20)
+        let updated = try coordinator.updateWorkingDirectory(started.id, to: "/Users/test/project/subdir")
+
+        XCTAssertEqual(updated.workingDirectory, "/Users/test/project/subdir")
+        XCTAssertEqual(updated.updatedAt, now)
+        XCTAssertEqual(updated.id, started.id)
+        XCTAssertEqual(updated.channelType, started.channelType)
+        XCTAssertEqual(updated.label, started.label)
+        XCTAssertEqual(updated.command, started.command)
+        XCTAssertEqual(updated.arguments, started.arguments)
+        XCTAssertEqual(updated.environmentProfile, started.environmentProfile)
+        XCTAssertEqual(updated.agentStatusOwnerToken, started.agentStatusOwnerToken)
+        XCTAssertEqual(updated.lifecycle, started.lifecycle)
+        XCTAssertEqual(updated.lastAttachedChannelID, started.lastAttachedChannelID)
+
+        now = Date(timeIntervalSince1970: 30)
+        let duplicate = try coordinator.updateWorkingDirectory(started.id, to: "/Users/test/project/subdir")
+
+        XCTAssertEqual(duplicate, updated, "An unchanged cwd must not rewrite updatedAt")
+        XCTAssertEqual(try coordinator.loadAll(), [updated])
+    }
+
     func testLegacyBrokerCreateResponseDoesNotPersistUnappliedOwnerToken() throws {
         let codec = BrokerSessionHostCodec()
         let runtime = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in

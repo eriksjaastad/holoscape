@@ -212,7 +212,7 @@ class ChannelManager {
             var staleBrokerSessionID: BrokerSessionID?
 
             if let shellChannel = channel as? ShellChannelController {
-                workingDir = shellChannel.workingDirectory
+                workingDir = shellChannel.persistedWorkingDirectory
                 staleBrokerSessionID = shellChannel.staleBrokerSessionID
             } else if let agentChannel = channel as? AgentChannelController {
                 workingDir = agentChannel.persistedWorkingDirectory

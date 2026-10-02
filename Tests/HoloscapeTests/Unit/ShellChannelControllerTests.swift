@@ -75,7 +75,7 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(delegate.outputCount, 1)
     }
 
-    func testShellUserInputHandlerRoutesThroughTerminalProcessSeam() {
+    func testShellUserInputHeuristicUpdatesPresentationWithoutPersistingUnconfirmedCWD() {
         let terminal = MockTerminalProcess()
         let controller = ShellChannelController(
             id: UUID(),
@@ -86,8 +86,67 @@ final class ShellChannelControllerTests: XCTestCase {
 
         controller.activate()
         terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertTrue(terminal.workingDirectoryUpdates.isEmpty)
+    }
+
+    func testShellHostCWDConfirmationPersistsAfterMatchingInputHeuristic() {
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: NSHomeDirectory(),
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+
+        XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
+    }
+
+    func testShellReplacementLaunchUsesPersistedDirectoryNotTypedHeuristic() {
+        let terminal = MockTerminalProcess()
+        let originalDirectory = NSHomeDirectory()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: originalDirectory,
+            terminal: terminal
+        )
+        controller.activate()
+        terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
+        terminal.reportSessionFailure(kind: .brokerSessionStale)
+
+        controller.retry()
+
+        XCTAssertEqual(terminal.lastCurrentDirectory, originalDirectory)
+        XCTAssertEqual(controller.workingDirectory, originalDirectory)
+        XCTAssertEqual(controller.persistedWorkingDirectory, originalDirectory)
+    }
+
+    func testShellRetriesHostCWDTruthAfterBrokerMetadataUpdateFails() {
+        let terminal = MockTerminalProcess()
+        terminal.workingDirectoryUpdateError = CocoaError(.fileWriteNoPermission)
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: NSHomeDirectory(),
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+        terminal.workingDirectoryUpdateError = nil
+        terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
+
+        XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertEqual(controller.displayBaseLabel, "tmp")
+        XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
     }
 
     func testShellHostCurrentDirectoryHandlerRoutesThroughTerminalProcessSeam() {
@@ -106,6 +165,7 @@ final class ShellChannelControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
         XCTAssertEqual(controller.displayBaseLabel, "tmp")
+        XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
         XCTAssertTrue(delegate.stateChanges.contains(.active))
     }
 
