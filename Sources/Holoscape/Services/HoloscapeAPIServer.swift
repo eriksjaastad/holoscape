@@ -24,6 +24,7 @@ final class SystemDockAttentionClient: DockAttentionClient {
 @MainActor
 class HoloscapeAPIServer {
     private var listener: NWListener?
+    private var acceptsRequests = false
     private weak var channelManager: ChannelManager?
     private weak var windowController: MainWindowController?
     let port: UInt16
@@ -62,9 +63,11 @@ class HoloscapeAPIServer {
         do {
             listener = try NWListener(using: params, on: nwPort)
         } catch {
+            acceptsRequests = false
             NSLog("HoloscapeAPI: Failed to create listener: \(error)")
             return
         }
+        acceptsRequests = true
 
         listener?.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
@@ -85,6 +88,9 @@ class HoloscapeAPIServer {
     }
 
     func stop() {
+        // Accepted connections can outlive the listener. Close admission before
+        // cancellation so no queued mutation crosses the teardown snapshot.
+        acceptsRequests = false
         listener?.cancel()
         listener = nil
     }
@@ -125,7 +131,10 @@ class HoloscapeAPIServer {
 
     // MARK: - Router
 
-    private func route(_ request: HTTPRequest) async -> HTTPResponse {
+    func route(_ request: HTTPRequest) async -> HTTPResponse {
+        guard acceptsRequests else {
+            return .error("Service unavailable", status: 503)
+        }
         switch (request.method, request.path) {
         case ("GET", "/channels"):
             return handleListChannels()

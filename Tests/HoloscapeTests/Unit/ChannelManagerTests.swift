@@ -15,6 +15,8 @@ final class ChannelManagerTests: XCTestCase {
         var startCalls: [StartCall] = []
         var detachCalls: [BrokerSessionID] = []
         var reattachableSessionRecords: [BrokerSessionRecord] = []
+        var reattachableSessionsError: Error?
+        private(set) var reattachableSessionsCallCount = 0
 
         func start(
             _ request: BrokerSessionLaunchRequest,
@@ -65,7 +67,11 @@ final class ChannelManagerTests: XCTestCase {
         func retireUntrackedSession(_ id: BrokerSessionID) throws {}
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
-        func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
+        func reattachableSessions() throws -> [BrokerSessionRecord] {
+            reattachableSessionsCallCount += 1
+            if let reattachableSessionsError { throw reattachableSessionsError }
+            return reattachableSessionRecords
+        }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -1413,6 +1419,47 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNil(manager.firstUnmatchedBrokerBackedShellSessionToRestore())
         XCTAssertNotNil(manager.brokerRegistryReadFailure)
         XCTAssertEqual(manager.unmatchedBrokerBackedSessionsToRestore(), [])
+    }
+
+    func testPrepareBrokerRecoveryRetriesTransientInventoryFailureBeforeUsingSurvivors() async {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionsError = BrokerSessionHostClientRuntime.ClientError.transportFailed(
+            "socketTimedOut(/tmp/holoscape-broker.sock)"
+        )
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        let firstPreparationSucceeded = await manager.prepareBrokerRecovery()
+        XCTAssertFalse(firstPreparationSucceeded)
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
+        XCTAssertEqual(coordinator.reattachableSessionsCallCount, 1)
+
+        let survivorID = BrokerSessionID(rawValue: "survivor-after-transient-discovery-failure")
+        coordinator.reattachableSessionsError = nil
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: survivorID,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/tmp/survivor",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        ]
+
+        let retryPreparationSucceeded = await manager.prepareBrokerRecovery()
+        XCTAssertTrue(retryPreparationSucceeded)
+        XCTAssertEqual(coordinator.reattachableSessionsCallCount, 2)
+        XCTAssertNil(manager.brokerRegistryReadFailure)
+        XCTAssertEqual(manager.firstUnmatchedBrokerBackedShellSessionToRestore()?.id, survivorID)
     }
 
     func testUnmatchedBrokerRecoveryWithUnreadableRegistryRestoresNothingAndKeepsTheFile() throws {

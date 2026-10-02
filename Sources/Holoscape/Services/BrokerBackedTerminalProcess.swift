@@ -57,6 +57,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var startFailureKind: TerminalStartFailureKind?
     private(set) var untrackedBrokerSessionID: BrokerSessionID?
     private(set) var lastScrollbackReplay: ScrollbackReplay?
+    /// The broker generation already represented by this terminal view.
+    private var presentedBrokerSessionID: BrokerSessionID?
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
@@ -221,6 +223,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try result.get()
             brokerSessionID = record.id
+            presentedBrokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
@@ -331,11 +334,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         sessionFailure = nil
         let coordinator = self.coordinator
         let channelID = self.channelID
+        let shouldReplayScrollback = presentedBrokerSessionID != sessionID
         guard coordinator.requiresOffMainBrokerWork else {
             finishReattach(
                 sessionID: sessionID,
                 result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) },
                 replay: nil,
+                shouldReplayScrollback: shouldReplayScrollback,
                 notifyStartCompletion: false
             )
             return
@@ -343,7 +348,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startCompletionPending = true
         reattachGeneration &+= 1
         let generation = reattachGeneration
-        failureRecoveryCoordinator.reattach(sessionID, attachedChannelID: channelID) { [weak self] result in
+        failureRecoveryCoordinator.reattach(
+            sessionID,
+            attachedChannelID: channelID,
+            shouldReplayScrollback: shouldReplayScrollback
+        ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self,
                       self.startCompletionPending,
@@ -353,6 +362,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     sessionID: sessionID,
                     result: result.record,
                     replay: result.replay,
+                    shouldReplayScrollback: shouldReplayScrollback,
                     notifyStartCompletion: true
                 )
             }
@@ -363,6 +373,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         sessionID: BrokerSessionID,
         result: Result<BrokerSessionRecord, Error>,
         replay: ScrollbackReplayResult?,
+        shouldReplayScrollback: Bool,
         notifyStartCompletion: Bool
     ) {
         do {
@@ -375,11 +386,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // publish it through the same host-truth seam as OSC 7 so the owning
             // shell replaces any stale channel metadata before saving again.
             hostCurrentDirectoryHandler?(record.workingDirectory)
-            if let replay {
-                applyScrollbackReplay(replay, for: record.id)
-            } else {
-                restoreScrollbackReplay(for: record.id)
+            if shouldReplayScrollback {
+                if let replay {
+                    applyScrollbackReplay(replay, for: record.id)
+                } else {
+                    restoreScrollbackReplay(for: record.id)
+                }
             }
+            presentedBrokerSessionID = record.id
             sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
@@ -932,19 +946,22 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     func reattach(
         _ id: BrokerSessionID,
         attachedChannelID: UUID,
+        shouldReplayScrollback: Bool,
         completion: @escaping @Sendable (ReattachResult) -> Void
     ) {
         queue.async { [self] in
             do {
                 let record = try coordinator.reattach(id, attachedChannelID: attachedChannelID)
-                let replay: ScrollbackReplayResult
-                do {
-                    replay = ScrollbackReplayResult(
-                        replay: try coordinator.readScrollbackReplay(id, maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach),
-                        error: nil
-                    )
-                } catch {
-                    replay = ScrollbackReplayResult(replay: nil, error: String(describing: error))
+                var replay: ScrollbackReplayResult?
+                if shouldReplayScrollback {
+                    do {
+                        replay = ScrollbackReplayResult(
+                            replay: try coordinator.readScrollbackReplay(id, maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach),
+                            error: nil
+                        )
+                    } catch {
+                        replay = ScrollbackReplayResult(replay: nil, error: String(describing: error))
+                    }
                 }
                 completion(ReattachResult(record: .success(record), replay: replay))
             } catch {

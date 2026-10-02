@@ -68,7 +68,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             // off-main before restore classification and initial tab creation.
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                await channelManagerRef?.prepareBrokerRecovery()
+                // A failed inventory is unknown, never empty. Do not create a
+                // default process until discovery succeeds, or a transient host
+                // outage could hide a survivor and launch a duplicate.
+                while await channelManagerRef?.prepareBrokerRecovery() == false {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !terminationTeardownStarted else { return }
+                }
                 restoreSavedChannelsAndRecoveredBrokerSessions()
                 ensureInitialChannelIfNeeded()
                 windowController?.refreshAllTabs()
@@ -152,6 +158,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     private func handleURL(_ url: URL) {
+        guard !terminationTeardownStarted else {
+            NSLog("Ignored external URL while application termination is pending")
+            return
+        }
         guard url.scheme == "holoscape" else { return }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         let params = Dictionary(
@@ -204,6 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
 
         stopAPIServerForTermination()
+        setLaunchRecoveryInteractionEnabled(false)
         beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
             sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
@@ -232,6 +243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             self.terminationTeardownGeneration &+= 1
             NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
             self.apiServer?.start()
+            self.setLaunchRecoveryInteractionEnabled(true)
             reply(false)
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem

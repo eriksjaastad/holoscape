@@ -56,6 +56,7 @@ struct HTTPResponse {
         case 201: return "Created"
         case 404: return "Not Found"
         case 400: return "Bad Request"
+        case 503: return "Service Unavailable"
         case 500: return "Internal Server Error"
         default: return "Unknown"
         }

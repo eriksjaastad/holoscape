@@ -459,6 +459,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
     private final class HostLossRuntime: BrokerSessionRuntime {
         var isHostAvailable = true
         private(set) var createdIDs: [BrokerSessionID] = []
+        var scrollbackTail = Data()
+        private(set) var scrollbackTailReadCount = 0
 
         private func hostUnavailable() throws -> Never {
             throw BrokerSessionHostClientRuntime.ClientError.transportFailed(
@@ -482,7 +484,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
             if !isHostAvailable { try hostUnavailable() }
-            return Data()
+            scrollbackTailReadCount += 1
+            return scrollbackTail
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
             if !isHostAvailable { try hostUnavailable() }
@@ -844,6 +847,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { failures.count == 1 }
 
         runtime.isHostAvailable = true
+        runtime.scrollbackTail = Data("already-rendered-before-host-loss".utf8)
         fixture.terminal.startProcess(
             executable: "/bin/zsh",
             args: ["--login"],
@@ -860,6 +864,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             [sessionID],
             "Retry after a host outage must reattach, never spawn a replacement"
         )
+        XCTAssertEqual(
+            runtime.scrollbackTailReadCount,
+            0,
+            "Reattaching the same broker generation into the same terminal view must not replay already-rendered history"
+        )
+        XCTAssertNil(fixture.terminal.lastScrollbackReplay)
     }
 
     func testRetryAfterBrokerHostLossPublishesAuthoritativeReattachedWorkingDirectory() throws {

@@ -12,6 +12,44 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         override func stop() { stopCallCount += 1 }
     }
 
+    func testStoppedAPIServerRejectsAlreadyAdmittedMutation() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIAdmissionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = HoloscapeAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.start()
+        let listResponse = await apiServer.route(HTTPRequest(
+            method: "GET",
+            path: "/channels",
+            queryParams: [:],
+            body: nil
+        ))
+        XCTAssertEqual(listResponse.status, 200)
+
+        apiServer.stop()
+        let createResponse = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: ["type": "shell"])
+        ))
+
+        XCTAssertEqual(createResponse.status, 503)
+        XCTAssertEqual(createResponse.statusText, "Service Unavailable")
+        XCTAssertEqual(manager.count, 0, "A request accepted before stop must not mutate the teardown snapshot")
+    }
+
     func testTerminationDeadlineRestartsSameAPIServerWithMuteStateIntact() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateAPIRestartTests-")

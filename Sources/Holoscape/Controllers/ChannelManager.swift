@@ -347,7 +347,8 @@ class ChannelManager {
     /// discarding what it could not read.
     /// Prepare broker recovery before any restore code performs synchronous
     /// record classification. All socket/status/retirement RPCs happen off-main.
-    func prepareBrokerRecovery() async {
+    @discardableResult
+    func prepareBrokerRecovery() async -> Bool {
         didPrepareBrokerRecovery = true
         do {
             let sessions = try await withCheckedThrowingContinuation { continuation in
@@ -357,10 +358,12 @@ class ChannelManager {
             }
             preparedBrokerRecoverySessions = sessions
             brokerRegistryReadFailure = nil
+            return true
         } catch {
             preparedBrokerRecoverySessions = nil
             brokerRegistryReadFailure = String(describing: error)
             NSLog("ChannelManager could not read broker sessions during launch recovery: \(error)")
+            return false
         }
     }
 
