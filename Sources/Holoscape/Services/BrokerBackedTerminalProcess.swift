@@ -394,6 +394,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 }
             }
             presentedBrokerSessionID = record.id
+            if record.lifecycle == .exited {
+                sessionIOReady = false
+                inputWriteLane.close()
+                finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
+                return
+            }
             sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
@@ -418,6 +424,63 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             startCompletionPending = false
             startCompletionHandler?()
         }
+    }
+
+    private func finishExitedReattach(
+        _ record: BrokerSessionRecord,
+        notifyStartCompletion: Bool
+    ) {
+        guard let exitCode = record.exitCode else {
+            startFailureDescription = "Exited broker session \(record.id.rawValue) has no exit code"
+            startFailureKind = .failed
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
+
+        let completion: @Sendable (Error?) -> Void = { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self, self.brokerSessionID == record.id else { return }
+                if let error {
+                    self.startFailureDescription = String(describing: error)
+                    self.startFailureKind = self.classifyStartFailure(error)
+                    self.completeReattachStartIfNeeded(notifyStartCompletion)
+                    return
+                }
+                self.brokerSessionID = nil
+                self.agentStatusOwnerToken = nil
+                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                let publishTermination: @MainActor @Sendable () -> Void = { [weak self] in
+                    guard let self, !self.didNotifyTermination else { return }
+                    self.didNotifyTermination = true
+                    self.terminationHandler?(exitCode)
+                }
+                if notifyStartCompletion {
+                    publishTermination()
+                } else {
+                    // Synchronous controller activation calls finishActivation
+                    // after startProcess returns. Publish exit on the next main
+                    // turn so that final state cannot be overwritten as active.
+                    DispatchQueue.main.async(execute: publishTermination)
+                }
+            }
+        }
+
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
+        } else {
+            do {
+                try coordinator.retireCompletedSession(record.id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
+        guard notifyStartCompletion else { return }
+        startCompletionPending = false
+        startCompletionHandler?()
     }
 
     private func restoreScrollbackReplay(for sessionID: BrokerSessionID) {
@@ -1005,6 +1068,20 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
         queue.async { [self] in
             do {
                 try coordinator.retireUntrackedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func retireCompletedSession(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.retireCompletedSession(id)
                 completion(nil)
             } catch {
                 completion(error)

@@ -1633,6 +1633,25 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.workingDirectory, "/tmp/context-menu-recreate")
     }
 
+    func testTerminationMutationGateDisablesContextActionsAndRejectsDirectChannelChanges() throws {
+        let channel = createMockChannel(type: .shell, role: "Shell")
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+        windowController.setChannelMutationEnabled(false)
+
+        let menu = try XCTUnwrap(windowController.buildContextMenu(for: channel.channelId))
+        for title in ["Close", "Rename", "Duplicate", "Reconnect", "Pin", "Mute Notifications"] {
+            let item = try XCTUnwrap(menu.items.first { $0.title == title })
+            XCTAssertFalse(item.isEnabled, "\(title) must not mutate channels during deferred termination")
+        }
+        XCTAssertTrue(try XCTUnwrap(menu.items.first { $0.title == "Copy Session Info" }).isEnabled)
+
+        windowController.createShellChannel()
+        windowController.closeChannel(id: channel.channelId)
+
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertNotNil(manager.channel(for: channel.channelId))
+    }
+
     func testRestoreStateSkipsDuplicateSavedIDBeforeInvokingFactory() {
         let duplicateID = UUID(uuidString: "00000000-0000-0000-0000-000000000765")!
         var config = configService.load()

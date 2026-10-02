@@ -329,9 +329,12 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
     }
 
-    func testExitRecordsExitCodeAndRemovesFromReattachableList() throws {
+    func testExitRecordsExitCodeAndOffersRetainedRuntimeForFinalReplay() throws {
         var now = Date(timeIntervalSince1970: 100)
-        let coordinator = makeCoordinator(now: { now })
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        runtime.observedTerminationStatus = nil
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
         let record = try coordinator.start(
             BrokerSessionLaunchRequest(
                 command: "/bin/zsh",
@@ -343,6 +346,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             label: nil,
             attachedChannelID: nil
         )
+        runtime.listedSessionIDs = [record.id]
 
         XCTAssertEqual(try coordinator.reattachableSessions(), [record])
 
@@ -352,14 +356,14 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(exited.lifecycle, .exited)
         XCTAssertEqual(exited.exitCode, 0)
         XCTAssertEqual(exited.updatedAt, now)
-        XCTAssertEqual(try coordinator.reattachableSessions(), [])
-        XCTAssertThrowsError(try coordinator.reattach(record.id, attachedChannelID: UUID())) { error in
-            XCTAssertEqual(
-                error as? BrokerSessionCoordinator.CoordinatorError,
-                .staleSession(record.id)
-            )
-        }
+        XCTAssertEqual(try coordinator.reattachableSessions(), [exited])
+        XCTAssertEqual(try coordinator.reattach(record.id, attachedChannelID: UUID()), exited)
         XCTAssertEqual(try coordinator.reconcileRuntimeStatus(record.id), exited)
+
+        try coordinator.retireCompletedSession(record.id)
+        runtime.listedSessionIDs = []
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try coordinator.loadAll(), [exited], "Durable exit metadata survives runtime retirement")
     }
 
     func testExitRebasesFinalStateAfterConcurrentMetadataUpdate() throws {

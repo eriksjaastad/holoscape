@@ -3,6 +3,11 @@ import AppKit
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var windowController: MainWindowController?
+    /// Test seam for termination admission; production ownership remains private.
+    var windowControllerRef: MainWindowController? {
+        get { windowController }
+        set { windowController = newValue }
+    }
     private let configService = ConfigService()
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
@@ -215,6 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         stopAPIServerForTermination()
         setLaunchRecoveryInteractionEnabled(false)
+        windowController?.setChannelMutationEnabled(false)
         beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
             sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
@@ -244,6 +250,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
             self.apiServer?.start()
             self.setLaunchRecoveryInteractionEnabled(true)
+            self.windowController?.setChannelMutationEnabled(true)
             reply(false)
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem

@@ -1565,6 +1565,63 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(try coordinator.isRunning(record.id))
     }
 
+    func testExitedDetachedSessionReplaysFinalScrollbackBeforePublishingExit() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalExitedReplayTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let runtime = NativePTYBrokerSessionRuntime()
+        let coordinator = BrokerSessionCoordinator(registry: registry, runtime: runtime)
+        let original = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "sleep 0.05; printf detached-final-scrollback; exit 7"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "finished-shell",
+            attachedChannelID: UUID()
+        )
+        _ = try coordinator.detach(original.id)
+        try waitUntil { try coordinator.terminationStatus(original.id) == 7 }
+
+        let recoverable = try coordinator.reattachableSessions()
+        XCTAssertEqual(recoverable.map(\.id), [original.id])
+        XCTAssertEqual(recoverable.first?.lifecycle, .exited)
+
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "finished-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: original.id,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { events.contains("exit:7") }
+        XCTAssertEqual(events.first, "output", "Final replay must render before exit authority reaches the controller")
+        XCTAssertEqual(events.last, "exit:7")
+        XCTAssertTrue(restoredTerminal.lastLines(20).joined(separator: "\n").contains("detached-final-scrollback"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+        XCTAssertEqual(try registry.load().single().lifecycle, .exited)
+        XCTAssertEqual(try runtime.listSessions(), [], "Completed runtime ownership must retire after final replay")
+    }
+
     func testCorruptScrollbackReplayDoesNotFailSuccessfulReattach() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerBackedTerminalProcessCorruptScrollbackTests-")

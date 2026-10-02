@@ -13,6 +13,8 @@ protocol BrokerSessionCoordinating {
     /// Retire a runtime session whose registry write never succeeded.
     func retireUntrackedSession(_ id: BrokerSessionID) throws
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
+    /// Remove a replayed, exited runtime object while preserving durable exit metadata.
+    func retireCompletedSession(_ id: BrokerSessionID) throws
     func reattachableSessions() throws -> [BrokerSessionRecord]
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
@@ -41,6 +43,8 @@ extension BrokerSessionCoordinating {
     ) throws {}
 
     func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool { false }
+
+    func retireCompletedSession(_ id: BrokerSessionID) throws {}
 
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         ScrollbackReplay(
@@ -94,11 +98,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func reattachableSessions() throws -> [BrokerSessionRecord] {
         let records = try registry.load()
         let recordedIDs = Set(records.map(\.id))
+        let runtimeSessionIDs = Set(try runtime.listSessions())
         // A failed-start generation may outlive the UI controller that knew its
         // ID (for example after tab close or app termination). The broker's live
         // inventory is the durable fallback authority: retire any generation
         // that has no registry record before offering sessions for restore.
-        for orphanID in try runtime.listSessions() where !recordedIDs.contains(orphanID) {
+        for orphanID in runtimeSessionIDs where !recordedIDs.contains(orphanID) {
             try retireUntrackedSession(orphanID)
         }
         return try records.compactMap { record in
@@ -108,6 +113,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 switch reconciled.lifecycle {
                 case .running, .detached, .stale:
                     return reconciled
+                case .exited:
+                    return runtimeSessionIDs.contains(reconciled.id) ? reconciled : nil
                 case .reattaching:
                     // A durable reattach lease has no in-process owner after
                     // relaunch. Revoke it to detached so normal restore can
@@ -128,10 +135,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     switch current.lifecycle {
                     case .running, .detached, .stale:
                         return current
-                    case .creating, .reattaching, .exited, .errored, .terminating:
+                    case .exited:
+                        return runtimeSessionIDs.contains(current.id) ? current : nil
+                    case .creating, .reattaching, .errored, .terminating:
                         return nil
                     }
-                case .creating, .exited, .errored, .terminating:
+                case .creating, .errored, .terminating:
                     return nil
                 }
             case .terminating:
@@ -141,7 +150,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // identity as stale and permit a replacement process.
                 _ = try markErrored(record.id)
                 return nil
-            case .creating, .exited, .errored:
+            case .exited:
+                // Native broker sessions retain their completed scrollback until
+                // explicit retirement. Offer that exited generation once more so
+                // restore can replay its final bytes before publishing exit to the
+                // controller. An exited record without a runtime owner has no live
+                // replay authority and remains final.
+                return runtimeSessionIDs.contains(record.id) ? record : nil
+            case .creating, .errored:
                 return nil
             }
         }
@@ -231,6 +247,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    func retireCompletedSession(_ id: BrokerSessionID) throws {
+        let existing = try record(for: id)
+        guard existing.lifecycle == .exited else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
+        do {
+            try runtime.markSessionErrored(id: id)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return
+        }
+    }
+
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         // Publish the reversible metadata transition before contacting the
@@ -294,8 +322,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             _ = try markErrored(id)
             throw CoordinatorError.staleSession(id)
         }
-        guard existing.lifecycle != .exited,
-              existing.lifecycle != .errored,
+        if existing.lifecycle == .exited {
+            // Reattach to the retained broker object only long enough to replay
+            // final scrollback. Preserve durable `.exited` truth; the terminal's
+            // first output poll will publish the stored exit code after replay.
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
+            return existing
+        }
+        guard existing.lifecycle != .errored,
               existing.lifecycle != .stale else {
             throw CoordinatorError.staleSession(id)
         }
