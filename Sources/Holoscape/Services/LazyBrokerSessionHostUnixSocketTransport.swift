@@ -52,10 +52,6 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard !BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) else {
-            throw LaunchError.socketTimedOut(socketPath)
-        }
-
         switch socketReachability() {
         case .reachable:
             return
@@ -63,6 +59,13 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
             throw LaunchError.socketTimedOut(socketPath)
         case .unreachable:
             break
+        }
+
+        if BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) {
+            if !FileManager.default.fileExists(atPath: socketPath) {
+                try waitForSocket()
+            }
+            return
         }
 
         if let launchedProcess, launchedProcess.isRunning {
@@ -89,8 +92,9 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     }
 
     private func waitForSocket() throws {
-        let deadline = Date().addingTimeInterval(Double(socketWaitTimeoutMilliseconds) / 1_000.0)
-        while Date() < deadline {
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(socketWaitTimeoutMilliseconds) * 1_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadline {
             if socketReachability() == .reachable {
                 return
             }

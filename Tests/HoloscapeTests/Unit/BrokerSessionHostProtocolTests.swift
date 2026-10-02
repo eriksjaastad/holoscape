@@ -372,6 +372,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         try client.setOutputAvailabilityHandler(id: sessionID, handler: nil)
     }
 
+    func testProductionSocketRuntimeUsesFallbackSamplingInsteadOfPerSessionLongPolls() {
+        let client = BrokerSessionHostClientRuntime.currentExecutableSocketHostRuntime(
+            socketPath: "/tmp/unused-production-socket-runtime.sock"
+        )
+
+        XCTAssertFalse(client.supportsOutputAvailabilityMonitoring)
+    }
+
     func testClientRuntimeFailsLoudlyWhenHostReturnsUnexpectedResponseShape() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime { _ in

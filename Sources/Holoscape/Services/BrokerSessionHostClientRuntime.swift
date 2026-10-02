@@ -63,7 +63,10 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             executableURL: currentExecutableURL(),
             socketPath: socketPath
         )
-        return BrokerSessionHostClientRuntime { frame in
+        return BrokerSessionHostClientRuntime(
+            supportsOutputAvailabilityMonitoring: false,
+            startsOutputAvailabilityMonitor: false
+        ) { frame in
             try lazyTransport.sendFrame(frame)
         }
     }
@@ -244,9 +247,13 @@ private final class BrokerSessionHostClientOutputMonitor: @unchecked Sendable {
                     if try wait(id), self?.isActive(id: id, generation: generation) == true {
                         handler(id)
                     }
-                } catch {
+                } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
                     guard self?.isActive(id: id, generation: generation) == true else { return }
                     Thread.sleep(forTimeInterval: 0.25)
+                } catch {
+                    NSLog("Broker output availability monitor stopped for %@: %@", id.rawValue, String(describing: error))
+                    self?.stopIfCurrent(id: id, generation: generation)
+                    return
                 }
             }
         }
@@ -260,6 +267,14 @@ private final class BrokerSessionHostClientOutputMonitor: @unchecked Sendable {
 
     private func isActive(id: BrokerSessionID, generation: UUID) -> Bool {
         lock.withLock { monitors[id]?.generation == generation }
+    }
+
+    private func stopIfCurrent(id: BrokerSessionID, generation: UUID) {
+        lock.withLock {
+            if monitors[id]?.generation == generation {
+                monitors[id] = nil
+            }
+        }
     }
 
 }
