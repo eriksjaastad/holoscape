@@ -18,6 +18,12 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         case writeFailed(String)
     }
 
+    enum Reachability: Equatable {
+        case reachable
+        case unreachable
+        case indeterminate
+    }
+
     private let socketPath: String
     private let host: BrokerSessionHost
     private let codec: BrokerSessionHostCodec
@@ -59,6 +65,12 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 throw ServerError.acceptFailed(String(cString: strerror(errno)))
             }
+            do {
+                try Self.configureAcceptedClientSocket(clientFD)
+            } catch {
+                Darwin.close(clientFD)
+                throw error
+            }
             handlerSlots.wait()
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
@@ -92,11 +104,16 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
 
         if FileManager.default.fileExists(atPath: socketPath) {
-            if Self.socketPathHasReachableBroker(socketPath) {
+            switch Self.socketPathBrokerReachability(socketPath) {
+            case .reachable:
                 Darwin.close(fd)
                 throw ServerError.bindFailed("socket path already has a reachable broker: \(socketPath)")
+            case .indeterminate:
+                Darwin.close(fd)
+                throw ServerError.bindFailed("socket path may have a reachable broker: \(socketPath)")
+            case .unreachable:
+                unlink(socketPath)
             }
-            unlink(socketPath)
         }
 
         var address = sockaddr_un()
@@ -133,6 +150,16 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         _ socketPath: String,
         timeoutMilliseconds: Int = 250
     ) -> Bool {
+        socketPathBrokerReachability(
+            socketPath,
+            timeoutMilliseconds: timeoutMilliseconds
+        ) == .reachable
+    }
+
+    static func socketPathBrokerReachability(
+        _ socketPath: String,
+        timeoutMilliseconds: Int = 250
+    ) -> Reachability {
         do {
             let codec = BrokerSessionHostCodec()
             let probeFrame = try codec.encodeRequest(.listSessions)
@@ -141,9 +168,24 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 requestTimeoutMilliseconds: timeoutMilliseconds
             ).sendFrame(probeFrame)
             _ = try codec.decodeResponse(responseFrame)
-            return true
+            return .reachable
+        } catch BrokerSessionHostUnixSocketTransport.TransportError.timedOut {
+            return .indeterminate
         } catch {
-            return false
+            return .unreachable
+        }
+    }
+
+    static func configureAcceptedClientSocket(_ clientFD: Int32) throws {
+        var noSigPipe: Int32 = 1
+        guard setsockopt(
+            clientFD,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &noSigPipe,
+            socklen_t(MemoryLayout<Int32>.size)
+        ) == 0 else {
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
         }
     }
 
@@ -245,6 +287,19 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw TransportError.socketFailed(String(cString: strerror(errno)))
+        }
+
+        var noSigPipe: Int32 = 1
+        guard setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &noSigPipe,
+            socklen_t(MemoryLayout<Int32>.size)
+        ) == 0 else {
+            let message = String(cString: strerror(errno))
+            Darwin.close(fd)
+            throw TransportError.socketFailed(message)
         }
 
         let currentFlags = fcntl(fd, F_GETFL)

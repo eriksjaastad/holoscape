@@ -48,8 +48,13 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        if isSocketConnectable() {
+        switch socketReachability() {
+        case .reachable:
             return
+        case .indeterminate:
+            throw LaunchError.socketTimedOut(socketPath)
+        case .unreachable:
+            break
         }
 
         if let launchedProcess, launchedProcess.isRunning {
@@ -78,7 +83,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private func waitForSocket() throws {
         let deadline = Date().addingTimeInterval(Double(socketWaitTimeoutMilliseconds) / 1_000.0)
         while Date() < deadline {
-            if isSocketConnectable() {
+            if socketReachability() == .reachable {
                 return
             }
             usleep(10_000)
@@ -86,8 +91,8 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         throw LaunchError.socketTimedOut(socketPath)
     }
 
-    private func isSocketConnectable() -> Bool {
-        BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath)
+    private func socketReachability() -> BrokerSessionHostUnixSocketServer.Reachability {
+        BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath)
     }
 
     static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {

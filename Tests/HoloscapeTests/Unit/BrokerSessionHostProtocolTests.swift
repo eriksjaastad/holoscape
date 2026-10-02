@@ -1085,6 +1085,105 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         wait(for: [serverFinished], timeout: 1)
     }
 
+    func testUnixSocketServerRefusesToReplaceSilentReachableSocket() throws {
+        let socketPath = "/tmp/hs-silent-existing-broker-\(UUID().uuidString).sock"
+        let existingServerFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(existingServerFD)
+            unlink(socketPath)
+        }
+
+        let existingServerFinished = expectation(description: "silent existing server released probe")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(existingServerFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                usleep(500_000)
+                Darwin.close(clientFD)
+            }
+            existingServerFinished.fulfill()
+        }
+
+        let replacement = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime())
+        )
+        XCTAssertThrowsError(try replacement.run(maxConnections: 0)) { error in
+            guard case let BrokerSessionHostUnixSocketServer.ServerError.bindFailed(message) = error else {
+                return XCTFail("Expected bindFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("may have a reachable broker"), message)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+        wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testLazyUnixSocketTransportDoesNotReplaceIndeterminateBroker() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketIndeterminateTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("replacement-broker")
+        let launchMarkerURL = temporaryDirectory.appendingPathComponent("launched")
+        let socketPath = "/tmp/hs-lazy-indeterminate-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+        }
+        try """
+        #!/bin/sh
+        touch "\(launchMarkerURL.path)"
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        let existingServerFD = try makeListeningUnixSocket(at: socketPath)
+        defer { Darwin.close(existingServerFD) }
+        let existingServerFinished = expectation(description: "indeterminate broker released probe")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(existingServerFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                usleep(500_000)
+                Darwin.close(clientFD)
+            }
+            existingServerFinished.fulfill()
+        }
+
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 100
+        )
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            XCTAssertEqual(
+                error as? LazyBrokerSessionHostUnixSocketTransport.LaunchError,
+                .socketTimedOut(socketPath)
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: launchMarkerURL.path))
+        wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testUnixSocketServerDisablesSIGPIPEOnAcceptedDescriptors() throws {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
+        defer {
+            Darwin.close(descriptors[0])
+            Darwin.close(descriptors[1])
+        }
+
+        try BrokerSessionHostUnixSocketServer.configureAcceptedClientSocket(descriptors[0])
+
+        var noSigPipe: Int32 = 0
+        var optionLength = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(
+            getsockopt(descriptors[0], SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, &optionLength),
+            0
+        )
+        XCTAssertEqual(noSigPipe, 1)
+    }
+
     func testUnixSocketServerDoesNotBlockUnrelatedSessionBehindSlowRequest() throws {
         let runtime = DelayedBrokerSessionRuntime()
         runtime.isRunning = true
