@@ -19,6 +19,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var events: [Event] = []
         var createError: Error?
         var attachError: Error?
+        var onAttach: (() throws -> Void)?
         var terminateError: Error?
         var onTerminate: (() throws -> Void)?
         var markErroredError: Error?
@@ -51,6 +52,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {
             if let attachError { throw attachError }
             events.append(.attach(id, channelID))
+            try onAttach?()
         }
 
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
@@ -278,6 +280,43 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(reattached.updatedAt, now)
     }
 
+    func testDetachDuringReattachCannotRepublishDurableOwnership() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var coordinator: BrokerSessionCoordinator!
+        coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 40) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-detach-race"),
+            channelType: .shell,
+            label: "race",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000040")!
+        )
+        _ = try coordinator.detach(started.id)
+        runtime.onAttach = {
+            _ = try coordinator.detach(started.id)
+        }
+
+        XCTAssertThrowsError(
+            try coordinator.reattach(
+                started.id,
+                attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000041")!
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .concurrentSessionTransition(started.id)
+            )
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .detached)
+        XCTAssertNil(durable.lastAttachedChannelID)
+        XCTAssertEqual(
+            runtime.events.filter { $0 == .detach(started.id) }.count,
+            3,
+            "The lost reattach lease must issue a final runtime detach after the racing teardown"
+        )
+    }
+
     func testExitRecordsExitCodeAndRemovesFromReattachableList() throws {
         var now = Date(timeIntervalSince1970: 100)
         let coordinator = makeCoordinator(now: { now })
@@ -500,7 +539,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
     }
 
     /// #7377 — an unrecordable start must not leave an orphaned runtime session.
-    func testStartTerminatesRuntimeSessionWhenRegistryWriteFails() throws {
+    func testStartRemovesRuntimeSessionWhenRegistryWriteFails() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let registry = try makeUnwritableRegistry()
         let coordinator = makeCoordinator(
@@ -522,8 +561,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             runtime.events,
-            [.create(createdID, request), .terminate(createdID, nil)],
-            "A start whose registry write fails must terminate the session it just created"
+            [.create(createdID, request), .markErrored(createdID)],
+            "A start whose registry write fails must remove the session it just created"
         )
         XCTAssertEqual(try registry.load(), [], "A rolled-back start must not persist a record")
     }
@@ -532,7 +571,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
     /// failure and the runtime identity required for a safe retry.
     func testStartRollbackFailureSurfacesUntrackedIdentityAndRegistryFailure() throws {
         let runtime = RecordingBrokerSessionRuntime()
-        runtime.terminateError = RuntimeError.failed
+        runtime.markErroredError = RuntimeError.failed
         let registry = try makeUnwritableRegistry()
         let coordinator = makeCoordinator(
             runtime: runtime,
@@ -558,15 +597,15 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             runtime.events,
-            [.create(createdID, request), .terminate(createdID, nil)],
+            [.create(createdID, request), .markErrored(createdID)],
             "The rollback must still be attempted when it is going to fail"
         )
 
-        runtime.terminateError = nil
+        runtime.markErroredError = nil
         try coordinator.retireUntrackedSession(createdID)
         XCTAssertEqual(
             runtime.events,
-            [.create(createdID, request), .terminate(createdID, nil), .terminate(createdID, nil)],
+            [.create(createdID, request), .markErrored(createdID), .markErrored(createdID)],
             "Retry must retire the known untracked generation before any replacement can start"
         )
     }

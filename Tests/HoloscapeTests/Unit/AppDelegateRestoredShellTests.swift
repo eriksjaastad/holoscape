@@ -1,8 +1,55 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
+        let mainMenu = NSMenu(title: "Main")
+        let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Holoscape")
+        let settings = NSMenuItem(
+            title: "Settings",
+            action: #selector(AppDelegate.openSettings),
+            keyEquivalent: ","
+        )
+        let quit = NSMenuItem(
+            title: "Quit",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        quit.target = NSApplication.shared
+        appMenu.addItem(settings)
+        appMenu.addItem(quit)
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        let newShell = NSMenuItem(
+            title: "New Shell Channel",
+            action: #selector(MainWindowController.createShellChannel),
+            keyEquivalent: "n"
+        )
+        fileMenu.addItem(newShell)
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+        quit.isEnabled = true
+
+        let appDelegate = AppDelegate()
+        appDelegate.setLaunchRecoveryInteractionEnabled(false, menu: mainMenu)
+
+        XCTAssertFalse(settings.isEnabled)
+        XCTAssertFalse(newShell.isEnabled)
+        XCTAssertFalse(AppDelegate.shouldDisableDuringLaunchRecovery(quit))
+        XCTAssertTrue(AppDelegate.shouldDisableDuringLaunchRecovery(newShell))
+
+        appDelegate.setLaunchRecoveryInteractionEnabled(true, menu: mainMenu)
+
+        XCTAssertTrue(settings.isEnabled)
+        XCTAssertTrue(newShell.isEnabled)
+    }
+
     private enum RecordingError: Error {
         case unexpectedStart
         case missingSession

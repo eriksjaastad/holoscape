@@ -1578,6 +1578,36 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(newManager.count, 1)
     }
 
+    func testRestoreStateSkipsDuplicateBrokerSessionIDBeforeInvokingFactory() {
+        let brokerSessionID = BrokerSessionID(rawValue: "duplicate-restored-broker-session")
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000766")!,
+                type: .shell,
+                role: "First",
+                brokerSessionID: brokerSessionID
+            ),
+            ChannelMetadata(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000767")!,
+                type: .shell,
+                role: "Duplicate Broker Owner",
+                brokerSessionID: brokerSessionID
+            )
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["First"])
+        XCTAssertEqual(newManager.count, 1)
+    }
+
     func testRestoreStateWithEmptyConfig() {
         let newManager = ChannelManager(configService: configService)
         newManager.restoreState { _ in nil }

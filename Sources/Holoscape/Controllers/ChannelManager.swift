@@ -278,6 +278,7 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) {
         let config = configService.load()
+        var claimedBrokerSessionIDs: Set<BrokerSessionID> = []
         for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
@@ -287,6 +288,9 @@ class ChannelManager {
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
             guard channels[metadata.id] == nil else { continue }
+            if let brokerSessionID = metadata.brokerSessionID {
+                guard claimedBrokerSessionIDs.insert(brokerSessionID).inserted else { continue }
+            }
             if let controller = factory(metadata), channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller

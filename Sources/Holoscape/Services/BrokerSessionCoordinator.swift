@@ -65,6 +65,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case brokerHostUnavailable(BrokerSessionID, String)
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
@@ -155,7 +156,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // surfacing the failure, otherwise the broker is left owning an
             // untracked process.
             do {
-                try runtime.terminateSession(id: id, exitCode: nil)
+                try runtime.markSessionErrored(id: id)
                 NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
             } catch {
                 throw CoordinatorError.untrackedSession(
@@ -171,7 +172,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     func retireUntrackedSession(_ id: BrokerSessionID) throws {
         do {
-            try runtime.terminateSession(id: id, exitCode: nil)
+            try runtime.markSessionErrored(id: id)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
             return
         }
@@ -245,27 +246,59 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
               existing.lifecycle != .stale else {
             throw CoordinatorError.staleSession(id)
         }
+        guard existing.lifecycle != .reattaching else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
+
+        // Publish a durable lease before the broker attach. Detach can revoke
+        // this lease by advancing `.reattaching` to `.detached`; a late attach
+        // must then clean up runtime ownership instead of republishing `.running`.
+        let lease = existing.withLifecycle(
+            .reattaching,
+            exitCode: nil,
+            updatedAt: now(),
+            lastAttachedChannelID: nil
+        )
+        guard try registry.replace(lease, ifUnchangedFrom: existing) else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
         do {
-            return try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
-                record.withLifecycle(
-                    .running,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: attachedChannelID
-                )
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
+            let attached = lease.withLifecycle(
+                .running,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: attachedChannelID
+            )
+            guard try registry.replace(attached, ifUnchangedFrom: lease) else {
+                do {
+                    try runtime.detachSession(id: id)
+                } catch {
+                    throw CoordinatorError.reattachCleanupFailed(
+                        id,
+                        runtimeFailure: String(describing: error)
+                    )
+                }
+                throw CoordinatorError.concurrentSessionTransition(id)
             }
+            return attached
         } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
+            _ = try? registry.replace(existing, ifUnchangedFrom: lease)
             throw CoordinatorError.brokerHostUnavailable(id, message)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
-            _ = try updateMetadataOnly(id) { record in
-                record.withLifecycle(
-                    .stale,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: nil
-                )
+            let stale = lease.withLifecycle(
+                .stale,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
+            )
+            if try registry.replace(stale, ifUnchangedFrom: lease) {
+                throw CoordinatorError.staleSession(id)
             }
             throw CoordinatorError.staleSession(id)
+        } catch {
+            _ = try? registry.replace(existing, ifUnchangedFrom: lease)
+            throw error
         }
     }
 

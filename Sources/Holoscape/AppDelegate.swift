@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var apiServer: HoloscapeAPIServer?
     private var launchRecoveryComplete = false
     private var pendingExternalURLs: [URL] = []
+    private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
 
     private var isUITesting: Bool {
         CommandLine.arguments.contains("--ui-testing")
@@ -55,6 +56,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
         let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldRestore {
+            setLaunchRecoveryInteractionEnabled(false)
             // Broker discovery can include bounded Unix-socket RPCs. Prepare it
             // off-main before restore classification and initial tab creation.
             Task { @MainActor [weak self] in
@@ -64,6 +66,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 ensureInitialChannelIfNeeded()
                 windowController?.refreshAllTabs()
                 launchRecoveryComplete = true
+                setLaunchRecoveryInteractionEnabled(true)
+                runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
                 startAPIServerIfNeeded(channelManager: channelManager)
                 showMainWindow()
                 drainPendingExternalURLs()
@@ -71,6 +75,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         } else {
             ensureInitialChannelIfNeeded()
             launchRecoveryComplete = true
+            runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
             startAPIServerIfNeeded(channelManager: channelManager)
         }
 
@@ -82,18 +87,50 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
         if launchRecoveryComplete { showMainWindow() }
 
-        if !isUITesting {
-            // Retry any pending reports from previous failed submissions
-            bugReportService.retryPendingReports()
+    }
 
-            // Check for crashes on previous launch
-            checkForCrashes(lastLaunch: config.lastLaunchTimestamp)
-
-            // Update launch timestamp
-            var updatedConfig = config
-            updatedConfig.lastLaunchTimestamp = Date()
-            configService.save(updatedConfig)
+    /// Keep launch-time restoration authoritative by disabling every mutating
+    /// menu command until saved tabs and surviving broker sessions are restored.
+    /// Quit stays available and already skips destructive saves while recovery
+    /// is incomplete. Original enabled states are restored exactly.
+    func setLaunchRecoveryInteractionEnabled(_ enabled: Bool, menu: NSMenu? = NSApp.mainMenu) {
+        if enabled {
+            for state in launchRecoveryMenuItemStates {
+                state.item.isEnabled = state.wasEnabled
+            }
+            launchRecoveryMenuItemStates.removeAll()
+            return
         }
+
+        guard launchRecoveryMenuItemStates.isEmpty, let menu else { return }
+        func disableMutatingItems(in current: NSMenu) {
+            for item in current.items {
+                if let submenu = item.submenu {
+                    disableMutatingItems(in: submenu)
+                }
+                guard Self.shouldDisableDuringLaunchRecovery(item) else { continue }
+                launchRecoveryMenuItemStates.append((item, item.isEnabled))
+                item.isEnabled = false
+            }
+        }
+        disableMutatingItems(in: menu)
+    }
+
+    static func shouldDisableDuringLaunchRecovery(_ item: NSMenuItem) -> Bool {
+        guard let action = item.action else { return false }
+        return NSStringFromSelector(action) != "terminate:"
+    }
+
+    private func runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: Date?) {
+        guard !isUITesting else { return }
+        bugReportService.retryPendingReports()
+        checkForCrashes(lastLaunch: previousLaunchTimestamp)
+
+        // Reload after channel restoration so recording launch metadata can
+        // never overwrite the newly authoritative tab/session snapshot.
+        var config = configService.load()
+        config.lastLaunchTimestamp = Date()
+        configService.save(config)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
