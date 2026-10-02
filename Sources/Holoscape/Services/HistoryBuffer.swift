@@ -64,11 +64,16 @@ final class HistoryBuffer {
     private var flushTimer: Timer?
     private var isDirty: Bool = false
 
-    init() {
-        let configDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".holoscape")
-        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
-        persistURL = configDir.appendingPathComponent("history-buffer.json")
-        startPeriodicFlush()
+    init(persistURL: URL? = nil, startsPeriodicFlush: Bool = true) {
+        self.persistURL = persistURL ?? Self.defaultPersistURL
+        if startsPeriodicFlush {
+            startPeriodicFlush()
+        }
+    }
+
+    private static var defaultPersistURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".holoscape/history-buffer.json")
     }
 
     func stopPeriodicFlush() {
@@ -128,21 +133,30 @@ final class HistoryBuffer {
 
     // MARK: - Persistence
 
-    func flush() {
-        guard isDirty else { return }
+    @discardableResult
+    func flush() -> Result<Void, Error> {
+        guard isDirty else { return .success(()) }
         let snap = snapshot()
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(snap) {
-            try? data.write(to: persistURL, options: .atomic)
+
+        do {
+            try FileManager.default.createDirectory(
+                at: persistURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try encoder.encode(snap)
+            try data.write(to: persistURL, options: .atomic)
             isDirty = false
+            return .success(())
+        } catch {
+            return .failure(error)
         }
     }
 
     /// Load the last persisted snapshot (for crash recovery).
-    static func loadPersistedSnapshot() -> HistorySnapshot? {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/history-buffer.json")
+    static func loadPersistedSnapshot(from url: URL? = nil) -> HistorySnapshot? {
+        let url = url ?? defaultPersistURL
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -152,7 +166,10 @@ final class HistoryBuffer {
     private func startPeriodicFlush() {
         flushTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.flush()
+                guard let result = self?.flush() else { return }
+                if case let .failure(error) = result {
+                    NSLog("HistoryBuffer flush failed: %@", error.localizedDescription)
+                }
             }
         }
     }

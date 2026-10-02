@@ -119,7 +119,9 @@ final class HistoryBufferTests: XCTestCase {
     func testFlushWritesToDisk() {
         let buffer = HistoryBuffer()
         buffer.recordCommand("flush-test", channelName: "Shell")
-        buffer.flush()
+        guard case .success = buffer.flush() else {
+            return XCTFail("Flush should report a successful write")
+        }
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".holoscape/history-buffer.json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Flush should write to disk")
@@ -127,6 +129,39 @@ final class HistoryBufferTests: XCTestCase {
         let data = try! Data(contentsOf: url)
         XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data))
         buffer.stopPeriodicFlush()
+    }
+
+    func testFlushRetriesSameSnapshotAfterWriteFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)", isDirectory: true)
+        let blockedParent = root.appendingPathComponent("not-a-directory")
+        let persistURL = blockedParent.appendingPathComponent("history-buffer.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("blocked".utf8).write(to: blockedParent)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let buffer = HistoryBuffer(persistURL: persistURL, startsPeriodicFlush: false)
+        buffer.recordCommand("retry-test", channelName: "Shell")
+
+        guard case .failure = buffer.flush() else {
+            return XCTFail("Flush should report the blocked persistence path")
+        }
+
+        try FileManager.default.removeItem(at: blockedParent)
+        try FileManager.default.createDirectory(at: blockedParent, withIntermediateDirectories: true)
+
+        guard case .success = buffer.flush() else {
+            return XCTFail("A failed flush should stay dirty and retry the same snapshot")
+        }
+        let loaded = HistoryBuffer.loadPersistedSnapshot(from: persistURL)
+        XCTAssertEqual(loaded?.recentCommands.map(\.command), ["retry-test"])
+    }
+
+    func testLoadMissingPersistedSnapshotReturnsNil() {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)/history-buffer.json")
+
+        XCTAssertNil(HistoryBuffer.loadPersistedSnapshot(from: missingURL))
     }
 
     func testLoadPersistedSnapshot() {
