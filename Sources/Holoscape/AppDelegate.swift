@@ -321,17 +321,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // dropped. See the comment on that callback for details.
         switch metadata.type {
         case .shell:
-            let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
             let brokerSession = channelManagerRef?.brokerBackedShellSessionToRestore(
                 for: metadata.id,
                 brokerSessionID: metadata.brokerSessionID
             )
+            let restoredShell = Self.restoredShellLaunchParameters(from: metadata)
             let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let controller = ShellChannelController.brokerBacked(
                 id: metadata.id,
                 instanceNumber: metadata.instanceNumber,
                 label: restoredShell.label,
-                workingDirectory: restoredShell.workingDirectory,
+                workingDirectory: brokerSession?.workingDirectory ?? restoredShell.workingDirectory,
                 existingBrokerSessionID: brokerIdentity.existing,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
