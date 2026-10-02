@@ -118,6 +118,9 @@ struct BrokerSessionHost {
         if case NativePTYBrokerSessionRuntime.RuntimeError.missingSession = error {
             return "missing-session"
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed = error {
+            return "scrollback-persistence-failed"
+        }
         return "runtime-error"
     }
 }

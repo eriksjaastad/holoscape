@@ -210,6 +210,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(failure.message.contains("missingSession"), failure.message)
     }
 
+    func testHostTurnsScrollbackPersistenceErrorsIntoTypedFailureFrames() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let sessionID = BrokerSessionID(rawValue: "failed-scrollback-host-session")
+        runtime.error = NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(
+            sessionID,
+            reason: "disk full"
+        )
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID)))
+        )
+
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected failure response, got \(response)")
+        }
+        XCTAssertEqual(failure.code, "scrollback-persistence-failed")
+        XCTAssertTrue(failure.message.contains(sessionID.rawValue), failure.message)
+        XCTAssertTrue(failure.message.contains("disk full"), failure.message)
+    }
+
     func testClientRuntimeSendsRequestsThroughHostTransportAndDecodesResponses() throws {
         let hostedRuntime = RecordingBrokerSessionRuntime()
         hostedRuntime.output = Data("client-output".utf8)

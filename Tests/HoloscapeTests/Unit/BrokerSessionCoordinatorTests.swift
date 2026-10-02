@@ -626,6 +626,35 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [reconciled])
     }
 
+    func testReconcileRuntimeStatusMarksScrollbackPersistenceFailureStale() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 780)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/failed-scrollback-runtime",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "failed-scrollback-runtime",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000780")!
+        )
+
+        now = Date(timeIntervalSince1970: 781)
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(
+            started.id,
+            reason: "disk full"
+        )
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .stale)
+        XCTAssertNil(reconciled.exitCode)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+        XCTAssertEqual(reconciled.updatedAt, now)
+    }
+
     func testReconcileRuntimeStatusRequiresTypedHostMissingSessionFailureBeforeMarkingStale() throws {
         let runtime = RecordingBrokerSessionRuntime()
         var now = Date(timeIntervalSince1970: 785)

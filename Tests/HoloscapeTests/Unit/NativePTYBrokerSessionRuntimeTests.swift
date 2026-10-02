@@ -557,7 +557,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
-    func testScrollbackPersistenceFailureBlocksPollingReadsUntilFailureIsRetained() throws {
+    func testScrollbackPersistenceFailureDefersOutputWithoutBlockingPollingReads() throws {
         let appender = BlockingScrollbackAppender(shouldFail: true)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
         let id = BrokerSessionID(rawValue: "failed-disk-scrollback-native-pty-runtime-test")
@@ -568,9 +568,6 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let outputAvailable = DispatchSemaphore(value: 0)
-        let readCompleted = DispatchSemaphore(value: 0)
-        let capturedOutput = LockedDataBox()
-        let capturedError = LockedRuntimeErrorBox()
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
@@ -581,43 +578,35 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         try runtime.sendInput(id: id, bytes: Array("unpersisted-scrollback-marker\n".utf8))
         XCTAssertEqual(appender.waitUntilEntered(), .success)
 
-        // Production socket clients poll independently of output-availability
-        // signals. A poll while the disk append is in flight must wait rather
-        // than consume bytes or let termination checks run ahead of persistence.
-        DispatchQueue.global().async {
-            do {
-                capturedOutput.store(try runtime.readAvailableOutput(id: id))
-            } catch {
-                capturedError.store(error)
-            }
-            readCompleted.signal()
-        }
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+        // A stalled filesystem write must not retain a broker scheduler lane.
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
 
         appender.release()
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
 
-        XCTAssertNil(capturedOutput.value)
-        guard case let .scrollbackPersistenceFailed(failedID, reason) =
-            capturedError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
-            return XCTFail("Expected retained scrollback persistence failure, got \(String(describing: capturedError.value))")
+        var retainedReason = ""
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, reason) = error else {
+                return XCTFail("Expected retained scrollback persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertFalse(reason.isEmpty)
+            retainedReason = reason
         }
-        XCTAssertEqual(failedID, id)
-        XCTAssertFalse(reason.isEmpty)
 
         let liveTail = String(decoding: try runtime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
         XCTAssertTrue(liveTail.contains("unpersisted-scrollback-marker"), liveTail)
         XCTAssertThrowsError(try runtime.readAvailableOutput(id: id)) { error in
-            XCTAssertEqual(
-                error as? NativePTYBrokerSessionRuntime.RuntimeError,
-                .scrollbackPersistenceFailed(failedID, reason: reason)
-            )
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, reason) = error else {
+                return XCTFail("Expected repeated reads to retain the persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(reason, retainedReason)
         }
     }
 
-    func testPollingReadWaitsUntilScrollbackPersistenceSucceedsWithoutLosingOutput() throws {
+    func testPollingReadDefersOutputUntilScrollbackPersistenceSucceedsWithoutBlocking() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
         let id = BrokerSessionID(rawValue: "delayed-disk-scrollback-native-pty-runtime-test")
@@ -628,9 +617,6 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
         let outputAvailable = DispatchSemaphore(value: 0)
-        let readCompleted = DispatchSemaphore(value: 0)
-        let capturedOutput = LockedDataBox()
-        let capturedError = LockedRuntimeErrorBox()
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
@@ -640,26 +626,16 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         try runtime.sendInput(id: id, bytes: Array("persisted-scrollback-marker\n".utf8))
         XCTAssertEqual(appender.waitUntilEntered(), .success)
-        DispatchQueue.global().async {
-            do {
-                capturedOutput.store(try runtime.readAvailableOutput(id: id))
-            } catch {
-                capturedError.store(error)
-            }
-            readCompleted.signal()
-        }
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
 
         appender.release()
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
-        XCTAssertNil(capturedError.value)
-        let output = String(decoding: try XCTUnwrap(capturedOutput.value), as: UTF8.self)
+        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
         XCTAssertTrue(output.contains("persisted-scrollback-marker"), output)
     }
 
-    func testTerminatedSessionReadWaitsForPersistenceBeforeDeliveringFinalOutput() throws {
+    func testTerminatedSessionDefersFinalStatusAndOutputUntilPersistenceCompletes() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
         let id = BrokerSessionID(rawValue: "terminated-delayed-scrollback-native-pty-runtime-test")
@@ -670,29 +646,24 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             environmentProfile: .shell,
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
-        let readCompleted = DispatchSemaphore(value: 0)
-        let capturedOutput = LockedDataBox()
-        let capturedError = LockedRuntimeErrorBox()
+        let outputAvailable = DispatchSemaphore(value: 0)
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
-        XCTAssertEqual(appender.waitUntilEntered(), .success)
-        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
-
-        DispatchQueue.global().async {
-            do {
-                capturedOutput.store(try runtime.readAvailableOutput(id: id))
-            } catch {
-                capturedError.store(error)
-            }
-            readCompleted.signal()
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            outputAvailable.signal()
         }
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        // The process may already have exited, but neither its final status nor
+        // bytes are authoritative until the PTY monitor and persistence settle.
+        XCTAssertNil(try runtime.terminationStatus(id: id))
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
 
         appender.release()
-        XCTAssertEqual(readCompleted.wait(timeout: .now() + 3), .success)
-        XCTAssertNil(capturedError.value)
-        let output = String(decoding: try XCTUnwrap(capturedOutput.value), as: UTF8.self)
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
         XCTAssertTrue(output.contains("final-persisted-scrollback"), output)
     }
 
@@ -1001,23 +972,6 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let output = String(decoding: collected, as: UTF8.self)
         XCTFail("Timed out collecting PTY output. Output: \(output)", file: file, line: line)
         return output
-    }
-}
-
-private final class LockedDataBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storedData: Data?
-
-    var value: Data? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedData
-    }
-
-    func store(_ data: Data) {
-        lock.lock()
-        storedData = data
-        lock.unlock()
     }
 }
 

@@ -443,14 +443,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {
         guard !didNotifyTermination else { return }
         guard try !coordinator.isRunning(brokerSessionID) else { return }
-        let exitCode = try coordinator.terminationStatus(brokerSessionID)
+        guard let exitCode = try coordinator.terminationStatus(brokerSessionID) else {
+            // The child has exited, but its final PTY bytes or persistence result
+            // are not authoritative yet. A later output-availability wake retries.
+            return
+        }
         didNotifyTermination = true
         outputReadLane.stop()
-        if let exitCode {
-            _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
-        } else {
-            _ = try coordinator.markErrored(brokerSessionID)
-        }
+        _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
         self.brokerSessionID = nil
         agentStatusOwnerToken = nil
         terminationHandler?(exitCode)
@@ -472,9 +472,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
            case .missingSession = runtimeError {
             return .brokerSessionStale
         }
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .scrollbackPersistenceFailed = runtimeError {
+            return .brokerSessionStale
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
-           code == "missing-session",
-           message.contains("missingSession") {
+           code == "scrollback-persistence-failed"
+               || (code == "missing-session" && message.contains("missingSession")) {
             return .brokerSessionStale
         }
         return .failed

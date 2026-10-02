@@ -320,19 +320,24 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             if let exitCode = try runtime.terminationStatus(id: id) {
                 return try exit(id, exitCode: exitCode)
             }
-            return try updateMetadataOnly(id) { record in
-                record.withLifecycle(
-                    .errored,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: nil
-                )
-            }
+            // A terminated child may still have a final PTY read or scrollback
+            // append in flight. Keep the durable record reattachable until the
+            // runtime can report a final status or a loud persistence failure.
+            return existing
         } catch MetadataOnlyBrokerSessionRuntime.RuntimeError.unsupportedPTYOperation {
             return existing
         } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
             return existing
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return try updateMetadataOnly(id) { record in
+                record.withLifecycle(
+                    .stale,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+            }
+        } catch let error where isUnrecoverableRuntimeSessionError(error, id: id) {
             return try updateMetadataOnly(id) { record in
                 record.withLifecycle(
                     .stale,
@@ -382,6 +387,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
            code == "missing-session",
            message.contains(id.rawValue) {
             return true
+        }
+        return false
+    }
+
+    private func isUnrecoverableRuntimeSessionError(_ error: Error, id: BrokerSessionID) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case let .scrollbackPersistenceFailed(failedID, _) = runtimeError {
+            return failedID == id
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error {
+            return code == "scrollback-persistence-failed" && message.contains(id.rawValue)
         }
         return false
     }

@@ -28,12 +28,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
         private var processGroupCleanupFailureReason: String?
-        let lock = NSCondition()
+        let lock = NSLock()
         private let terminationLock = NSLock()
         var output = Data()
         var scrollback = Data()
         private var scrollbackPersistenceFailureReason: String?
         private var pendingScrollbackPersistenceWrites = 0
+        private var outputMonitoringComplete = false
         var terminationStatus: Int32?
         var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
@@ -68,7 +69,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                     try scrollbackAppender(data, id)
                     lock.lock()
                     pendingScrollbackPersistenceWrites -= 1
-                    lock.broadcast()
                     lock.unlock()
                 } catch {
                     let reason = String(describing: error)
@@ -77,7 +77,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                     if scrollbackPersistenceFailureReason == nil {
                         scrollbackPersistenceFailureReason = reason
                     }
-                    lock.broadcast()
                     lock.unlock()
                     NSLog("Broker scrollback persistence failed for \(id.rawValue): \(reason)")
                 }
@@ -93,13 +92,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
         func readOutput() throws -> Data {
             lock.lock()
-            while pendingScrollbackPersistenceWrites > 0,
-                  scrollbackPersistenceFailureReason == nil {
-                lock.wait()
-            }
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+            guard pendingScrollbackPersistenceWrites == 0 else {
+                lock.unlock()
+                return Data()
             }
             let snapshot = output
             output.removeAll(keepingCapacity: true)
@@ -163,11 +162,27 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             lock.unlock()
         }
 
-        func observedTerminationStatus() -> Int32? {
+        func observedTerminationStatus(processFallback: Int32? = nil) throws -> Int32? {
             lock.lock()
-            let status = terminationStatus
+            if let reason = scrollbackPersistenceFailureReason {
+                lock.unlock()
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+            guard outputMonitoringComplete, pendingScrollbackPersistenceWrites == 0 else {
+                lock.unlock()
+                return nil
+            }
+            let status = terminationStatus ?? processFallback
             lock.unlock()
             return status
+        }
+
+        func markOutputMonitoringComplete() {
+            lock.lock()
+            outputMonitoringComplete = true
+            let handler = outputAvailabilityHandler
+            lock.unlock()
+            handler?(id)
         }
 
         func setOutputAvailabilityHandler(_ handler: (@Sendable (BrokerSessionID) -> Void)?) {
@@ -313,6 +328,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
+                session?.markOutputMonitoringComplete()
                 return
             }
             session?.appendOutput(data)
@@ -461,10 +477,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
-        if let status = session.observedTerminationStatus() {
-            return status
-        }
-        return session.process.isRunning ? nil : session.process.terminationStatus
+        let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
+        return try session.observedTerminationStatus(processFallback: processFallback)
     }
 
     private func close(_ session: Session) throws {
