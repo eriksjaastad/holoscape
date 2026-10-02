@@ -118,17 +118,24 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         /// live-output generation under one lock. Bytes appended after the
         /// snapshot remain unread, so replay followed by the output pump emits
         /// every byte exactly once across detach/reattach.
-        func readScrollbackReplay(maxBytes: Int) -> Data {
+        func readScrollbackReplay(maxBytes: Int) throws -> Data {
             lock.lock()
             defer { lock.unlock() }
-            let replay: Data
-            if maxBytes <= 0 {
-                replay = Data()
-            } else if scrollback.count > maxBytes {
-                replay = Data(scrollback.suffix(maxBytes))
-            } else {
-                replay = scrollback
+            if let reason = scrollbackPersistenceFailureReason {
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
             }
+            // Replay may consume unread output only when the returned tail can
+            // contain that generation in full. Otherwise the live pump owns all
+            // unread bytes, preserving order without truncation or duplication.
+            guard pendingScrollbackPersistenceWrites == 0,
+                  maxBytes > 0,
+                  output.count <= maxBytes,
+                  output.count <= scrollback.count else {
+                return Data()
+            }
+            let replay = scrollback.count > maxBytes
+                ? Data(scrollback.suffix(maxBytes))
+                : scrollback
             output.removeAll(keepingCapacity: true)
             return replay
         }
@@ -473,7 +480,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         if let session = existingSession(for: id) {
             return ScrollbackReplay(
-                data: session.readScrollbackReplay(maxBytes: maxBytes),
+                data: try session.readScrollbackReplay(maxBytes: maxBytes),
                 source: .liveBrokerMemory,
                 maxBytes: maxBytes
             )

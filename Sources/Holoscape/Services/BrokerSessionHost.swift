@@ -89,6 +89,21 @@ struct BrokerSessionHost {
             return .outputAvailable(try waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
         case let .readScrollbackTail(id, maxBytes):
             return .output(try runtime.readScrollbackTail(id: id, maxBytes: maxBytes))
+        case let .readScrollbackReplay(id, maxBytes):
+            if let replayRuntime = runtime as? ScrollbackReplayReportingRuntime {
+                return .scrollbackReplay(try replayRuntime.readScrollbackReplay(id: id, maxBytes: maxBytes))
+            }
+            // Non-consuming tails have no unread-output watermark. Return no
+            // replay rather than duplicating bytes when the live pump starts.
+            // Preserve tail-read errors so clients can report corrupt storage.
+            _ = try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
+            return .scrollbackReplay(
+                ScrollbackReplay(
+                    data: Data(),
+                    source: .unknown,
+                    maxBytes: maxBytes
+                )
+            )
         case let .resize(id, size):
             try runtime.resizeSession(id: id, size: size)
             return .ok
@@ -162,6 +177,7 @@ private extension BrokerSessionHostRequest {
              let .readAvailableOutput(id),
              let .waitForOutputAvailability(id, _),
              let .readScrollbackTail(id, _),
+             let .readScrollbackReplay(id, _),
              let .resize(id, _),
              let .isRunning(id),
              let .terminationStatus(id):

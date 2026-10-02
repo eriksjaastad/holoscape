@@ -605,6 +605,61 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(String(decoding: unreadOutput, as: UTF8.self).contains("tail-preserves-output-marker"))
     }
 
+    func testLiveReplayLeavesUnreadOutputIntactWhenReplayLimitCannotContainIt() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "limited-live-replay-preserves-output-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf output-larger-than-replay-limit; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let replay = try runtime.readScrollbackReplay(id: id, maxBytes: 4)
+        let unreadOutput = try runtime.readAvailableOutput(id: id)
+
+        XCTAssertEqual(replay.data, Data())
+        XCTAssertTrue(String(decoding: unreadOutput, as: UTF8.self).contains("output-larger-than-replay-limit"))
+    }
+
+    func testLiveReplayDoesNotConsumePendingOrFailedPersistenceOutput() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: true)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "failed-persistence-live-replay-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        try runtime.sendInput(id: id, bytes: Array("failed-replay-persistence-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        XCTAssertEqual(try runtime.readScrollbackReplay(id: id, maxBytes: 4096).data, Data())
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        XCTAssertThrowsError(try runtime.readScrollbackReplay(id: id, maxBytes: 4096)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, _) = error else {
+                return XCTFail("Expected retained persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+        }
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id))
+    }
+
     func testScrollbackPersistenceFailureDefersOutputWithoutBlockingPollingReads() throws {
         let appender = BlockingScrollbackAppender(shouldFail: true)
         let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)

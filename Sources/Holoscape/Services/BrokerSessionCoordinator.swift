@@ -575,7 +575,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
-        try readScrollbackReplay(id, maxBytes: maxBytes).data
+        _ = try record(for: id)
+        return try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
     }
 
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
@@ -583,8 +584,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if let replayRuntime = runtime as? ScrollbackReplayReportingRuntime {
             return try replayRuntime.readScrollbackReplay(id: id, maxBytes: maxBytes)
         }
+        // A plain tail read cannot atomically establish which unread bytes it
+        // represents. Replaying it would let the output pump emit them again.
+        // Still perform the read so persistence/corruption failures remain
+        // observable to the reattach recovery path.
+        _ = try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
         return ScrollbackReplay(
-            data: try runtime.readScrollbackTail(id: id, maxBytes: maxBytes),
+            data: Data(),
             source: .unknown,
             maxBytes: maxBytes
         )

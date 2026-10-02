@@ -28,6 +28,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .readAvailableOutput(id: sessionID),
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
+            .readScrollbackReplay(id: sessionID, maxBytes: 4096),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
             .terminationStatus(id: sessionID),
@@ -50,6 +51,13 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
                 BrokerSessionID(rawValue: "response-session-b"),
             ]),
             .output(Data([0x00, 0x01, 0x02, 0x0A, 0xFF])),
+            .scrollbackReplay(
+                ScrollbackReplay(
+                    data: Data("replay".utf8),
+                    source: .liveBrokerMemory,
+                    maxBytes: 4096
+                )
+            ),
             .outputAvailable(true),
             .outputAvailable(false),
             .running(true),
@@ -126,6 +134,18 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.isRunning(id: sessionID))), try codec.encodeResponse(.running(true)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readScrollbackTail(id: sessionID, maxBytes: 64))), try codec.encodeResponse(.output(Data("scrollback-tail".utf8))))
+        XCTAssertEqual(
+            try host.handle(codec.encodeRequest(.readScrollbackReplay(id: sessionID, maxBytes: 64))),
+            try codec.encodeResponse(
+                .scrollbackReplay(
+                    ScrollbackReplay(
+                        data: Data("scrollback-replay".utf8),
+                        source: .liveBrokerMemory,
+                        maxBytes: 64
+                    )
+                )
+            )
+        )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.resize(id: sessionID, size: TerminalGridSize(columns: 100, rows: 30)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.detach(id: sessionID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminate(id: sessionID, exitCode: 9))), try codec.encodeResponse(.ok))
@@ -140,6 +160,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "isRunning host-dispatch-test",
             "terminationStatus host-dispatch-test",
             "readScrollbackTail host-dispatch-test 64",
+            "readScrollbackReplay host-dispatch-test 64",
             "resize host-dispatch-test 100x30",
             "detach host-dispatch-test",
             "terminate host-dispatch-test 9",
@@ -258,6 +279,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(try client.isRunning(id: sessionID))
         XCTAssertEqual(try client.terminationStatus(id: sessionID), 12)
         XCTAssertEqual(try client.readScrollbackTail(id: sessionID, maxBytes: 32), Data("scrollback-tail".utf8))
+        XCTAssertEqual(
+            try client.readScrollbackReplay(id: sessionID, maxBytes: 32),
+            ScrollbackReplay(
+                data: Data("scrollback-replay".utf8),
+                source: .liveBrokerMemory,
+                maxBytes: 32
+            )
+        )
         try client.resizeSession(id: sessionID, size: TerminalGridSize(columns: 120, rows: 40))
         try client.detachSession(id: sessionID)
         try client.terminateSession(id: sessionID, exitCode: 12)
@@ -272,11 +301,47 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "isRunning client-runtime-test",
             "terminationStatus client-runtime-test",
             "readScrollbackTail client-runtime-test 32",
+            "readScrollbackReplay client-runtime-test 32",
             "resize client-runtime-test 120x40",
             "detach client-runtime-test",
             "terminate client-runtime-test 12",
             "markErrored client-runtime-test",
         ])
+    }
+
+    func testHostClientLiveReplayConsumesDetachedOutputExactlyOnce() throws {
+        let nativeRuntime = NativePTYBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: nativeRuntime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "host-client-live-replay-once")
+        try client.createSession(
+            id: sessionID,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf host-client-replay-marker; sleep 5"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? client.markSessionErrored(id: sessionID) }
+
+        let deadline = Date().addingTimeInterval(3)
+        var tail = Data()
+        while Date() < deadline {
+            tail = try client.readScrollbackTail(id: sessionID, maxBytes: 4096)
+            if String(decoding: tail, as: UTF8.self).contains("host-client-replay-marker") { break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(String(decoding: tail, as: UTF8.self).contains("host-client-replay-marker"))
+
+        let replay = try client.readScrollbackReplay(id: sessionID, maxBytes: 4096)
+
+        XCTAssertEqual(replay.source, .liveBrokerMemory)
+        XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("host-client-replay-marker"))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
     }
 
     func testClientRuntimeTurnsHostFailureFramesIntoTypedErrors() throws {
@@ -2556,7 +2621,7 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
     }
 }
 
-private class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
+private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime {
     var events: [String] = []
     var output = Data()
     var isRunning = false
@@ -2614,6 +2679,16 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
         try throwIfNeeded()
         events.append("readScrollbackTail \(id.rawValue) \(maxBytes)")
         return Data("scrollback-tail".utf8)
+    }
+
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        try throwIfNeeded()
+        events.append("readScrollbackReplay \(id.rawValue) \(maxBytes)")
+        return ScrollbackReplay(
+            data: Data("scrollback-replay".utf8),
+            source: .liveBrokerMemory,
+            maxBytes: maxBytes
+        )
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {

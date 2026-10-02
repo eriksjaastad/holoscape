@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
@@ -163,6 +163,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             throw ClientError.unexpectedResponse(expected: "output", actual: response)
         }
         return data
+    }
+
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        let response = try response(for: .readScrollbackReplay(id: id, maxBytes: maxBytes))
+        guard case let .scrollbackReplay(replay) = response else {
+            throw ClientError.unexpectedResponse(expected: "scrollbackReplay", actual: response)
+        }
+        return replay
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {

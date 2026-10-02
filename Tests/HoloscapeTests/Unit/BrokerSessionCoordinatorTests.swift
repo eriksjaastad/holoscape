@@ -6,7 +6,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
-    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
             case detach(BrokerSessionID)
@@ -29,6 +29,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var observedTerminationStatus: Int32? = 0
         var statusCalledOnMainActor = false
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
+        var scrollbackTailReadCount = 0
+        var scrollbackReplayReadCount = 0
         var listedSessionIDs: [BrokerSessionID] = []
 
         func listSessions() throws -> [BrokerSessionID] { listedSessionIDs }
@@ -71,7 +73,16 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
-            maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
+            scrollbackTailReadCount += 1
+            return maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
+        }
+        func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+            scrollbackReplayReadCount += 1
+            return ScrollbackReplay(
+                data: maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data(),
+                source: .liveBrokerMemory,
+                maxBytes: maxBytes
+            )
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
             events.append(.resize(id, size))
@@ -698,6 +709,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             String(decoding: try coordinator.readScrollbackTail(started.id, maxBytes: 15), as: UTF8.self),
             "scrollback tail"
         )
+        XCTAssertEqual(runtime.scrollbackTailReadCount, 1)
+        XCTAssertEqual(runtime.scrollbackReplayReadCount, 0)
         XCTAssertThrowsError(try coordinator.readScrollbackTail(BrokerSessionID(rawValue: "missing"), maxBytes: 4096)) { error in
             XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(BrokerSessionID(rawValue: "missing")))
         }

@@ -34,13 +34,13 @@ protocol BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
     ) throws -> Bool
 }
 
-enum ScrollbackReplaySource: Equatable, Sendable {
+enum ScrollbackReplaySource: String, Codable, Equatable, Sendable {
     case liveBrokerMemory
     case persistedDiskTail
     case unknown
 }
 
-struct ScrollbackReplay: Equatable, Sendable {
+struct ScrollbackReplay: Codable, Equatable, Sendable {
     let data: Data
     let source: ScrollbackReplaySource
     let maxBytes: Int
