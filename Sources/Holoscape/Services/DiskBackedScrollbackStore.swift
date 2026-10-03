@@ -195,10 +195,12 @@ struct DiskBackedScrollbackStore: Sendable {
     /// Enumerates the persisted per-session scrollback tails in the configured
     /// directory, exposing just enough metadata for a settings or manual
     /// maintenance UI. Only valid `.scrollback` session files are reported;
-    /// foreign files and malformed session names are skipped, and a single
-    /// entry whose metadata cannot be read (for example a tail deleted between
-    /// directory enumeration and this read) is skipped rather than failing the
-    /// whole listing, so maintenance still surfaces every tail it can.
+    /// foreign files and malformed session names are skipped. Each valid
+    /// session's metadata read shares the same deletion-stable process lock as
+    /// append/read/count/remove, so GUI maintenance cannot inspect a tail while
+    /// the broker is replacing it. Entry metadata failures (for example a tail
+    /// deleted before its lock is acquired) remain non-fatal; lock acquisition
+    /// and cleanup failures propagate so maintenance cannot report false success.
     ///
     /// `resourceValues` is a seam over the per-entry metadata read so the
     /// resilience path can be exercised deterministically in tests; callers
@@ -219,17 +221,28 @@ struct DiskBackedScrollbackStore: Sendable {
         var tails: [StoredScrollbackTail] = []
         for url in urls {
             guard url.pathExtension == "scrollback" else { continue }
+            let rawID = url.deletingPathExtension().lastPathComponent
+            guard Self.isValidSessionID(rawID) else { continue }
+            // Reject foreign directories and symlinks before deriving the
+            // advisory-lock path. `withLock` resolves symlinks so aliases share
+            // authority; invoking it for an untrusted entry could otherwise
+            // create a `.lock` file beside that entry's external target.
+            guard let entryType = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  entryType.isRegularFile == true,
+                  entryType.isSymbolicLink != true else { continue }
             let values: URLResourceValues
             do {
-                values = try resourceValues(url)
+                values = try operationLocks.withLock(for: url) {
+                    try resourceValues(url)
+                }
+            } catch let error as ScrollbackSessionOperationLocks.LockError {
+                throw error
             } catch {
                 // A per-entry metadata/readability race must not throw out the
                 // entire listing; skip the bad entry and surface the rest.
                 continue
             }
             guard values.isRegularFile == true else { continue }
-            let rawID = url.deletingPathExtension().lastPathComponent
-            guard Self.isValidSessionID(rawID) else { continue }
             tails.append(StoredScrollbackTail(
                 sessionID: BrokerSessionID(rawValue: rawID),
                 byteCount: values.fileSize ?? 0,
