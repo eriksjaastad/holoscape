@@ -673,6 +673,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         inputWriteLane.close()
         if freshStartPending {
             freshStartCancelled = true
+            // A later teardown (for example a second quit after the first was
+            // denied) supersedes any reconnect queued while cleanup was live.
+            // Never launch a replacement after termination authority completes.
+            restartAfterCancelledFreshStart = nil
             freshStartTeardownCompletions.append(completion)
             return
         }

@@ -1556,6 +1556,38 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.startCallCount, 2)
     }
 
+    func testSecondTeardownRevokesReconnectQueuedBehindCancelledFreshStart() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "new",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        var startCompletionCount = 0
+        var teardownCompletionCount = 0
+        terminal.setStartCompletionHandler { startCompletionCount += 1 }
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp/original")
+        XCTAssertTrue(coordinator.waitForStart())
+        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp/retry")
+
+        // A second quit owns final termination authority. It must cancel the
+        // reconnect queued after the first quit was denied.
+        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        coordinator.finishStart()
+
+        try waitUntil { teardownCompletionCount == 2 }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(coordinator.startCallCount, 1, "No replacement may launch after the second teardown completes")
+        XCTAssertEqual(startCompletionCount, 0)
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+    }
+
     func testUntrackedTeardownBrokerRPCDoesNotBlockMainActor() throws {
         let sessionID = BrokerSessionID(rawValue: "untracked-teardown")
         let coordinator = BlockingReattachCoordinator()
