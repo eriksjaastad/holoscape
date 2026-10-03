@@ -46,6 +46,24 @@ struct ScrollbackReplay: Codable, Equatable, Sendable {
     let maxBytes: Int
 }
 
+/// A non-destructive view of unread broker output. The runtime retains every
+/// byte through `generation` until the client explicitly acknowledges it.
+struct BrokerOutputSnapshot: Codable, Equatable, Sendable {
+    let data: Data
+    let generation: UInt64?
+}
+
+struct BrokerScrollbackReplaySnapshot: Codable, Equatable, Sendable {
+    let replay: ScrollbackReplay
+    let generation: UInt64?
+}
+
+protocol BrokerTransactionalOutputRuntime {
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws
+}
+
 protocol ScrollbackReplayReportingRuntime {
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
 }

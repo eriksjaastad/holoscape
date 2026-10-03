@@ -21,6 +21,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     let supportsOutputAvailabilityMonitoring: Bool
     private let startsOutputAvailabilityMonitor: Bool
     private let outputMonitor = BrokerSessionHostClientOutputMonitor()
+    private let outputTransactions = BrokerSessionHostClientOutputTransactions()
 
     init(
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
@@ -131,11 +132,15 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
-        let response = try response(for: .readAvailableOutput(id: id))
-        guard case let .output(data) = response else {
-            throw ClientError.unexpectedResponse(expected: "output", actual: response)
+        try outputTransactions.withSession(id) {
+            try flushPendingOutputAcknowledgment(id: id)
+            let response = try response(for: .readAvailableOutput(id: id))
+            guard case let .outputSnapshot(snapshot) = response else {
+                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
+            }
+            acknowledgeAfterDelivery(id: id, generation: snapshot.generation)
+            return snapshot.data
         }
-        return data
     }
 
     func setOutputAvailabilityHandler(
@@ -166,11 +171,35 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
-        let response = try response(for: .readScrollbackReplay(id: id, maxBytes: maxBytes))
-        guard case let .scrollbackReplay(replay) = response else {
-            throw ClientError.unexpectedResponse(expected: "scrollbackReplay", actual: response)
+        try outputTransactions.withSession(id) {
+            try flushPendingOutputAcknowledgment(id: id)
+            let response = try response(for: .readScrollbackReplay(id: id, maxBytes: maxBytes))
+            guard case let .scrollbackReplaySnapshot(snapshot) = response else {
+                throw ClientError.unexpectedResponse(expected: "scrollbackReplaySnapshot", actual: response)
+            }
+            acknowledgeAfterDelivery(id: id, generation: snapshot.generation)
+            return snapshot.replay
         }
-        return replay
+    }
+
+    private func acknowledgeAfterDelivery(id: BrokerSessionID, generation: UInt64?) {
+        guard let generation else { return }
+        do {
+            try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
+            outputTransactions.clearPending(id: id, through: generation)
+        } catch {
+            // The bytes are already safely present in this process. Preserve the
+            // idempotent acknowledgement for the next read instead of turning an
+            // ambiguous ack response into output loss or duplicate delivery.
+            outputTransactions.setPending(id: id, generation: generation)
+            NSLog("Broker output acknowledgement deferred for \(id.rawValue): \(error)")
+        }
+    }
+
+    private func flushPendingOutputAcknowledgment(id: BrokerSessionID) throws {
+        guard let generation = outputTransactions.pendingGeneration(id: id) else { return }
+        try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
+        outputTransactions.clearPending(id: id, through: generation)
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
@@ -244,6 +273,42 @@ extension BrokerSessionHostClientRuntime.ClientError {
         case .hostFailure:
             return nil
         }
+    }
+}
+
+private final class BrokerSessionHostClientOutputTransactions: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var sessionLocks: [BrokerSessionID: NSRecursiveLock] = [:]
+    private var pendingAcknowledgments: [BrokerSessionID: UInt64] = [:]
+
+    func withSession<T>(_ id: BrokerSessionID, operation: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        let lock = sessionLocks[id] ?? NSRecursiveLock()
+        sessionLocks[id] = lock
+        stateLock.unlock()
+        lock.lock()
+        defer { lock.unlock() }
+        return try operation()
+    }
+
+    func pendingGeneration(id: BrokerSessionID) -> UInt64? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pendingAcknowledgments[id]
+    }
+
+    func setPending(id: BrokerSessionID, generation: UInt64) {
+        stateLock.lock()
+        pendingAcknowledgments[id] = max(pendingAcknowledgments[id] ?? 0, generation)
+        stateLock.unlock()
+    }
+
+    func clearPending(id: BrokerSessionID, through generation: UInt64) {
+        stateLock.lock()
+        if let pending = pendingAcknowledgments[id], pending <= generation {
+            pendingAcknowledgments.removeValue(forKey: id)
+        }
+        stateLock.unlock()
     }
 }
 

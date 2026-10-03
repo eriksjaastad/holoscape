@@ -7,7 +7,7 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -31,6 +31,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         let lock = NSLock()
         private let terminationLock = NSLock()
         var output = Data()
+        private var outputStartOffset: UInt64 = 0
+        private var outputEndOffset: UInt64 = 0
         var scrollback = Data()
         private var scrollbackPersistenceFailureReason: String?
         private var pendingScrollbackPersistenceWrites = 0
@@ -55,6 +57,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             let shouldPersist: Bool
             lock.lock()
             output.append(data)
+            outputEndOffset &+= UInt64(data.count)
             scrollback.append(data)
             if scrollback.count > maxScrollbackBytes {
                 scrollback.removeFirst(scrollback.count - maxScrollbackBytes)
@@ -90,7 +93,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             handler?(id)
         }
 
-        func readOutput() throws -> Data {
+        func snapshotOutput() throws -> BrokerOutputSnapshot {
             lock.lock()
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
@@ -98,12 +101,33 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             }
             guard pendingScrollbackPersistenceWrites == 0 else {
                 lock.unlock()
-                return Data()
+                return BrokerOutputSnapshot(data: Data(), generation: nil)
             }
-            let snapshot = output
-            output.removeAll(keepingCapacity: true)
+            let snapshot = BrokerOutputSnapshot(
+                data: output,
+                generation: output.isEmpty ? nil : outputEndOffset
+            )
             lock.unlock()
             return snapshot
+        }
+
+        func acknowledgeOutput(through generation: UInt64) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard generation > outputStartOffset else { return }
+            let boundedGeneration = min(generation, outputEndOffset)
+            let acknowledgedCount = boundedGeneration - outputStartOffset
+            guard acknowledgedCount <= UInt64(output.count) else { return }
+            output.removeFirst(Int(acknowledgedCount))
+            outputStartOffset = boundedGeneration
+        }
+
+        func readOutput() throws -> Data {
+            let snapshot = try snapshotOutput()
+            if let generation = snapshot.generation {
+                acknowledgeOutput(through: generation)
+            }
+            return snapshot.data
         }
 
         func readScrollbackTail(maxBytes: Int) -> Data {
@@ -118,7 +142,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         /// live-output generation under one lock. Bytes appended after the
         /// snapshot remain unread, so replay followed by the output pump emits
         /// every byte exactly once across detach/reattach.
-        func readScrollbackReplay(maxBytes: Int) throws -> Data {
+        func snapshotScrollbackReplay(maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
             lock.lock()
             defer { lock.unlock() }
             if let reason = scrollbackPersistenceFailureReason {
@@ -131,13 +155,26 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                   maxBytes > 0,
                   output.count <= maxBytes,
                   output.count <= scrollback.count else {
-                return Data()
+                return BrokerScrollbackReplaySnapshot(
+                    replay: ScrollbackReplay(data: Data(), source: .liveBrokerMemory, maxBytes: maxBytes),
+                    generation: nil
+                )
             }
             let replay = scrollback.count > maxBytes
                 ? Data(scrollback.suffix(maxBytes))
                 : scrollback
-            output.removeAll(keepingCapacity: true)
-            return replay
+            return BrokerScrollbackReplaySnapshot(
+                replay: ScrollbackReplay(data: replay, source: .liveBrokerMemory, maxBytes: maxBytes),
+                generation: output.isEmpty ? nil : outputEndOffset
+            )
+        }
+
+        func readScrollbackReplay(maxBytes: Int) throws -> Data {
+            let snapshot = try snapshotScrollbackReplay(maxBytes: maxBytes)
+            if let generation = snapshot.generation {
+                acknowledgeOutput(through: generation)
+            }
+            return snapshot.replay.data
         }
 
         func writeInput(_ data: Data) throws {
@@ -456,6 +493,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         try session(for: id).readOutput()
     }
 
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try session(for: id).snapshotOutput()
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+        try session(for: id).acknowledgeOutput(through: generation)
+    }
+
     func setOutputAvailabilityHandler(
         id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -490,6 +535,23 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                 data: try scrollbackStore.readTail(for: id, maxBytes: maxBytes),
                 source: .persistedDiskTail,
                 maxBytes: maxBytes
+            )
+        }
+        throw RuntimeError.missingSession(id)
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        if let session = existingSession(for: id) {
+            return try session.snapshotScrollbackReplay(maxBytes: maxBytes)
+        }
+        if let scrollbackStore {
+            return BrokerScrollbackReplaySnapshot(
+                replay: ScrollbackReplay(
+                    data: try scrollbackStore.readTail(for: id, maxBytes: maxBytes),
+                    source: .persistedDiskTail,
+                    maxBytes: maxBytes
+                ),
+                generation: nil
             )
         }
         throw RuntimeError.missingSession(id)

@@ -29,6 +29,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
             .readScrollbackReplay(id: sessionID, maxBytes: 4096),
+            .acknowledgeOutput(id: sessionID, throughGeneration: 42),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
             .terminationStatus(id: sessionID),
@@ -56,6 +57,17 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
                     data: Data("replay".utf8),
                     source: .liveBrokerMemory,
                     maxBytes: 4096
+                )
+            ),
+            .outputSnapshot(BrokerOutputSnapshot(data: Data("snapshot".utf8), generation: 42)),
+            .scrollbackReplaySnapshot(
+                BrokerScrollbackReplaySnapshot(
+                    replay: ScrollbackReplay(
+                        data: Data("snapshot-replay".utf8),
+                        source: .liveBrokerMemory,
+                        maxBytes: 4096
+                    ),
+                    generation: 43
                 )
             ),
             .outputAvailable(true),
@@ -129,7 +141,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.listSessions)), try codec.encodeResponse(.sessionIDs([sessionID])))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
-        XCTAssertEqual(try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))), try codec.encodeResponse(.output(Data("broker-output".utf8))))
+        XCTAssertEqual(
+            try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))),
+            try codec.encodeResponse(.outputSnapshot(BrokerOutputSnapshot(data: Data("broker-output".utf8), generation: 1)))
+        )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.isRunning(id: sessionID))), try codec.encodeResponse(.running(true)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
@@ -137,11 +152,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(
             try host.handle(codec.encodeRequest(.readScrollbackReplay(id: sessionID, maxBytes: 64))),
             try codec.encodeResponse(
-                .scrollbackReplay(
-                    ScrollbackReplay(
-                        data: Data("scrollback-replay".utf8),
-                        source: .liveBrokerMemory,
-                        maxBytes: 64
+                .scrollbackReplaySnapshot(
+                    BrokerScrollbackReplaySnapshot(
+                        replay: ScrollbackReplay(
+                            data: Data("scrollback-replay".utf8),
+                            source: .liveBrokerMemory,
+                            maxBytes: 64
+                        ),
+                        generation: nil
                     )
                 )
             )
@@ -298,6 +316,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "attach client-runtime-test 00000000-0000-0000-0000-000000009003",
             "sendInput client-runtime-test pwd\\n",
             "readAvailableOutput client-runtime-test",
+            "acknowledgeOutput client-runtime-test 1",
             "isRunning client-runtime-test",
             "terminationStatus client-runtime-test",
             "readScrollbackTail client-runtime-test 32",
@@ -342,6 +361,46 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(replay.source, .liveBrokerMemory)
         XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("host-client-replay-marker"))
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+    }
+
+    func testLostOutputResponseLeavesSnapshotAvailableForRetry() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("response-loss-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let readAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let response = try host.handle(frame)
+            if case .readAvailableOutput = try codec.decodeRequest(frame), readAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("lost after host snapshot")
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "lost-output-response")
+
+        XCTAssertThrowsError(try client.readAvailableOutput(id: sessionID))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("response-loss-output".utf8))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+    }
+
+    func testLostAcknowledgementResponseIsRetriedBeforeNextRead() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("ack-loss-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let ackAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let response = try host.handle(frame)
+            if case .acknowledgeOutput = try codec.decodeRequest(frame), ackAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("lost after host ack")
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "lost-output-ack")
+
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("ack-loss-output".utf8))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+        XCTAssertEqual(ackAttempts.value, 2)
     }
 
     func testClientRuntimeTurnsHostFailureFramesIntoTypedErrors() throws {
@@ -543,7 +602,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .map { Data("\($0)\n".utf8) }
 
         XCTAssertEqual(frames.count, 2)
-        XCTAssertEqual(try codec.decodeResponse(frames[0]), .output(Data("stdio-output".utf8)))
+        XCTAssertEqual(
+            try codec.decodeResponse(frames[0]),
+            .outputSnapshot(BrokerOutputSnapshot(data: Data("stdio-output".utf8), generation: 1))
+        )
         XCTAssertEqual(try codec.decodeResponse(frames[1]), .running(false))
         XCTAssertEqual(runtime.events, [
             "readAvailableOutput stdio-server-session",
@@ -2485,7 +2547,7 @@ private final class SignalingBrokerSessionRuntime: BrokerSessionRuntime, BrokerO
     func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
 }
 
-private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Sendable {
+private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     private let lock = NSLock()
     private var readDelays: [BrokerSessionID: TimeInterval] = [:]
     private var sendDelays: [(needle: String, seconds: TimeInterval)] = []
@@ -2570,6 +2632,19 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
         return Data("delayed-output".utf8)
     }
 
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: try readAvailableOutput(id: id), generation: nil)
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: ScrollbackReplay(data: Data(), source: .liveBrokerMemory, maxBytes: maxBytes),
+            generation: nil
+        )
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {}
+
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
         appendEvent("readScrollbackTail \(id.rawValue)")
         return Data()
@@ -2621,7 +2696,7 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
     }
 }
 
-private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime {
+private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerTransactionalOutputRuntime {
     var events: [String] = []
     var output = Data()
     var isRunning = false
@@ -2675,6 +2750,17 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
         return output
     }
 
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        let data = try readAvailableOutput(id: id)
+        return BrokerOutputSnapshot(data: data, generation: data.isEmpty ? nil : 1)
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+        try throwIfNeeded()
+        events.append("acknowledgeOutput \(id.rawValue) \(generation)")
+        if generation >= 1 { output.removeAll() }
+    }
+
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
         try throwIfNeeded()
         events.append("readScrollbackTail \(id.rawValue) \(maxBytes)")
@@ -2688,6 +2774,13 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
             data: Data("scrollback-replay".utf8),
             source: .liveBrokerMemory,
             maxBytes: maxBytes
+        )
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id: id, maxBytes: maxBytes),
+            generation: nil
         )
     }
 
