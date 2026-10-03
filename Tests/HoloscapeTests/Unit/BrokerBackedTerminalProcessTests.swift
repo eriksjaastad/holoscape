@@ -18,6 +18,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let outputSnapshotRelease = DispatchSemaphore(value: 0)
         private let inputWriteEntered = DispatchSemaphore(value: 0)
         private let inputWriteRelease = DispatchSemaphore(value: 0)
+        private let acknowledgmentRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
         private(set) var markErroredCalls: [BrokerSessionID] = []
@@ -32,7 +33,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockOutputSnapshot = false
         private var shouldBlockInputWrite = false
         private var blockedInputWriteShouldFail = false
+        private var shouldBlockAcknowledgment = false
         private var storedAcknowledgedOutputGenerations: [UInt64] = []
+        private var storedScrollbackSnapshotCount = 0
         private var storedSuccessfulInputWrites = 0
         var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
@@ -80,6 +83,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var acknowledgedOutputGenerations: [UInt64] {
             lock.withLock { storedAcknowledgedOutputGenerations }
         }
+        var scrollbackSnapshotCount: Int { lock.withLock { storedScrollbackSnapshotCount } }
+        func blockAcknowledgment() { lock.withLock { shouldBlockAcknowledgment = true } }
+        func finishAcknowledgment() { acknowledgmentRelease.signal() }
 
         func blockNextInputWrite(fail: Bool) {
             lock.withLock {
@@ -180,9 +186,26 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return BrokerOutputSnapshot(data: Data("cancelled-before-delivery".utf8), generation: 42)
         }
         func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
-            lock.withLock { storedAcknowledgedOutputGenerations.append(generation) }
+            let shouldBlock = lock.withLock { () -> Bool in
+                storedAcknowledgedOutputGenerations.append(generation)
+                return shouldBlockAcknowledgment
+            }
+            if shouldBlock {
+                _ = acknowledgmentRelease.wait(timeout: .now() + 2)
+            }
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+            lock.withLock { storedScrollbackSnapshotCount += 1 }
+            return BrokerScrollbackReplaySnapshot(
+                replay: ScrollbackReplay(
+                    data: Data("one-time-replay\n".utf8),
+                    source: .liveBrokerMemory,
+                    maxBytes: maxBytes
+                ),
+                generation: 41
+            )
+        }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {
             let blocked: (shouldBlock: Bool, shouldFail: Bool) = lock.withLock {
                 resizeRanOnMainThread.append(Thread.isMainThread)
@@ -694,6 +717,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
     private final class FinalOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
         private let lock = NSLock()
         private var createdIDs: [BrokerSessionID] = []
+        private var retiredIDs: [BrokerSessionID] = []
         private var output = Data()
         private var running = true
         private var outputAfterTerminationCheck = Data()
@@ -709,14 +733,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             currentHandler?(id)
         }
 
-        func listSessions() throws -> [BrokerSessionID] { lock.withLock { createdIDs } }
+        func listSessions() throws -> [BrokerSessionID] {
+            lock.withLock { createdIDs.filter { !retiredIDs.contains($0) } }
+        }
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             lock.withLock { createdIDs.append(id) }
         }
         func detachSession(id: BrokerSessionID) throws {}
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
-        func markSessionErrored(id: BrokerSessionID) throws {}
+        func markSessionErrored(id: BrokerSessionID) throws {
+            lock.withLock { retiredIDs.append(id) }
+        }
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data {
             lock.withLock {
@@ -1072,6 +1100,60 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(finalLines.contains("first-final-lane-output"))
         XCTAssertTrue(finalLines.contains("raced-final-lane-output"))
         XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .exited)
+        XCTAssertTrue(
+            try fixture.coordinator.reattachableSessions().isEmpty,
+            "A naturally exited session must retire its runtime owner so closing the disconnected tab cannot resurrect it"
+        )
+    }
+
+    func testTeardownAfterReplayDeliveryDoesNotReplaySameSessionAgain() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockAcknowledgment()
+        let sessionID = BrokerSessionID(rawValue: "replay-display-ownership")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "replay-display-ownership",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { coordinator.acknowledgedOutputGenerations == [41] }
+        XCTAssertEqual(coordinator.scrollbackSnapshotCount, 1)
+
+        let detached = expectation(description: "detach after replay delivery")
+        terminal.detachBrokerSession { detached.fulfill() }
+        coordinator.finishAcknowledgment()
+        wait(for: [detached], timeout: 1)
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { coordinator.reattachCallCount == 2 && !terminal.completesStartAsynchronously }
+
+        XCTAssertEqual(
+            coordinator.scrollbackSnapshotCount,
+            1,
+            "Presentation ownership must survive teardown even when acknowledgement completion becomes stale"
+        )
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
     }
 
     func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {

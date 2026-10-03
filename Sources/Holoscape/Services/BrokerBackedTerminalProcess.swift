@@ -428,6 +428,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 } else {
                     restoreScrollbackReplay(for: record.id)
                 }
+                // Presentation and broker acknowledgement are separate facts.
+                // Once this terminal view renders a replay (or its recovery
+                // warning), teardown must not let a same-object retry render it
+                // again merely because the asynchronous acknowledgement callback
+                // lost authority before it completed.
+                presentedBrokerSessionID = record.id
             }
             if let generation = replay?.generation {
                 failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [weak self] error in
@@ -903,13 +909,46 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.brokerSessionID == id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       !self.didNotifyTermination else { return }
-                self.didNotifyTermination = true
                 self.outputReadLane.stop()
-                self.revokeOutputDeliveryOwnership()
-                self.brokerSessionID = nil
                 self.sessionIOReady = false
-                self.agentStatusOwnerToken = nil
-                self.terminationHandler?(exitCode)
+                self.inputWriteLane.close()
+
+                let completion: @Sendable (Error?) -> Void = { [weak self] error in
+                    DispatchQueue.main.async {
+                        guard let self,
+                              self.brokerSessionID == id,
+                              self.activeOutputDeliveryGeneration == deliveryGeneration,
+                              !self.didNotifyTermination else { return }
+                        if let error {
+                            self.reportSessionFailure(
+                                error,
+                                for: id,
+                                deliveryGeneration: deliveryGeneration
+                            )
+                            return
+                        }
+                        self.didNotifyTermination = true
+                        self.revokeOutputDeliveryOwnership()
+                        self.brokerSessionID = nil
+                        self.agentStatusOwnerToken = nil
+                        self.terminationHandler?(exitCode)
+                    }
+                }
+
+                // Durable exit was already published by the output lane. Remove
+                // the retained runtime object before releasing the tab's broker
+                // identity; otherwise closing the disconnected tab can make the
+                // completed generation appear as a recovered session next launch.
+                if self.coordinator.requiresOffMainBrokerWork {
+                    self.failureRecoveryCoordinator.retireCompletedSession(id, completion: completion)
+                } else {
+                    do {
+                        try self.coordinator.retireCompletedSession(id)
+                        completion(nil)
+                    } catch {
+                        completion(error)
+                    }
+                }
             }
         }
     }
