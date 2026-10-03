@@ -557,6 +557,71 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
+    func testInstallingAvailabilityHandlerSignalsAlreadyBufferedOutput() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "prebuffered-output-availability-test")
+        let marker = "prebuffered-output-marker"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let bufferedDeadline = Date().addingTimeInterval(3)
+        while Date() < bufferedDeadline {
+            let scrollback = try runtime.readScrollbackTail(id: id, maxBytes: 4096)
+            if scrollback.contains(Data(marker.utf8)) { break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(
+            try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data(marker.utf8)),
+            "fixture output never reached the runtime buffer"
+        )
+
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 1), .success)
+        let snapshot = try runtime.snapshotAvailableOutput(id: id)
+        XCTAssertTrue(snapshot.data.contains(Data(marker.utf8)))
+        try runtime.acknowledgeOutput(id: id, through: try XCTUnwrap(snapshot.generation))
+        XCTAssertEqual(try runtime.snapshotAvailableOutput(id: id).data, Data())
+    }
+
+    func testInstallingAvailabilityHandlerDuringPersistenceSignalsAfterCommit() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "handler-during-persistence-test")
+        let marker = "handler-during-persistence-marker"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.sendInput(id: id, bytes: Array("\(marker)\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        let snapshot = try runtime.snapshotAvailableOutput(id: id)
+        XCTAssertTrue(snapshot.data.contains(Data(marker.utf8)))
+        try runtime.acknowledgeOutput(id: id, through: try XCTUnwrap(snapshot.generation))
+        XCTAssertEqual(try runtime.snapshotAvailableOutput(id: id).data, Data())
+    }
+
     func testLiveScrollbackReplayConsumesOnlyTheReplayedUnreadGeneration() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "live-replay-consumes-unread-generation-test")

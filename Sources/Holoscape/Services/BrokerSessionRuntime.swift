@@ -71,6 +71,9 @@ protocol ScrollbackReplayReportingRuntime {
 protocol BrokerOutputAvailabilityMonitoringRuntime {
     var supportsOutputAvailabilityMonitoring: Bool { get }
 
+    /// Installs a level-triggered availability handler. Implementations must
+    /// invoke a non-nil handler when deliverable output or terminal state is
+    /// already buffered, as well as when availability changes afterward.
     func setOutputAvailabilityHandler(
         id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?

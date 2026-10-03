@@ -290,7 +290,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         func setOutputAvailabilityHandler(_ handler: (@Sendable (BrokerSessionID) -> Void)?) {
             lock.lock()
             outputAvailabilityHandler = handler
+            let shouldSignalImmediately = handler != nil && (
+                (!output.isEmpty && pendingScrollbackPersistenceWrites == 0)
+                    || scrollbackPersistenceFailureReason != nil
+                    || outputMonitoringComplete
+            )
             lock.unlock()
+            if shouldSignalImmediately {
+                handler?(id)
+            }
         }
 
         func setProcessGroupID(_ id: pid_t) -> Int32? {
