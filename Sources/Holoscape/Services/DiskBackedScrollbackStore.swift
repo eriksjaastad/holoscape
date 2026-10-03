@@ -1,5 +1,38 @@
 import Foundation
 
+final class ScrollbackSessionOperationLocks: @unchecked Sendable {
+    static let shared = ScrollbackSessionOperationLocks()
+
+    private final class LockBox: @unchecked Sendable {
+        let lock = NSLock()
+    }
+
+    private final class WeakLockBox {
+        weak var value: LockBox?
+
+        init(_ value: LockBox) {
+            self.value = value
+        }
+    }
+
+    private let registryLock = NSLock()
+    private var locksByPath: [String: WeakLockBox] = [:]
+
+    func withLock<T>(for fileURL: URL, _ operation: () throws -> T) rethrows -> T {
+        let key = fileURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let lockBox = registryLock.withLock {
+            locksByPath = locksByPath.filter { $0.value.value != nil }
+            if let existing = locksByPath[key]?.value {
+                return existing
+            }
+            let created = LockBox()
+            locksByPath[key] = WeakLockBox(created)
+            return created
+        }
+        return try lockBox.lock.withLock(operation)
+    }
+}
+
 /// Bounded raw-byte scrollback persistence for broker-owned terminal sessions.
 ///
 /// This store is intentionally keyed only by broker session id and stores bytes in
@@ -21,6 +54,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     let directory: URL
     private let maxRetainedBytes: Int
+    private let operationLocks = ScrollbackSessionOperationLocks.shared
 
     init(
         directory: URL,
@@ -32,51 +66,59 @@ struct DiskBackedScrollbackStore: Sendable {
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
         guard !data.isEmpty else { return }
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = try fileURL(for: id)
-        if !fileManager.fileExists(atPath: url.path) {
-            fileManager.createFile(atPath: url.path, contents: nil)
+        try operationLocks.withLock(for: url) {
+            let fileManager = FileManager.default
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !fileManager.fileExists(atPath: url.path) {
+                fileManager.createFile(atPath: url.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            try prune(url)
         }
-        let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
-        try prune(url)
     }
 
     func readTail(for id: BrokerSessionID, maxBytes: Int) throws -> Data {
         guard maxBytes > 0 else { return Data() }
         guard maxRetainedBytes > 0 else { return Data() }
-        let fileManager = FileManager.default
         let url = try fileURL(for: id)
-        guard fileManager.fileExists(atPath: url.path) else { return Data() }
-        let data = try Data(contentsOf: url)
-        // A crash between append's write and its prune can leave the persisted
-        // tail oversized relative to the retention cap. Repair it on read so a
-        // normal store operation restores the bounded-scrollback guarantee.
-        if data.count > maxRetainedBytes {
-            try prune(url)
+        return try operationLocks.withLock(for: url) {
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: url.path) else { return Data() }
+            let data = try Data(contentsOf: url)
+            // A crash between append's write and its prune can leave the persisted
+            // tail oversized relative to the retention cap. Repair it on read so a
+            // normal store operation restores the bounded-scrollback guarantee.
+            if data.count > maxRetainedBytes {
+                try prune(url)
+            }
+            let capped = min(maxBytes, maxRetainedBytes)
+            guard data.count > capped else { return data }
+            return Data(data.suffix(capped))
         }
-        let capped = min(maxBytes, maxRetainedBytes)
-        guard data.count > capped else { return data }
-        return Data(data.suffix(capped))
     }
 
     func remove(for id: BrokerSessionID) throws {
-        let fileManager = FileManager.default
         let url = try fileURL(for: id)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
+        try operationLocks.withLock(for: url) {
+            let fileManager = FileManager.default
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
         }
     }
 
     func storedByteCount(for id: BrokerSessionID) throws -> Int {
-        let fileManager = FileManager.default
         let url = try fileURL(for: id)
-        guard fileManager.fileExists(atPath: url.path) else { return 0 }
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        return attributes[.size] as? Int ?? 0
+        return try operationLocks.withLock(for: url) {
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: url.path) else { return 0 }
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            return attributes[.size] as? Int ?? 0
+        }
     }
 
     /// Enumerates the persisted per-session scrollback tails in the configured

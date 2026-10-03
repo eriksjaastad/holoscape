@@ -32,6 +32,134 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(restored, "-kept-suffix")
     }
 
+    func testConcurrentAppendsForSameSessionPreserveEveryPayload() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "concurrent-append-session")
+        let payloadSize = 4_096
+        let payloadCount = 64
+        let expectedSize = payloadSize * payloadCount
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: expectedSize)
+        let start = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+        let errors = ScrollbackStoreErrorRecorder()
+
+        for payloadIndex in 0..<payloadCount {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                start.wait()
+                do {
+                    try store.append(
+                        Data(repeating: UInt8(payloadIndex), count: payloadSize),
+                        for: id
+                    )
+                } catch {
+                    errors.record(error)
+                }
+            }
+        }
+        for _ in 0..<payloadCount {
+            start.signal()
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected append errors: \(errors.values)")
+
+        let persisted = try store.readTail(for: id, maxBytes: expectedSize)
+        XCTAssertEqual(persisted.count, expectedSize)
+        for payloadIndex in 0..<payloadCount {
+            XCTAssertEqual(
+                persisted.filter { $0 == UInt8(payloadIndex) }.count,
+                payloadSize,
+                "Payload \(payloadIndex) was overwritten or duplicated"
+            )
+        }
+    }
+
+    func testAppendAndRemoveSerializePerSessionAcrossStoreInstances() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let locks = ScrollbackSessionOperationLocks.shared
+        let writer = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024
+        )
+        let remover = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024
+        )
+        let blockedID = BrokerSessionID(rawValue: "blocked-session")
+        let independentID = BrokerSessionID(rawValue: "independent-session")
+        let blockedURL = directory
+            .appendingPathComponent(blockedID.rawValue)
+            .appendingPathExtension("scrollback")
+        let lockHeld = DispatchSemaphore(value: 0)
+        let releaseLock = DispatchSemaphore(value: 0)
+        let holderDone = DispatchSemaphore(value: 0)
+        let appendStarted = DispatchSemaphore(value: 0)
+        let appendDone = DispatchSemaphore(value: 0)
+        let removeStarted = DispatchSemaphore(value: 0)
+        let removeDone = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+        let firstPayload = Data("first-payload".utf8)
+
+        DispatchQueue.global().async {
+            locks.withLock(for: blockedURL) {
+                lockHeld.signal()
+                releaseLock.wait()
+            }
+            holderDone.signal()
+        }
+        XCTAssertEqual(lockHeld.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            appendStarted.signal()
+            do {
+                try writer.append(firstPayload, for: blockedID)
+            } catch {
+                errors.record(error)
+            }
+            appendDone.signal()
+        }
+        DispatchQueue.global().async {
+            removeStarted.signal()
+            do {
+                try remover.remove(for: blockedID)
+            } catch {
+                errors.record(error)
+            }
+            removeDone.signal()
+        }
+
+        XCTAssertEqual(appendStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(removeStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(removeDone.wait(timeout: .now() + 0.1), .timedOut)
+
+        let independentPayload = Data("independent".utf8)
+        try writer.append(independentPayload, for: independentID)
+        XCTAssertEqual(
+            try writer.readTail(for: independentID, maxBytes: 1_024),
+            independentPayload
+        )
+
+        releaseLock.signal()
+        XCTAssertEqual(holderDone.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(removeDone.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected operation errors: \(errors.values)")
+
+        let racedTail = try writer.readTail(for: blockedID, maxBytes: 1_024)
+        XCTAssertTrue(racedTail.isEmpty || racedTail == firstPayload)
+
+        let postRacePayload = Data("post-race".utf8)
+        try writer.append(postRacePayload, for: blockedID)
+        XCTAssertTrue(
+            try writer.readTail(for: blockedID, maxBytes: 1_024).suffix(postRacePayload.count) == postRacePayload
+        )
+    }
+
     func testReadTailRepairsOversizedPersistedFile() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -288,5 +416,20 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+private final class ScrollbackStoreErrorRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Error] = []
+
+    var values: [Error] {
+        lock.withLock { storage }
+    }
+
+    func record(_ error: Error) {
+        lock.withLock {
+            storage.append(error)
+        }
     }
 }
