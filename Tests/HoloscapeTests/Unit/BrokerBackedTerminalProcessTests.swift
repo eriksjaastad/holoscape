@@ -178,16 +178,17 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
     }
 
     private final class ExitedUnreadOutputCoordinator: BrokerSessionCoordinating {
+        let requiresOffMainBrokerWork = true
         let sessionID = BrokerSessionID(rawValue: "exited-unread-output")
         private(set) var outputReadCount = 0
         private(set) var retiredSessionIDs: [BrokerSessionID] = []
+        private let outputReadRelease = DispatchSemaphore(value: 0)
+        private var shouldBlockOutputRead = false
 
-        func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
-            throw XCTSkip("unused")
-        }
-        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
-        func retireUntrackedSession(_ id: BrokerSessionID) throws { throw XCTSkip("unused") }
-        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
+        func blockOutputRead() { shouldBlockOutputRead = true }
+        func finishOutputRead() { outputReadRelease.signal() }
+
+        private func exitedRecord(id: BrokerSessionID) -> BrokerSessionRecord {
             BrokerSessionRecord(
                 id: id,
                 channelType: .shell,
@@ -203,6 +204,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 lastAttachedChannelID: nil
             )
         }
+
+        func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
+            throw XCTSkip("unused")
+        }
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { exitedRecord(id: id) }
+        func retireUntrackedSession(_ id: BrokerSessionID) throws { throw XCTSkip("unused") }
+        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
+            exitedRecord(id: id)
+        }
         func retireCompletedSession(_ id: BrokerSessionID) throws { retiredSessionIDs.append(id) }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -211,6 +221,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
             outputReadCount += 1
+            if shouldBlockOutputRead {
+                _ = outputReadRelease.wait(timeout: .now() + 1)
+            }
             return Data("detached-final-overflow\n".utf8)
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
@@ -849,6 +862,39 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         let detached = expectation(description: "terminal detached")
         terminal.detachBrokerSession { detached.fulfill() }
+        coordinator.finishOutputSnapshot()
+        wait(for: [detached], timeout: 1)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
+        XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
+    }
+
+    func testQueuedOutputDeliveryIsRevokedWhenTeardownWinsMainActor() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "queued-delivery-cancellation",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { terminal.brokerSessionID != nil }
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        let detached = expectation(description: "queued delivery terminal detached")
+        DispatchQueue.main.async {
+            terminal.detachBrokerSession { detached.fulfill() }
+        }
         coordinator.finishOutputSnapshot()
         wait(for: [detached], timeout: 1)
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
@@ -1823,6 +1869,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(restoredTerminal.lastScrollbackReplay?.data, Data(), "Oversized unread generation must remain owned by the final drain")
         XCTAssertTrue(restoredTerminal.lastLines(20).joined(separator: "\n").contains("detached-final-overflow"))
         XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testExitedFinalDrainDoesNotRetireAfterTeardownRevokesDelivery() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.blockOutputRead()
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "cancelled-finished-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+
+        let detached = expectation(description: "exited delivery terminal detached")
+        DispatchQueue.main.async {
+            restoredTerminal.detachBrokerSession { detached.fulfill() }
+        }
+        coordinator.finishOutputRead()
+        wait(for: [detached], timeout: 1)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.retiredSessionIDs, [])
+        XCTAssertEqual(events, [])
+        XCTAssertFalse(restoredTerminal.lastLines(20).joined(separator: "\n").contains("detached-final-overflow"))
+        XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
     }
 
     func testCorruptScrollbackReplayDoesNotFailSuccessfulReattach() throws {

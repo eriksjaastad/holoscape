@@ -42,6 +42,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// its controller waiting forever on the cancelled generation.
     private var restartAfterCancelledFreshStart: (@MainActor () -> Void)?
     private var reattachGeneration: UInt = 0
+    /// Identifies the terminal-view ownership window allowed to consume broker
+    /// output. A queued main-actor delivery must still hold this exact lease;
+    /// matching the broker ID alone is insufficient because teardown deliberately
+    /// preserves that ID for later reattach.
+    private var nextOutputDeliveryGeneration: UInt = 0
+    private var activeOutputDeliveryGeneration: UInt?
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
@@ -185,6 +191,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
+        revokeOutputDeliveryOwnership()
         sessionIOReady = false
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
@@ -247,6 +254,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
+            beginOutputDeliveryOwnership()
             sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
@@ -257,6 +265,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             brokerSessionID = nil
             agentStatusOwnerToken = nil
+            revokeOutputDeliveryOwnership()
             sessionIOReady = false
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
@@ -447,11 +456,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         inputWriteLane.open(for: record.id)
         presentedBrokerSessionID = record.id
         if record.lifecycle == .exited {
+            beginOutputDeliveryOwnership()
             sessionIOReady = false
             inputWriteLane.close()
             finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
             return
         }
+        beginOutputDeliveryOwnership()
         sessionIOReady = true
         if outputHandler != nil {
             startOutputPump()
@@ -472,6 +483,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             brokerSessionID = sessionID
         }
         agentStatusOwnerToken = nil
+        revokeOutputDeliveryOwnership()
         sessionIOReady = false
         NSLog("Broker-backed terminal reattach failed: \(error)")
     }
@@ -486,16 +498,24 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             completeReattachStartIfNeeded(notifyStartCompletion)
             return
         }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else {
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
 
         let completion: @Sendable (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
-                guard let self, self.brokerSessionID == record.id else { return }
+                guard let self,
+                      self.brokerSessionID == record.id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                 if let error {
+                    self.revokeOutputDeliveryOwnership()
                     self.startFailureDescription = String(describing: error)
                     self.startFailureKind = self.classifyStartFailure(error)
                     self.completeReattachStartIfNeeded(notifyStartCompletion)
                     return
                 }
+                self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
@@ -529,14 +549,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
 
         let deliverFinalOutputAndRetire: @MainActor (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
-            guard let self, self.brokerSessionID == record.id else { return }
+            guard let self,
+                  self.brokerSessionID == record.id,
+                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
             do {
                 let snapshot = try result.get()
                 self.handleOutputPumpSample(snapshot.data, for: record.id)
                 if let generation = snapshot.generation {
                     self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
                         DispatchQueue.main.async {
-                            guard self.brokerSessionID == record.id else { return }
+                            guard self.brokerSessionID == record.id,
+                                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                             if let error {
                                 self.startFailureDescription = String(describing: error)
                                 self.startFailureKind = self.classifyStartFailure(error)
@@ -550,6 +573,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     retireCompletedSession()
                 }
             } catch {
+                self.revokeOutputDeliveryOwnership()
                 self.startFailureDescription = String(describing: error)
                 self.startFailureKind = self.classifyStartFailure(error)
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
@@ -708,6 +732,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
         reattachGeneration &+= 1
+        revokeOutputDeliveryOwnership()
         sessionIOReady = false
         stopOutputPump()
         inputWriteLane.close()
@@ -842,7 +867,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func outputSampleHandler() -> @Sendable (BrokerSessionID, Data) -> Bool {
-        { [weak self] id, data in
+        let deliveryGeneration = activeOutputDeliveryGeneration
+        return { [weak self] id, data in
             // The serial lane does not perform liveness/exit RPCs until the main
             // actor has consumed this sample, preserving final-byte ordering
             // without making the main actor call the broker.
@@ -850,7 +876,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             let acceptance = BrokerOutputDeliveryAcceptance()
             DispatchQueue.main.async { [weak self] in
                 defer { delivered.signal() }
-                guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
+                guard let self,
+                      let deliveryGeneration,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration,
+                      self.brokerSessionID == id,
+                      self.sessionIOReady,
+                      self.sessionFailure == nil else { return }
                 self.handleOutputPumpSample(data, for: id)
                 acceptance.accept()
             }
@@ -867,6 +898,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       !self.didNotifyTermination else { return }
                 self.didNotifyTermination = true
                 self.outputReadLane.stop()
+                self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.sessionIOReady = false
                 self.agentStatusOwnerToken = nil
@@ -907,6 +939,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let description = String(describing: error)
         inputWriteLane.close()
         stopOutputPump()
+        revokeOutputDeliveryOwnership()
 
         if kind == .brokerSessionStale, isScrollbackPersistenceFailure(error) {
             beginScrollbackFailureRecovery(error, for: sessionID)
@@ -968,6 +1001,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         sessionFailure = failure
         NSLog("Broker-backed terminal session failed (\(failure.kind)): \(failure.description)")
         sessionFailureHandler?(failure)
+    }
+
+    @discardableResult
+    private func beginOutputDeliveryOwnership() -> UInt {
+        nextOutputDeliveryGeneration &+= 1
+        activeOutputDeliveryGeneration = nextOutputDeliveryGeneration
+        return nextOutputDeliveryGeneration
+    }
+
+    private func revokeOutputDeliveryOwnership() {
+        activeOutputDeliveryGeneration = nil
     }
 
     private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
