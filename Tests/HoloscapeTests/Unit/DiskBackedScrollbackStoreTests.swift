@@ -144,6 +144,132 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
     }
 
+    func testOwnedStagingReplacementIsPreservedAndRejected() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "owned-staging-replacement")
+        let tailURL = directory.appendingPathComponent("\(id.rawValue).scrollback")
+        let stagingURL = directory.appendingPathComponent(".\(tailURL.lastPathComponent).staging")
+        let displacedURL = directory.appendingPathComponent("owned-staging-displaced")
+        let foreign = Data("foreign-staging".utf8)
+        let interrupted = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeOwnedFilePublish: { url in
+                guard url == tailURL else { return }
+                try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+                try foreign.write(to: stagingURL)
+                throw ScrollbackTransactionInterruption()
+            }
+        )
+
+        XCTAssertThrowsError(try interrupted.append(Data("payload".utf8), for: id))
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+
+        let recovered = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        XCTAssertThrowsError(try recovered.append(Data("payload".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(stagingURL.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tailURL.path))
+    }
+
+    func testFormatStagingReplacementIsPreservedAndRejected() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "format-staging-replacement")
+        let markerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2")
+        let stagingURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2.staging")
+        let displacedURL = directory.appendingPathComponent("format-staging-displaced")
+        let foreign = Data("foreign-format-staging".utf8)
+        let interrupted = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeFormatMarkerPublish: {
+                try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+                try foreign.write(to: stagingURL)
+                throw ScrollbackTransactionInterruption()
+            }
+        )
+
+        XCTAssertThrowsError(try interrupted.append(Data("payload".utf8), for: id))
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+
+        let recovered = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        XCTAssertThrowsError(try recovered.append(Data("payload".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
+    func testLegacyMarkerPublicationRaceFailsBeforeV2Authority() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "legacy-publication-race")
+        let legacyMarkerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v1")
+        let legacyContents = Data("HoloScapeScrollbackDirectoryV1\n".utf8)
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeLegacyRetirementMarkerPublish: {
+                try legacyContents.write(to: legacyMarkerURL, options: .withoutOverwriting)
+            }
+        )
+
+        XCTAssertThrowsError(try store.append(Data("payload".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: legacyMarkerURL), legacyContents)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".holoscape-scrollback-format-v2").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".holoscape-scrollback-migration.lock").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("\(id.rawValue).scrollback").path
+            )
+        )
+    }
+
+    func testOversizedFormatMarkerFailsBeforeUnboundedRead() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let seed = BrokerSessionID(rawValue: "format-marker-seed")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("seed".utf8), for: seed)
+        let markerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2")
+        let descriptor = Darwin.open(markerURL.path, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        XCTAssertEqual(ftruncate(descriptor, off_t(4) * 1_024 * 1_024 * 1_024), 0)
+        XCTAssertEqual(Darwin.close(descriptor), 0)
+
+        XCTAssertThrowsError(try store.readTail(for: seed, maxBytes: 1_024)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: markerURL.path)
+        XCTAssertEqual(attributes[.size] as? UInt64, 4 * 1_024 * 1_024 * 1_024)
+    }
+
     func testAmbiguousV1OwnedDirectoryFailsClosedWithoutMutatingData() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -555,6 +681,49 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             XCTAssertTrue(message.contains("cleanup also failed"), message)
             XCTAssertTrue(message.contains("close failed"), message)
         }
+    }
+
+    func testAuthorityRetryResyncsStagingAfterOneShotFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let oneShotSync = OneShotDescriptorSyncFailure()
+        let locks = ScrollbackSessionOperationLocks(descriptorSync: oneShotSync.sync)
+        let sessionURL = directory.appendingPathComponent("authority-retry.scrollback")
+
+        XCTAssertThrowsError(try locks.withLock(for: sessionURL) {})
+        var operationRan = false
+        try locks.withLock(for: sessionURL) {
+            operationRan = true
+        }
+
+        XCTAssertTrue(operationRan)
+        XCTAssertGreaterThan(oneShotSync.callCount, 1)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("authority-retry.scrollback.lock").path
+            )
+        )
+    }
+
+    func testFailedLockStagingDoesNotUnlinkReplacement() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sessionURL = directory.appendingPathComponent("lock-staging-replacement.scrollback")
+        let stagingURL = directory.appendingPathComponent(".lock-staging-replacement.scrollback.lock.staging")
+        let displacedURL = directory.appendingPathComponent("lock-staging-displaced")
+        let foreign = Data("foreign-lock-staging".utf8)
+        let oneShotSync = OneShotDescriptorSyncFailure {
+            try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+            try foreign.write(to: stagingURL)
+        }
+        let locks = ScrollbackSessionOperationLocks(descriptorSync: oneShotSync.sync)
+
+        XCTAssertThrowsError(try locks.withLock(for: sessionURL) {})
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+        XCTAssertThrowsError(try locks.withLock(for: sessionURL) {}) { error in
+            XCTAssertTrue(String(describing: error).contains("unowned lock staging file"))
+        }
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
     }
 
     func testAppendRejectsSymlinkedTailWithoutMutatingTarget() throws {
@@ -2034,6 +2203,35 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
 private struct ScrollbackTransactionInterruption: Error {}
 private struct ScrollbackListingMetadataFailure: Error {}
+
+private final class OneShotDescriptorSyncFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+    private var calls = 0
+    private let beforeFailure: () throws -> Void
+
+    init(beforeFailure: @escaping () throws -> Void = {}) {
+        self.beforeFailure = beforeFailure
+    }
+
+    var callCount: Int { lock.withLock { calls } }
+
+    func sync(_ descriptor: Int32) -> Int32 {
+        let fail = lock.withLock {
+            calls += 1
+            defer { shouldFail = false }
+            return shouldFail
+        }
+        guard fail else { return Darwin.fsync(descriptor) }
+        do {
+            try beforeFailure()
+        } catch {
+            XCTFail("Descriptor sync mutation failed: \(error)")
+        }
+        errno = EIO
+        return -1
+    }
+}
 
 private final class OneShotDescriptorCloseFailure: @unchecked Sendable {
     private let lock = NSLock()

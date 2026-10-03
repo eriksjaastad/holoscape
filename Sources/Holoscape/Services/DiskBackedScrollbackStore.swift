@@ -24,6 +24,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
     private static let legacyFormatMarkerContents = Data("HoloScapeScrollbackDirectoryV1\n".utf8)
     private static let currentFormatMarkerName = ".holoscape-scrollback-format-v2"
     private let directoryMetadata: @Sendable (Int32) throws -> stat
+    private let descriptorSync: @Sendable (Int32) -> Int32
     private let descriptorClose: @Sendable (Int32) -> Int32
 
     struct LockError: LocalizedError {
@@ -43,9 +44,11 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             }
             return status
         },
+        descriptorSync: @escaping @Sendable (Int32) -> Int32 = { fsync($0) },
         descriptorClose: @escaping @Sendable (Int32) -> Int32 = { Darwin.close($0) }
     ) {
         self.directoryMetadata = directoryMetadata
+        self.descriptorSync = descriptorSync
         self.descriptorClose = descriptorClose
     }
 
@@ -141,30 +144,58 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     throw LockError(message: "missing authoritative lock file at \(lockPath)")
                 }
 
-                let token = Self.ownerMarker(
+                var token = Self.ownerMarker(
                     lockName: lockName,
                     directoryStatus: directoryStatus,
                     nonce: UUID().uuidString
                 )
-                let temporaryName = ".\(lockName).creating-\(UUID().uuidString)"
+                let temporaryName = ".\(lockName).staging"
+                var stagingWasCreated = true
                 opened = Darwin.openat(
                     directoryDescriptor,
                     temporaryName,
                     O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
                     S_IRUSR | S_IWUSR
                 )
+                if opened < 0, errno == EEXIST {
+                    stagingWasCreated = false
+                    opened = Darwin.openat(
+                        directoryDescriptor,
+                        temporaryName,
+                        O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                    )
+                }
                 guard opened >= 0 else {
                     throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
                 }
                 do {
-                    try Self.setXattr(
-                        descriptor: opened,
-                        name: Self.ownerXattr,
-                        value: token,
-                        flags: XATTR_CREATE,
-                        displayPath: lockPath
-                    )
-                    guard fsync(opened) == 0 else {
+                    if stagingWasCreated {
+                        try Self.setXattr(
+                            descriptor: opened,
+                            name: Self.ownerXattr,
+                            value: token,
+                            flags: XATTR_CREATE,
+                            displayPath: lockPath
+                        )
+                    } else {
+                        let existing = try Self.getXattr(
+                            descriptor: opened,
+                            name: Self.ownerXattr,
+                            allowMissing: true,
+                            displayPath: lockPath
+                        )
+                        let prefix = Self.ownerMarkerPrefix(
+                            lockName: lockName,
+                            directoryStatus: directoryStatus
+                        )
+                        guard let existing,
+                              existing.starts(with: prefix),
+                              existing.count > prefix.count else {
+                            throw LockError(message: "unowned lock staging file at \(lockPath)")
+                        }
+                        token = existing
+                    }
+                    guard descriptorSync(opened) == 0 else {
                         throw LockError(message: Self.posixFailure("fsync", path: lockPath, code: errno))
                     }
                     guard renameatx_np(
@@ -176,7 +207,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     ) == 0 else {
                         throw LockError(message: Self.posixFailure("renameatx_np", path: lockPath, code: errno))
                     }
-                    guard fsync(directoryDescriptor) == 0 else {
+                    guard descriptorSync(directoryDescriptor) == 0 else {
                         throw LockError(message: Self.posixFailure("fsync", path: directoryPath, code: errno))
                     }
                     try Self.establishDirectoryMarker(
@@ -188,17 +219,8 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     directoryMarker = token
                     return opened
                 } catch {
-                    var cleanupFailures: [String] = []
-                    if unlinkat(directoryDescriptor, temporaryName, 0) != 0, errno != ENOENT {
-                        cleanupFailures.append(Self.posixFailure("unlinkat", path: lockPath, code: errno))
-                    }
                     if Darwin.close(opened) != 0 {
-                        cleanupFailures.append(Self.posixFailure("close", path: lockPath, code: errno))
-                    }
-                    guard cleanupFailures.isEmpty else {
-                        throw LockError(
-                            message: "\(error); cleanup also failed: \(cleanupFailures.joined(separator: "; "))"
-                        )
+                        throw LockError(message: "\(error); cleanup also failed: \(Self.posixFailure("close", path: lockPath, code: errno))")
                     }
                     throw error
                 }
@@ -216,10 +238,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     descriptor,
                     lockName: lockName,
                     directoryStatus: directoryStatus,
-                    allowLegacyV1: try Self.isLegacyFormatDirectory(
-                        directoryDescriptor,
-                        displayPath: directoryPath
-                    ),
+                    allowLegacyV1: false,
                     displayPath: lockPath
                 ) {
                     var pathStatus = stat()
@@ -292,6 +311,9 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             let token: Data
             if let existing, existing.starts(with: prefix), existing.count > prefix.count {
                 token = existing
+                guard fsync(descriptor) == 0 else {
+                    throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
+                }
             } else if let existing,
                       allowLegacyV1,
                       existing == Self.legacyOwnerMarker(lockName: lockName) {
@@ -395,6 +417,9 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         let marker: Data
         if let existing, existing.starts(with: expectedPrefix), existing.count > expectedPrefix.count {
             marker = existing
+            guard fsync(descriptor) == 0 else {
+                throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
+            }
         } else if let existing,
                   allowLegacyV1,
                   existing == legacyOwnerMarker(lockName: lockName) {
@@ -458,6 +483,9 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         ) {
             guard existing == token else {
                 throw LockError(message: "foreign lock authority at \(displayPath)")
+            }
+            guard fsync(descriptor) == 0 else {
+                throw LockError(message: posixFailure("fsync", path: displayPath, code: errno))
             }
             return
         }
@@ -762,6 +790,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private let directoryStreamClose: @Sendable (UnsafeMutablePointer<DIR>) -> Int32
     private let beforeOwnedFilePublish: @Sendable (URL) throws -> Void
     private let beforeFormatMarkerPublish: @Sendable () throws -> Void
+    private let beforeLegacyRetirementMarkerPublish: @Sendable () throws -> Void
 
     init(
         directory: URL,
@@ -783,7 +812,8 @@ struct DiskBackedScrollbackStore: Sendable {
         directoryEntryRead: @escaping @Sendable (UnsafeMutablePointer<DIR>) -> UnsafeMutablePointer<dirent>? = { readdir($0) },
         directoryStreamClose: @escaping @Sendable (UnsafeMutablePointer<DIR>) -> Int32 = { closedir($0) },
         beforeOwnedFilePublish: @escaping @Sendable (URL) throws -> Void = { _ in },
-        beforeFormatMarkerPublish: @escaping @Sendable () throws -> Void = {}
+        beforeFormatMarkerPublish: @escaping @Sendable () throws -> Void = {},
+        beforeLegacyRetirementMarkerPublish: @escaping @Sendable () throws -> Void = {}
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
@@ -802,6 +832,7 @@ struct DiskBackedScrollbackStore: Sendable {
         self.directoryStreamClose = directoryStreamClose
         self.beforeOwnedFilePublish = beforeOwnedFilePublish
         self.beforeFormatMarkerPublish = beforeFormatMarkerPublish
+        self.beforeLegacyRetirementMarkerPublish = beforeLegacyRetirementMarkerPublish
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -1223,12 +1254,12 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func migrateLegacyFilesIfNeeded(_ authority: DirectoryAuthority) throws {
-        // V1 markers carry only filenames, not directory provenance. Detect
-        // them before creating or locking any v2 authority so a live v1
-        // process and ambiguous transplanted files are left untouched.
-        if try legacyFormatMarkerExists(authority) {
-            throw StoreError.unsafeScrollbackDirectory(directory.path)
-        }
+        // Atomically retire the v1 marker pathname before publishing any v2
+        // authority. A concurrently running v1 process and this store race on
+        // the same RENAME_EXCL destination: an actual v1 marker wins and is
+        // left untouched, while the durable retirement marker prevents a v1
+        // process from publishing after our preflight.
+        try establishLegacyRetirementMarker(authority)
         let lockBase = String(Self.migrationLockName.dropLast(".lock".count))
         try operationLocks.withLock(
             directoryDescriptor: authority.descriptor,
@@ -1236,8 +1267,8 @@ struct DiskBackedScrollbackStore: Sendable {
             fileName: lockBase,
             displayPath: directory.appendingPathComponent(lockBase).path
         ) {
+            try requireLegacyRetirementMarker(authority)
             if try formatMarkerExists(authority) { return }
-            let legacyFormatExists = try legacyFormatMarkerExists(authority)
             for name in try directoryEntryNames(authority) {
                 let url = directory.appendingPathComponent(name)
                 if url.pathExtension == "lock" {
@@ -1248,8 +1279,8 @@ struct DiskBackedScrollbackStore: Sendable {
                             directoryDescriptor: authority.descriptor,
                             lockName: name,
                             displayPath: url.path,
-                            allowLegacyV1: legacyFormatExists,
-                            allowUnowned: !legacyFormatExists
+                            allowLegacyV1: false,
+                            allowUnowned: true
                         )
                     }
                     continue
@@ -1274,9 +1305,10 @@ struct DiskBackedScrollbackStore: Sendable {
                     name: name,
                     url: url,
                     kind: kind,
-                    legacyFormatExists: legacyFormatExists
+                    legacyFormatExists: false
                 )
             }
+            try requireLegacyRetirementMarker(authority)
             try createFormatMarker(authority)
         }
     }
@@ -1307,7 +1339,10 @@ struct DiskBackedScrollbackStore: Sendable {
                 name: Self.ownerXattr,
                 allowMissing: true
             )
-            if existing == expected { return }
+            if existing == expected {
+                try sync(descriptor)
+                return
+            }
             if legacyFormatExists, existing == kind.legacyMarker(fileName: name) {
                 try setXattr(
                     descriptor: descriptor,
@@ -1327,6 +1362,131 @@ struct DiskBackedScrollbackStore: Sendable {
             throw StoreError.unsafeScrollbackFile(url.path)
         }
         _ = try close(descriptor, after: result)
+    }
+
+    private func legacyRetirementMarkerContents(_ authority: DirectoryAuthority) -> Data {
+        Data(
+            "HoloScapeScrollbackDirectoryV1Retired:\(authority.status.st_dev):\(authority.status.st_ino)\n".utf8
+        )
+    }
+
+    private func legacyRetirementStagingOwner(_ authority: DirectoryAuthority) -> Data {
+        Data(
+            "holoscape-scrollback-format-v1-retirement:\(authority.status.st_dev):\(authority.status.st_ino)".utf8
+        )
+    }
+
+    private func requireLegacyRetirementMarker(_ authority: DirectoryAuthority) throws {
+        guard try markerExists(
+            authority,
+            name: Self.legacyFormatMarkerName,
+            contents: legacyRetirementMarkerContents(authority)
+        ) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+    }
+
+    private func establishLegacyRetirementMarker(_ authority: DirectoryAuthority) throws {
+        if try pathExists(authority, name: Self.legacyFormatMarkerName) {
+            try requireLegacyRetirementMarker(authority)
+            try sync(authority.descriptor)
+            return
+        }
+
+        guard flock(authority.descriptor, LOCK_EX) == 0 else {
+            throw Self.posixError(code: errno)
+        }
+        let result: Result<Void, Error> = Result {
+            if try pathExists(authority, name: Self.legacyFormatMarkerName) {
+                try requireLegacyRetirementMarker(authority)
+                try sync(authority.descriptor)
+                return
+            }
+
+            let temporaryName = "\(Self.legacyFormatMarkerName).staging"
+            let expectedContents = legacyRetirementMarkerContents(authority)
+            let expectedOwner = legacyRetirementStagingOwner(authority)
+            var stagingWasCreated = true
+            var descriptor = Darwin.openat(
+                authority.descriptor,
+                temporaryName,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+                S_IRUSR | S_IWUSR
+            )
+            if descriptor < 0, errno == EEXIST {
+                stagingWasCreated = false
+                descriptor = Darwin.openat(
+                    authority.descriptor,
+                    temporaryName,
+                    O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                )
+            }
+            guard descriptor >= 0 else {
+                if errno == ELOOP || errno == EISDIR {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+                throw Self.posixError(code: errno)
+            }
+
+            let initialization: Result<Void, Error> = Result {
+                var status = stat()
+                guard fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno) }
+                guard status.st_mode & S_IFMT == S_IFREG else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+                if stagingWasCreated {
+                    try setXattr(
+                        descriptor: descriptor,
+                        name: Self.ownerXattr,
+                        value: expectedOwner,
+                        flags: XATTR_CREATE
+                    )
+                } else {
+                    guard try getXattr(
+                        descriptor: descriptor,
+                        name: Self.ownerXattr,
+                        allowMissing: true
+                    ) == expectedOwner else {
+                        throw StoreError.unsafeScrollbackDirectory(directory.path)
+                    }
+                }
+                try rewrite(descriptor, with: expectedContents)
+                try sync(descriptor)
+                try beforeLegacyRetirementMarkerPublish()
+            }
+            if case .failure(let error) = initialization {
+                return try close(descriptor, after: .failure(error))
+            }
+            _ = try close(descriptor, after: .success(()))
+
+            guard renameatx_np(
+                authority.descriptor,
+                temporaryName,
+                authority.descriptor,
+                Self.legacyFormatMarkerName,
+                UInt32(RENAME_EXCL)
+            ) == 0 else {
+                let code = errno
+                if code == EEXIST {
+                    try requireLegacyRetirementMarker(authority)
+                    try sync(authority.descriptor)
+                    return
+                }
+                throw Self.posixError(code: code)
+            }
+            try sync(authority.descriptor)
+        }
+        if flock(authority.descriptor, LOCK_UN) != 0 {
+            let unlockFailure = Self.posixError(code: errno)
+            if case .failure(let error) = result {
+                throw StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: error),
+                    close: String(describing: unlockFailure)
+                )
+            }
+            throw unlockFailure
+        }
+        return try result.get()
     }
 
     private func formatMarkerExists(_ authority: DirectoryAuthority) throws -> Bool {
@@ -1365,6 +1525,7 @@ struct DiskBackedScrollbackStore: Sendable {
             var status = stat()
             guard fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno) }
             guard status.st_mode & S_IFMT == S_IFREG,
+                  status.st_size == off_t(contents.count),
                   try readAll(descriptor) == contents else {
                 throw StoreError.unsafeScrollbackDirectory(directory.path)
             }
@@ -1374,42 +1535,53 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func createFormatMarker(_ authority: DirectoryAuthority) throws {
-        let temporaryName = ".\(Self.formatMarkerName).creating-\(UUID().uuidString)"
-        let descriptor = Darwin.openat(
+        let temporaryName = "\(Self.formatMarkerName).staging"
+        let expectedMarker = Data(
+            "holoscape-scrollback-format-v2-staging:\(authority.status.st_dev):\(authority.status.st_ino)".utf8
+        )
+        var stagingWasCreated = true
+        var descriptor = Darwin.openat(
             authority.descriptor,
             temporaryName,
-            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
             S_IRUSR | S_IWUSR
         )
+        if descriptor < 0, errno == EEXIST {
+            stagingWasCreated = false
+            descriptor = Darwin.openat(
+                authority.descriptor,
+                temporaryName,
+                O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+            )
+        }
         guard descriptor >= 0 else { throw Self.posixError(code: errno) }
         let initialization: Result<Void, Error> = Result {
-            try writeAll(descriptor, data: Self.formatMarkerContents, offset: 0)
+            if stagingWasCreated {
+                try setXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    value: expectedMarker,
+                    flags: XATTR_CREATE
+                )
+            } else {
+                guard try getXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    allowMissing: true
+                ) == expectedMarker else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+            }
+            try rewrite(descriptor, with: Self.formatMarkerContents)
             try sync(descriptor)
             try beforeFormatMarkerPublish()
         }
         if case .failure(let error) = initialization {
-            try cleanupOpenTemporary(
-                authority,
-                name: temporaryName,
-                descriptor: descriptor,
-                displayPath: directory.appendingPathComponent(temporaryName).path,
-                after: error
-            )
+            let failure: Result<Void, Error> = .failure(error)
+            _ = try close(descriptor, after: failure)
+            throw error
         }
-        if descriptorClose(descriptor) != 0 {
-            let closeError = StoreError.descriptorCloseFailed(
-                String(describing: Self.posixError(code: errno))
-            )
-            do {
-                try cleanupTemporaryName(authority, name: temporaryName)
-            } catch {
-                throw StoreError.fileOperationAndCloseFailed(
-                    operation: String(describing: closeError),
-                    close: String(describing: error)
-                )
-            }
-            throw closeError
-        }
+        _ = try close(descriptor, after: .success(()))
 
         guard renameatx_np(
             authority.descriptor,
@@ -1419,17 +1591,6 @@ struct DiskBackedScrollbackStore: Sendable {
             UInt32(RENAME_EXCL)
         ) == 0 else {
             let code = errno
-            do {
-                try cleanupTemporaryName(
-                    authority,
-                    name: temporaryName
-                )
-            } catch {
-                throw StoreError.fileOperationAndCloseFailed(
-                    operation: String(describing: Self.posixError(code: code)),
-                    close: String(describing: error)
-                )
-            }
             if code == EEXIST, try formatMarkerExists(authority) { return }
             throw Self.posixError(code: code)
         }
@@ -1667,35 +1828,53 @@ struct DiskBackedScrollbackStore: Sendable {
         )
         var created = false
         if descriptor < 0, errno == ENOENT, createIfMissing {
-            let temporaryName = ".\(url.lastPathComponent).creating-\(UUID().uuidString)"
+            let temporaryName = ".\(url.lastPathComponent).staging"
+            var stagingWasCreated = true
             descriptor = Darwin.openat(
                 authority.descriptor,
                 temporaryName,
                 O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
                 S_IRUSR | S_IWUSR
             )
-            guard descriptor >= 0 else { throw Self.posixError(code: errno) }
-            let initialization: Result<Void, Error> = Result {
-                try setXattr(
-                    descriptor: descriptor,
-                    name: Self.ownerXattr,
-                    value: kind.marker(
-                        fileName: url.lastPathComponent,
-                        directoryStatus: authority.status
-                    )
+            if descriptor < 0, errno == EEXIST {
+                stagingWasCreated = false
+                descriptor = Darwin.openat(
+                    authority.descriptor,
+                    temporaryName,
+                    O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
                 )
+            }
+            guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+            let expectedMarker = kind.marker(
+                fileName: url.lastPathComponent,
+                directoryStatus: authority.status
+            )
+            let initialization: Result<Void, Error> = Result {
+                if stagingWasCreated {
+                    try setXattr(
+                        descriptor: descriptor,
+                        name: Self.ownerXattr,
+                        value: expectedMarker,
+                        flags: XATTR_CREATE
+                    )
+                } else {
+                    guard try getXattr(
+                        descriptor: descriptor,
+                        name: Self.ownerXattr,
+                        allowMissing: true
+                    ) == expectedMarker else {
+                        throw StoreError.unsafeScrollbackFile(
+                            directory.appendingPathComponent(temporaryName).path
+                        )
+                    }
+                }
+                try rewrite(descriptor, with: Data())
                 if kind == .recovery { try setRecoveryPhase(.idle, descriptor: descriptor) }
                 try sync(descriptor)
                 try beforeOwnedFilePublish(url)
             }
             if case .failure(let error) = initialization {
-                try cleanupOpenTemporary(
-                    authority,
-                    name: temporaryName,
-                    descriptor: descriptor,
-                    displayPath: url.path,
-                    after: error
-                )
+                return try close(descriptor, after: .failure(error))
             }
 
             guard renameatx_np(
@@ -1707,12 +1886,7 @@ struct DiskBackedScrollbackStore: Sendable {
             ) == 0 else {
                 let code = errno
                 do {
-                    try cleanupOpenTemporary(
-                        authority,
-                        name: temporaryName,
-                        descriptor: descriptor,
-                        displayPath: url.path
-                    )
+                    _ = try close(descriptor, after: .success(()))
                 } catch {
                     throw StoreError.fileOperationAndCloseFailed(
                         operation: "renameatx_np failed for \(url.path): \(String(cString: strerror(code))) (errno \(code))",
@@ -1840,6 +2014,7 @@ struct DiskBackedScrollbackStore: Sendable {
             guard existing == expected else {
                 throw StoreError.unsafeScrollbackFile(directory.appendingPathComponent(fileName).path)
             }
+            try sync(authority.descriptor)
             return
         }
         try setXattr(
