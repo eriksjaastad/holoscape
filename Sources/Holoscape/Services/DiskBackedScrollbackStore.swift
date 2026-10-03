@@ -123,8 +123,6 @@ struct DiskBackedScrollbackStore: Sendable {
         case invalidSessionID(String)
         case unsafeScrollbackFile(String)
         case fileOperationAndCloseFailed(operation: String, close: String)
-        case fileOperationAndCleanupFailed(operation: String, cleanup: String)
-        case fileOperationAndRollbackFailed(operation: String, rollback: String)
     }
 
     /// Maintenance-facing metadata for one persisted per-session scrollback tail.
@@ -138,30 +136,18 @@ struct DiskBackedScrollbackStore: Sendable {
     private let maxRetainedBytes: Int
     private let operationLocks = ScrollbackSessionOperationLocks.shared
     private let beforeLeafMutation: @Sendable (URL) -> Void
-    private let beforeAuxiliaryLeafMutation: @Sendable (URL) -> Void
-    private let replacementTemporaryURL: @Sendable (URL) -> URL
-    private let removalQuarantineURL: @Sendable (URL) -> URL
+    private let beforeDescriptorMutation: @Sendable (URL) -> Void
 
     init(
         directory: URL,
         maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
         beforeLeafMutation: @escaping @Sendable (URL) -> Void = { _ in },
-        beforeAuxiliaryLeafMutation: @escaping @Sendable (URL) -> Void = { _ in },
-        replacementTemporaryURL: @escaping @Sendable (URL) -> URL = { url in
-            url.deletingLastPathComponent()
-                .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        },
-        removalQuarantineURL: @escaping @Sendable (URL) -> URL = { url in
-            url.deletingLastPathComponent()
-                .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).remove")
-        }
+        beforeDescriptorMutation: @escaping @Sendable (URL) -> Void = { _ in }
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
         self.beforeLeafMutation = beforeLeafMutation
-        self.beforeAuxiliaryLeafMutation = beforeAuxiliaryLeafMutation
-        self.replacementTemporaryURL = replacementTemporaryURL
-        self.removalQuarantineURL = removalQuarantineURL
+        self.beforeDescriptorMutation = beforeDescriptorMutation
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -176,16 +162,20 @@ struct DiskBackedScrollbackStore: Sendable {
                 allowMissing: false
             ) { descriptor, sourceStatus in
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                beforeLeafMutation(url)
+                try requireIdentity(at: url, matches: sourceStatus)
+                beforeDescriptorMutation(url)
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
                 let byteCount = try handle.seekToEnd()
                 if maxRetainedBytes <= 0 {
-                    try replaceRegularFileAtomically(at: url, expectedStatus: sourceStatus, with: Data())
+                    try rewriteRegularFile(descriptor, with: Data())
                 } else if byteCount > UInt64(maxRetainedBytes) {
                     try handle.seek(toOffset: byteCount - UInt64(maxRetainedBytes))
                     let retained = try handle.readToEnd() ?? Data()
-                    try replaceRegularFileAtomically(at: url, expectedStatus: sourceStatus, with: retained)
+                    try rewriteRegularFile(descriptor, with: retained)
                 }
+                try requireIdentity(at: url, matches: sourceStatus)
             }
         }
     }
@@ -197,7 +187,7 @@ struct DiskBackedScrollbackStore: Sendable {
         return try operationLocks.withLock(for: url) {
             try withRegularFileDescriptor(
                 at: url,
-                flags: O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+                flags: O_RDWR | O_NOFOLLOW | O_CLOEXEC
             ) { descriptor, sourceStatus in
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 let data = try handle.readToEnd() ?? Data()
@@ -205,11 +195,11 @@ struct DiskBackedScrollbackStore: Sendable {
                 // tail oversized relative to the retention cap. Repair it on read so a
                 // normal store operation restores the bounded-scrollback guarantee.
                 if data.count > maxRetainedBytes {
-                    try replaceRegularFileAtomically(
-                        at: url,
-                        expectedStatus: sourceStatus,
-                        with: Data(data.suffix(maxRetainedBytes))
-                    )
+                    beforeLeafMutation(url)
+                    try requireIdentity(at: url, matches: sourceStatus)
+                    beforeDescriptorMutation(url)
+                    try rewriteRegularFile(descriptor, with: Data(data.suffix(maxRetainedBytes)))
+                    try requireIdentity(at: url, matches: sourceStatus)
                 }
                 let capped = min(maxBytes, maxRetainedBytes)
                 guard data.count > capped else { return data }
@@ -218,15 +208,23 @@ struct DiskBackedScrollbackStore: Sendable {
         }
     }
 
+    /// Clears persisted bytes through the validated descriptor instead of unlinking
+    /// the leaf. Darwin has no identity-conditional unlink, so retaining an empty
+    /// inode is the only way to guarantee that a concurrent pathname replacement
+    /// is never deleted. Empty leaves are omitted from maintenance listings and
+    /// reused by the next append for the same session.
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
             _ = try withRegularFileDescriptor(
                 at: url,
-                flags: O_RDONLY | O_NOFOLLOW | O_CLOEXEC
-            ) { _, expectedStatus in
+                flags: O_RDWR | O_NOFOLLOW | O_CLOEXEC
+            ) { descriptor, expectedStatus in
                 beforeLeafMutation(url)
-                try quarantineAndRemoveRegularFile(at: url, expectedStatus: expectedStatus)
+                try requireIdentity(at: url, matches: expectedStatus)
+                beforeDescriptorMutation(url)
+                try rewriteRegularFile(descriptor, with: Data())
+                try requireIdentity(at: url, matches: expectedStatus)
             }
         }
     }
@@ -296,10 +294,12 @@ struct DiskBackedScrollbackStore: Sendable {
             }
             guard let values else { continue }
             guard values.isRegularFile == true,
-                  values.isSymbolicLink != true else { continue }
+                  values.isSymbolicLink != true,
+                  let byteCount = values.fileSize,
+                  byteCount > 0 else { continue }
             tails.append(StoredScrollbackTail(
                 sessionID: BrokerSessionID(rawValue: rawID),
-                byteCount: values.fileSize ?? 0,
+                byteCount: byteCount,
                 modifiedAt: values.contentModificationDate
             ))
         }
@@ -362,159 +362,30 @@ struct DiskBackedScrollbackStore: Sendable {
         return try result.get()
     }
 
-    private func replaceRegularFileAtomically(
-        at url: URL,
-        expectedStatus: stat,
-        with data: Data
-    ) throws {
-        let temporaryURL = replacementTemporaryURL(url)
-        var createdStatus: stat?
-        do {
-            _ = try withRegularFileDescriptor(
-                at: temporaryURL,
-                flags: O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
-                allowMissing: false
-            ) { descriptor, temporaryStatus in
-                createdStatus = temporaryStatus
-                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-                try handle.write(contentsOf: data)
-
-                beforeLeafMutation(url)
-                try requireIdentity(at: url, matches: expectedStatus)
-                try requireIdentity(at: temporaryURL, matches: temporaryStatus)
-                guard renameatx_np(
-                    AT_FDCWD,
-                    temporaryURL.path,
-                    AT_FDCWD,
-                    url.path,
-                    UInt32(RENAME_SWAP)
-                ) == 0 else {
-                    throw Self.posixError(code: errno)
-                }
-
-                do {
-                    try requireIdentity(at: url, matches: temporaryStatus)
-                    try requireIdentity(at: temporaryURL, matches: expectedStatus)
-                } catch {
-                    let validationError = error
-                    do {
-                        try requireIdentity(at: url, matches: temporaryStatus)
-                        try requireIdentity(at: temporaryURL, matches: expectedStatus)
-                        guard renameatx_np(
-                            AT_FDCWD,
-                            temporaryURL.path,
-                            AT_FDCWD,
-                            url.path,
-                            UInt32(RENAME_SWAP)
-                        ) == 0 else {
-                            throw Self.posixError(code: errno)
-                        }
-                        try requireIdentity(at: url, matches: expectedStatus)
-                        try requireIdentity(at: temporaryURL, matches: temporaryStatus)
-                    } catch {
-                        throw StoreError.fileOperationAndRollbackFailed(
-                            operation: String(describing: validationError),
-                            rollback: String(describing: error)
-                        )
-                    }
-                    throw StoreError.unsafeScrollbackFile(url.path)
-                }
-
-                beforeAuxiliaryLeafMutation(temporaryURL)
-                try requireIdentity(at: url, matches: temporaryStatus)
-                try requireIdentity(at: temporaryURL, matches: expectedStatus)
-                guard Darwin.unlink(temporaryURL.path) == 0 else {
-                    throw StoreError.fileOperationAndCleanupFailed(
-                        operation: "atomic replacement completed",
-                        cleanup: String(describing: Self.posixError(code: errno))
-                    )
-                }
+    /// Rewrites the already-validated inode without resolving its pathname again.
+    /// A non-cooperating process may replace the directory entry after validation,
+    /// but it cannot redirect these writes or the truncate to that replacement.
+    private func rewriteRegularFile(_ descriptor: Int32, with data: Data) throws {
+        var written = 0
+        while written < data.count {
+            let result = data.withUnsafeBytes { bytes in
+                Darwin.pwrite(
+                    descriptor,
+                    bytes.baseAddress!.advanced(by: written),
+                    data.count - written,
+                    off_t(written)
+                )
             }
-        } catch {
-            let operationError = error
-            if let createdStatus {
-                do {
-                    try removeLeafIfOwned(at: temporaryURL, expectedStatus: createdStatus)
-                } catch {
-                    throw StoreError.fileOperationAndCleanupFailed(
-                        operation: String(describing: operationError),
-                        cleanup: String(describing: error)
-                    )
-                }
+            if result < 0 {
+                if errno == EINTR { continue }
+                throw Self.posixError(code: errno)
             }
-            throw operationError
+            guard result > 0 else { throw Self.posixError(code: EIO) }
+            written += result
         }
-    }
-
-    private func quarantineAndRemoveRegularFile(at url: URL, expectedStatus: stat) throws {
-        let quarantineURL = removalQuarantineURL(url)
-        try requireIdentity(at: url, matches: expectedStatus)
-        guard renameatx_np(
-            AT_FDCWD,
-            url.path,
-            AT_FDCWD,
-            quarantineURL.path,
-            UInt32(RENAME_EXCL)
-        ) == 0 else {
+        guard ftruncate(descriptor, off_t(data.count)) == 0 else {
             throw Self.posixError(code: errno)
         }
-
-        do {
-            try requireIdentity(at: quarantineURL, matches: expectedStatus)
-            beforeAuxiliaryLeafMutation(quarantineURL)
-            try requireIdentity(at: quarantineURL, matches: expectedStatus)
-            try requireMissingLeaf(at: url)
-        } catch {
-            let validationError = error
-            do {
-                try restoreQuarantinedLeaf(
-                    from: quarantineURL,
-                    to: url,
-                    expectedStatus: expectedStatus
-                )
-            } catch {
-                throw StoreError.fileOperationAndRollbackFailed(
-                    operation: String(describing: validationError),
-                    rollback: String(describing: error)
-                )
-            }
-            throw StoreError.unsafeScrollbackFile(url.path)
-        }
-
-        guard Darwin.unlink(quarantineURL.path) == 0 else {
-            let removalError = Self.posixError(code: errno)
-            do {
-                try restoreQuarantinedLeaf(
-                    from: quarantineURL,
-                    to: url,
-                    expectedStatus: expectedStatus
-                )
-            } catch {
-                throw StoreError.fileOperationAndRollbackFailed(
-                    operation: String(describing: removalError),
-                    rollback: String(describing: error)
-                )
-            }
-            throw removalError
-        }
-    }
-
-    private func restoreQuarantinedLeaf(
-        from quarantineURL: URL,
-        to url: URL,
-        expectedStatus: stat
-    ) throws {
-        try requireIdentity(at: quarantineURL, matches: expectedStatus)
-        guard renameatx_np(
-            AT_FDCWD,
-            quarantineURL.path,
-            AT_FDCWD,
-            url.path,
-            UInt32(RENAME_EXCL)
-        ) == 0 else {
-            throw Self.posixError(code: errno)
-        }
-        try requireIdentity(at: url, matches: expectedStatus)
     }
 
     private func requireIdentity(at url: URL, matches expectedStatus: stat) throws {
@@ -524,23 +395,6 @@ struct DiskBackedScrollbackStore: Sendable {
         }
     }
 
-    private func requireMissingLeaf(at url: URL) throws {
-        var status = stat()
-        guard lstat(url.path, &status) != 0 else {
-            throw StoreError.unsafeScrollbackFile(url.path)
-        }
-        let code = errno
-        guard code == ENOENT else { throw Self.posixError(code: code) }
-    }
-
-    private func removeLeafIfOwned(at url: URL, expectedStatus: stat) throws {
-        guard let currentStatus = try inspectRegularFile(at: url) else { return }
-        guard Self.isSameFile(currentStatus, expectedStatus) else { return }
-        if Darwin.unlink(url.path) != 0 {
-            let code = errno
-            guard code == ENOENT else { throw Self.posixError(code: code) }
-        }
-    }
 
     private func fileURL(for id: BrokerSessionID) throws -> URL {
         guard Self.isValidSessionID(id.rawValue) else {
