@@ -121,7 +121,9 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
 struct DiskBackedScrollbackStore: Sendable {
     enum StoreError: Error, Equatable {
         case invalidSessionID(String)
+        case unsafeScrollbackFile(String)
         case fileOperationAndCloseFailed(operation: String, close: String)
+        case fileOperationAndCleanupFailed(operation: String, cleanup: String)
     }
 
     /// Maintenance-facing metadata for one persisted per-session scrollback tail.
@@ -149,27 +151,23 @@ struct DiskBackedScrollbackStore: Sendable {
         try operationLocks.withLock(for: url) {
             let fileManager = FileManager.default
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            if !fileManager.fileExists(atPath: url.path) {
-                fileManager.createFile(atPath: url.path, contents: nil)
-            }
-            let handle = try FileHandle(forWritingTo: url)
-            do {
+            _ = try withRegularFileDescriptor(
+                at: url,
+                flags: O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                allowMissing: false
+            ) { descriptor in
+                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
-            } catch {
-                let operationError = error
-                do {
-                    try handle.close()
-                } catch {
-                    throw StoreError.fileOperationAndCloseFailed(
-                        operation: String(describing: operationError),
-                        close: String(describing: error)
-                    )
+                let byteCount = try handle.seekToEnd()
+                if maxRetainedBytes <= 0 {
+                    try replaceRegularFileAtomically(at: url, with: Data())
+                } else if byteCount > UInt64(maxRetainedBytes) {
+                    try handle.seek(toOffset: byteCount - UInt64(maxRetainedBytes))
+                    let retained = try handle.readToEnd() ?? Data()
+                    try replaceRegularFileAtomically(at: url, with: retained)
                 }
-                throw operationError
             }
-            try handle.close()
-            try prune(url)
         }
     }
 
@@ -178,14 +176,15 @@ struct DiskBackedScrollbackStore: Sendable {
         guard maxRetainedBytes > 0 else { return Data() }
         let url = try fileURL(for: id)
         return try operationLocks.withLock(for: url) {
-            let fileManager = FileManager.default
-            guard fileManager.fileExists(atPath: url.path) else { return Data() }
-            let data = try Data(contentsOf: url)
+            guard let data = try readRegularFile(at: url) else { return Data() }
             // A crash between append's write and its prune can leave the persisted
             // tail oversized relative to the retention cap. Repair it on read so a
             // normal store operation restores the bounded-scrollback guarantee.
             if data.count > maxRetainedBytes {
-                try prune(url)
+                try replaceRegularFileAtomically(
+                    at: url,
+                    with: Data(data.suffix(maxRetainedBytes))
+                )
             }
             let capped = min(maxBytes, maxRetainedBytes)
             guard data.count > capped else { return data }
@@ -196,9 +195,9 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
-            let fileManager = FileManager.default
-            if fileManager.fileExists(atPath: url.path) {
-                try fileManager.removeItem(at: url)
+            guard try inspectRegularFile(at: url) != nil else { return }
+            guard Darwin.unlink(url.path) == 0 else {
+                throw Self.posixError(code: errno)
             }
         }
     }
@@ -206,10 +205,8 @@ struct DiskBackedScrollbackStore: Sendable {
     func storedByteCount(for id: BrokerSessionID) throws -> Int {
         let url = try fileURL(for: id)
         return try operationLocks.withLock(for: url) {
-            let fileManager = FileManager.default
-            guard fileManager.fileExists(atPath: url.path) else { return 0 }
-            let attributes = try fileManager.attributesOfItem(atPath: url.path)
-            return attributes[.size] as? Int ?? 0
+            guard let status = try inspectRegularFile(at: url) else { return 0 }
+            return Int(status.st_size)
         }
     }
 
@@ -280,14 +277,103 @@ struct DiskBackedScrollbackStore: Sendable {
         return tails.sorted { $0.sessionID.rawValue < $1.sessionID.rawValue }
     }
 
-    private func prune(_ url: URL) throws {
-        guard maxRetainedBytes > 0 else {
-            try Data().write(to: url, options: .atomic)
-            return
+    private func readRegularFile(at url: URL) throws -> Data? {
+        try withRegularFileDescriptor(
+            at: url,
+            flags: O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+        ) { descriptor in
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            return try handle.readToEnd() ?? Data()
         }
-        let data = try Data(contentsOf: url)
-        guard data.count > maxRetainedBytes else { return }
-        try Data(data.suffix(maxRetainedBytes)).write(to: url, options: .atomic)
+    }
+
+    private func inspectRegularFile(at url: URL) throws -> stat? {
+        try withRegularFileDescriptor(at: url, flags: O_RDONLY | O_NOFOLLOW | O_CLOEXEC) { descriptor in
+            var status = stat()
+            guard fstat(descriptor, &status) == 0 else {
+                throw Self.posixError(code: errno)
+            }
+            return status
+        }
+    }
+
+    private func withRegularFileDescriptor<T>(
+        at url: URL,
+        flags: Int32,
+        allowMissing: Bool = true,
+        _ operation: (Int32) throws -> T
+    ) throws -> T? {
+        let descriptor = Darwin.open(url.path, flags, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            let code = errno
+            if allowMissing, code == ENOENT { return nil }
+            if code == ELOOP { throw StoreError.unsafeScrollbackFile(url.path) }
+            throw Self.posixError(code: code)
+        }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            let operationError = Self.posixError(code: errno)
+            return try close(descriptor, after: .failure(operationError))
+        }
+        guard status.st_mode & S_IFMT == S_IFREG else {
+            return try close(
+                descriptor,
+                after: .failure(StoreError.unsafeScrollbackFile(url.path))
+            )
+        }
+
+        let result: Result<T, Error>
+        do {
+            result = .success(try operation(descriptor))
+        } catch {
+            result = .failure(error)
+        }
+        return try close(descriptor, after: result)
+    }
+
+    private func close<T>(_ descriptor: Int32, after result: Result<T, Error>) throws -> T {
+        guard Darwin.close(descriptor) == 0 else {
+            let closeError = Self.posixError(code: errno)
+            switch result {
+            case .success:
+                throw closeError
+            case .failure(let operationError):
+                throw StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: operationError),
+                    close: String(describing: closeError)
+                )
+            }
+        }
+        return try result.get()
+    }
+
+    private func replaceRegularFileAtomically(at url: URL, with data: Data) throws {
+        let temporaryURL = url
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        do {
+            _ = try withRegularFileDescriptor(
+                at: temporaryURL,
+                flags: O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+                allowMissing: false
+            ) { descriptor in
+                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                try handle.write(contentsOf: data)
+            }
+            guard Darwin.rename(temporaryURL.path, url.path) == 0 else {
+                throw Self.posixError(code: errno)
+            }
+        } catch {
+            let operationError = error
+            if Darwin.unlink(temporaryURL.path) != 0, errno != ENOENT {
+                throw StoreError.fileOperationAndCleanupFailed(
+                    operation: String(describing: operationError),
+                    cleanup: String(describing: Self.posixError(code: errno))
+                )
+            }
+            throw operationError
+        }
     }
 
     private func fileURL(for id: BrokerSessionID) throws -> URL {
@@ -307,5 +393,9 @@ struct DiskBackedScrollbackStore: Sendable {
         var fileStatus = stat()
         guard lstat(url.path, &fileStatus) == 0 else { return false }
         return fileStatus.st_mode & S_IFMT == S_IFREG
+    }
+
+    private static func posixError(code: Int32) -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
     }
 }

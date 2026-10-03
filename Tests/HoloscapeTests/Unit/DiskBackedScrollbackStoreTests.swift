@@ -254,6 +254,78 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testAppendRejectsSymlinkedTailWithoutMutatingTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "append-symlink-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let targetURL = directory.appendingPathComponent("foreign-append-target")
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let original = Data("foreign-original".utf8)
+        try original.write(to: targetURL)
+        try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
+
+        XCTAssertThrowsError(try store.append(Data("-must-not-append".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: targetURL), original)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tailURL.path), targetURL.path)
+    }
+
+    func testReadAndCountRejectSymlinkedTailWithoutDisclosingTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "read-symlink-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let targetURL = directory.appendingPathComponent("foreign-read-target")
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        try Data("foreign-secret".utf8).write(to: targetURL)
+        try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
+
+        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 1_024)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertThrowsError(try store.storedByteCount(for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+    }
+
+    func testRemoveRejectsSymlinkedTailWithoutDeletingLinkOrTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "remove-symlink-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let targetURL = directory.appendingPathComponent("foreign-remove-target")
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let original = Data("foreign-preserved".utf8)
+        try original.write(to: targetURL)
+        try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
+
+        XCTAssertThrowsError(try store.remove(for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: targetURL), original)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tailURL.path), targetURL.path)
+    }
+
     func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
