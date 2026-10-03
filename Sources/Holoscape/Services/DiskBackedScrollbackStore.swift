@@ -123,6 +123,7 @@ struct DiskBackedScrollbackStore: Sendable {
         case invalidSessionID(String)
         case unsafeScrollbackFile(String)
         case corruptRecoveryFile(String)
+        case descriptorCloseFailed(String)
         case fileOperationAndCloseFailed(operation: String, close: String)
     }
 
@@ -235,19 +236,22 @@ struct DiskBackedScrollbackStore: Sendable {
     private let beforeLeafMutation: @Sendable (URL) -> Void
     private let beforeDescriptorMutation: @Sendable (URL) -> Void
     private let transactionPhaseHook: @Sendable (TransactionPhase) throws -> Void
+    private let descriptorClose: @Sendable (Int32) -> Int32
 
     init(
         directory: URL,
         maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
         beforeLeafMutation: @escaping @Sendable (URL) -> Void = { _ in },
         beforeDescriptorMutation: @escaping @Sendable (URL) -> Void = { _ in },
-        transactionPhaseHook: @escaping @Sendable (TransactionPhase) throws -> Void = { _ in }
+        transactionPhaseHook: @escaping @Sendable (TransactionPhase) throws -> Void = { _ in },
+        descriptorClose: @escaping @Sendable (Int32) -> Int32 = { Darwin.close($0) }
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
         self.beforeLeafMutation = beforeLeafMutation
         self.beforeDescriptorMutation = beforeDescriptorMutation
         self.transactionPhaseHook = transactionPhaseHook
+        self.descriptorClose = descriptorClose
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -305,9 +309,9 @@ struct DiskBackedScrollbackStore: Sendable {
                 kind: .main
             ) { descriptor, status -> Data? in
                 let recovery = try observeRecovery(at: recoveryURL(for: url), mainStatus: status)
-                let data = try readAll(descriptor)
-                if case .none = recovery, data.count <= max(0, maxRetainedBytes) {
-                    return cappedTail(data, requestedBytes: maxBytes)
+                if case .none = recovery,
+                   status.st_size <= off_t(max(0, maxRetainedBytes)) {
+                    return cappedTail(try readAll(descriptor), requestedBytes: maxBytes)
                 }
                 return nil
             }
@@ -413,6 +417,13 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
             } catch let error as ScrollbackSessionOperationLocks.LockError {
                 throw error
+            } catch let error as StoreError {
+                switch error {
+                case .descriptorCloseFailed, .fileOperationAndCloseFailed:
+                    throw error
+                case .invalidSessionID, .unsafeScrollbackFile, .corruptRecoveryFile:
+                    continue
+                }
             } catch {
                 // Foreign, malformed, and racy entries are omitted without
                 // disclosing metadata or mutating either inode.
@@ -852,8 +863,10 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func close<T>(_ descriptor: Int32, after result: Result<T, Error>) throws -> T {
-        guard Darwin.close(descriptor) == 0 else {
-            let closeError = Self.posixError(code: errno)
+        guard descriptorClose(descriptor) == 0 else {
+            let closeError = StoreError.descriptorCloseFailed(
+                String(describing: Self.posixError(code: errno))
+            )
             switch result {
             case .success: throw closeError
             case .failure(let operationError):

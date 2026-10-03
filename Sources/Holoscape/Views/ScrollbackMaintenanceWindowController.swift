@@ -219,8 +219,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             } catch {
                 self.refreshListing()
                 self.presentMessage(
-                    "Could Not Remove Scrollback",
-                    message: "Holoscape could not remove scrollback for session \(tail.sessionID.rawValue): \(error)"
+                    "Could Not Clear Scrollback",
+                    message: "Holoscape could not clear scrollback for session \(tail.sessionID.rawValue): \(error)"
                 )
                 return
             }
@@ -250,8 +250,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             } catch {
                 self.refreshListing()
                 self.presentMessage(
-                    "Could Not Remove All Scrollback",
-                    message: "Holoscape removed some tails before failing: \(error)"
+                    "Could Not Clear All Scrollback",
+                    message: "Holoscape cleared some tails before failing: \(error)"
                 )
                 return
             }

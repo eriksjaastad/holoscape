@@ -834,6 +834,26 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testListStoredTailsPropagatesDescriptorCloseFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-close-failure")
+        let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try setupStore.append(Data("persisted-tail".utf8), for: id)
+        let closeFailure = OneShotDescriptorCloseFailure()
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            descriptorClose: closeFailure.close
+        )
+
+        XCTAssertThrowsError(try store.listStoredTails()) { error in
+            guard case .descriptorCloseFailed = error as? DiskBackedScrollbackStore.StoreError else {
+                return XCTFail("Expected descriptor close failure, got \(error)")
+            }
+        }
+    }
+
     func testListStoredTailsWaitsForProcessSharedSessionLock() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -944,6 +964,24 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(String(decoding: tail, as: UTF8.self), suffix)
 
         // The read must repair the persisted file back down to the cap.
+        XCTAssertEqual(try store.storedByteCount(for: id), 8)
+    }
+
+    func testReadTailRepairsHugeSparseFileWithoutReadingItsOversizedPrefix() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "huge-sparse-tail")
+        let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        try setupStore.append(Data(repeating: 0x41, count: 8), for: id)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let descriptor = Darwin.open(url.path, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        XCTAssertEqual(ftruncate(descriptor, off_t(4) * 1_024 * 1_024 * 1_024), 0)
+        XCTAssertEqual(Darwin.close(descriptor), 0)
+
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 8), Data(repeating: 0, count: 8))
         XCTAssertEqual(try store.storedByteCount(for: id), 8)
     }
 
@@ -1220,6 +1258,22 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 }
 
 private struct ScrollbackTransactionInterruption: Error {}
+
+private final class OneShotDescriptorCloseFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func close(_ descriptor: Int32) -> Int32 {
+        let fail = lock.withLock {
+            defer { shouldFail = false }
+            return shouldFail
+        }
+        let result = Darwin.close(descriptor)
+        guard fail, result == 0 else { return result }
+        errno = EIO
+        return -1
+    }
+}
 
 private final class OneShotScrollbackLeafMutation: @unchecked Sendable {
     private let lock = NSLock()

@@ -92,7 +92,7 @@ final class ScrollbackMaintenanceFormattingTests: XCTestCase {
 
         for copy in [header, single, bulk] {
             XCTAssertFalse(copy.localizedCaseInsensitiveContains("delete"), copy)
-            XCTAssertFalse(copy.localizedCaseInsensitiveContains("removes the saved file"), copy)
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("remove"), copy)
             XCTAssertTrue(copy.localizedCaseInsensitiveContains("clear"), copy)
         }
         XCTAssertTrue(single.contains("session-a"))

@@ -51,7 +51,7 @@ enum ScrollbackMaintenanceFormatting {
 /// covered directly: clearing retains an empty, reusable owned inode.
 enum ScrollbackMaintenanceCopy {
     static let header =
-        "Persisted scrollback tails hold saved terminal output for reattached sessions. Clearing a tail removes its saved bytes while retaining its protected storage file; live sessions are unaffected."
+        "Persisted scrollback tails hold saved terminal output for reattached sessions. Clearing a tail erases its saved bytes while retaining its protected storage file; live sessions are unaffected."
 
     static func singleConfirmation(sessionID: String, formattedSize: String) -> String {
         "Clear the persisted scrollback bytes for session “\(sessionID)” (\(formattedSize))? The protected storage file remains available for reuse, and no live session is affected."
