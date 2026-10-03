@@ -421,6 +421,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
 
                 beforeAuxiliaryLeafMutation(temporaryURL)
+                try requireIdentity(at: url, matches: temporaryStatus)
                 try requireIdentity(at: temporaryURL, matches: expectedStatus)
                 guard Darwin.unlink(temporaryURL.path) == 0 else {
                     throw StoreError.fileOperationAndCleanupFailed(
@@ -462,6 +463,7 @@ struct DiskBackedScrollbackStore: Sendable {
             try requireIdentity(at: quarantineURL, matches: expectedStatus)
             beforeAuxiliaryLeafMutation(quarantineURL)
             try requireIdentity(at: quarantineURL, matches: expectedStatus)
+            try requireMissingLeaf(at: url)
         } catch {
             let validationError = error
             do {
@@ -520,6 +522,15 @@ struct DiskBackedScrollbackStore: Sendable {
               Self.isSameFile(currentStatus, expectedStatus) else {
             throw StoreError.unsafeScrollbackFile(url.path)
         }
+    }
+
+    private func requireMissingLeaf(at url: URL) throws {
+        var status = stat()
+        guard lstat(url.path, &status) != 0 else {
+            throw StoreError.unsafeScrollbackFile(url.path)
+        }
+        let code = errno
+        guard code == ENOENT else { throw Self.posixError(code: code) }
     }
 
     private func removeLeafIfOwned(at url: URL, expectedStatus: stat) throws {
