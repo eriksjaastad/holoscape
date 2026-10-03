@@ -159,7 +159,6 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
                 guard url == tailURL else { return }
                 try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
                 try foreign.write(to: stagingURL)
-                throw ScrollbackTransactionInterruption()
             }
         )
 
@@ -191,7 +190,6 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             beforeFormatMarkerPublish: {
                 try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
                 try foreign.write(to: stagingURL)
-                throw ScrollbackTransactionInterruption()
             }
         )
 
@@ -243,6 +241,38 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent("\(id.rawValue).scrollback").path
+            )
+        )
+    }
+
+    func testLegacyRetirementPublicationRejectsStagingPathReplacement() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "legacy-staging-replacement")
+        let markerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v1")
+        let stagingURL = directory.appendingPathComponent(".holoscape-scrollback-format-v1.staging")
+        let displacedURL = directory.appendingPathComponent("legacy-staging-displaced")
+        let foreign = Data("foreign-legacy-staging".utf8)
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeLegacyRetirementMarkerPublish: {
+                try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+                try foreign.write(to: stagingURL)
+            }
+        )
+
+        XCTAssertThrowsError(try store.append(Data("payload".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markerURL.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".holoscape-scrollback-format-v2").path
             )
         )
     }
@@ -724,6 +754,27 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             XCTAssertTrue(String(describing: error).contains("unowned lock staging file"))
         }
         XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+    }
+
+    func testLockPublicationRejectsStagingPathReplacement() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sessionURL = directory.appendingPathComponent("lock-publication-replacement.scrollback")
+        let lockURL = directory.appendingPathComponent("lock-publication-replacement.scrollback.lock")
+        let stagingURL = directory.appendingPathComponent(".lock-publication-replacement.scrollback.lock.staging")
+        let displacedURL = directory.appendingPathComponent("lock-publication-displaced")
+        let foreign = Data("foreign-lock-staging".utf8)
+        let oneShotMutation = OneShotDescriptorSyncMutation {
+            try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+            try foreign.write(to: stagingURL)
+        }
+        let locks = ScrollbackSessionOperationLocks(descriptorSync: oneShotMutation.sync)
+
+        XCTAssertThrowsError(try locks.withLock(for: sessionURL) {}) { error in
+            XCTAssertTrue(String(describing: error).contains("pathname identity changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: stagingURL), foreign)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL.path))
     }
 
     func testAppendRejectsSymlinkedTailWithoutMutatingTarget() throws {
@@ -2230,6 +2281,33 @@ private final class OneShotDescriptorSyncFailure: @unchecked Sendable {
         }
         errno = EIO
         return -1
+    }
+}
+
+private final class OneShotDescriptorSyncMutation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldMutate = true
+    private let mutation: () throws -> Void
+
+    init(mutation: @escaping () throws -> Void) {
+        self.mutation = mutation
+    }
+
+    func sync(_ descriptor: Int32) -> Int32 {
+        let mutate = lock.withLock {
+            defer { shouldMutate = false }
+            return shouldMutate
+        }
+        if mutate {
+            do {
+                try mutation()
+            } catch {
+                XCTFail("Descriptor sync mutation failed: \(error)")
+                errno = EIO
+                return -1
+            }
+        }
+        return Darwin.fsync(descriptor)
     }
 }
 

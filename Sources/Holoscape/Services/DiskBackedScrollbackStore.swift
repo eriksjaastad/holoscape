@@ -198,6 +198,12 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     guard descriptorSync(opened) == 0 else {
                         throw LockError(message: Self.posixFailure("fsync", path: lockPath, code: errno))
                     }
+                    try Self.requirePathIdentity(
+                        directoryDescriptor: directoryDescriptor,
+                        name: temporaryName,
+                        descriptor: opened,
+                        displayPath: lockPath
+                    )
                     guard renameatx_np(
                         directoryDescriptor,
                         temporaryName,
@@ -591,6 +597,24 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         }
     }
 
+
+    private static func requirePathIdentity(
+        directoryDescriptor: Int32,
+        name: String,
+        descriptor: Int32,
+        displayPath: String
+    ) throws {
+        var descriptorStatus = stat()
+        var pathStatus = stat()
+        guard fstat(descriptor, &descriptorStatus) == 0,
+              fstatat(directoryDescriptor, name, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0,
+              descriptorStatus.st_mode & S_IFMT == S_IFREG,
+              pathStatus.st_mode & S_IFMT == S_IFREG,
+              descriptorStatus.st_dev == pathStatus.st_dev,
+              descriptorStatus.st_ino == pathStatus.st_ino else {
+            throw LockError(message: "lock staging pathname identity changed at \(displayPath)")
+        }
+    }
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
@@ -1457,7 +1481,16 @@ struct DiskBackedScrollbackStore: Sendable {
             if case .failure(let error) = initialization {
                 return try close(descriptor, after: .failure(error))
             }
-            _ = try close(descriptor, after: .success(()))
+            do {
+                try requirePathIdentity(
+                    authority,
+                    name: temporaryName,
+                    descriptor: descriptor,
+                    failure: .unsafeScrollbackDirectory(directory.path)
+                )
+            } catch {
+                return try close(descriptor, after: .failure(error))
+            }
 
             guard renameatx_np(
                 authority.descriptor,
@@ -1467,6 +1500,14 @@ struct DiskBackedScrollbackStore: Sendable {
                 UInt32(RENAME_EXCL)
             ) == 0 else {
                 let code = errno
+                do {
+                    _ = try close(descriptor, after: .success(()))
+                } catch {
+                    throw StoreError.fileOperationAndCloseFailed(
+                        operation: "renameatx_np failed for \(directory.path): \(String(cString: strerror(code))) (errno \(code))",
+                        close: String(describing: error)
+                    )
+                }
                 if code == EEXIST {
                     try requireLegacyRetirementMarker(authority)
                     try sync(authority.descriptor)
@@ -1474,6 +1515,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
                 throw Self.posixError(code: code)
             }
+            _ = try close(descriptor, after: .success(()))
             try sync(authority.descriptor)
         }
         if flock(authority.descriptor, LOCK_UN) != 0 {
@@ -1581,7 +1623,16 @@ struct DiskBackedScrollbackStore: Sendable {
             _ = try close(descriptor, after: failure)
             throw error
         }
-        _ = try close(descriptor, after: .success(()))
+        do {
+            try requirePathIdentity(
+                authority,
+                name: temporaryName,
+                descriptor: descriptor,
+                failure: .unsafeScrollbackDirectory(directory.path)
+            )
+        } catch {
+            return try close(descriptor, after: .failure(error))
+        }
 
         guard renameatx_np(
             authority.descriptor,
@@ -1591,9 +1642,18 @@ struct DiskBackedScrollbackStore: Sendable {
             UInt32(RENAME_EXCL)
         ) == 0 else {
             let code = errno
+            do {
+                _ = try close(descriptor, after: .success(()))
+            } catch {
+                throw StoreError.fileOperationAndCloseFailed(
+                    operation: "renameatx_np failed for \(directory.path): \(String(cString: strerror(code))) (errno \(code))",
+                    close: String(describing: error)
+                )
+            }
             if code == EEXIST, try formatMarkerExists(authority) { return }
             throw Self.posixError(code: code)
         }
+        _ = try close(descriptor, after: .success(()))
         try sync(authority.descriptor)
     }
 
@@ -1872,6 +1932,14 @@ struct DiskBackedScrollbackStore: Sendable {
                 if kind == .recovery { try setRecoveryPhase(.idle, descriptor: descriptor) }
                 try sync(descriptor)
                 try beforeOwnedFilePublish(url)
+                try requirePathIdentity(
+                    authority,
+                    name: temporaryName,
+                    descriptor: descriptor,
+                    failure: .unsafeScrollbackFile(
+                        directory.appendingPathComponent(temporaryName).path
+                    )
+                )
             }
             if case .failure(let error) = initialization {
                 return try close(descriptor, after: .failure(error))
@@ -1989,6 +2057,23 @@ struct DiskBackedScrollbackStore: Sendable {
             result = .success(())
         } catch { result = .failure(error) }
         try close(descriptor, after: result)
+    }
+
+    private func requirePathIdentity(
+        _ authority: DirectoryAuthority,
+        name: String,
+        descriptor: Int32,
+        failure: @autoclosure () -> StoreError
+    ) throws {
+        var descriptorStatus = stat()
+        var pathStatus = stat()
+        guard fstat(descriptor, &descriptorStatus) == 0,
+              fstatat(authority.descriptor, name, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0,
+              descriptorStatus.st_mode & S_IFMT == S_IFREG,
+              pathStatus.st_mode & S_IFMT == S_IFREG,
+              Self.isSameFile(descriptorStatus, pathStatus) else {
+            throw failure()
+        }
     }
 
     private func hasMainAuthority(_ authority: DirectoryAuthority, fileName: String) throws -> Bool {
