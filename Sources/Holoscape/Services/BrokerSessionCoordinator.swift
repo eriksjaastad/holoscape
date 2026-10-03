@@ -21,6 +21,8 @@ protocol BrokerSessionCoordinating {
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -28,6 +30,7 @@ protocol BrokerSessionCoordinating {
     func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
     func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
@@ -51,6 +54,19 @@ extension BrokerSessionCoordinating {
             data: try readScrollbackTail(id, maxBytes: maxBytes),
             source: .unknown,
             maxBytes: maxBytes
+        )
+    }
+
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: try readAvailableOutput(id), generation: nil)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {}
+
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id, maxBytes: maxBytes),
+            generation: nil
         )
     }
 }
@@ -594,6 +610,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         return try runtime.readAvailableOutput(id: id)
     }
 
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        _ = try record(for: id)
+        if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+            return try transactionalRuntime.snapshotAvailableOutput(id: id)
+        }
+        return BrokerOutputSnapshot(data: try runtime.readAvailableOutput(id: id), generation: nil)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+        _ = try record(for: id)
+        guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else { return }
+        try transactionalRuntime.acknowledgeOutput(id: id, through: generation)
+    }
+
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -627,6 +657,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             data: Data(),
             source: .unknown,
             maxBytes: maxBytes
+        )
+    }
+
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        _ = try record(for: id)
+        if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+            return try transactionalRuntime.snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+        }
+        return BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id, maxBytes: maxBytes),
+            generation: nil
         )
     }
 

@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
@@ -132,14 +132,21 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+        let snapshot = try snapshotAvailableOutput(id: id)
+        if let generation = snapshot.generation {
+            try acknowledgeOutput(id: id, through: generation)
+        }
+        return snapshot.data
+    }
+
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
         try outputTransactions.withSession(id) {
             try flushPendingOutputAcknowledgment(id: id)
-            let response = try response(for: .readAvailableOutput(id: id))
+            let response = try response(for: .snapshotAvailableOutput(id: id))
             guard case let .outputSnapshot(snapshot) = response else {
                 throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
             }
-            acknowledgeAfterDelivery(id: id, generation: snapshot.generation)
-            return snapshot.data
+            return snapshot
         }
     }
 
@@ -171,14 +178,27 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        let snapshot = try snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+        if let generation = snapshot.generation {
+            try acknowledgeOutput(id: id, through: generation)
+        }
+        return snapshot.replay
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
         try outputTransactions.withSession(id) {
             try flushPendingOutputAcknowledgment(id: id)
-            let response = try response(for: .readScrollbackReplay(id: id, maxBytes: maxBytes))
+            let response = try response(for: .snapshotScrollbackReplay(id: id, maxBytes: maxBytes))
             guard case let .scrollbackReplaySnapshot(snapshot) = response else {
                 throw ClientError.unexpectedResponse(expected: "scrollbackReplaySnapshot", actual: response)
             }
-            acknowledgeAfterDelivery(id: id, generation: snapshot.generation)
-            return snapshot.replay
+            return snapshot
+        }
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+        outputTransactions.withSession(id) {
+            acknowledgeAfterDelivery(id: id, generation: generation)
         }
     }
 

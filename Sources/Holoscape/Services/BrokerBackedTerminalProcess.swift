@@ -406,7 +406,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             brokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
-            inputWriteLane.open(for: record.id)
             // The durable broker record is authoritative after a delayed retry;
             // publish it through the same host-truth seam as OSC 7 so the owning
             // shell replaces any stale channel metadata before saving again.
@@ -418,37 +417,63 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     restoreScrollbackReplay(for: record.id)
                 }
             }
-            presentedBrokerSessionID = record.id
-            if record.lifecycle == .exited {
-                sessionIOReady = false
-                inputWriteLane.close()
-                finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
+            if let generation = replay?.generation {
+                failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [weak self] error in
+                    DispatchQueue.main.async {
+                        guard let self,
+                              self.brokerSessionID == record.id,
+                              self.startCompletionPending else { return }
+                        if let error {
+                            self.failReattach(error, sessionID: sessionID)
+                            self.completeReattachStartIfNeeded(notifyStartCompletion)
+                            return
+                        }
+                        self.completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
+                    }
+                }
                 return
             }
-            sessionIOReady = true
-            if outputHandler != nil {
-                startOutputPump()
-            }
+            completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
         } catch {
-            startFailureDescription = String(describing: error)
-            startFailureKind = classifyStartFailure(error)
-            switch startFailureKind {
-            case .brokerHostUnavailable:
-                brokerSessionID = sessionID
-            case .brokerSessionStale:
-                brokerSessionID = nil
-                staleBrokerSessionID = sessionID
-            case .failed, .none:
-                brokerSessionID = sessionID
-            }
-            agentStatusOwnerToken = nil
+            failReattach(error, sessionID: sessionID)
+            completeReattachStartIfNeeded(notifyStartCompletion)
+        }
+    }
+
+    private func completeSuccessfulReattach(
+        _ record: BrokerSessionRecord,
+        notifyStartCompletion: Bool
+    ) {
+        inputWriteLane.open(for: record.id)
+        presentedBrokerSessionID = record.id
+        if record.lifecycle == .exited {
             sessionIOReady = false
-            NSLog("Broker-backed terminal reattach failed: \(error)")
+            inputWriteLane.close()
+            finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
+            return
         }
-        if notifyStartCompletion {
-            startCompletionPending = false
-            startCompletionHandler?()
+        sessionIOReady = true
+        if outputHandler != nil {
+            startOutputPump()
         }
+        completeReattachStartIfNeeded(notifyStartCompletion)
+    }
+
+    private func failReattach(_ error: Error, sessionID: BrokerSessionID) {
+        startFailureDescription = String(describing: error)
+        startFailureKind = classifyStartFailure(error)
+        switch startFailureKind {
+        case .brokerHostUnavailable:
+            brokerSessionID = sessionID
+        case .brokerSessionStale:
+            brokerSessionID = nil
+            staleBrokerSessionID = sessionID
+        case .failed, .none:
+            brokerSessionID = sessionID
+        }
+        agentStatusOwnerToken = nil
+        sessionIOReady = false
+        NSLog("Broker-backed terminal reattach failed: \(error)")
     }
 
     private func finishExitedReattach(
@@ -503,12 +528,27 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         }
 
-        let deliverFinalOutputAndRetire: @MainActor (Result<Data, Error>) -> Void = { [weak self] result in
+        let deliverFinalOutputAndRetire: @MainActor (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
             guard let self, self.brokerSessionID == record.id else { return }
             do {
-                let finalOutput = try result.get()
-                self.handleOutputPumpSample(finalOutput, for: record.id)
-                retireCompletedSession()
+                let snapshot = try result.get()
+                self.handleOutputPumpSample(snapshot.data, for: record.id)
+                if let generation = snapshot.generation {
+                    self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
+                        DispatchQueue.main.async {
+                            guard self.brokerSessionID == record.id else { return }
+                            if let error {
+                                self.startFailureDescription = String(describing: error)
+                                self.startFailureKind = self.classifyStartFailure(error)
+                                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                                return
+                            }
+                            retireCompletedSession()
+                        }
+                    }
+                } else {
+                    retireCompletedSession()
+                }
             } catch {
                 self.startFailureDescription = String(describing: error)
                 self.startFailureKind = self.classifyStartFailure(error)
@@ -528,7 +568,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         } else {
             deliverFinalOutputAndRetire(Result {
-                try coordinator.readAvailableOutput(record.id)
+                try coordinator.snapshotAvailableOutput(record.id)
             })
         }
     }
@@ -714,7 +754,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
             read: { [outputCoordinator] id in
-                try outputCoordinator.readAvailableOutput(id)
+                try outputCoordinator.snapshotAvailableOutput(id)
+            },
+            acknowledge: { [outputCoordinator] id, generation in
+                try outputCoordinator.acknowledgeOutput(id, through: generation)
             },
             terminationStatus: { [outputCoordinator] id in
                 try outputCoordinator.terminationStatusIfStopped(id)
@@ -766,7 +809,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             sessionID: brokerSessionID,
             mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
             read: { [outputCoordinator] id in
-                try outputCoordinator.readAvailableOutput(id)
+                try outputCoordinator.snapshotAvailableOutput(id)
+            },
+            acknowledge: { [outputCoordinator] id, generation in
+                try outputCoordinator.acknowledgeOutput(id, through: generation)
             },
             terminationStatus: { [outputCoordinator] id in
                 try outputCoordinator.terminationStatusIfStopped(id)
@@ -795,18 +841,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputSampleHandler() -> @Sendable (BrokerSessionID, Data) -> Void {
+    private func outputSampleHandler() -> @Sendable (BrokerSessionID, Data) -> Bool {
         { [weak self] id, data in
             // The serial lane does not perform liveness/exit RPCs until the main
             // actor has consumed this sample, preserving final-byte ordering
             // without making the main actor call the broker.
             let delivered = DispatchSemaphore(value: 0)
+            let acceptance = BrokerOutputDeliveryAcceptance()
             DispatchQueue.main.async { [weak self] in
                 defer { delivered.signal() }
                 guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
                 self.handleOutputPumpSample(data, for: id)
+                acceptance.accept()
             }
             delivered.wait()
+            return acceptance.wasAccepted
         }
     }
 
@@ -1012,8 +1061,12 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
         self.coordinator = coordinator
     }
 
-    func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
-        try coordinator.readAvailableOutput(id)
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try coordinator.snapshotAvailableOutput(id)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+        try coordinator.acknowledgeOutput(id, through: generation)
     }
 
     /// Check and durably finalize process exit on the same serial lane as output
@@ -1031,6 +1084,7 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
 
 private struct ScrollbackReplayResult: Sendable {
     let replay: ScrollbackReplay?
+    let generation: UInt64?
     let error: String?
 }
 
@@ -1078,12 +1132,21 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
                 var replay: ScrollbackReplayResult?
                 if shouldReplayScrollback {
                     do {
+                        let snapshot = try coordinator.snapshotScrollbackReplay(
+                            id,
+                            maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
+                        )
                         replay = ScrollbackReplayResult(
-                            replay: try coordinator.readScrollbackReplay(id, maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach),
+                            replay: snapshot.replay,
+                            generation: snapshot.generation,
                             error: nil
                         )
                     } catch {
-                        replay = ScrollbackReplayResult(replay: nil, error: String(describing: error))
+                        replay = ScrollbackReplayResult(
+                            replay: nil,
+                            generation: nil,
+                            error: String(describing: error)
+                        )
                     }
                 }
                 completion(ReattachResult(record: .success(record), replay: replay))
@@ -1151,12 +1214,27 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
 
     func readAvailableOutput(
         _ id: BrokerSessionID,
-        completion: @escaping @Sendable (Result<Data, Error>) -> Void
+        completion: @escaping @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void
     ) {
         queue.async { [self] in
             completion(Result {
-                try coordinator.readAvailableOutput(id)
+                try coordinator.snapshotAvailableOutput(id)
             })
+        }
+    }
+
+    func acknowledgeOutput(
+        _ id: BrokerSessionID,
+        through generation: UInt64,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.acknowledgeOutput(id, through: generation)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
         }
     }
 
@@ -1173,6 +1251,19 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
                 completion(error)
             }
         }
+    }
+}
+
+private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
+    private let lock = NSLock()
+    private var accepted = false
+
+    func accept() {
+        lock.withLock { accepted = true }
+    }
+
+    var wasAccepted: Bool {
+        lock.withLock { accepted }
     }
 }
 
@@ -1197,10 +1288,11 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     func start(
         sessionID: BrokerSessionID,
         mode: Mode,
-        read: @escaping @Sendable (BrokerSessionID) throws -> Data,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
@@ -1223,18 +1315,30 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 }
                 guard self.isOpen(for: sessionID) else { return }
                 do {
-                    let data = try read(sessionID)
+                    let snapshot = try read(sessionID)
                     guard self.isOpen(for: sessionID) else { return }
-                    onSample(sessionID, data)
+                    guard onSample(sessionID, snapshot.data) else {
+                        self.closeIfCurrent(sessionID)
+                        return
+                    }
+                    if let generation = snapshot.generation {
+                        try acknowledge(sessionID, generation)
+                    }
                     guard self.isOpen(for: sessionID) else { return }
                     if let exitCode = try terminationStatus(sessionID) {
                         // Termination observation and the PTY readability callback
                         // can race. Once termination is observable, monitoring is
                         // complete, so one final drain captures bytes appended
                         // after the first read and before exit authority.
-                        let finalData = try read(sessionID)
+                        let finalSnapshot = try read(sessionID)
                         guard self.isOpen(for: sessionID) else { return }
-                        onSample(sessionID, finalData)
+                        guard onSample(sessionID, finalSnapshot.data) else {
+                            self.closeIfCurrent(sessionID)
+                            return
+                        }
+                        if let generation = finalSnapshot.generation {
+                            try acknowledge(sessionID, generation)
+                        }
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
                         try finishTermination(sessionID, exitCode)
@@ -1253,10 +1357,11 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
 
     func pollOnce(
         sessionID: BrokerSessionID,
-        read: @escaping @Sendable (BrokerSessionID) throws -> Data,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
@@ -1266,10 +1371,17 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         }
         queue.async {
             do {
-                let data = try read(sessionID)
-                onSample(sessionID, data)
+                let snapshot = try read(sessionID)
+                guard onSample(sessionID, snapshot.data) else { return }
+                if let generation = snapshot.generation {
+                    try acknowledge(sessionID, generation)
+                }
                 if let exitCode = try terminationStatus(sessionID) {
-                    onSample(sessionID, try read(sessionID))
+                    let finalSnapshot = try read(sessionID)
+                    guard onSample(sessionID, finalSnapshot.data) else { return }
+                    if let generation = finalSnapshot.generation {
+                        try acknowledge(sessionID, generation)
+                    }
                     try finishTermination(sessionID, exitCode)
                     onTermination(sessionID, exitCode)
                 }

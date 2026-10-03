@@ -14,6 +14,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let startRelease = DispatchSemaphore(value: 0)
         private let resizeEntered = DispatchSemaphore(value: 0)
         private let resizeRelease = DispatchSemaphore(value: 0)
+        private let outputSnapshotEntered = DispatchSemaphore(value: 0)
+        private let outputSnapshotRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
         private(set) var markErroredCalls: [BrokerSessionID] = []
@@ -24,6 +26,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockTeardown = false
         private var shouldBlockStart = false
         private var shouldBlockResize = false
+        private var shouldBlockOutputSnapshot = false
+        private var storedAcknowledgedOutputGenerations: [UInt64] = []
         var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
 
@@ -55,6 +59,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             resizeEntered.wait(timeout: .now() + timeout) == .success
         }
         func finishResize() { resizeRelease.signal() }
+
+        func blockOutputSnapshot() { lock.withLock { shouldBlockOutputSnapshot = true } }
+        func waitForOutputSnapshot(timeout: TimeInterval = 1) -> Bool {
+            outputSnapshotEntered.wait(timeout: .now() + timeout) == .success
+        }
+        func finishOutputSnapshot() { outputSnapshotRelease.signal() }
+        var acknowledgedOutputGenerations: [UInt64] {
+            lock.withLock { storedAcknowledgedOutputGenerations }
+        }
 
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
             let shouldBlock = lock.withLock { () -> Bool in
@@ -115,6 +128,20 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
             lock.withLock { outputReadCount += 1 }
             return Data()
+        }
+        func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+            let shouldBlock = lock.withLock { () -> Bool in
+                outputReadCount += 1
+                return shouldBlockOutputSnapshot
+            }
+            if shouldBlock {
+                outputSnapshotEntered.signal()
+                _ = outputSnapshotRelease.wait(timeout: .now() + 2)
+            }
+            return BrokerOutputSnapshot(data: Data("cancelled-before-delivery".utf8), generation: 42)
+        }
+        func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+            lock.withLock { storedAcknowledgedOutputGenerations.append(generation) }
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {
@@ -797,6 +824,37 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         try waitUntil { outputNotifications == 1 }
         XCTAssertGreaterThan(runtime.readCount, readsAfterInitialWake)
+    }
+
+    func testCancelledOutputSnapshotIsNotAcknowledgedBeforeTerminalDelivery() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "delivery-cancellation",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { terminal.brokerSessionID != nil }
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        let detached = expectation(description: "terminal detached")
+        terminal.detachBrokerSession { detached.fulfill() }
+        coordinator.finishOutputSnapshot()
+        wait(for: [detached], timeout: 1)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
+        XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
     }
 
     func testOutputPumpDeliversFinalBytesBeforeReportingTermination() throws {

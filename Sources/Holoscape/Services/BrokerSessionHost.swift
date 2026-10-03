@@ -83,7 +83,7 @@ struct BrokerSessionHost {
         case let .sendInput(id, bytes):
             try runtime.sendInput(id: id, bytes: Array(bytes))
             return .ok
-        case let .readAvailableOutput(id):
+        case let .snapshotAvailableOutput(id):
             guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else {
                 throw BrokerTransactionalOutputRequiredError()
             }
@@ -92,7 +92,7 @@ struct BrokerSessionHost {
             return .outputAvailable(try waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
         case let .readScrollbackTail(id, maxBytes):
             return .output(try runtime.readScrollbackTail(id: id, maxBytes: maxBytes))
-        case let .readScrollbackReplay(id, maxBytes):
+        case let .snapshotScrollbackReplay(id, maxBytes):
             if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
                 return .scrollbackReplaySnapshot(
                     try transactionalRuntime.snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
@@ -185,10 +185,10 @@ private extension BrokerSessionHostRequest {
              let .terminate(id, _),
              let .markErrored(id),
              let .sendInput(id, _),
-             let .readAvailableOutput(id),
+             let .snapshotAvailableOutput(id),
              let .waitForOutputAvailability(id, _),
              let .readScrollbackTail(id, _),
-             let .readScrollbackReplay(id, _),
+             let .snapshotScrollbackReplay(id, _),
              let .acknowledgeOutput(id, _),
              let .resize(id, _),
              let .isRunning(id),

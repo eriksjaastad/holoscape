@@ -25,10 +25,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .terminate(id: sessionID, exitCode: 0),
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
-            .readAvailableOutput(id: sessionID),
+            .snapshotAvailableOutput(id: sessionID),
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
-            .readScrollbackReplay(id: sessionID, maxBytes: 4096),
+            .snapshotScrollbackReplay(id: sessionID, maxBytes: 4096),
             .acknowledgeOutput(id: sessionID, throughGeneration: 42),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
@@ -142,7 +142,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(
-            try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))),
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID))),
             try codec.encodeResponse(.outputSnapshot(BrokerOutputSnapshot(data: Data("broker-output".utf8), generation: 1)))
         )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
@@ -150,7 +150,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readScrollbackTail(id: sessionID, maxBytes: 64))), try codec.encodeResponse(.output(Data("scrollback-tail".utf8))))
         XCTAssertEqual(
-            try host.handle(codec.encodeRequest(.readScrollbackReplay(id: sessionID, maxBytes: 64))),
+            try host.handle(codec.encodeRequest(.snapshotScrollbackReplay(id: sessionID, maxBytes: 64))),
             try codec.encodeResponse(
                 .scrollbackReplaySnapshot(
                     BrokerScrollbackReplaySnapshot(
@@ -259,7 +259,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let host = BrokerSessionHost(runtime: runtime)
         let codec = BrokerSessionHostCodec()
         let response = try codec.decodeResponse(
-            try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID)))
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
         )
 
         guard case let .failure(failure) = response else {
@@ -371,7 +371,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let readAttempts = LockedCounter()
         let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
             let response = try host.handle(frame)
-            if case .readAvailableOutput = try codec.decodeRequest(frame), readAttempts.increment() == 1 {
+            if case .snapshotAvailableOutput = try codec.decodeRequest(frame), readAttempts.increment() == 1 {
                 throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("lost after host snapshot")
             }
             return response
@@ -401,6 +401,39 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("ack-loss-output".utf8))
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
         XCTAssertEqual(ackAttempts.value, 2)
+    }
+
+    func testTransactionalSnapshotRequestUsesProtocolShapeLegacyHostCannotDispatch() throws {
+        let codec = BrokerSessionHostCodec()
+        let frame = try codec.encodeRequest(
+            .snapshotAvailableOutput(id: BrokerSessionID(rawValue: "version-separated-output"))
+        )
+        let json = String(decoding: frame, as: UTF8.self)
+
+        XCTAssertTrue(json.contains("snapshotAvailableOutput"), json)
+        XCTAssertFalse(json.contains("\"readAvailableOutput\""), json)
+    }
+
+    func testTransactionalClientDefersAcknowledgementUntilDeliveryOwnerAcceptsSnapshot() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("delivery-owned-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "delivery-owned-output")
+
+        let transactionalClient: any BrokerTransactionalOutputRuntime = client
+        let snapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+
+        XCTAssertEqual(snapshot.data, Data("delivery-owned-output".utf8))
+        XCTAssertFalse(runtime.events.contains("acknowledgeOutput delivery-owned-output 1"))
+        XCTAssertEqual(runtime.output, Data("delivery-owned-output".utf8))
+
+        try transactionalClient.acknowledgeOutput(id: sessionID, through: try XCTUnwrap(snapshot.generation))
+
+        XCTAssertTrue(runtime.events.contains("acknowledgeOutput delivery-owned-output 1"))
+        XCTAssertEqual(runtime.output, Data())
     }
 
     func testClientRuntimeTurnsHostFailureFramesIntoTypedErrors() throws {
@@ -590,7 +623,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             readChunkSize: 7
         )
 
-        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.readAvailableOutput(id: sessionID)))
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
         try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
         try inputPipe.fileHandleForWriting.close()
 
