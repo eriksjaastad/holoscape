@@ -237,6 +237,57 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
     }
 
+    func testLockSetupWrapsParentDirectoryFailureAsLockError() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentFile = directory.appendingPathComponent("not-a-directory")
+        FileManager.default.createFile(atPath: parentFile.path, contents: Data("x".utf8))
+        let sessionURL = parentFile.appendingPathComponent("session.scrollback")
+
+        XCTAssertThrowsError(
+            try ScrollbackSessionOperationLocks.shared.withLock(for: sessionURL) {}
+        ) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("createDirectory failed") == true)
+            XCTAssertTrue(lockError?.message.contains(parentFile.path) == true)
+        }
+    }
+
+    func testListStoredTailsRejectsSymlinkSwappedAfterPreflightWithoutForeignLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-symlink-swap")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let foreignTarget = directory.appendingPathComponent("swap-target.txt")
+        try Data("foreign".utf8).write(to: foreignTarget)
+        var didSwap = false
+
+        let tails = try store.listStoredTails(resourceValues: { url in
+            if url.lastPathComponent == tailURL.lastPathComponent, !didSwap {
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: foreignTarget)
+                didSwap = true
+            }
+            return try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ])
+        })
+
+        XCTAssertTrue(didSwap)
+        XCTAssertTrue(tails.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: foreignTarget.appendingPathExtension("lock").path
+        ))
+    }
+
     func testListStoredTailsPropagatesProcessSharedLockOpenFailure() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
