@@ -37,6 +37,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var freshStartPending = false
     private var freshStartCancelled = false
     private var freshStartTeardownCompletions: [@MainActor () -> Void] = []
+    /// A denied quit may reopen channel interaction while cancellation cleanup
+    /// still owns an in-flight launch. Preserve the reconnect instead of leaving
+    /// its controller waiting forever on the cancelled generation.
+    private var restartAfterCancelledFreshStart: (@MainActor () -> Void)?
     private var reattachGeneration: UInt = 0
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
@@ -103,6 +107,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        if freshStartPending, freshStartCancelled {
+            restartAfterCancelledFreshStart = { [weak self] in
+                guard let self else { return }
+                self.startCompletionPending = false
+                self.continueStartProcess(
+                    executable: executable,
+                    args: args,
+                    environment: environment,
+                    currentDirectory: currentDirectory
+                )
+                if !self.startCompletionPending {
+                    self.startCompletionHandler?()
+                }
+            }
+            return
+        }
         guard recoveringBrokerSessionID == nil, !startCompletionPending else {
             NSLog("Broker-backed terminal retry ignored while session recovery is still running")
             return
@@ -264,10 +284,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func completeCancelledFreshStart() {
         freshStartPending = false
         freshStartCancelled = false
-        startCompletionPending = false
         let completions = freshStartTeardownCompletions
         freshStartTeardownCompletions.removeAll()
         completions.forEach { $0() }
+        if let restartAfterCancelledFreshStart {
+            self.restartAfterCancelledFreshStart = nil
+            restartAfterCancelledFreshStart()
+        } else {
+            startCompletionPending = false
+        }
     }
 
     private func retireTrackedForTeardown(
@@ -465,15 +490,46 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         }
 
-        if coordinator.requiresOffMainBrokerWork {
-            failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
-        } else {
+        let retireCompletedSession: @MainActor () -> Void = { [self] in
+            if coordinator.requiresOffMainBrokerWork {
+                failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
+                return
+            }
             do {
                 try coordinator.retireCompletedSession(record.id)
                 completion(nil)
             } catch {
                 completion(error)
             }
+        }
+
+        let deliverFinalOutputAndRetire: @MainActor (Result<Data, Error>) -> Void = { [weak self] result in
+            guard let self, self.brokerSessionID == record.id else { return }
+            do {
+                let finalOutput = try result.get()
+                self.handleOutputPumpSample(finalOutput, for: record.id)
+                retireCompletedSession()
+            } catch {
+                self.startFailureDescription = String(describing: error)
+                self.startFailureKind = self.classifyStartFailure(error)
+                self.completeReattachStartIfNeeded(notifyStartCompletion)
+            }
+        }
+
+        // Replay intentionally leaves an unread generation untouched when it
+        // cannot fit in the replay cap. A running session's pump would own that
+        // generation; an exited session has no pump, so drain it exactly once
+        // before runtime retirement and exit publication.
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.readAvailableOutput(record.id) { result in
+                DispatchQueue.main.async {
+                    deliverFinalOutputAndRetire(result)
+                }
+            }
+        } else {
+            deliverFinalOutputAndRetire(Result {
+                try coordinator.readAvailableOutput(record.id)
+            })
         }
     }
 
@@ -1086,6 +1142,17 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
             } catch {
                 completion(error)
             }
+        }
+    }
+
+    func readAvailableOutput(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Result<Data, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result {
+                try coordinator.readAvailableOutput(id)
+            })
         }
     }
 
