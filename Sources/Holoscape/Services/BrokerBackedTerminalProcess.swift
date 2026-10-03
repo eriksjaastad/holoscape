@@ -369,19 +369,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let coordinator = self.coordinator
         let channelID = self.channelID
         let shouldReplayScrollback = presentedBrokerSessionID != sessionID
+        reattachGeneration &+= 1
+        let generation = reattachGeneration
         guard coordinator.requiresOffMainBrokerWork else {
             finishReattach(
                 sessionID: sessionID,
                 result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) },
                 replay: nil,
                 shouldReplayScrollback: shouldReplayScrollback,
-                notifyStartCompletion: false
+                notifyStartCompletion: false,
+                authorityGeneration: generation
             )
             return
         }
         startCompletionPending = true
-        reattachGeneration &+= 1
-        let generation = reattachGeneration
         failureRecoveryCoordinator.reattach(
             sessionID,
             attachedChannelID: channelID,
@@ -397,7 +398,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     result: result.record,
                     replay: result.replay,
                     shouldReplayScrollback: shouldReplayScrollback,
-                    notifyStartCompletion: true
+                    notifyStartCompletion: true,
+                    authorityGeneration: generation
                 )
             }
         }
@@ -408,7 +410,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         result: Result<BrokerSessionRecord, Error>,
         replay: ScrollbackReplayResult?,
         shouldReplayScrollback: Bool,
-        notifyStartCompletion: Bool
+        notifyStartCompletion: Bool,
+        authorityGeneration: UInt
     ) {
         do {
             let record = try result.get()
@@ -430,6 +433,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [weak self] error in
                     DispatchQueue.main.async {
                         guard let self,
+                              self.reattachGeneration == authorityGeneration,
                               self.brokerSessionID == record.id,
                               self.startCompletionPending else { return }
                         if let error {
@@ -674,6 +678,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // which is showing its recovery guidance; late keystrokes are inert.
             return
         }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         inputWriteLane.enqueue(
             sessionID: brokerSessionID,
             bytes: bytes,
@@ -688,7 +693,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             },
             onFailure: { [weak self] id, error in
                 Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error, for: id)
+                    self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
                 }
             }
         )
@@ -776,6 +781,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func pollOutputOnce() {
         guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
             read: { [outputCoordinator] id in
@@ -790,9 +796,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(),
-            onTermination: outputTerminationHandler(),
-            onFailure: outputFailureHandler()
+            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
+            onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
     }
 
@@ -802,19 +808,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
         }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         let size = currentGridSize
         if coordinator.requiresOffMainBrokerWork {
             failureRecoveryCoordinator.resize(brokerSessionID, size: size) { [weak self] error in
                 guard let error else { return }
                 DispatchQueue.main.async { [weak self] in
-                    self?.reportSessionFailure(error, for: brokerSessionID)
+                    self?.reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
                 }
             }
         } else {
             do {
                 try coordinator.resize(brokerSessionID, size: size)
             } catch {
-                reportSessionFailure(error, for: brokerSessionID)
+                reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
             }
         }
     }
@@ -829,6 +836,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func startOutputPump() {
         guard sessionIOReady, let brokerSessionID else { return }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         let supportsOutputAvailabilityMonitoring = (try? coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)) == true
         outputReadLane.start(
             sessionID: brokerSessionID,
@@ -845,16 +853,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(),
-            onTermination: outputTerminationHandler(),
-            onFailure: outputFailureHandler()
+            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
+            onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
         do {
             try coordinator.setOutputAvailabilityHandler(brokerSessionID) { [outputReadLane] id in
                 outputReadLane.wake(sessionID: id)
             }
         } catch {
-            reportSessionFailure(error, for: brokerSessionID)
+            reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
         }
     }
 
@@ -866,8 +874,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputSampleHandler() -> @Sendable (BrokerSessionID, Data) -> Bool {
-        let deliveryGeneration = activeOutputDeliveryGeneration
+    private func outputSampleHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Data) -> Bool {
         return { [weak self] id, data in
             // The serial lane does not perform liveness/exit RPCs until the main
             // actor has consumed this sample, preserving final-byte ordering
@@ -877,7 +884,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             DispatchQueue.main.async { [weak self] in
                 defer { delivered.signal() }
                 guard let self,
-                      let deliveryGeneration,
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       self.brokerSessionID == id,
                       self.sessionIOReady,
@@ -890,11 +896,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputTerminationHandler() -> @Sendable (BrokerSessionID, Int32) -> Void {
+    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32) -> Void {
         { [weak self] id, exitCode in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.brokerSessionID == id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration,
                       !self.didNotifyTermination else { return }
                 self.didNotifyTermination = true
                 self.outputReadLane.stop()
@@ -907,10 +914,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputFailureHandler() -> @Sendable (BrokerSessionID, Error) -> Void {
+    private func outputFailureHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Error) -> Void {
         { [weak self] id, error in
             Task { @MainActor [weak self] in
-                self?.reportSessionFailure(error, for: id)
+                self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
             }
         }
     }
@@ -930,8 +937,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// instead of trapping. The durable broker handle is preserved for the
     /// retryable cases so retry reattaches the same session rather than starting
     /// a replacement.
-    private func reportSessionFailure(_ error: Error, for sessionID: BrokerSessionID) {
-        guard brokerSessionID == sessionID else {
+    private func reportSessionFailure(
+        _ error: Error,
+        for sessionID: BrokerSessionID,
+        deliveryGeneration: UInt
+    ) {
+        guard brokerSessionID == sessionID,
+              activeOutputDeliveryGeneration == deliveryGeneration else {
             NSLog("Ignoring delayed broker failure for inactive session \(sessionID.rawValue): \(error)")
             return
         }
@@ -1391,8 +1403,9 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
                         try finishTermination(sessionID, exitCode)
-                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        onTermination(sessionID, exitCode)
+                        if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                            onTermination(sessionID, exitCode)
+                        }
                         return
                     }
                 } catch {
@@ -1451,7 +1464,10 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     }
                     guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                     try finishTermination(sessionID, exitCode)
-                    onTermination(sessionID, exitCode)
+                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                        onTermination(sessionID, exitCode)
+                    }
+                    return
                 }
                 self.closeIfCurrent(sessionID, runGeneration: runGeneration)
             } catch {

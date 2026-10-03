@@ -28,6 +28,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockTeardown = false
         private var shouldBlockStart = false
         private var shouldBlockResize = false
+        private var blockedResizeShouldFail = false
         private var shouldBlockOutputSnapshot = false
         private var shouldBlockInputWrite = false
         private var blockedInputWriteShouldFail = false
@@ -60,6 +61,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func finishStart() { startRelease.signal() }
 
         func blockResize() { lock.withLock { shouldBlockResize = true } }
+        func blockNextResize(fail: Bool) {
+            lock.withLock {
+                shouldBlockResize = true
+                blockedResizeShouldFail = fail
+            }
+        }
         func waitForResize(timeout: TimeInterval = 1) -> Bool {
             resizeEntered.wait(timeout: .now() + timeout) == .success
         }
@@ -177,13 +184,19 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {
-            let shouldBlock = lock.withLock { () -> Bool in
+            let blocked: (shouldBlock: Bool, shouldFail: Bool) = lock.withLock {
                 resizeRanOnMainThread.append(Thread.isMainThread)
-                return shouldBlockResize
+                let result = (shouldBlockResize, blockedResizeShouldFail)
+                shouldBlockResize = false
+                blockedResizeShouldFail = false
+                return result
             }
-            if shouldBlock {
+            if blocked.shouldBlock {
                 resizeEntered.signal()
                 _ = resizeRelease.wait(timeout: .now() + 2)
+            }
+            if blocked.shouldFail {
+                throw RuntimeError.createFailed
             }
         }
         func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
@@ -1002,6 +1015,35 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         terminal.send(Array("replacement-write".utf8))
         try waitUntil { coordinator.successfulInputWrites == 1 }
         terminal.detachBrokerSession()
+    }
+
+    func testDelayedResizeFailureIsIgnoredAfterRunOwnershipIsRevoked() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockNextResize(fail: true)
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "stale-resize-failure",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        try waitUntil { terminal.brokerSessionID != nil }
+        let sessionID = try XCTUnwrap(terminal.brokerSessionID)
+        var failures: [TerminalSessionFailure] = []
+        terminal.setSessionFailureHandler { failures.append($0) }
+
+        terminal.resizeToCurrentGrid()
+        XCTAssertTrue(coordinator.waitForResize())
+        let detached = expectation(description: "resize owner detached")
+        terminal.detachBrokerSession { detached.fulfill() }
+        coordinator.finishResize()
+        wait(for: [detached], timeout: 1)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertNil(terminal.sessionFailure)
+        XCTAssertTrue(failures.isEmpty)
     }
 
     func testOutputPumpDeliversFinalBytesBeforeReportingTermination() throws {
