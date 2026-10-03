@@ -480,6 +480,44 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: recoveryURL), Data("malformed".utf8))
     }
 
+    func testHugeSparseOwnedRecoveryFailsBeforeUnboundedRead() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "huge-sparse-recovery")
+        let initialStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        try initialStore.append(Data("12345678".utf8), for: id)
+        let interruptedStore = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 8,
+            transactionPhaseHook: { phase in
+                if phase == .recoveryIntentDurable { throw ScrollbackTransactionInterruption() }
+            }
+        )
+        XCTAssertThrowsError(try interruptedStore.append(Data("ABC".utf8), for: id))
+
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let recoveryURL = tailURL.appendingPathExtension("recovery")
+        let primaryBeforeCorruption = try Data(contentsOf: tailURL)
+        let descriptor = Darwin.open(recoveryURL.path, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        XCTAssertEqual(ftruncate(descriptor, off_t(4) * 1_024 * 1_024 * 1_024), 0)
+        XCTAssertEqual(Darwin.close(descriptor), 0)
+
+        let recoveryStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        XCTAssertThrowsError(try recoveryStore.readTail(for: id, maxBytes: 8)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .corruptRecoveryFile(recoveryURL.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: tailURL), primaryBeforeCorruption)
+        let attributes = try FileManager.default.attributesOfItem(atPath: recoveryURL.path)
+        XCTAssertEqual(attributes[.size] as? UInt64, 4 * 1_024 * 1_024 * 1_024)
+    }
+
     func testReadAndCountRejectSymlinkedTailWithoutDisclosingTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

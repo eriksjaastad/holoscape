@@ -567,7 +567,16 @@ struct DiskBackedScrollbackStore: Sendable {
             flags: O_RDONLY,
             createIfMissing: false,
             kind: .recovery
-        ) { descriptor, _ in
+        ) { descriptor, status in
+            let maximumPayload = max(
+                max(0, maxRetainedBytes),
+                ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+            )
+            let maximumRecordSize = RecoveryRecord.headerSize + maximumPayload
+            guard status.st_size >= 0,
+                  status.st_size <= off_t(maximumRecordSize) else {
+                throw StoreError.corruptRecoveryFile(url.path)
+            }
             let data = try readAll(descriptor)
             let phaseData = try getXattr(
                 descriptor: descriptor,
