@@ -254,6 +254,29 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-symlink-lock")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+        let lockURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+            .appendingPathExtension("lock")
+        let foreignTarget = directory.appendingPathComponent("foreign-lock-target")
+        try FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createSymbolicLink(at: lockURL, withDestinationURL: foreignTarget)
+
+        XCTAssertThrowsError(try store.listStoredTails()) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("open failed") == true)
+            XCTAssertTrue(lockError?.message.contains(lockURL.path) == true)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: foreignTarget.path))
+    }
+
     func testListStoredTailsRejectsSymlinkSwappedAfterPreflightWithoutForeignLock() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

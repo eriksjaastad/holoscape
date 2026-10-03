@@ -58,7 +58,14 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 )
             }
 
-            let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            // The lock leaf is persistent authority, not an aliasable path.
+            // Refuse symlinks atomically at open so a concurrent replacement
+            // cannot redirect flock to a file outside the scrollback directory.
+            let descriptor = Darwin.open(
+                lockURL.path,
+                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
             guard descriptor >= 0 else {
                 throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
             }
