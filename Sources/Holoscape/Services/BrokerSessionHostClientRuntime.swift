@@ -134,7 +134,9 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
         let snapshot = try snapshotAvailableOutput(id: id)
         if let generation = snapshot.generation {
-            try acknowledgeOutput(id: id, through: generation)
+            outputTransactions.withSession(id) {
+                deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
+            }
         }
         return snapshot.data
     }
@@ -180,7 +182,9 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         let snapshot = try snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
         if let generation = snapshot.generation {
-            try acknowledgeOutput(id: id, through: generation)
+            outputTransactions.withSession(id) {
+                deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
+            }
         }
         return snapshot.replay
     }
@@ -197,12 +201,12 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
-        outputTransactions.withSession(id) {
-            acknowledgeAfterDelivery(id: id, generation: generation)
+        try outputTransactions.withSession(id) {
+            try acknowledgeAfterDelivery(id: id, generation: generation)
         }
     }
 
-    private func acknowledgeAfterDelivery(id: BrokerSessionID, generation: UInt64?) {
+    private func acknowledgeAfterDelivery(id: BrokerSessionID, generation: UInt64?) throws {
         guard let generation else { return }
         do {
             try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
@@ -213,6 +217,18 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             // ambiguous ack response into output loss or duplicate delivery.
             outputTransactions.setPending(id: id, generation: generation)
             NSLog("Broker output acknowledgement deferred for \(id.rawValue): \(error)")
+            throw error
+        }
+    }
+
+    private func deferAcknowledgmentAfterLegacyDelivery(id: BrokerSessionID, generation: UInt64?) {
+        do {
+            try acknowledgeAfterDelivery(id: id, generation: generation)
+        } catch {
+            // The legacy read-and-consume API has already returned ownership of
+            // these bytes to this process. Preserve its lossless contract by
+            // retrying before the next read; transactional callers use the
+            // throwing acknowledgement API and must not advance lifecycle state.
         }
     }
 

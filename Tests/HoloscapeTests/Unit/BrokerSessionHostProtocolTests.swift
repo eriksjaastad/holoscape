@@ -403,6 +403,34 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(ackAttempts.value, 2)
     }
 
+    func testTransactionalAcknowledgementFailureThrowsAndRemainsPendingForRetry() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("strict-ack-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let ackAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            if case .acknowledgeOutput = try codec.decodeRequest(frame), ackAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("ack never reached host")
+            }
+            return try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "strict-output-ack")
+        let transactionalClient: any BrokerTransactionalOutputRuntime = client
+        let snapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+        let generation = try XCTUnwrap(snapshot.generation)
+
+        XCTAssertThrowsError(
+            try transactionalClient.acknowledgeOutput(id: sessionID, through: generation),
+            "A delivery owner must not publish exit or retire the runtime without confirmed acknowledgement"
+        )
+        XCTAssertEqual(runtime.output, Data("strict-ack-output".utf8))
+
+        let nextSnapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+        XCTAssertEqual(nextSnapshot.data, Data())
+        XCTAssertEqual(ackAttempts.value, 2)
+    }
+
     func testTransactionalSnapshotRequestUsesProtocolShapeLegacyHostCannotDispatch() throws {
         let codec = BrokerSessionHostCodec()
         let frame = try codec.encodeRequest(
