@@ -32,6 +32,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     let channelManager: ChannelManager
     private let configService: ConfigService
     private var profileManager: SessionProfileManager?
+    private(set) var channelMutationEnabled = true
+
+    func setChannelMutationEnabled(_ enabled: Bool) {
+        channelMutationEnabled = enabled
+    }
 
     private let splitView = NSSplitView()
     private let sidebarContainer = NSView()
@@ -1935,6 +1940,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - URL Scheme
 
     func openChannel(type: String, directory: String?, label: String?, command: String? = nil) {
+        guard channelMutationEnabled else { return }
         let explicitDir = directory.flatMap { path -> URL? in
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
@@ -2097,10 +2103,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc func handleNewSession() {
+        guard channelMutationEnabled else { return }
         presentUnifiedChannelLauncher()
     }
 
     @objc func presentUnifiedChannelLauncher() {
+        guard channelMutationEnabled else { return }
         if !sidebarExpanded {
             sidebarExpanded = true
             applySidebarState(animated: true)
@@ -2119,6 +2127,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc func createShellChannel() {
+        guard channelMutationEnabled else { return }
         let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: .shell,
@@ -2227,6 +2236,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func createAgentAPIKeyChannel(prompt: AgentChannelPromptResult) {
+        guard channelMutationEnabled else { return }
         do {
             try createAgentChannel(authType: AgentAPIKeyResolver().authType(), prompt: prompt)
         } catch {
@@ -2239,6 +2249,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func createAgentChannel(authType: AgentAuthType, prompt: AgentChannelPromptResult) {
+        guard channelMutationEnabled else { return }
         let channel = channelManager.createChannel(
             type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
             role: prompt.label,
@@ -2261,6 +2272,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func createGroupChatChannel() {
+        guard channelMutationEnabled else { return }
         let envPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/agent-chat.env")
         var apiURL = ""
@@ -2318,6 +2330,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func createBridgeChannel() {
+        guard channelMutationEnabled else { return }
         let cm = channelManager
         let channel = channelManager.createChannel(
             type: .bridge,
@@ -2332,6 +2345,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func launchSession(from profile: SessionProfile) {
+        guard channelMutationEnabled else { return }
         let resolved = profile.resolved(with: configService.load().sshDefaults)
         let channel = channelManager.createChannel(from: resolved)
         channel.delegate = self
@@ -2363,6 +2377,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     func closeChannel(id: UUID) {
+        guard channelMutationEnabled else { return }
         channelManager.closeChannel(id: id)
 
         splitPaneManager.removeChannel(channelId: id)
@@ -2406,16 +2421,19 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         let closeItem = NSMenuItem(title: "Close", action: #selector(contextMenuClose(_:)), keyEquivalent: "")
         closeItem.target = self
         closeItem.representedObject = channelId
+        closeItem.isEnabled = channelMutationEnabled
         menu.addItem(closeItem)
 
         let renameItem = NSMenuItem(title: "Rename", action: #selector(contextMenuRename(_:)), keyEquivalent: "")
         renameItem.target = self
         renameItem.representedObject = channelId
+        renameItem.isEnabled = channelMutationEnabled
         menu.addItem(renameItem)
 
         let duplicateItem = NSMenuItem(title: "Duplicate", action: #selector(contextMenuDuplicate(_:)), keyEquivalent: "")
         duplicateItem.target = self
         duplicateItem.representedObject = channelId
+        duplicateItem.isEnabled = channelMutationEnabled
         menu.addItem(duplicateItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -2424,7 +2442,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         let reconnectItem = NSMenuItem(title: recoveryAction?.menuTitle ?? "Reconnect", action: #selector(contextMenuReconnect(_:)), keyEquivalent: "")
         reconnectItem.target = self
         reconnectItem.representedObject = channelId
-        reconnectItem.isEnabled = recoveryAction != nil
+        reconnectItem.isEnabled = channelMutationEnabled && recoveryAction != nil
         reconnectItem.toolTip = recoveryAction?.operatorGuidance
         menu.addItem(reconnectItem)
 
@@ -2436,6 +2454,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         let pinItem = NSMenuItem(title: pinTitle, action: #selector(contextMenuTogglePin(_:)), keyEquivalent: "")
         pinItem.target = self
         pinItem.representedObject = channelId
+        pinItem.isEnabled = channelMutationEnabled
         menu.addItem(pinItem)
 
         let isMuted = apiServer?.isNotificationMuted(for: channelId) ?? false
@@ -2443,6 +2462,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         let muteItem = NSMenuItem(title: muteTitle, action: #selector(contextMenuToggleNotificationMute(_:)), keyEquivalent: "")
         muteItem.target = self
         muteItem.representedObject = channelId
+        muteItem.isEnabled = channelMutationEnabled
         menu.addItem(muteItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -2456,6 +2476,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuClose(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
 
@@ -2476,6 +2497,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuRename(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
 
@@ -2496,6 +2518,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
 
@@ -2522,12 +2545,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID else { return }
         guard channelManager.recoverChannel(id: id) != nil else { return }
         refreshAllTabs()
     }
 
     @objc private func contextMenuTogglePin(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID else { return }
         channelManager.togglePin(id: id)
         refreshAllTabs()
@@ -2535,6 +2560,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc private func contextMenuToggleNotificationMute(_ sender: NSMenuItem) {
+        guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID else { return }
         _ = apiServer?.toggleNotificationMuted(for: id)
         refreshAllTabs()
@@ -2600,6 +2626,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction) {
+        guard channelMutationEnabled else { return }
         switch action {
         case .shell:
             createShellChannel()

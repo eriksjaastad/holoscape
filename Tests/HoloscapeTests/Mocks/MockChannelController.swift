@@ -39,6 +39,8 @@ class MockChannelController: NSObject, ChannelController {
 
     var activateCallCount = 0
     var deactivateCallCount = 0
+    var defersDeactivationCompletion = false
+    private var pendingDeactivationCompletion: (@MainActor () -> Void)?
     var sentInputs: [String] = []
 
     init(
@@ -70,6 +72,21 @@ class MockChannelController: NSObject, ChannelController {
         deactivateCallCount += 1
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
+    }
+
+    func deactivate(completion: @escaping @MainActor () -> Void) {
+        deactivate()
+        if defersDeactivationCompletion {
+            pendingDeactivationCompletion = completion
+        } else {
+            completion()
+        }
+    }
+
+    func finishDeactivation() {
+        let completion = pendingDeactivationCompletion
+        pendingDeactivationCompletion = nil
+        completion?()
     }
 
     func retry() {

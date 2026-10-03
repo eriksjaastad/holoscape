@@ -6,7 +6,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
-    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
             case detach(BrokerSessionID)
@@ -19,13 +19,21 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var events: [Event] = []
         var createError: Error?
         var attachError: Error?
+        var onAttach: (() throws -> Void)?
         var terminateError: Error?
+        var onTerminate: (() throws -> Void)?
+        var markErroredError: Error?
+        var onMarkErrored: (() throws -> Void)?
         var statusError: Error?
         var running = false
         var observedTerminationStatus: Int32? = 0
+        var statusCalledOnMainActor = false
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
+        var scrollbackTailReadCount = 0
+        var scrollbackReplayReadCount = 0
+        var listedSessionIDs: [BrokerSessionID] = []
 
-        func listSessions() throws -> [BrokerSessionID] { [] }
+        func listSessions() throws -> [BrokerSessionID] { listedSessionIDs }
 
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             if let createError { throw createError }
@@ -47,26 +55,40 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {
             if let attachError { throw attachError }
             events.append(.attach(id, channelID))
+            try onAttach?()
         }
 
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
             events.append(.terminate(id, exitCode))
+            try onTerminate?()
             if let terminateError { throw terminateError }
         }
 
         func markSessionErrored(id: BrokerSessionID) throws {
             events.append(.markErrored(id))
+            try onMarkErrored?()
+            if let markErroredError { throw markErroredError }
         }
 
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
-            maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
+            scrollbackTailReadCount += 1
+            return maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
+        }
+        func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+            scrollbackReplayReadCount += 1
+            return ScrollbackReplay(
+                data: maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data(),
+                source: .liveBrokerMemory,
+                maxBytes: maxBytes
+            )
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
             events.append(.resize(id, size))
         }
         func isRunning(id: BrokerSessionID) throws -> Bool {
+            statusCalledOnMainActor = Thread.isMainThread
             if let statusError { throw statusError }
             return running
         }
@@ -202,6 +224,31 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(persisted.agentStatusOwnerToken)
     }
 
+    func testDetachPreservesDurableRetirementIntentDuringTeardown() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 42) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/retiring"),
+            channelType: .shell,
+            label: "retiring",
+            attachedChannelID: nil
+        )
+        var teardownRecord: BrokerSessionRecord?
+        runtime.onMarkErrored = {
+            // Force teardown to run after `.terminating` is durable but before
+            // retirement's runtime RPC completes—the exact race that previously
+            // rewrote the record to `.detached`.
+            teardownRecord = try coordinator.detach(started.id)
+        }
+
+        let errored = try coordinator.markErrored(started.id)
+
+        XCTAssertEqual(teardownRecord?.lifecycle, .terminating)
+        XCTAssertEqual(errored.lifecycle, .errored)
+        XCTAssertEqual(try coordinator.loadAll().first?.lifecycle, .errored)
+        XCTAssertFalse(runtime.events.contains(.detach(started.id)))
+    }
+
     func testDetachAndReattachUpdateLifecycleWithoutChangingLaunchIntent() throws {
         var now = Date(timeIntervalSince1970: 10)
         let runtime = RecordingBrokerSessionRuntime()
@@ -245,9 +292,49 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(reattached.updatedAt, now)
     }
 
-    func testExitRecordsExitCodeAndRemovesFromReattachableList() throws {
+    func testDetachDuringReattachCannotRepublishDurableOwnership() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var coordinator: BrokerSessionCoordinator!
+        coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 40) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-detach-race"),
+            channelType: .shell,
+            label: "race",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000040")!
+        )
+        _ = try coordinator.detach(started.id)
+        runtime.onAttach = {
+            _ = try coordinator.detach(started.id)
+        }
+
+        XCTAssertThrowsError(
+            try coordinator.reattach(
+                started.id,
+                attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000041")!
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .concurrentSessionTransition(started.id)
+            )
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .detached)
+        XCTAssertNil(durable.lastAttachedChannelID)
+        XCTAssertEqual(
+            runtime.events.filter { $0 == .detach(started.id) }.count,
+            3,
+            "The lost reattach lease must issue a final runtime detach after the racing teardown"
+        )
+    }
+
+    func testExitRecordsExitCodeAndOffersRetainedRuntimeForFinalReplay() throws {
         var now = Date(timeIntervalSince1970: 100)
-        let coordinator = makeCoordinator(now: { now })
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        runtime.observedTerminationStatus = nil
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
         let record = try coordinator.start(
             BrokerSessionLaunchRequest(
                 command: "/bin/zsh",
@@ -259,6 +346,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             label: nil,
             attachedChannelID: nil
         )
+        runtime.listedSessionIDs = [record.id]
 
         XCTAssertEqual(try coordinator.reattachableSessions(), [record])
 
@@ -268,14 +356,38 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(exited.lifecycle, .exited)
         XCTAssertEqual(exited.exitCode, 0)
         XCTAssertEqual(exited.updatedAt, now)
-        XCTAssertEqual(try coordinator.reattachableSessions(), [])
-        XCTAssertThrowsError(try coordinator.reattach(record.id, attachedChannelID: UUID())) { error in
-            XCTAssertEqual(
-                error as? BrokerSessionCoordinator.CoordinatorError,
-                .staleSession(record.id)
-            )
-        }
+        XCTAssertEqual(try coordinator.reattachableSessions(), [exited])
+        XCTAssertEqual(try coordinator.reattach(record.id, attachedChannelID: UUID()), exited)
         XCTAssertEqual(try coordinator.reconcileRuntimeStatus(record.id), exited)
+
+        try coordinator.retireCompletedSession(record.id)
+        runtime.listedSessionIDs = []
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try coordinator.loadAll(), [exited], "Durable exit metadata survives runtime retirement")
+    }
+
+    func testExitRebasesFinalStateAfterConcurrentMetadataUpdate() throws {
+        var now = Date(timeIntervalSince1970: 110)
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/before-exit"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.onTerminate = {
+            now = Date(timeIntervalSince1970: 111)
+            _ = try coordinator.updateWorkingDirectory(record.id, to: "/tmp/final-directory")
+        }
+
+        now = Date(timeIntervalSince1970: 112)
+        let exited = try coordinator.exit(record.id, exitCode: 7)
+
+        XCTAssertEqual(exited.lifecycle, .exited)
+        XCTAssertEqual(exited.exitCode, 7)
+        XCTAssertEqual(exited.workingDirectory, "/tmp/final-directory")
+        XCTAssertEqual(try coordinator.loadAll(), [exited])
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {
@@ -302,6 +414,91 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(errored.exitCode)
         XCTAssertEqual(errored.updatedAt, now)
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
+    }
+
+    func testMarkErroredKeepsTerminatingStateWhenBrokerResponseIsLost() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 202) })
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            guard case BrokerSessionHostClientRuntime.ClientError.transportFailed = error else {
+                return XCTFail("Expected ambiguous transport failure, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(
+            try XCTUnwrap(coordinator.loadAll().first).lifecycle,
+            .terminating,
+            "A lost broker response must not restore durable state to running after retirement may have completed"
+        )
+
+        runtime.markErroredError = nil
+        XCTAssertEqual(try coordinator.markErrored(record.id).lifecycle, .errored)
+    }
+
+    func testRelaunchDiscoveryIsDispatchedOffMainActor() async throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 700) })
+        _ = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/off-main"),
+            channelType: .shell,
+            label: "off-main",
+            attachedChannelID: nil
+        )
+        let recovery = BrokerRecoveryCoordinator(coordinator)
+
+        let sessions = try await withCheckedThrowingContinuation { continuation in
+            recovery.load { result in
+                continuation.resume(with: result)
+            }
+        }
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertFalse(runtime.statusCalledOnMainActor)
+    }
+
+    func testRelaunchDiscoveryFinishesPendingRetirementBeforeAllowingReplacement() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 203.75) })
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = BrokerSessionHostClientRuntime.ClientError.transportFailed("request delivery unknown")
+        XCTAssertThrowsError(try coordinator.markErrored(record.id))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
+
+        runtime.markErroredError = nil
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertEqual(
+            runtime.events.filter { event in
+                if case .markErrored(record.id) = event { return true }
+                return false
+            }.count,
+            2,
+            "Relaunch discovery must retry the old generation's retirement before replacement"
+        )
     }
 
     func testUpdatingMissingSessionFailsLoudly() throws {
@@ -358,7 +555,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
     }
 
     /// #7377 — an unrecordable start must not leave an orphaned runtime session.
-    func testStartTerminatesRuntimeSessionWhenRegistryWriteFails() throws {
+    func testStartRemovesRuntimeSessionWhenRegistryWriteFails() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let registry = try makeUnwritableRegistry()
         let coordinator = makeCoordinator(
@@ -380,17 +577,17 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             runtime.events,
-            [.create(createdID, request), .terminate(createdID, nil)],
-            "A start whose registry write fails must terminate the session it just created"
+            [.create(createdID, request), .markErrored(createdID)],
+            "A start whose registry write fails must remove the session it just created"
         )
         XCTAssertEqual(try registry.load(), [], "A rolled-back start must not persist a record")
     }
 
-    /// #7377 — when the rollback itself fails, the original registry failure still
-    /// surfaces instead of being masked by the cleanup attempt.
-    func testStartRollbackFailureStillSurfacesTheRegistryFailure() throws {
+    /// #7377 — when rollback fails, the typed error preserves both the registry
+    /// failure and the runtime identity required for a safe retry.
+    func testStartRollbackFailureSurfacesUntrackedIdentityAndRegistryFailure() throws {
         let runtime = RecordingBrokerSessionRuntime()
-        runtime.terminateError = RuntimeError.failed
+        runtime.markErroredError = RuntimeError.failed
         let registry = try makeUnwritableRegistry()
         let coordinator = makeCoordinator(
             runtime: runtime,
@@ -402,8 +599,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertThrowsError(
             try coordinator.start(request, channelType: .shell, label: "unrecordable", attachedChannelID: nil)
         ) { error in
-            XCTAssertNotEqual(error as? RuntimeError, .failed, "The rollback failure must not replace the registry failure")
-            XCTAssertFalse(error is BrokerSessionCoordinator.CoordinatorError, "Unexpected coordinator error: \(error)")
+            guard case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, registryFailure, rollbackFailure) = error else {
+                return XCTFail("Expected typed untracked-session failure, got \(error)")
+            }
+            XCTAssertEqual(rollbackFailure, "failed")
+            XCTAssertFalse(registryFailure.isEmpty)
+            guard case let .create(createdID, _) = runtime.events.first else { return XCTFail("Missing create") }
+            XCTAssertEqual(id, createdID)
         }
 
         guard case let .create(createdID, _) = runtime.events.first else {
@@ -411,9 +613,85 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             runtime.events,
-            [.create(createdID, request), .terminate(createdID, nil)],
+            [.create(createdID, request), .markErrored(createdID)],
             "The rollback must still be attempted when it is going to fail"
         )
+
+        runtime.markErroredError = nil
+        try coordinator.retireUntrackedSession(createdID)
+        XCTAssertEqual(
+            runtime.events,
+            [.create(createdID, request), .markErrored(createdID), .markErrored(createdID)],
+            "Retry must retire the known untracked generation before any replacement can start"
+        )
+    }
+
+    func testStartWithLostCreateResponseRetiresGeneratedIdentityBeforeReportingHostFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 601) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/uncertain-create"),
+                channelType: .shell,
+                label: "uncertain",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, message) = error else {
+                return XCTFail("Expected typed broker-host failure, got \(error)")
+            }
+            XCTAssertEqual(message, "response lost")
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
+    }
+
+    func testStartWithUnexpectedCreateResponseRetiresGeneratedIdentityBeforeReportingHostFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.unexpectedResponse(
+            expected: "created",
+            actual: .ok
+        )
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 603) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/unexpected-create-response"),
+                channelType: .shell,
+                label: "unexpected",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, message) = error else {
+                return XCTFail("Expected typed broker-host failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("unexpected response"))
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
+    }
+
+    func testStartWithLostCreateResponsePreservesIdentityWhenRetirementIsUncertain() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.markErroredError = RuntimeError.failed
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 602) })
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/uncertain-create-retirement"),
+                channelType: .shell,
+                label: "uncertain",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, registryFailure, rollbackFailure) = error else {
+                return XCTFail("Expected typed untracked-session failure, got \(error)")
+            }
+            XCTAssertTrue(registryFailure.contains("response lost"))
+            XCTAssertEqual(rollbackFailure, "failed")
+            XCTAssertEqual(runtime.events, [.markErrored(id)])
+        }
     }
 
     func testReadScrollbackTailRequiresDurableRecordAndUsesRuntimeTail() throws {
@@ -435,6 +713,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             String(decoding: try coordinator.readScrollbackTail(started.id, maxBytes: 15), as: UTF8.self),
             "scrollback tail"
         )
+        XCTAssertEqual(runtime.scrollbackTailReadCount, 1)
+        XCTAssertEqual(runtime.scrollbackReplayReadCount, 0)
         XCTAssertThrowsError(try coordinator.readScrollbackTail(BrokerSessionID(rawValue: "missing"), maxBytes: 4096)) { error in
             XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(BrokerSessionID(rawValue: "missing")))
         }
@@ -472,6 +752,83 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             .attach(started.id, secondChannel),
             .terminate(started.id, 0)
         ])
+    }
+
+    func testRelaunchDiscoveryRevokesAbandonedReattachLease() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("reattach-lease.json"))
+        let coordinator = makeCoordinator(runtime: runtime, registry: registry, now: { Date(timeIntervalSince1970: 525) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-lease"),
+            channelType: .shell,
+            label: "lease",
+            attachedChannelID: UUID()
+        )
+        let lease = BrokerSessionRecord(
+            id: started.id,
+            channelType: started.channelType,
+            label: started.label,
+            command: started.command,
+            arguments: started.arguments,
+            workingDirectory: started.workingDirectory,
+            environmentProfile: started.environmentProfile,
+            agentStatusOwnerToken: started.agentStatusOwnerToken,
+            lifecycle: .reattaching,
+            exitCode: nil,
+            createdAt: started.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 524),
+            lastAttachedChannelID: nil
+        )
+        try registry.upsert(lease)
+
+        let discovered = try coordinator.reattachableSessions()
+
+        XCTAssertEqual(discovered.count, 1)
+        XCTAssertEqual(discovered[0].id, started.id)
+        XCTAssertEqual(discovered[0].lifecycle, .detached)
+        XCTAssertNil(discovered[0].lastAttachedChannelID)
+        XCTAssertEqual(try registry.load(), discovered)
+    }
+
+    func testRelaunchDiscoveryRetiresRuntimeSessionsMissingFromRegistry() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let orphan = BrokerSessionID(rawValue: "failed-start-orphan")
+        runtime.listedSessionIDs = [orphan]
+        let coordinator = makeCoordinator(runtime: runtime, now: Date.init)
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(runtime.events, [.markErrored(orphan)])
+    }
+
+    func testReattachRevokesRuntimeOwnershipWhenRegistryFailsAfterAttach() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let registryURL = tempDirectory.appendingPathComponent("reattach-registry-failure.json")
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+        let coordinator = makeCoordinator(runtime: runtime, registry: registry, now: Date.init)
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/reattach-registry-failure"),
+            channelType: .shell,
+            label: "registry-failure",
+            attachedChannelID: UUID()
+        )
+        runtime.events.removeAll()
+        runtime.onAttach = {
+            try FileManager.default.removeItem(at: registryURL)
+            try FileManager.default.createDirectory(at: registryURL, withIntermediateDirectories: false)
+        }
+
+        XCTAssertThrowsError(try coordinator.reattach(started.id, attachedChannelID: UUID())) { error in
+            guard case BrokerSessionCoordinator.CoordinatorError.reattachRollbackFailed = error else {
+                return XCTFail("Expected typed reattach rollback failure, got \(error)")
+            }
+        }
+        XCTAssertEqual(runtime.events.count, 2)
+        guard case .attach(started.id, _) = runtime.events[0] else {
+            return XCTFail("Expected attach before registry failure: \(runtime.events)")
+        }
+        XCTAssertEqual(runtime.events[1], .detach(started.id))
     }
 
     func testResizeForwardsExactGridSizeToRuntimeWithoutMutatingRecord() throws {
@@ -624,6 +981,36 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(reconciled.lastAttachedChannelID)
         XCTAssertEqual(reconciled.updatedAt, now)
         XCTAssertEqual(try coordinator.reattachableSessions(), [reconciled])
+    }
+
+    func testReconcileRuntimeStatusRetiresScrollbackPersistenceFailureAndMarksErrored() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 780)
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let started = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/zsh",
+                workingDirectory: "/tmp/failed-scrollback-runtime",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "failed-scrollback-runtime",
+            attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000780")!
+        )
+
+        now = Date(timeIntervalSince1970: 781)
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(
+            started.id,
+            reason: "disk full"
+        )
+        let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
+
+        XCTAssertEqual(reconciled.lifecycle, .errored)
+        XCTAssertNil(reconciled.exitCode)
+        XCTAssertNil(reconciled.lastAttachedChannelID)
+        XCTAssertEqual(reconciled.updatedAt, now)
+        XCTAssertTrue(runtime.events.contains(.markErrored(started.id)))
     }
 
     func testReconcileRuntimeStatusRequiresTypedHostMissingSessionFailureBeforeMarkingStale() throws {

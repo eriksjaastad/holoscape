@@ -21,12 +21,33 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let coordinator: any BrokerSessionCoordinating
     private let inputCoordinator: BrokerInputCoordinator
     private let outputCoordinator: BrokerOutputCoordinator
+    private let failureRecoveryCoordinator: BrokerFailureRecoveryCoordinator
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var hostCurrentDirectoryHandler: ((String?) -> Void)?
     private var terminationHandler: ((Int32?) -> Void)?
+    private var startCompletionHandler: (() -> Void)?
+    private var startCompletionPending = false
+    /// A restored identity is not safe for I/O until reattach and scrollback
+    /// replay commit. Keeping this separate from `brokerSessionID` prevents an
+    /// installed output handler from draining live bytes ahead of replay.
+    private var sessionIOReady = false
+    private var freshStartPending = false
+    private var freshStartCancelled = false
+    private var freshStartTeardownCompletions: [@MainActor () -> Void] = []
+    /// A denied quit may reopen channel interaction while cancellation cleanup
+    /// still owns an in-flight launch. Preserve the reconnect instead of leaving
+    /// its controller waiting forever on the cancelled generation.
+    private var restartAfterCancelledFreshStart: (@MainActor () -> Void)?
+    private var reattachGeneration: UInt = 0
+    /// Identifies the terminal-view ownership window allowed to consume broker
+    /// output. A queued main-actor delivery must still hold this exact lease;
+    /// matching the broker ID alone is insufficient because teardown deliberately
+    /// preserves that ID for later reattach.
+    private var nextOutputDeliveryGeneration: UInt = 0
+    private var activeOutputDeliveryGeneration: UInt?
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
@@ -37,18 +58,23 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// reattaching the dead session, while the owning tab can still persist the
     /// dead identity for the next launch.
     private(set) var staleBrokerSessionID: BrokerSessionID?
+    private var recoveringBrokerSessionID: BrokerSessionID?
     private var didNotifyTermination = false
     /// Most recent failure observed while operating the live session. `nil` means
     /// the session is healthy (or has not started yet).
     private(set) var sessionFailure: TerminalSessionFailure?
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
+    private(set) var untrackedBrokerSessionID: BrokerSessionID?
     private(set) var lastScrollbackReplay: ScrollbackReplay?
+    /// The broker generation already represented by this terminal view.
+    private var presentedBrokerSessionID: BrokerSessionID?
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
     var currentGridSize: TerminalGridSize { terminalView.currentGridSize }
     var brokerOwnedSessionID: BrokerSessionID? { brokerSessionID }
+    var completesStartAsynchronously: Bool { startCompletionPending }
 
     init(
         channelID: UUID,
@@ -68,6 +94,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.coordinator = coordinator
         self.inputCoordinator = BrokerInputCoordinator(coordinator)
         self.outputCoordinator = BrokerOutputCoordinator(coordinator)
+        self.failureRecoveryCoordinator = BrokerFailureRecoveryCoordinator(coordinator)
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -86,12 +113,86 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
-        inputWriteLane.closeAndDrain()
+        if freshStartPending, freshStartCancelled {
+            restartAfterCancelledFreshStart = { [weak self] in
+                guard let self else { return }
+                self.startCompletionPending = false
+                self.continueStartProcess(
+                    executable: executable,
+                    args: args,
+                    environment: environment,
+                    currentDirectory: currentDirectory
+                )
+                if !self.startCompletionPending {
+                    self.startCompletionHandler?()
+                }
+            }
+            return
+        }
+        guard recoveringBrokerSessionID == nil, !startCompletionPending else {
+            NSLog("Broker-backed terminal retry ignored while session recovery is still running")
+            return
+        }
+        if let untrackedBrokerSessionID {
+            // This generation is outside the durable registry, so replacement
+            // cannot begin until retirement is confirmed. Always perform that
+            // potentially blocking cleanup off-main, including for in-process
+            // runtimes and test doubles that do not otherwise require host work.
+            startCompletionPending = true
+            failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [weak self] error in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.startCompletionPending,
+                          self.untrackedBrokerSessionID == untrackedBrokerSessionID else { return }
+                    if let error {
+                        self.startFailureDescription = String(describing: error)
+                        self.startFailureKind = .failed
+                        NSLog("Broker-backed terminal refused replacement until untracked session \(untrackedBrokerSessionID.rawValue) is retired: \(error)")
+                        self.startCompletionPending = false
+                        self.startCompletionHandler?()
+                    } else {
+                        self.untrackedBrokerSessionID = nil
+                        // Retirement is only the prerequisite. The replacement
+                        // start owns completion so controllers cannot publish a
+                        // transient active state with no broker identity.
+                        self.startCompletionPending = false
+                        self.continueStartProcess(
+                            executable: executable,
+                            args: args,
+                            environment: environment,
+                            currentDirectory: currentDirectory
+                        )
+                        if !self.startCompletionPending {
+                            self.startCompletionHandler?()
+                        }
+                    }
+                }
+            }
+            return
+        }
+        continueStartProcess(
+            executable: executable,
+            args: args,
+            environment: environment,
+            currentDirectory: currentDirectory
+        )
+    }
+
+    private func continueStartProcess(
+        executable: String,
+        args: [String],
+        environment: [String]?,
+        currentDirectory: String?
+    ) {
+        inputWriteLane.close()
         startFailureDescription = nil
         startFailureKind = nil
+        untrackedBrokerSessionID = nil
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
         if let existingBrokerSessionID = brokerSessionID {
             reattachExistingSession(existingBrokerSessionID)
             return
@@ -110,26 +211,135 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             initialSize: currentGridSize
         )
 
-        do {
-            let record = try coordinator.start(
+        if coordinator.requiresOffMainBrokerWork {
+            startCompletionPending = true
+            freshStartPending = true
+            freshStartCancelled = false
+            failureRecoveryCoordinator.start(
+                request,
+                channelType: channelType,
+                label: label,
+                attachedChannelID: channelID
+            ) { [self] result in
+                DispatchQueue.main.async { [self] in
+                    guard freshStartPending else { return }
+                    if freshStartCancelled {
+                        finishCancelledFreshStart(result)
+                        return
+                    }
+                    finishNewSessionStart(result)
+                    freshStartPending = false
+                    startCompletionPending = false
+                    startCompletionHandler?()
+                }
+            }
+            return
+        }
+
+        finishNewSessionStart(Result {
+            try coordinator.start(
                 request,
                 channelType: channelType,
                 label: label,
                 attachedChannelID: channelID
             )
+        })
+    }
+
+    private func finishNewSessionStart(_ result: Result<BrokerSessionRecord, Error>) {
+        do {
+            let record = try result.get()
             brokerSessionID = record.id
+            presentedBrokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
+            beginOutputDeliveryOwnership()
+            sessionIOReady = true
             if outputHandler != nil {
                 startOutputPump()
             }
         } catch {
+            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+                untrackedBrokerSessionID = id
+            }
             brokerSessionID = nil
             agentStatusOwnerToken = nil
+            revokeOutputDeliveryOwnership()
+            sessionIOReady = false
             startFailureDescription = String(describing: error)
             startFailureKind = classifyStartFailure(error)
             NSLog("Broker-backed terminal start failed: \(error)")
+        }
+    }
+
+    private func finishCancelledFreshStart(_ result: Result<BrokerSessionRecord, Error>) {
+        switch result {
+        case .success(let record):
+            retireTrackedForTeardown(record.id) { [self] in
+                completeCancelledFreshStart()
+            }
+        case .failure(let error):
+            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+                retireUntrackedForTeardown(id) { [self] in
+                    completeCancelledFreshStart()
+                }
+            } else {
+                completeCancelledFreshStart()
+            }
+        }
+    }
+
+    private func completeCancelledFreshStart() {
+        freshStartPending = false
+        freshStartCancelled = false
+        let completions = freshStartTeardownCompletions
+        freshStartTeardownCompletions.removeAll()
+        completions.forEach { $0() }
+        if let restartAfterCancelledFreshStart {
+            self.restartAfterCancelledFreshStart = nil
+            restartAfterCancelledFreshStart()
+        } else {
+            startCompletionPending = false
+        }
+    }
+
+    private func retireTrackedForTeardown(
+        _ id: BrokerSessionID,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        failureRecoveryCoordinator.markErrored(id) { [self] error in
+            DispatchQueue.main.async { [self] in
+                guard let error else {
+                    completion()
+                    return
+                }
+                NSLog("Broker-backed terminal could not retire tracked session \(id.rawValue) during teardown; retrying: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+                    retireTrackedForTeardown(id, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func retireUntrackedForTeardown(
+        _ id: BrokerSessionID,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        failureRecoveryCoordinator.retireUntrackedSession(id) { [self] error in
+            DispatchQueue.main.async { [self] in
+                guard let error else {
+                    if untrackedBrokerSessionID == id {
+                        untrackedBrokerSessionID = nil
+                    }
+                    completion()
+                    return
+                }
+                NSLog("Broker-backed terminal could not retire untracked session \(id.rawValue) during teardown; retrying: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+                    retireUntrackedForTeardown(id, completion: completion)
+                }
+            }
         }
     }
 
@@ -156,44 +366,251 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         lastScrollbackReplay = nil
         staleBrokerSessionID = nil
         sessionFailure = nil
+        let coordinator = self.coordinator
+        let channelID = self.channelID
+        let shouldReplayScrollback = presentedBrokerSessionID != sessionID
+        reattachGeneration &+= 1
+        let generation = reattachGeneration
+        guard coordinator.requiresOffMainBrokerWork else {
+            finishReattach(
+                sessionID: sessionID,
+                result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) },
+                replay: nil,
+                shouldReplayScrollback: shouldReplayScrollback,
+                notifyStartCompletion: false,
+                authorityGeneration: generation
+            )
+            return
+        }
+        startCompletionPending = true
+        failureRecoveryCoordinator.reattach(
+            sessionID,
+            attachedChannelID: channelID,
+            shouldReplayScrollback: shouldReplayScrollback
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.startCompletionPending,
+                      self.reattachGeneration == generation,
+                      self.brokerSessionID == sessionID else { return }
+                self.finishReattach(
+                    sessionID: sessionID,
+                    result: result.record,
+                    replay: result.replay,
+                    shouldReplayScrollback: shouldReplayScrollback,
+                    notifyStartCompletion: true,
+                    authorityGeneration: generation
+                )
+            }
+        }
+    }
+
+    private func finishReattach(
+        sessionID: BrokerSessionID,
+        result: Result<BrokerSessionRecord, Error>,
+        replay: ScrollbackReplayResult?,
+        shouldReplayScrollback: Bool,
+        notifyStartCompletion: Bool,
+        authorityGeneration: UInt
+    ) {
         do {
-            let record = try coordinator.reattach(sessionID, attachedChannelID: channelID)
+            let record = try result.get()
             brokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
-            inputWriteLane.open(for: record.id)
             // The durable broker record is authoritative after a delayed retry;
             // publish it through the same host-truth seam as OSC 7 so the owning
             // shell replaces any stale channel metadata before saving again.
             hostCurrentDirectoryHandler?(record.workingDirectory)
-            restoreScrollbackReplay(for: record.id)
-            if outputHandler != nil {
-                startOutputPump()
+            if shouldReplayScrollback {
+                if let replay {
+                    applyScrollbackReplay(replay, for: record.id)
+                } else {
+                    restoreScrollbackReplay(for: record.id)
+                }
+                // Presentation and broker acknowledgement are separate facts.
+                // Once this terminal view renders a replay (or its recovery
+                // warning), teardown must not let a same-object retry render it
+                // again merely because the asynchronous acknowledgement callback
+                // lost authority before it completed.
+                presentedBrokerSessionID = record.id
             }
+            if let generation = replay?.generation {
+                failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [weak self] error in
+                    DispatchQueue.main.async {
+                        guard let self,
+                              self.reattachGeneration == authorityGeneration,
+                              self.brokerSessionID == record.id,
+                              self.startCompletionPending else { return }
+                        if let error {
+                            self.failReattach(error, sessionID: sessionID)
+                            self.completeReattachStartIfNeeded(notifyStartCompletion)
+                            return
+                        }
+                        self.completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
+                    }
+                }
+                return
+            }
+            completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
         } catch {
-            startFailureDescription = String(describing: error)
-            startFailureKind = classifyStartFailure(error)
-            switch startFailureKind {
-            case .brokerHostUnavailable:
-                // The host is unreachable but the session may still be alive:
-                // keep the handle so retry reattaches instead of replacing it.
-                brokerSessionID = sessionID
-            case .brokerSessionStale:
-                // The broker no longer owns this session. Drop the live handle so
-                // retry spawns a replacement, and report the dead identity so the
-                // tab can keep its recreate guidance across relaunch.
-                brokerSessionID = nil
-                staleBrokerSessionID = sessionID
-            case .failed, .none:
-                // An unclassified failure (including a temporarily unreadable
-                // registry) does not prove the session is gone. Keep the handle
-                // so an in-place retry reattaches this generation rather than
-                // silently spawning a second process.
-                brokerSessionID = sessionID
-            }
-            agentStatusOwnerToken = nil
-            NSLog("Broker-backed terminal reattach failed: \(error)")
+            failReattach(error, sessionID: sessionID)
+            completeReattachStartIfNeeded(notifyStartCompletion)
         }
+    }
+
+    private func completeSuccessfulReattach(
+        _ record: BrokerSessionRecord,
+        notifyStartCompletion: Bool
+    ) {
+        inputWriteLane.open(for: record.id)
+        presentedBrokerSessionID = record.id
+        if record.lifecycle == .exited {
+            beginOutputDeliveryOwnership()
+            sessionIOReady = false
+            inputWriteLane.close()
+            finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
+            return
+        }
+        beginOutputDeliveryOwnership()
+        sessionIOReady = true
+        if outputHandler != nil {
+            startOutputPump()
+        }
+        completeReattachStartIfNeeded(notifyStartCompletion)
+    }
+
+    private func failReattach(_ error: Error, sessionID: BrokerSessionID) {
+        startFailureDescription = String(describing: error)
+        startFailureKind = classifyStartFailure(error)
+        switch startFailureKind {
+        case .brokerHostUnavailable:
+            brokerSessionID = sessionID
+        case .brokerSessionStale:
+            brokerSessionID = nil
+            staleBrokerSessionID = sessionID
+        case .failed, .none:
+            brokerSessionID = sessionID
+        }
+        agentStatusOwnerToken = nil
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        NSLog("Broker-backed terminal reattach failed: \(error)")
+    }
+
+    private func finishExitedReattach(
+        _ record: BrokerSessionRecord,
+        notifyStartCompletion: Bool
+    ) {
+        guard let exitCode = record.exitCode else {
+            startFailureDescription = "Exited broker session \(record.id.rawValue) has no exit code"
+            startFailureKind = .failed
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else {
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
+
+        let completion: @Sendable (Error?) -> Void = { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.brokerSessionID == record.id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+                if let error {
+                    self.revokeOutputDeliveryOwnership()
+                    self.startFailureDescription = String(describing: error)
+                    self.startFailureKind = self.classifyStartFailure(error)
+                    self.completeReattachStartIfNeeded(notifyStartCompletion)
+                    return
+                }
+                self.revokeOutputDeliveryOwnership()
+                self.brokerSessionID = nil
+                self.agentStatusOwnerToken = nil
+                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                let publishTermination: @MainActor @Sendable () -> Void = { [weak self] in
+                    guard let self, !self.didNotifyTermination else { return }
+                    self.didNotifyTermination = true
+                    self.terminationHandler?(exitCode)
+                }
+                if notifyStartCompletion {
+                    publishTermination()
+                } else {
+                    // Synchronous controller activation calls finishActivation
+                    // after startProcess returns. Publish exit on the next main
+                    // turn so that final state cannot be overwritten as active.
+                    DispatchQueue.main.async(execute: publishTermination)
+                }
+            }
+        }
+
+        let retireCompletedSession: @MainActor () -> Void = { [self] in
+            if coordinator.requiresOffMainBrokerWork {
+                failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
+                return
+            }
+            do {
+                try coordinator.retireCompletedSession(record.id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+
+        let deliverFinalOutputAndRetire: @MainActor (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
+            guard let self,
+                  self.brokerSessionID == record.id,
+                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+            do {
+                let snapshot = try result.get()
+                self.handleOutputPumpSample(snapshot.data, for: record.id)
+                if let generation = snapshot.generation {
+                    self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
+                        DispatchQueue.main.async {
+                            guard self.brokerSessionID == record.id,
+                                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+                            if let error {
+                                self.startFailureDescription = String(describing: error)
+                                self.startFailureKind = self.classifyStartFailure(error)
+                                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                                return
+                            }
+                            retireCompletedSession()
+                        }
+                    }
+                } else {
+                    retireCompletedSession()
+                }
+            } catch {
+                self.revokeOutputDeliveryOwnership()
+                self.startFailureDescription = String(describing: error)
+                self.startFailureKind = self.classifyStartFailure(error)
+                self.completeReattachStartIfNeeded(notifyStartCompletion)
+            }
+        }
+
+        // Replay intentionally leaves an unread generation untouched when it
+        // cannot fit in the replay cap. A running session's pump would own that
+        // generation; an exited session has no pump, so drain it exactly once
+        // before runtime retirement and exit publication.
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.readAvailableOutput(record.id) { result in
+                DispatchQueue.main.async {
+                    deliverFinalOutputAndRetire(result)
+                }
+            }
+        } else {
+            deliverFinalOutputAndRetire(Result {
+                try coordinator.snapshotAvailableOutput(record.id)
+            })
+        }
+    }
+
+    private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
+        guard notifyStartCompletion else { return }
+        startCompletionPending = false
+        startCompletionHandler?()
     }
 
     private func restoreScrollbackReplay(for sessionID: BrokerSessionID) {
@@ -216,6 +633,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             feedStatusLine(
                 "Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally."
             )
+            outputHandler?()
+            NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
+        }
+    }
+
+    private func applyScrollbackReplay(_ result: ScrollbackReplayResult, for sessionID: BrokerSessionID) {
+        if let replay = result.replay {
+            lastScrollbackReplay = replay
+            guard !replay.data.isEmpty else { return }
+            feedStatusLine(scrollbackReplayStatus(for: replay))
+            terminalView.feed(byteArray: Array(replay.data)[...])
+            outputHandler?()
+        } else if let error = result.error {
+            lastScrollbackReplay = nil
+            feedStatusLine("Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally.")
             outputHandler?()
             NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
         }
@@ -252,21 +684,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // which is showing its recovery guidance; late keystrokes are inert.
             return
         }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         inputWriteLane.enqueue(
             sessionID: brokerSessionID,
             bytes: bytes,
             write: { [inputCoordinator] id, queuedBytes in
                 try inputCoordinator.sendInput(id, bytes: queuedBytes)
             },
-            onSuccess: { [weak self] id in
-                Task { @MainActor [weak self] in
-                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
-                    self.pollOutputOnce()
-                }
+            onSuccess: { [outputReadLane] id in
+                // Keep every production output read on the single output lane.
+                // A direct main-actor poll can otherwise overtake a sample whose
+                // bytes were drained off-main but not yet delivered to SwiftTerm.
+                outputReadLane.wake(sessionID: id)
             },
-            onFailure: { [weak self] _, error in
+            onFailure: { [weak self] id, error in
                 Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error)
+                    self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
                 }
             }
         )
@@ -276,13 +709,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         outputHandler = handler
         if handler == nil {
             stopOutputPump()
-        } else if brokerSessionID != nil, sessionFailure == nil {
+        } else if brokerSessionID != nil, sessionIOReady, sessionFailure == nil {
             startOutputPump()
         }
     }
 
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {
         sessionFailureHandler = handler
+    }
+
+    func setStartCompletionHandler(_ handler: (() -> Void)?) {
+        startCompletionHandler = handler
     }
 
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) {
@@ -301,48 +738,97 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         terminalView.lastLines(count)
     }
 
-    func detachBrokerSession() {
-        guard let brokerSessionID, !didNotifyTermination else { return }
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
+        // A host reattach may still be executing off-main. Invalidate its token
+        // before detaching so its late result cannot reopen I/O or publish the
+        // owning controller as active after teardown.
+        reattachGeneration &+= 1
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
         stopOutputPump()
-        inputWriteLane.closeAndDrain()
-        do {
-            _ = try coordinator.detach(brokerSessionID)
-        } catch {
-            // Detach runs on tab teardown and again during app termination. A
-            // broker host outage — or a broker that already dropped the session —
-            // must not trap the app while it is quitting. The durable broker
-            // record from `ChannelManager.saveState` is what the next launch
-            // reads, so report loudly and leave it reattachable for reconcile.
-            NSLog("Broker-backed terminal detach failed: \(error)")
+        inputWriteLane.close()
+        if freshStartPending {
+            freshStartCancelled = true
+            // A later teardown (for example a second quit after the first was
+            // denied) supersedes any reconnect queued while cleanup was live.
+            // Never launch a replacement after termination authority completes.
+            restartAfterCancelledFreshStart = nil
+            freshStartTeardownCompletions.append(completion)
+            return
         }
+        startCompletionPending = false
+        if let brokerSessionID, !didNotifyTermination {
+            if coordinator.requiresOffMainBrokerWork {
+                failureRecoveryCoordinator.detach(brokerSessionID) { error in
+                    if let error {
+                        NSLog("Broker-backed terminal detach failed: \(error)")
+                    }
+                    DispatchQueue.main.async { completion() }
+                }
+                return
+            }
+            do {
+                _ = try coordinator.detach(brokerSessionID)
+            } catch {
+                // Detach runs on tab teardown and again during app termination. A
+                // broker host outage — or a broker that already dropped the session —
+                // must not trap the app while it is quitting. The durable broker
+                // record from `ChannelManager.saveState` is what the next launch
+                // reads, so report loudly and leave it reattachable for reconcile.
+                NSLog("Broker-backed terminal detach failed: \(error)")
+            }
+        } else if let untrackedBrokerSessionID {
+            retireUntrackedForTeardown(untrackedBrokerSessionID, completion: completion)
+            return
+        }
+        completion()
     }
 
     func pollOutputOnce() {
-        guard sessionFailure == nil else { return }
+        guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
-        do {
-            let data = try coordinator.readAvailableOutput(brokerSessionID)
-            if !data.isEmpty {
-                let bytes = Array(data)
-                terminalView.feed(byteArray: bytes[...])
-                outputHandler?()
-            }
-            try notifyTerminationIfNeeded(for: brokerSessionID)
-        } catch {
-            reportSessionFailure(error)
-        }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        outputReadLane.pollOnce(
+            sessionID: brokerSessionID,
+            read: { [outputCoordinator] id in
+                try outputCoordinator.snapshotAvailableOutput(id)
+            },
+            acknowledge: { [outputCoordinator] id, generation in
+                try outputCoordinator.acknowledgeOutput(id, through: generation)
+            },
+            terminationStatus: { [outputCoordinator] id in
+                try outputCoordinator.terminationStatusIfStopped(id)
+            },
+            finishTermination: { [outputCoordinator] id, exitCode in
+                try outputCoordinator.finishTermination(id, exitCode: exitCode)
+            },
+            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
+            onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
+        )
     }
 
     func resizeToCurrentGrid() {
-        guard sessionFailure == nil else { return }
+        guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else {
             NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
         }
-        do {
-            try coordinator.resize(brokerSessionID, size: currentGridSize)
-        } catch {
-            reportSessionFailure(error)
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        let size = currentGridSize
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.resize(brokerSessionID, size: size) { [weak self] error in
+                guard let error else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
+                }
+            }
+        } else {
+            do {
+                try coordinator.resize(brokerSessionID, size: size)
+            } catch {
+                reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
+            }
         }
     }
 
@@ -355,32 +841,34 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func startOutputPump() {
-        guard let brokerSessionID else { return }
+        guard sessionIOReady, let brokerSessionID else { return }
+        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
         let supportsOutputAvailabilityMonitoring = (try? coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)) == true
         outputReadLane.start(
             sessionID: brokerSessionID,
             mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
             read: { [outputCoordinator] id in
-                try outputCoordinator.readAvailableOutput(id)
+                try outputCoordinator.snapshotAvailableOutput(id)
             },
-            onSample: { [weak self] id, data in
-                Task { @MainActor [weak self] in
-                    guard let self, self.brokerSessionID == id, self.sessionFailure == nil else { return }
-                    self.handleOutputPumpSample(data, for: id)
-                }
+            acknowledge: { [outputCoordinator] id, generation in
+                try outputCoordinator.acknowledgeOutput(id, through: generation)
             },
-            onFailure: { [weak self] _, error in
-                Task { @MainActor [weak self] in
-                    self?.reportSessionFailure(error)
-                }
-            }
+            terminationStatus: { [outputCoordinator] id in
+                try outputCoordinator.terminationStatusIfStopped(id)
+            },
+            finishTermination: { [outputCoordinator] id, exitCode in
+                try outputCoordinator.finishTermination(id, exitCode: exitCode)
+            },
+            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
+            onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
         do {
             try coordinator.setOutputAvailabilityHandler(brokerSessionID) { [outputReadLane] id in
                 outputReadLane.wake(sessionID: id)
             }
         } catch {
-            reportSessionFailure(error)
+            reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
         }
     }
 
@@ -390,10 +878,86 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             terminalView.feed(byteArray: bytes[...])
             outputHandler?()
         }
-        do {
-            try notifyTerminationIfNeeded(for: brokerSessionID)
-        } catch {
-            reportSessionFailure(error)
+    }
+
+    private func outputSampleHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Data) -> Bool {
+        return { [weak self] id, data in
+            // The serial lane does not perform liveness/exit RPCs until the main
+            // actor has consumed this sample, preserving final-byte ordering
+            // without making the main actor call the broker.
+            let delivered = DispatchSemaphore(value: 0)
+            let acceptance = BrokerOutputDeliveryAcceptance()
+            DispatchQueue.main.async { [weak self] in
+                defer { delivered.signal() }
+                guard let self,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration,
+                      self.brokerSessionID == id,
+                      self.sessionIOReady,
+                      self.sessionFailure == nil else { return }
+                self.handleOutputPumpSample(data, for: id)
+                acceptance.accept()
+            }
+            delivered.wait()
+            return acceptance.wasAccepted
+        }
+    }
+
+    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32) -> Void {
+        { [weak self] id, exitCode in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.brokerSessionID == id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration,
+                      !self.didNotifyTermination else { return }
+                self.outputReadLane.stop()
+                self.sessionIOReady = false
+                self.inputWriteLane.close()
+
+                let completion: @Sendable (Error?) -> Void = { [weak self] error in
+                    DispatchQueue.main.async {
+                        guard let self,
+                              self.brokerSessionID == id,
+                              self.activeOutputDeliveryGeneration == deliveryGeneration,
+                              !self.didNotifyTermination else { return }
+                        if let error {
+                            self.reportSessionFailure(
+                                error,
+                                for: id,
+                                deliveryGeneration: deliveryGeneration
+                            )
+                            return
+                        }
+                        self.didNotifyTermination = true
+                        self.revokeOutputDeliveryOwnership()
+                        self.brokerSessionID = nil
+                        self.agentStatusOwnerToken = nil
+                        self.terminationHandler?(exitCode)
+                    }
+                }
+
+                // Durable exit was already published by the output lane. Remove
+                // the retained runtime object before releasing the tab's broker
+                // identity; otherwise closing the disconnected tab can make the
+                // completed generation appear as a recovered session next launch.
+                if self.coordinator.requiresOffMainBrokerWork {
+                    self.failureRecoveryCoordinator.retireCompletedSession(id, completion: completion)
+                } else {
+                    do {
+                        try self.coordinator.retireCompletedSession(id)
+                        completion(nil)
+                    } catch {
+                        completion(error)
+                    }
+                }
+            }
+        }
+    }
+
+    private func outputFailureHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Error) -> Void {
+        { [weak self] id, error in
+            Task { @MainActor [weak self] in
+                self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
+            }
         }
     }
 
@@ -412,9 +976,27 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// instead of trapping. The durable broker handle is preserved for the
     /// retryable cases so retry reattaches the same session rather than starting
     /// a replacement.
-    private func reportSessionFailure(_ error: Error) {
+    private func reportSessionFailure(
+        _ error: Error,
+        for sessionID: BrokerSessionID,
+        deliveryGeneration: UInt
+    ) {
+        guard brokerSessionID == sessionID,
+              activeOutputDeliveryGeneration == deliveryGeneration else {
+            NSLog("Ignoring delayed broker failure for inactive session \(sessionID.rawValue): \(error)")
+            return
+        }
         let kind = classifyStartFailure(error)
+        let description = String(describing: error)
         inputWriteLane.close()
+        stopOutputPump()
+        revokeOutputDeliveryOwnership()
+
+        if kind == .brokerSessionStale, isScrollbackPersistenceFailure(error) {
+            beginScrollbackFailureRecovery(error, for: sessionID)
+            return
+        }
+
         switch kind {
         case .brokerHostUnavailable, .failed:
             // The host is unreachable (or the failure is unclassified) but the
@@ -423,37 +1005,75 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         case .brokerSessionStale:
             // The broker no longer owns the session: hand the dead identity to the
             // tab and drop the live handle so retry starts a replacement.
-            if let sessionID = brokerSessionID {
-                brokerSessionID = nil
-                staleBrokerSessionID = sessionID
-            }
+            brokerSessionID = nil
+            sessionIOReady = false
+            staleBrokerSessionID = sessionID
         }
 
-        let failure = TerminalSessionFailure(kind: kind, description: String(describing: error))
+        publishSessionFailure(TerminalSessionFailure(kind: kind, description: description))
+    }
+
+    private func beginScrollbackFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
+        guard recoveringBrokerSessionID == nil else { return }
+        recoveringBrokerSessionID = sessionID
+        let originalDescription = String(describing: error)
+        failureRecoveryCoordinator.markErrored(sessionID) { [weak self] recoveryError in
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.recoveringBrokerSessionID == sessionID,
+                      self.brokerSessionID == sessionID else { return }
+                self.recoveringBrokerSessionID = nil
+
+                if let recoveryError {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(
+                            kind: .failed,
+                            description: originalDescription
+                                + "; failed to retire persistence-broken broker session: \(recoveryError)"
+                        )
+                    )
+                } else {
+                    self.brokerSessionID = nil
+                    self.sessionIOReady = false
+                    self.staleBrokerSessionID = sessionID
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .brokerSessionStale, description: originalDescription)
+                    )
+                }
+            }
+        }
+    }
+
+    private func publishSessionFailure(_ failure: TerminalSessionFailure) {
         guard sessionFailure != failure else {
             NSLog("Broker-backed terminal session still failing: \(failure.description)")
             return
         }
         sessionFailure = failure
-        stopOutputPump()
         NSLog("Broker-backed terminal session failed (\(failure.kind)): \(failure.description)")
         sessionFailureHandler?(failure)
     }
 
-    private func notifyTerminationIfNeeded(for brokerSessionID: BrokerSessionID) throws {
-        guard !didNotifyTermination else { return }
-        guard try !coordinator.isRunning(brokerSessionID) else { return }
-        let exitCode = try coordinator.terminationStatus(brokerSessionID)
-        didNotifyTermination = true
-        outputReadLane.stop()
-        if let exitCode {
-            _ = try coordinator.exit(brokerSessionID, exitCode: exitCode)
-        } else {
-            _ = try coordinator.markErrored(brokerSessionID)
+    @discardableResult
+    private func beginOutputDeliveryOwnership() -> UInt {
+        nextOutputDeliveryGeneration &+= 1
+        activeOutputDeliveryGeneration = nextOutputDeliveryGeneration
+        return nextOutputDeliveryGeneration
+    }
+
+    private func revokeOutputDeliveryOwnership() {
+        activeOutputDeliveryGeneration = nil
+    }
+
+    private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .scrollbackPersistenceFailed = runtimeError {
+            return true
         }
-        self.brokerSessionID = nil
-        agentStatusOwnerToken = nil
-        terminationHandler?(exitCode)
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "scrollback-persistence-failed"
+        }
+        return false
     }
 
     private func classifyStartFailure(_ error: Error) -> TerminalStartFailureKind {
@@ -463,6 +1083,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
+            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed, .reattachCleanupFailed:
+                return .failed
+            case .concurrentSessionTransition, .untrackedSession:
+                return .failed
             }
         }
         if case BrokerSessionHostClientRuntime.ClientError.transportFailed = error {
@@ -472,9 +1096,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
            case .missingSession = runtimeError {
             return .brokerSessionStale
         }
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .scrollbackPersistenceFailed = runtimeError {
+            return .brokerSessionStale
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
-           code == "missing-session",
-           message.contains("missingSession") {
+           code == "scrollback-persistence-failed"
+               || (code == "missing-session" && message.contains("missingSession")) {
             return .brokerSessionStale
         }
         return .failed
@@ -528,8 +1156,209 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
         self.coordinator = coordinator
     }
 
-    func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
-        try coordinator.readAvailableOutput(id)
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try coordinator.snapshotAvailableOutput(id)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+        try coordinator.acknowledgeOutput(id, through: generation)
+    }
+
+    /// Check and durably finalize process exit on the same serial lane as output
+    /// reads. The lane calls this only after SwiftTerm has consumed the preceding
+    /// sample, so final bytes remain visible before exit becomes authoritative.
+    func terminationStatusIfStopped(_ id: BrokerSessionID) throws -> Int32? {
+        guard try !coordinator.isRunning(id) else { return nil }
+        return try coordinator.terminationStatus(id)
+    }
+
+    func finishTermination(_ id: BrokerSessionID, exitCode: Int32) throws {
+        _ = try coordinator.exit(id, exitCode: exitCode)
+    }
+}
+
+private struct ScrollbackReplayResult: Sendable {
+    let replay: ScrollbackReplay?
+    let generation: UInt64?
+    let error: String?
+}
+
+private struct ReattachResult: Sendable {
+    let record: Result<BrokerSessionRecord, Error>
+    let replay: ScrollbackReplayResult?
+}
+
+private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+    private let queue = DispatchQueue(label: "holoscape.broker.failure-recovery", qos: .userInitiated)
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func start(
+        _ request: BrokerSessionLaunchRequest,
+        channelType: ChannelType,
+        label: String?,
+        attachedChannelID: UUID?,
+        completion: @escaping @Sendable (Result<BrokerSessionRecord, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result {
+                try coordinator.start(
+                    request,
+                    channelType: channelType,
+                    label: label,
+                    attachedChannelID: attachedChannelID
+                )
+            })
+        }
+    }
+
+    func reattach(
+        _ id: BrokerSessionID,
+        attachedChannelID: UUID,
+        shouldReplayScrollback: Bool,
+        completion: @escaping @Sendable (ReattachResult) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                let record = try coordinator.reattach(id, attachedChannelID: attachedChannelID)
+                var replay: ScrollbackReplayResult?
+                if shouldReplayScrollback {
+                    do {
+                        let snapshot = try coordinator.snapshotScrollbackReplay(
+                            id,
+                            maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
+                        )
+                        replay = ScrollbackReplayResult(
+                            replay: snapshot.replay,
+                            generation: snapshot.generation,
+                            error: nil
+                        )
+                    } catch {
+                        replay = ScrollbackReplayResult(
+                            replay: nil,
+                            generation: nil,
+                            error: String(describing: error)
+                        )
+                    }
+                }
+                completion(ReattachResult(record: .success(record), replay: replay))
+            } catch {
+                completion(ReattachResult(record: .failure(error), replay: nil))
+            }
+        }
+    }
+
+    func markErrored(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                _ = try coordinator.markErrored(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func detach(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                _ = try coordinator.detach(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func retireUntrackedSession(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.retireUntrackedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func retireCompletedSession(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.retireCompletedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func readAvailableOutput(
+        _ id: BrokerSessionID,
+        completion: @escaping @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result {
+                try coordinator.snapshotAvailableOutput(id)
+            })
+        }
+    }
+
+    func acknowledgeOutput(
+        _ id: BrokerSessionID,
+        through generation: UInt64,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.acknowledgeOutput(id, through: generation)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+
+    func resize(
+        _ id: BrokerSessionID,
+        size: TerminalGridSize,
+        completion: @escaping @Sendable (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            do {
+                try coordinator.resize(id, size: size)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
+    }
+}
+
+private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
+    private let lock = NSLock()
+    private var accepted = false
+
+    func accept() {
+        lock.withLock { accepted = true }
+    }
+
+    var wasAccepted: Bool {
+        lock.withLock { accepted }
     }
 }
 
@@ -544,6 +1373,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     private let pollingInterval: TimeInterval
     private let lock = NSLock()
     private var openSessionID: BrokerSessionID?
+    private var nextRunGeneration: UInt = 0
+    private var openRunGeneration: UInt?
     private var semaphore: DispatchSemaphore?
 
     init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
@@ -554,36 +1385,133 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     func start(
         sessionID: BrokerSessionID,
         mode: Mode,
-        read: @escaping @Sendable (BrokerSessionID) throws -> Data,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Void,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         stop()
         let semaphore = DispatchSemaphore(value: 0)
-        lock.withLock {
+        let runGeneration = lock.withLock { () -> UInt in
+            nextRunGeneration &+= 1
             openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
             self.semaphore = semaphore
+            return nextRunGeneration
         }
 
         queue.async { [weak self] in
             semaphore.signal()
             while true {
-                guard let self, self.isOpen(for: sessionID) else { return }
+                guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 switch mode {
                 case .outputAvailabilitySignal:
                     _ = semaphore.wait(timeout: .now() + self.signalTerminationCheckInterval)
                 case .periodicPolling:
                     _ = semaphore.wait(timeout: .now() + self.pollingInterval)
                 }
-                guard self.isOpen(for: sessionID) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 do {
-                    let data = try read(sessionID)
-                    guard self.isOpen(for: sessionID) else { return }
-                    onSample(sessionID, data)
+                    let snapshot = try read(sessionID)
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    guard onSample(sessionID, snapshot.data) else {
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                        return
+                    }
+                    if let generation = snapshot.generation {
+                        try acknowledge(sessionID, generation)
+                    }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    if let exitCode = try terminationStatus(sessionID) {
+                        // Termination observation and the PTY readability callback
+                        // can race. Once termination is observable, monitoring is
+                        // complete, so one final drain captures bytes appended
+                        // after the first read and before exit authority.
+                        let finalSnapshot = try read(sessionID)
+                        guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                        guard onSample(sessionID, finalSnapshot.data) else {
+                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                            return
+                        }
+                        if let generation = finalSnapshot.generation {
+                            try acknowledge(sessionID, generation)
+                        }
+                        // The final sample is synchronously consumed by the main
+                        // actor before durable exit authority is published.
+                        try finishTermination(sessionID, exitCode)
+                        if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                            onTermination(sessionID, exitCode)
+                        }
+                        return
+                    }
                 } catch {
-                    self.closeIfCurrent(sessionID)
-                    onFailure(sessionID, error)
+                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                        onFailure(sessionID, error)
+                    }
                     return
+                }
+            }
+        }
+    }
+
+    func pollOnce(
+        sessionID: BrokerSessionID,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+    ) {
+        if isOpen(for: sessionID) {
+            wake(sessionID: sessionID)
+            return
+        }
+        let runGeneration = lock.withLock { () -> UInt in
+            nextRunGeneration &+= 1
+            openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
+            semaphore = nil
+            return nextRunGeneration
+        }
+        queue.async {
+            do {
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                let snapshot = try read(sessionID)
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                guard onSample(sessionID, snapshot.data) else {
+                    self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                    return
+                }
+                if let generation = snapshot.generation {
+                    try acknowledge(sessionID, generation)
+                }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                if let exitCode = try terminationStatus(sessionID) {
+                    let finalSnapshot = try read(sessionID)
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    guard onSample(sessionID, finalSnapshot.data) else {
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                        return
+                    }
+                    if let generation = finalSnapshot.generation {
+                        try acknowledge(sessionID, generation)
+                    }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    try finishTermination(sessionID, exitCode)
+                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                        onTermination(sessionID, exitCode)
+                    }
+                    return
+                }
+                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+            } catch {
+                if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    onFailure(sessionID, error)
                 }
             }
         }
@@ -597,6 +1525,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     func stop() {
         let semaphore = lock.withLock { () -> DispatchSemaphore? in
             openSessionID = nil
+            openRunGeneration = nil
             let current = self.semaphore
             self.semaphore = nil
             return current
@@ -608,13 +1537,21 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         lock.withLock { openSessionID == sessionID }
     }
 
-    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+    private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
+        lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
+    }
+
+    @discardableResult
+    private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
         lock.withLock {
-            if openSessionID == sessionID {
+            if openSessionID == sessionID, openRunGeneration == runGeneration {
                 openSessionID = nil
+                openRunGeneration = nil
                 semaphore?.signal()
                 semaphore = nil
+                return true
             }
+            return false
         }
     }
 }
@@ -623,22 +1560,22 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
     private let queue = DispatchQueue(label: "holoscape.broker.input.write-lane", qos: .userInteractive)
     private let lock = NSLock()
     private var openSessionID: BrokerSessionID?
+    private var nextRunGeneration: UInt = 0
+    private var openRunGeneration: UInt?
 
     func open(for sessionID: BrokerSessionID) {
         lock.withLock {
+            nextRunGeneration &+= 1
             openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
         }
     }
 
     func close() {
         lock.withLock {
             openSessionID = nil
+            openRunGeneration = nil
         }
-    }
-
-    func closeAndDrain() {
-        close()
-        queue.sync {}
     }
 
     func enqueue(
@@ -648,29 +1585,38 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
         onSuccess: @escaping @Sendable (BrokerSessionID) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
-        guard isOpen(for: sessionID) else { return }
+        guard let runGeneration = runGeneration(for: sessionID) else { return }
         queue.async { [weak self] in
-            guard let self, self.isOpen(for: sessionID) else { return }
+            guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
             do {
                 try write(sessionID, bytes)
-                guard self.isOpen(for: sessionID) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 onSuccess(sessionID)
             } catch {
-                self.closeIfCurrent(sessionID)
-                onFailure(sessionID, error)
+                if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    onFailure(sessionID, error)
+                }
             }
         }
     }
 
-    private func isOpen(for sessionID: BrokerSessionID) -> Bool {
-        lock.withLock { openSessionID == sessionID }
+    private func runGeneration(for sessionID: BrokerSessionID) -> UInt? {
+        lock.withLock { openSessionID == sessionID ? openRunGeneration : nil }
     }
 
-    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+    private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
+        lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
+    }
+
+    @discardableResult
+    private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
         lock.withLock {
-            if openSessionID == sessionID {
+            if openSessionID == sessionID, openRunGeneration == runGeneration {
                 openSessionID = nil
+                openRunGeneration = nil
+                return true
             }
+            return false
         }
     }
 }

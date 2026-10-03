@@ -34,16 +34,34 @@ protocol BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
     ) throws -> Bool
 }
 
-enum ScrollbackReplaySource: Equatable, Sendable {
+enum ScrollbackReplaySource: String, Codable, Equatable, Sendable {
     case liveBrokerMemory
     case persistedDiskTail
     case unknown
 }
 
-struct ScrollbackReplay: Equatable, Sendable {
+struct ScrollbackReplay: Codable, Equatable, Sendable {
     let data: Data
     let source: ScrollbackReplaySource
     let maxBytes: Int
+}
+
+/// A non-destructive view of unread broker output. The runtime retains every
+/// byte through `generation` until the client explicitly acknowledges it.
+struct BrokerOutputSnapshot: Codable, Equatable, Sendable {
+    let data: Data
+    let generation: UInt64?
+}
+
+struct BrokerScrollbackReplaySnapshot: Codable, Equatable, Sendable {
+    let replay: ScrollbackReplay
+    let generation: UInt64?
+}
+
+protocol BrokerTransactionalOutputRuntime {
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws
 }
 
 protocol ScrollbackReplayReportingRuntime {

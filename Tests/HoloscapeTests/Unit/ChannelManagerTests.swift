@@ -15,6 +15,8 @@ final class ChannelManagerTests: XCTestCase {
         var startCalls: [StartCall] = []
         var detachCalls: [BrokerSessionID] = []
         var reattachableSessionRecords: [BrokerSessionRecord] = []
+        var reattachableSessionsError: Error?
+        private(set) var reattachableSessionsCallCount = 0
 
         func start(
             _ request: BrokerSessionLaunchRequest,
@@ -62,8 +64,14 @@ final class ChannelManagerTests: XCTestCase {
             )
         }
 
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
-        func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
+        func reattachableSessions() throws -> [BrokerSessionRecord] {
+            reattachableSessionsCallCount += 1
+            if let reattachableSessionsError { throw reattachableSessionsError }
+            return reattachableSessionRecords
+        }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -1165,6 +1173,34 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(manager.allChannels().map(\.channelId), [first.channelId, second.channelId])
     }
 
+    func testDetachAllChannelsForAppTerminationAlsoDeactivatesDisconnectedTabs() {
+        let disconnected = createMockChannel(type: .shell, role: "Failed Start") as! MockChannelController
+
+        manager.detachAllChannelsForAppTermination()
+
+        XCTAssertEqual(disconnected.deactivateCallCount, 1)
+        XCTAssertEqual(manager.allChannels().map(\.channelId), [disconnected.channelId])
+    }
+
+    func testDetachAllChannelsForAppTerminationCompletesAfterEveryChannelFinishesTeardown() {
+        let immediate = createMockChannel(type: .shell, role: "Immediate") as! MockChannelController
+        let deferred = createMockChannel(type: .agentDirect, role: "Deferred") as! MockChannelController
+        deferred.defersDeactivationCompletion = true
+        var didComplete = false
+
+        manager.detachAllChannelsForAppTermination {
+            didComplete = true
+        }
+
+        XCTAssertEqual(immediate.deactivateCallCount, 1)
+        XCTAssertEqual(deferred.deactivateCallCount, 1)
+        XCTAssertFalse(didComplete, "App termination must remain deferred while any channel still owns teardown")
+
+        deferred.finishDeactivation()
+
+        XCTAssertTrue(didComplete)
+    }
+
     // MARK: - Close Confirmation
 
     func testNeedsCloseConfirmationWhenActive() {
@@ -1385,6 +1421,47 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(manager.unmatchedBrokerBackedSessionsToRestore(), [])
     }
 
+    func testPrepareBrokerRecoveryRetriesTransientInventoryFailureBeforeUsingSurvivors() async {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionsError = BrokerSessionHostClientRuntime.ClientError.transportFailed(
+            "socketTimedOut(/tmp/holoscape-broker.sock)"
+        )
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        let firstPreparationSucceeded = await manager.prepareBrokerRecovery()
+        XCTAssertFalse(firstPreparationSucceeded)
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
+        XCTAssertEqual(coordinator.reattachableSessionsCallCount, 1)
+
+        let survivorID = BrokerSessionID(rawValue: "survivor-after-transient-discovery-failure")
+        coordinator.reattachableSessionsError = nil
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: survivorID,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/tmp/survivor",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        ]
+
+        let retryPreparationSucceeded = await manager.prepareBrokerRecovery()
+        XCTAssertTrue(retryPreparationSucceeded)
+        XCTAssertEqual(coordinator.reattachableSessionsCallCount, 2)
+        XCTAssertNil(manager.brokerRegistryReadFailure)
+        XCTAssertEqual(manager.firstUnmatchedBrokerBackedShellSessionToRestore()?.id, survivorID)
+    }
+
     func testUnmatchedBrokerRecoveryWithUnreadableRegistryRestoresNothingAndKeepsTheFile() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }
@@ -1554,6 +1631,96 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.id, channel.channelId)
         XCTAssertEqual(saved.brokerSessionID, replacementID)
         XCTAssertEqual(saved.workingDirectory, "/tmp/context-menu-recreate")
+    }
+
+    func testTerminationMutationGateDisablesContextActionsAndRejectsDirectChannelChanges() throws {
+        let channel = createMockChannel(type: .shell, role: "Shell")
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+        windowController.setChannelMutationEnabled(false)
+
+        let menu = try XCTUnwrap(windowController.buildContextMenu(for: channel.channelId))
+        for title in ["Close", "Rename", "Duplicate", "Reconnect", "Pin", "Mute Notifications"] {
+            let item = try XCTUnwrap(menu.items.first { $0.title == title })
+            XCTAssertFalse(item.isEnabled, "\(title) must not mutate channels during deferred termination")
+        }
+        XCTAssertTrue(try XCTUnwrap(menu.items.first { $0.title == "Copy Session Info" }).isEnabled)
+
+        windowController.createShellChannel()
+        windowController.closeChannel(id: channel.channelId)
+
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertNotNil(manager.channel(for: channel.channelId))
+    }
+
+    func testRestoreStateSkipsDuplicateSavedIDBeforeInvokingFactory() {
+        let duplicateID = UUID(uuidString: "00000000-0000-0000-0000-000000000765")!
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(id: duplicateID, type: .shell, role: "First"),
+            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate")
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["First"])
+        XCTAssertEqual(newManager.count, 1)
+    }
+
+    func testRestoreStateSkipsDuplicateBrokerSessionIDBeforeInvokingFactory() {
+        let brokerSessionID = BrokerSessionID(rawValue: "duplicate-restored-broker-session")
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000766")!,
+                type: .shell,
+                role: "First",
+                brokerSessionID: brokerSessionID
+            ),
+            ChannelMetadata(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000767")!,
+                type: .shell,
+                role: "Duplicate Broker Owner",
+                brokerSessionID: brokerSessionID
+            )
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["First"])
+        XCTAssertEqual(newManager.count, 1)
+    }
+
+    func testRestoreStateFailedFactoryDoesNotClaimBrokerSessionIdentity() {
+        let brokerSessionID = BrokerSessionID(rawValue: "surviving-restored-broker-session")
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(id: UUID(), type: .shell, role: "Invalid", brokerSessionID: brokerSessionID),
+            ChannelMetadata(id: UUID(), type: .shell, role: "Survivor", brokerSessionID: brokerSessionID)
+        ]
+        configService.save(config)
+
+        let newManager = ChannelManager(configService: configService)
+        var restoredRoles: [String] = []
+        newManager.restoreState { metadata in
+            restoredRoles.append(metadata.role)
+            guard metadata.role == "Survivor" else { return nil }
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredRoles, ["Invalid", "Survivor"])
+        XCTAssertEqual(newManager.allChannels().map(\.displayLabel), ["Survivor"])
     }
 
     func testRestoreStateWithEmptyConfig() {

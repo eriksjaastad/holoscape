@@ -1,6 +1,7 @@
 import Foundation
 
 protocol BrokerSessionCoordinating {
+    var requiresOffMainBrokerWork: Bool { get }
     func start(
         _ request: BrokerSessionLaunchRequest,
         channelType: ChannelType,
@@ -9,13 +10,19 @@ protocol BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord
 
     func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord
+    /// Retire a runtime session whose registry write never succeeded.
+    func retireUntrackedSession(_ id: BrokerSessionID) throws
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord
+    /// Remove a replayed, exited runtime object while preserving durable exit metadata.
+    func retireCompletedSession(_ id: BrokerSessionID) throws
     func reattachableSessions() throws -> [BrokerSessionRecord]
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws
     func readAvailableOutput(_ id: BrokerSessionID) throws -> Data
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -23,6 +30,7 @@ protocol BrokerSessionCoordinating {
     func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot
     func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws
     func isRunning(_ id: BrokerSessionID) throws -> Bool
     func terminationStatus(_ id: BrokerSessionID) throws -> Int32?
@@ -30,6 +38,8 @@ protocol BrokerSessionCoordinating {
 }
 
 extension BrokerSessionCoordinating {
+    var requiresOffMainBrokerWork: Bool { false }
+
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -37,11 +47,26 @@ extension BrokerSessionCoordinating {
 
     func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool { false }
 
+    func retireCompletedSession(_ id: BrokerSessionID) throws {}
+
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
         ScrollbackReplay(
             data: try readScrollbackTail(id, maxBytes: maxBytes),
             source: .unknown,
             maxBytes: maxBytes
+        )
+    }
+
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: try readAvailableOutput(id), generation: nil)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {}
+
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id, maxBytes: maxBytes),
+            generation: nil
         )
     }
 }
@@ -58,6 +83,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case missingSession(BrokerSessionID)
         case staleSession(BrokerSessionID)
         case brokerHostUnavailable(BrokerSessionID, String)
+        case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
+        case concurrentSessionTransition(BrokerSessionID)
+        case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
 
     private let registry: BrokerSessionRegistry
@@ -74,22 +105,75 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         self.now = now
     }
 
+    var requiresOffMainBrokerWork: Bool { runtime is BrokerSessionHostClientRuntime }
+
     func loadAll() throws -> [BrokerSessionRecord] {
         try registry.load()
     }
 
     func reattachableSessions() throws -> [BrokerSessionRecord] {
-        try registry.load().compactMap { record in
+        let records = try registry.load()
+        let recordedIDs = Set(records.map(\.id))
+        let runtimeSessionIDs = Set(try runtime.listSessions())
+        // A failed-start generation may outlive the UI controller that knew its
+        // ID (for example after tab close or app termination). The broker's live
+        // inventory is the durable fallback authority: retire any generation
+        // that has no registry record before offering sessions for restore.
+        for orphanID in runtimeSessionIDs where !recordedIDs.contains(orphanID) {
+            try retireUntrackedSession(orphanID)
+        }
+        return try records.compactMap { record in
             switch record.lifecycle {
-            case .running, .detached, .stale:
+            case .running, .detached, .reattaching, .stale:
                 let reconciled = try reconcileRuntimeStatus(record.id)
                 switch reconciled.lifecycle {
                 case .running, .detached, .stale:
                     return reconciled
-                case .creating, .reattaching, .exited, .errored, .terminating:
+                case .exited:
+                    return runtimeSessionIDs.contains(reconciled.id) ? reconciled : nil
+                case .reattaching:
+                    // A durable reattach lease has no in-process owner after
+                    // relaunch. Revoke it to detached so normal restore can
+                    // safely acquire a fresh lease for the still-live child.
+                    var current = reconciled
+                    while current.lifecycle == .reattaching {
+                        let detached = current.withLifecycle(
+                            .detached,
+                            exitCode: nil,
+                            updatedAt: now(),
+                            lastAttachedChannelID: nil
+                        )
+                        if try registry.replace(detached, ifUnchangedFrom: current) {
+                            return detached
+                        }
+                        current = try reconcileRuntimeStatus(record.id)
+                    }
+                    switch current.lifecycle {
+                    case .running, .detached, .stale:
+                        return current
+                    case .exited:
+                        return runtimeSessionIDs.contains(current.id) ? current : nil
+                    case .creating, .reattaching, .errored, .terminating:
+                        return nil
+                    }
+                case .creating, .errored, .terminating:
                     return nil
                 }
-            case .creating, .reattaching, .exited, .errored, .terminating:
+            case .terminating:
+                // A prior retirement may have reached the broker without its
+                // response reaching Holoscape. Relaunch must finish this
+                // idempotent transition before restore can classify the saved
+                // identity as stale and permit a replacement process.
+                _ = try markErrored(record.id)
+                return nil
+            case .exited:
+                // Native broker sessions retain their completed scrollback until
+                // explicit retirement. Offer that exited generation once more so
+                // restore can replay its final bytes before publishing exit to the
+                // controller. An exited record without a runtime owner has no live
+                // replay authority and remains final.
+                return runtimeSessionIDs.contains(record.id) ? record : nil
+            case .creating, .errored:
                 return nil
             }
         }
@@ -104,15 +188,35 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         let timestamp = now()
         let id = BrokerSessionID()
         let ownerTokenWasApplied: Bool
-        if request.agentStatusOwnerToken != nil,
-           let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
-            ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
-                id: id,
-                request: request
-            )
-        } else {
-            try runtime.createSession(id: id, request: request)
-            ownerTokenWasApplied = false
+        do {
+            if request.agentStatusOwnerToken != nil,
+               let acknowledgingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
+                ownerTokenWasApplied = try acknowledgingRuntime.createSessionAcknowledgingAgentStatusOwnerToken(
+                    id: id,
+                    request: request
+                )
+            } else {
+                try runtime.createSession(id: id, request: request)
+                ownerTokenWasApplied = false
+            }
+        } catch let clientError as BrokerSessionHostClientRuntime.ClientError
+            where clientError.ambiguousCreateFailureReason != nil {
+            let message = clientError.ambiguousCreateFailureReason!
+            // A lost or malformed response does not prove create failed: the
+            // broker may own a
+            // live process under this generated ID. Retire that exact generation
+            // before returning, or preserve its identity in a typed failure so a
+            // retry cannot create a duplicate while the outcome is uncertain.
+            do {
+                try retireUntrackedSession(id)
+            } catch let rollbackFailure {
+                throw CoordinatorError.untrackedSession(
+                    id,
+                    registryFailure: "broker create outcome uncertain: \(message)",
+                    rollbackFailure: String(describing: rollbackFailure)
+                )
+            }
+            throw CoordinatorError.brokerHostUnavailable(id, message)
         }
         let record = BrokerSessionRecord(
             id: id,
@@ -131,104 +235,358 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         )
         do {
             try registry.upsert(record)
-        } catch {
+        } catch let registryFailure {
             // The runtime session exists but Holoscape could not record it, so it
             // could never be reattached, exited, or recovered: roll it back before
             // surfacing the failure, otherwise the broker is left owning an
             // untracked process.
-            rollbackUnrecordedStart(id, registryFailure: error)
-            throw error
+            do {
+                try runtime.markSessionErrored(id: id)
+                NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
+            } catch {
+                throw CoordinatorError.untrackedSession(
+                    id,
+                    registryFailure: String(describing: registryFailure),
+                    rollbackFailure: String(describing: error)
+                )
+            }
+            throw registryFailure
         }
         return record
     }
 
-    /// Terminate the session created by a start whose registry write failed.
-    ///
-    /// A rollback failure is reported loudly and never replaces the original start
-    /// failure: the caller must see why the start failed, and the orphaned session
-    /// id is only visible in this log because nothing else can find it.
-    private func rollbackUnrecordedStart(_ id: BrokerSessionID, registryFailure: Error) {
+    func retireUntrackedSession(_ id: BrokerSessionID) throws {
         do {
-            try runtime.terminateSession(id: id, exitCode: nil)
-            NSLog("Broker session start was rolled back (unrecordable session \(id.rawValue)): \(registryFailure)")
-        } catch {
-            NSLog(
-                "Broker session rollback failed for \(id.rawValue): \(error). "
-                    + "The session created by the failed start may still be running untracked "
-                    + "(registry failure: \(registryFailure))"
-            )
+            try runtime.markSessionErrored(id: id)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return
         }
     }
 
-    func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.detachSession(id: id) }) { record in
-            record.withLifecycle(
-                .detached,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: nil
-            )
+    func retireCompletedSession(_ id: BrokerSessionID) throws {
+        let existing = try record(for: id)
+        guard existing.lifecycle == .exited else {
+            throw CoordinatorError.concurrentSessionTransition(id)
         }
+        do {
+            try runtime.markSessionErrored(id: id)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            return
+        }
+    }
+
+
+    func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+        // Publish the reversible metadata transition before contacting the
+        // runtime. A concurrent retirement either wins first (and detach becomes
+        // a no-op) or observes `.detached` and advances it to `.terminating`.
+        // In neither ordering can teardown erase durable retirement intent.
+        var transitionToRollback: (existing: BrokerSessionRecord, detached: BrokerSessionRecord)?
+        detachTransition: while true {
+            let existing = try record(for: id)
+            switch existing.lifecycle {
+            case .terminating, .exited, .errored, .stale:
+                return existing
+            case .detached:
+                break detachTransition
+            case .creating, .running, .reattaching:
+                let candidate = existing.withLifecycle(
+                    .detached,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(candidate, ifUnchangedFrom: existing) {
+                    transitionToRollback = (existing, candidate)
+                    break detachTransition
+                }
+                continue
+            }
+        }
+
+        do {
+            try runtime.detachSession(id: id)
+        } catch {
+            // Detach is advisory in the native runtime. Restore the attached
+            // claim only if no concurrent transition has advanced the record;
+            // notably, a retirement that won the race remains authoritative.
+            if let transitionToRollback {
+                do {
+                    _ = try registry.replace(
+                        transitionToRollback.existing,
+                        ifUnchangedFrom: transitionToRollback.detached
+                    )
+                } catch let registryError {
+                    throw CoordinatorError.detachRollbackFailed(
+                        id,
+                        runtimeFailure: String(describing: error),
+                        registryFailure: String(describing: registryError)
+                    )
+                }
+            }
+            throw error
+        }
+        return try record(for: id)
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
-        guard existing.lifecycle != .exited,
-              existing.lifecycle != .errored,
+        if existing.lifecycle == .terminating {
+            // A prior retirement may have removed the runtime session before its
+            // final metadata write or response completed. Finish that idempotent
+            // retirement before allowing the caller to replace this generation.
+            _ = try markErrored(id)
+            throw CoordinatorError.staleSession(id)
+        }
+        if existing.lifecycle == .exited {
+            // Reattach to the retained broker object only long enough to replay
+            // final scrollback. Preserve durable `.exited` truth; the terminal's
+            // first output poll will publish the stored exit code after replay.
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
+            return existing
+        }
+        guard existing.lifecycle != .errored,
               existing.lifecycle != .stale else {
             throw CoordinatorError.staleSession(id)
         }
+        guard existing.lifecycle != .reattaching else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
+
+        // Publish a durable lease before the broker attach. Detach can revoke
+        // this lease by advancing `.reattaching` to `.detached`; a late attach
+        // must then clean up runtime ownership instead of republishing `.running`.
+        let lease = existing.withLifecycle(
+            .reattaching,
+            exitCode: nil,
+            updatedAt: now(),
+            lastAttachedChannelID: nil
+        )
+        guard try registry.replace(lease, ifUnchangedFrom: existing) else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
         do {
-            return try update(id, runtimeAction: { try runtime.attachSession(id: id, channelID: attachedChannelID) }) { record in
-                record.withLifecycle(
-                    .running,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: attachedChannelID
-                )
-            }
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
         } catch BrokerSessionHostClientRuntime.ClientError.transportFailed(let message) {
+            try rollbackReattach(id, lease: lease, to: existing, runtimeFailure: message)
             throw CoordinatorError.brokerHostUnavailable(id, message)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
-            _ = try updateMetadataOnly(id) { record in
-                record.withLifecycle(
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else {
+                    throw CoordinatorError.staleSession(id)
+                }
+                let stale = current.withLifecycle(
                     .stale,
                     exitCode: nil,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
+                if try registry.replace(stale, ifUnchangedFrom: current) { break }
             }
             throw CoordinatorError.staleSession(id)
+        } catch {
+            try rollbackReattach(id, lease: lease, to: existing, runtimeFailure: String(describing: error))
+            throw error
         }
-    }
 
-    func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.terminateSession(id: id, exitCode: exitCode) }) { record in
-            record.withLifecycle(
-                .exited,
-                exitCode: exitCode,
-                updatedAt: now(),
-                lastAttachedChannelID: nil
+        do {
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else {
+                    do {
+                        try runtime.detachSession(id: id)
+                    } catch {
+                        throw CoordinatorError.reattachCleanupFailed(
+                            id,
+                            runtimeFailure: String(describing: error)
+                        )
+                    }
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+                let attached = current.withLifecycle(
+                    .running,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: attachedChannelID
+                )
+                if try registry.replace(attached, ifUnchangedFrom: current) {
+                    return attached
+                }
+            }
+        } catch let error as CoordinatorError {
+            throw error
+        } catch let registryFailure {
+            // Runtime attach already succeeded, but durable ownership could not
+            // be published. Revoke runtime ownership before returning so the tab
+            // cannot remain invisibly attached behind a failed completion. The
+            // durable lease is left for relaunch discovery to revoke once
+            // registry I/O is healthy again.
+            do {
+                try runtime.detachSession(id: id)
+            } catch {
+                throw CoordinatorError.reattachCleanupFailed(
+                    id,
+                    runtimeFailure: "registry failure: \(registryFailure); detach failure: \(error)"
+                )
+            }
+            throw CoordinatorError.reattachRollbackFailed(
+                id,
+                runtimeFailure: "runtime attach succeeded; runtime ownership was revoked",
+                registryFailure: String(describing: registryFailure)
             )
         }
     }
 
+    private func rollbackReattach(
+        _ id: BrokerSessionID,
+        lease: BrokerSessionRecord,
+        to previous: BrokerSessionRecord,
+        runtimeFailure: String
+    ) throws {
+        do {
+            while true {
+                let current = try record(for: id)
+                guard current.lifecycle == .reattaching else { return }
+                let rolledBack = current == lease
+                    ? previous
+                    : current.withLifecycle(
+                        previous.lifecycle,
+                        exitCode: previous.exitCode,
+                        updatedAt: current.updatedAt,
+                        lastAttachedChannelID: previous.lastAttachedChannelID
+                    )
+                if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+            }
+        } catch let registryFailure {
+            throw CoordinatorError.reattachRollbackFailed(
+                id,
+                runtimeFailure: runtimeFailure,
+                registryFailure: String(describing: registryFailure)
+            )
+        }
+    }
+
+    func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
+        _ = try record(for: id)
+        try runtime.terminateSession(id: id, exitCode: exitCode)
+
+        // The runtime action is irreversible. Rebase the final state on any
+        // concurrent metadata-only mutation so a successful termination cannot
+        // be left durably `.running` or `.detached` after a lost CAS.
+        while true {
+            let current = try record(for: id)
+            switch current.lifecycle {
+            case .exited:
+                return current
+            case .terminating, .errored:
+                // Persistence-failure retirement owns the stronger final truth.
+                return current
+            case .creating, .running, .detached, .reattaching, .stale:
+                let candidate = current.withLifecycle(
+                    .exited,
+                    exitCode: exitCode,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(candidate, ifUnchangedFrom: current) {
+                    return candidate
+                }
+            }
+        }
+    }
+
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-        try update(id, runtimeAction: { try runtime.markSessionErrored(id: id) }) { record in
-            record.withLifecycle(
+        let existing = try record(for: id)
+        let retiring: BrokerSessionRecord
+        if existing.lifecycle == .terminating {
+            retiring = existing
+        } else {
+            retiring = existing.withLifecycle(
+                .terminating,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
+            )
+            // Persist intent before the irreversible runtime action. If the
+            // final write or host response is lost, durable state never claims
+            // that the retired child is still running.
+            guard try registry.replace(retiring, ifUnchangedFrom: existing) else {
+                return try markErrored(id)
+            }
+        }
+        do {
+            try runtime.markSessionErrored(id: id)
+        } catch let error where isMissingRuntimeSessionError(error, id: id) {
+            // Retirement is idempotent. A prior request may have removed the
+            // runtime session before its response or metadata write was lost.
+        } catch let error as BrokerSessionHostClientRuntime.ClientError {
+            if case .transportFailed = error {
+                // The host may have retired the child before its response was
+                // lost. Preserve the durable intent so retry can finish the
+                // idempotent transition instead of reviving a dead session.
+                throw error
+            }
+            do {
+                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+            } catch let registryError {
+                throw CoordinatorError.retirementRollbackFailed(
+                    id,
+                    runtimeFailure: String(describing: error),
+                    registryFailure: String(describing: registryError)
+                )
+            }
+            throw error
+        } catch {
+            // Runtime retirement did not complete. Restore the prior lifecycle
+            // when possible so a live child remains reattachable.
+            do {
+                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+            } catch let registryError {
+                throw CoordinatorError.retirementRollbackFailed(
+                    id,
+                    runtimeFailure: String(describing: error),
+                    registryFailure: String(describing: registryError)
+                )
+            }
+            throw error
+        }
+        let updated: BrokerSessionRecord
+        // Runtime retirement may overlap metadata-only mutations (for example a
+        // working-directory update). Rebase the final lifecycle transition on
+        // the current record instead of losing the truthful `.errored` state
+        // merely because an unrelated field changed.
+        while true {
+            let current = try record(for: id)
+            guard current.lifecycle == .terminating else {
+                if current.lifecycle == .errored { return current }
+                throw CoordinatorError.concurrentSessionTransition(id)
+            }
+            let candidate = current.withLifecycle(
                 .errored,
                 exitCode: nil,
                 updatedAt: now(),
                 lastAttachedChannelID: nil
             )
+            if try registry.replace(candidate, ifUnchangedFrom: current) {
+                updated = candidate
+                break
+            }
         }
+        return updated
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
-        let existing = try record(for: id)
-        guard existing.workingDirectory != directory else { return existing }
-        let updated = existing.withWorkingDirectory(directory, updatedAt: now())
-        try registry.upsert(updated)
+        guard let updated = try registry.update(id, transform: { existing in
+            guard existing.workingDirectory != directory else { return existing }
+            return existing.withWorkingDirectory(directory, updatedAt: now())
+        }) else {
+            throw CoordinatorError.missingSession(id)
+        }
         return updated
     }
 
@@ -252,6 +610,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         return try runtime.readAvailableOutput(id: id)
     }
 
+    func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        _ = try record(for: id)
+        if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+            return try transactionalRuntime.snapshotAvailableOutput(id: id)
+        }
+        return BrokerOutputSnapshot(data: try runtime.readAvailableOutput(id: id), generation: nil)
+    }
+
+    func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+        _ = try record(for: id)
+        guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else { return }
+        try transactionalRuntime.acknowledgeOutput(id: id, through: generation)
+    }
+
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
@@ -267,7 +639,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data {
-        try readScrollbackReplay(id, maxBytes: maxBytes).data
+        _ = try record(for: id)
+        return try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
     }
 
     func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
@@ -275,10 +648,26 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if let replayRuntime = runtime as? ScrollbackReplayReportingRuntime {
             return try replayRuntime.readScrollbackReplay(id: id, maxBytes: maxBytes)
         }
+        // A plain tail read cannot atomically establish which unread bytes it
+        // represents. Replaying it would let the output pump emit them again.
+        // Still perform the read so persistence/corruption failures remain
+        // observable to the reattach recovery path.
+        _ = try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
         return ScrollbackReplay(
-            data: try runtime.readScrollbackTail(id: id, maxBytes: maxBytes),
+            data: Data(),
             source: .unknown,
             maxBytes: maxBytes
+        )
+    }
+
+    func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        _ = try record(for: id)
+        if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+            return try transactionalRuntime.snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+        }
+        return BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id, maxBytes: maxBytes),
+            generation: nil
         )
     }
 
@@ -320,14 +709,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             if let exitCode = try runtime.terminationStatus(id: id) {
                 return try exit(id, exitCode: exitCode)
             }
-            return try updateMetadataOnly(id) { record in
-                record.withLifecycle(
-                    .errored,
-                    exitCode: nil,
-                    updatedAt: now(),
-                    lastAttachedChannelID: nil
-                )
-            }
+            // A terminated child may still have a final PTY read or scrollback
+            // append in flight. Keep the durable record reattachable until the
+            // runtime can report a final status or a loud persistence failure.
+            return existing
         } catch MetadataOnlyBrokerSessionRuntime.RuntimeError.unsupportedPTYOperation {
             return existing
         } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
@@ -341,6 +726,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     lastAttachedChannelID: nil
                 )
             }
+        } catch let error where isUnrecoverableRuntimeSessionError(error, id: id) {
+            // A persistence-broken runtime is still owned, unlike a missing
+            // session. Retire it before publishing a final lifecycle record.
+            return try markErrored(id)
         }
     }
 
@@ -355,7 +744,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
         try runtimeAction()
         let updated = transform(existing)
-        try registry.upsert(updated)
+        guard try registry.replace(updated, ifUnchangedFrom: existing) else {
+            throw CoordinatorError.concurrentSessionTransition(id)
+        }
         return updated
     }
 
@@ -382,6 +773,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
            code == "missing-session",
            message.contains(id.rawValue) {
             return true
+        }
+        return false
+    }
+
+    private func isUnrecoverableRuntimeSessionError(_ error: Error, id: BrokerSessionID) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case let .scrollbackPersistenceFailed(failedID, _) = runtimeError {
+            return failedID == id
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error {
+            return code == "scrollback-persistence-failed" && message.contains(id.rawValue)
         }
         return false
     }

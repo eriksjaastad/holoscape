@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
@@ -21,6 +21,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     let supportsOutputAvailabilityMonitoring: Bool
     private let startsOutputAvailabilityMonitor: Bool
     private let outputMonitor = BrokerSessionHostClientOutputMonitor()
+    private let outputTransactions = BrokerSessionHostClientOutputTransactions()
 
     init(
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
@@ -131,11 +132,24 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
-        let response = try response(for: .readAvailableOutput(id: id))
-        guard case let .output(data) = response else {
-            throw ClientError.unexpectedResponse(expected: "output", actual: response)
+        try outputTransactions.withSession(id) {
+            let snapshot = try snapshotAvailableOutput(id: id)
+            if let generation = snapshot.generation {
+                deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
+            }
+            return snapshot.data
         }
-        return data
+    }
+
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try outputTransactions.withSession(id) {
+            try flushPendingOutputAcknowledgment(id: id)
+            let response = try response(for: .snapshotAvailableOutput(id: id))
+            guard case let .outputSnapshot(snapshot) = response else {
+                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
+            }
+            return snapshot
+        }
     }
 
     func setOutputAvailabilityHandler(
@@ -163,6 +177,76 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             throw ClientError.unexpectedResponse(expected: "output", actual: response)
         }
         return data
+    }
+
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        try outputTransactions.withSession(id) {
+            let snapshot = try snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+            guard outputTransactions.claimLegacyReplay(
+                id: id,
+                hasNewGeneration: snapshot.generation != nil,
+                hasData: !snapshot.replay.data.isEmpty
+            ) else {
+                return ScrollbackReplay(
+                    data: Data(),
+                    source: snapshot.replay.source,
+                    maxBytes: snapshot.replay.maxBytes
+                )
+            }
+            if let generation = snapshot.generation {
+                deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
+            }
+            return snapshot.replay
+        }
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        try outputTransactions.withSession(id) {
+            try flushPendingOutputAcknowledgment(id: id)
+            let response = try response(for: .snapshotScrollbackReplay(id: id, maxBytes: maxBytes))
+            guard case let .scrollbackReplaySnapshot(snapshot) = response else {
+                throw ClientError.unexpectedResponse(expected: "scrollbackReplaySnapshot", actual: response)
+            }
+            return snapshot
+        }
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+        try outputTransactions.withSession(id) {
+            try acknowledgeAfterDelivery(id: id, generation: generation)
+        }
+    }
+
+    private func acknowledgeAfterDelivery(id: BrokerSessionID, generation: UInt64?) throws {
+        guard let generation else { return }
+        do {
+            try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
+            outputTransactions.clearPending(id: id, through: generation)
+        } catch {
+            // The bytes are already safely present in this process. Preserve the
+            // idempotent acknowledgement for the next read instead of turning an
+            // ambiguous ack response into output loss or duplicate delivery.
+            outputTransactions.setPending(id: id, generation: generation)
+            NSLog("Broker output acknowledgement deferred for \(id.rawValue): \(error)")
+            throw error
+        }
+    }
+
+    private func deferAcknowledgmentAfterLegacyDelivery(id: BrokerSessionID, generation: UInt64?) {
+        do {
+            try acknowledgeAfterDelivery(id: id, generation: generation)
+        } catch {
+            // The legacy read-and-consume API has already returned ownership of
+            // these bytes to this process. Preserve its lossless contract by
+            // retrying before the next read; transactional callers use the
+            // throwing acknowledgement API and must not advance lifecycle state.
+        }
+    }
+
+    private func flushPendingOutputAcknowledgment(id: BrokerSessionID) throws {
+        guard let generation = outputTransactions.pendingGeneration(id: id) else { return }
+        try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
+        outputTransactions.clearPending(id: id, through: generation)
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
@@ -210,11 +294,81 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         } catch {
             throw ClientError.transportFailed(String(describing: error))
         }
-        let response = try codec.decodeResponse(responseFrame)
+        let response: BrokerSessionHostResponse
+        do {
+            response = try codec.decodeResponse(responseFrame)
+        } catch {
+            // A malformed or partial response does not prove a mutating request
+            // failed before the broker applied it. Preserve that uncertainty as
+            // transport failure so callers retain the request's exact identity.
+            throw ClientError.transportFailed("responseDecodeFailed(\(error))")
+        }
         if case let .failure(failure) = response {
             throw ClientError.hostFailure(code: failure.code, message: failure.message)
         }
         return response
+    }
+}
+
+extension BrokerSessionHostClientRuntime.ClientError {
+    var ambiguousCreateFailureReason: String? {
+        switch self {
+        case .transportFailed(let reason):
+            return reason
+        case .unexpectedResponse(let expected, let actual):
+            return "unexpected response; expected \(expected), got \(actual)"
+        case .hostFailure:
+            return nil
+        }
+    }
+}
+
+private final class BrokerSessionHostClientOutputTransactions: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var sessionLocks: [BrokerSessionID: NSRecursiveLock] = [:]
+    private var pendingAcknowledgments: [BrokerSessionID: UInt64] = [:]
+    private var legacyReplayPresented: Set<BrokerSessionID> = []
+
+    func withSession<T>(_ id: BrokerSessionID, operation: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        let lock = sessionLocks[id] ?? NSRecursiveLock()
+        sessionLocks[id] = lock
+        stateLock.unlock()
+        lock.lock()
+        defer { lock.unlock() }
+        return try operation()
+    }
+
+    func pendingGeneration(id: BrokerSessionID) -> UInt64? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pendingAcknowledgments[id]
+    }
+
+    func setPending(id: BrokerSessionID, generation: UInt64) {
+        stateLock.lock()
+        pendingAcknowledgments[id] = max(pendingAcknowledgments[id] ?? 0, generation)
+        stateLock.unlock()
+    }
+
+    func clearPending(id: BrokerSessionID, through generation: UInt64) {
+        stateLock.lock()
+        if let pending = pendingAcknowledgments[id], pending <= generation {
+            pendingAcknowledgments.removeValue(forKey: id)
+        }
+        stateLock.unlock()
+    }
+
+    func claimLegacyReplay(id: BrokerSessionID, hasNewGeneration: Bool, hasData: Bool) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if !hasNewGeneration, legacyReplayPresented.contains(id) {
+            return false
+        }
+        if hasData {
+            legacyReplayPresented.insert(id)
+        }
+        return true
     }
 }
 

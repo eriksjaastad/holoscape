@@ -39,6 +39,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var adapterOwnerToken = UUID().uuidString
     private var requiresAdapterOwnerToken = true
     private var lastStartFailureKind: TerminalStartFailureKind?
+    private var pendingRestoredAttention: (state: PersistentChannelState, brokerSessionID: BrokerSessionID)?
 
     var persistentState: PersistentChannelState {
         let runtimeState = PersistentChannelState.fromRuntimeState(
@@ -231,6 +232,9 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setSessionFailureHandler { [weak self] failure in
             self?.handleSessionFailure(failure)
         }
+        self.terminal.setStartCompletionHandler { [weak self] in
+            self?.finishActivation()
+        }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
@@ -302,7 +306,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             execName: launch.execName,
             currentDirectory: workingDirectory?.path
         )
+        if terminal.completesStartAsynchronously { return }
+        finishActivation()
+    }
+
+    private func finishActivation() {
         if let startFailure = terminal.startFailureDescription {
+            pendingRestoredAttention = nil
             NSLog("Agent terminal start failed: \(startFailure)")
             let failedState = applyBrokerFailure(kind: terminal.startFailureKind)
             state = failedState
@@ -329,6 +339,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         activatedAt = now
         recordUserInteraction(at: now)
         delegate?.channelStateDidChange(self, to: .active)
+        if let pendingRestoredAttention {
+            self.pendingRestoredAttention = nil
+            if brokerSessionID == pendingRestoredAttention.brokerSessionID {
+                restorePersistentAttentionState(pendingRestoredAttention.state)
+            }
+        }
     }
 
     func recordUserInteraction(at date: Date = Date()) {
@@ -349,8 +365,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
+        deactivate(completion: {})
+    }
+
+    func deactivate(completion: @escaping @MainActor () -> Void) {
         terminal.setOutputHandler(nil)
-        terminal.detachBrokerSession()
+        terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()
         transitionToDisconnected()
     }
@@ -431,6 +451,20 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             delegate?.channelStateDidChange(self, to: state)
         case .processLifecycle, .brokerRegistry, .userAction, .plugin:
             break
+        }
+    }
+
+    /// Preserve saved attention while production broker reattach is still
+    /// completing off-main. Apply it only after the same durable process
+    /// generation has successfully re-established ownership.
+    func restorePersistentAttentionState(
+        _ restoredState: PersistentChannelState,
+        afterReattaching brokerSessionID: BrokerSessionID
+    ) {
+        if state == .active, self.brokerSessionID == brokerSessionID {
+            restorePersistentAttentionState(restoredState)
+        } else if state == .connecting {
+            pendingRestoredAttention = (restoredState, brokerSessionID)
         }
     }
 
@@ -545,6 +579,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private func transitionToDisconnected(invalidateAdapterOwner: Bool = false) {
+        pendingRestoredAttention = nil
         adapterPersistentState = nil
         terminalOutputPersistentState = nil
         persistentStatesBySource[.processLifecycle] = nil

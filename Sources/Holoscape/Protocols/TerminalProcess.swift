@@ -29,10 +29,15 @@ protocol TerminalProcess: AnyObject {
     /// (broker host outage, broker that no longer owns the session). The owning
     /// tab downgrades its recovery state from this instead of guessing.
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?)
+    /// Broker reattach can finish after `startProcess` returns. Controllers use
+    /// this completion as the terminal-start commit point; direct terminals keep
+    /// their historical synchronous behavior.
+    func setStartCompletionHandler(_ handler: (() -> Void)?)
+    var completesStartAsynchronously: Bool { get }
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?)
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
-    func detachBrokerSession()
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void)
     /// Persist host-reported cwd truth with the process owner. Direct terminals
     /// do not own durable metadata and therefore use the default no-op.
     func updateWorkingDirectory(_ directory: String) throws
@@ -79,7 +84,10 @@ extension TerminalProcess {
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
-    func detachBrokerSession() {}
+    func setStartCompletionHandler(_ handler: (() -> Void)?) {}
+    var completesStartAsynchronously: Bool { false }
+    func detachBrokerSession(completion: @escaping @MainActor () -> Void) { completion() }
+    func detachBrokerSession() { detachBrokerSession(completion: {}) }
     func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }

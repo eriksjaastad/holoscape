@@ -3,6 +3,11 @@ import AppKit
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var windowController: MainWindowController?
+    /// Test seam for termination admission; production ownership remains private.
+    var windowControllerRef: MainWindowController? {
+        get { windowController }
+        set { windowController = newValue }
+    }
     private let configService = ConfigService()
     private let crashScanner = CrashReportScanner()
     private let bugReportService = BugReportService()
@@ -11,7 +16,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
-    private var apiServer: HoloscapeAPIServer?
+    var apiServer: HoloscapeAPIServer?
+    var launchRecoveryComplete = false
+    private var terminationTeardownStarted = false
+    private var terminationTeardownComplete = false
+    private var terminationTeardownGeneration: UInt = 0
+    private var terminationTeardownTimeoutWorkItem: DispatchWorkItem?
+    /// Test seam and hard upper bound for app-owned teardown authority. A timed
+    /// out quit is denied while the live app keeps retrying cleanup.
+    var terminationTeardownTimeout: TimeInterval = 30
+    private var pendingExternalURLs: [URL] = []
+    private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
 
     private var isUITesting: Bool {
         CommandLine.arguments.contains("--ui-testing")
@@ -47,62 +62,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             windowController?.setNotificationService(notificationService!)
         }
 
-        // Start API server for MCP integration
-        if let wc = windowController {
-            var apiPort: UInt16 = 7865
-            if let idx = CommandLine.arguments.firstIndex(of: "--api-port"),
-               idx + 1 < CommandLine.arguments.count,
-               let p = UInt16(CommandLine.arguments[idx + 1]) {
-                apiPort = p
-            }
-            apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
-            apiServer?.start()
-            wc.apiServer = apiServer
-        }
 
         // Apply appearance
         applyAppearance(config.appearance)
 
         let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldRestore {
-            // Restore channels from saved state.
-            //
-            // Order matters: we MUST set `controller.delegate` before calling
-            // `controller.activate()`. `activate()` fires `channelStateDidChange`
-            // delegate callbacks for .connecting and .active, and for shell
-            // channels drives `terminalView.startProcess(...)`. If the delegate
-            // is nil at that point (as it was when activate() lived inside
-            // `createChannelFromMetadata`), the state-change calls silently
-            // vanish — the restored shell runs but the tab bar / sidebar /
-            // splitPaneManager never learns about it, which is how the
-            // "restored shell's terminal buffer appears empty" bug reproduced
-            // in DirectoryPersistenceUITests.testRestoredChannelStartsInSavedDirectory.
-            // This mirrors the default-channel fix in PR #57.
-            restoreSavedChannelsAndRecoveredBrokerSessions()
-        }
-
-        // If no channels restored, create a default shell
-        if channelManager.count == 0 {
-            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
-            let defaultDir = DefaultWorkingDirectory.preferredURL
-            let channel = channelManager.createChannel(
-                type: .shell,
-                role: existingBrokerSession?.label,
-                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
-            ) { id, _, _, instanceNum, workDir in
-                ShellChannelController.brokerBacked(
-                    id: id,
-                    instanceNumber: instanceNum,
-                    label: existingBrokerSession?.label,
-                    workingDirectory: workDir?.path,
-                    existingBrokerSessionID: existingBrokerSession?.id
-                )
+            setLaunchRecoveryInteractionEnabled(false)
+            // Broker discovery can include bounded Unix-socket RPCs. Prepare it
+            // off-main before restore classification and initial tab creation.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // A failed inventory is unknown, never empty. Do not create a
+                // default process until discovery succeeds, or a transient host
+                // outage could hide a survivor and launch a duplicate.
+                while await channelManagerRef?.prepareBrokerRecovery() == false {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !terminationTeardownStarted else { return }
+                }
+                restoreSavedChannelsAndRecoveredBrokerSessions()
+                ensureInitialChannelIfNeeded()
+                windowController?.refreshAllTabs()
+                launchRecoveryComplete = true
+                setLaunchRecoveryInteractionEnabled(true)
+                runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
+                startAPIServerIfNeeded(channelManager: channelManager)
+                showMainWindow()
+                drainPendingExternalURLs()
             }
-            channel.delegate = windowController
-            channel.activate()
-            windowController?.switchToChannel(channel.channelId)
-        } else if let first = channelManager.allChannels().first {
-            windowController?.switchToChannel(first.channelId)
+        } else {
+            ensureInitialChannelIfNeeded()
+            launchRecoveryComplete = true
+            runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
+            startAPIServerIfNeeded(channelManager: channelManager)
         }
 
         windowController?.refreshAllTabs()
@@ -111,29 +103,70 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if isUITesting, let window = windowController?.window, let screen = NSScreen.main {
             window.setFrame(screen.visibleFrame, display: true)
         }
-        windowController?.window.makeKeyAndOrderFront(nil)
+        if launchRecoveryComplete { showMainWindow() }
 
-        if !isUITesting {
-            // Retry any pending reports from previous failed submissions
-            bugReportService.retryPendingReports()
+    }
 
-            // Check for crashes on previous launch
-            checkForCrashes(lastLaunch: config.lastLaunchTimestamp)
-
-            // Update launch timestamp
-            var updatedConfig = config
-            updatedConfig.lastLaunchTimestamp = Date()
-            configService.save(updatedConfig)
+    /// Keep launch-time restoration authoritative by disabling every mutating
+    /// menu command until saved tabs and surviving broker sessions are restored.
+    /// Quit stays available and already skips destructive saves while recovery
+    /// is incomplete. Original enabled states are restored exactly.
+    func setLaunchRecoveryInteractionEnabled(_ enabled: Bool, menu: NSMenu? = NSApp.mainMenu) {
+        if enabled {
+            for state in launchRecoveryMenuItemStates {
+                state.item.isEnabled = state.wasEnabled
+            }
+            launchRecoveryMenuItemStates.removeAll()
+            return
         }
+
+        guard launchRecoveryMenuItemStates.isEmpty, let menu else { return }
+        func disableMutatingItems(in current: NSMenu) {
+            for item in current.items {
+                if let submenu = item.submenu {
+                    disableMutatingItems(in: submenu)
+                }
+                guard Self.shouldDisableDuringLaunchRecovery(item) else { continue }
+                launchRecoveryMenuItemStates.append((item, item.isEnabled))
+                item.isEnabled = false
+            }
+        }
+        disableMutatingItems(in: menu)
+    }
+
+    static func shouldDisableDuringLaunchRecovery(_ item: NSMenuItem) -> Bool {
+        guard let action = item.action else { return false }
+        return NSStringFromSelector(action) != "terminate:"
+    }
+
+    private func runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: Date?) {
+        guard !isUITesting else { return }
+        bugReportService.retryPendingReports()
+        checkForCrashes(lastLaunch: previousLaunchTimestamp)
+
+        // Reload after channel restoration so recording launch metadata can
+        // never overwrite the newly authoritative tab/session snapshot.
+        var config = configService.load()
+        config.lastLaunchTimestamp = Date()
+        configService.save(config)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard launchRecoveryComplete else {
+            pendingExternalURLs.append(contentsOf: urls)
+            NSLog("Queued \(urls.count) external URL(s) until launch recovery completes")
+            return
+        }
         for url in urls {
             handleURL(url)
         }
     }
 
     private func handleURL(_ url: URL) {
+        guard !terminationTeardownStarted else {
+            NSLog("Ignored external URL while application termination is pending")
+            return
+        }
         guard url.scheme == "holoscape" else { return }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         let params = Dictionary(
@@ -157,15 +190,85 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldSave {
-            windowController?.channelManager.saveState()
-            windowController?.channelManager.detachAllChannelsForAppTermination()
+        if shouldSave && launchRecoveryComplete {
+            if !terminationTeardownStarted {
+                windowController?.channelManager.saveState()
+                windowController?.channelManager.detachAllChannelsForAppTermination()
+            }
+        } else if shouldSave {
+            NSLog("Skipping channel save during incomplete launch recovery")
         }
         if let result = windowController?.historyBuffer.flush(),
            case let .failure(error) = result {
             NSLog("HistoryBuffer final flush failed during app termination: %@", error.localizedDescription)
         }
         windowController?.historyBuffer.stopPeriodicFlush()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
+        guard shouldSave, launchRecoveryComplete,
+              let channelManager = windowController?.channelManager ?? channelManagerRef else {
+            return .terminateNow
+        }
+        if terminationTeardownComplete {
+            return .terminateNow
+        }
+        if terminationTeardownStarted {
+            return .terminateLater
+        }
+
+        stopAPIServerForTermination()
+        setLaunchRecoveryInteractionEnabled(false)
+        windowController?.setChannelMutationEnabled(false)
+        beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
+            sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
+    }
+
+    /// Start a bounded quit transaction. Broker cleanup may keep retrying after
+    /// the deadline, but the application denies that quit request instead of
+    /// remaining in AppKit's `.terminateLater` state forever. A later quit joins
+    /// the still-live controllers and can succeed once cleanup finishes.
+    func beginTerminationTeardown(
+        using channelManager: ChannelManager,
+        reply: @escaping @MainActor (Bool) -> Void
+    ) {
+        terminationTeardownStarted = true
+        terminationTeardownGeneration &+= 1
+        let generation = terminationTeardownGeneration
+        terminationTeardownTimeoutWorkItem?.cancel()
+
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.terminationTeardownStarted,
+                  !self.terminationTeardownComplete,
+                  self.terminationTeardownGeneration == generation else { return }
+            self.terminationTeardownStarted = false
+            self.terminationTeardownGeneration &+= 1
+            NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
+            self.apiServer?.start()
+            self.setLaunchRecoveryInteractionEnabled(true)
+            self.windowController?.setChannelMutationEnabled(true)
+            reply(false)
+        }
+        terminationTeardownTimeoutWorkItem = timeoutWorkItem
+
+        channelManager.saveState()
+        channelManager.detachAllChannelsForAppTermination { [weak self] in
+            guard let self,
+                  self.terminationTeardownStarted,
+                  self.terminationTeardownGeneration == generation else { return }
+            self.terminationTeardownTimeoutWorkItem?.cancel()
+            self.terminationTeardownTimeoutWorkItem = nil
+            self.terminationTeardownComplete = true
+            reply(true)
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + terminationTeardownTimeout,
+            execute: timeoutWorkItem
+        )
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -220,6 +323,61 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     // MARK: - Private
 
+    private func startAPIServerIfNeeded(channelManager: ChannelManager) {
+        guard apiServer == nil, let wc = windowController else { return }
+        var apiPort: UInt16 = 7865
+        if let idx = CommandLine.arguments.firstIndex(of: "--api-port"),
+           idx + 1 < CommandLine.arguments.count,
+           let p = UInt16(CommandLine.arguments[idx + 1]) {
+            apiPort = p
+        }
+        apiServer = HoloscapeAPIServer(channelManager: channelManager, windowController: wc, port: apiPort)
+        apiServer?.start()
+        wc.apiServer = apiServer
+    }
+
+    private func stopAPIServerForTermination() {
+        apiServer?.stop()
+    }
+
+    private func showMainWindow() {
+        guard let window = windowController?.window else { return }
+        if isUITesting, let screen = NSScreen.main { window.setFrame(screen.visibleFrame, display: true) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func drainPendingExternalURLs() {
+        let urls = pendingExternalURLs
+        pendingExternalURLs.removeAll()
+        for url in urls { handleURL(url) }
+    }
+
+    private func ensureInitialChannelIfNeeded() {
+        guard let channelManager = channelManagerRef else { return }
+        if channelManager.count == 0 {
+            let existingBrokerSession = channelManager.firstUnmatchedBrokerBackedShellSessionToRestore()
+            let defaultDir = DefaultWorkingDirectory.preferredURL
+            let channel = channelManager.createChannel(
+                type: .shell,
+                role: existingBrokerSession?.label,
+                workingDirectory: existingBrokerSession?.workingDirectory.map(URL.init(fileURLWithPath:)) ?? defaultDir
+            ) { id, _, _, instanceNum, workDir in
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNum,
+                    label: existingBrokerSession?.label,
+                    workingDirectory: workDir?.path,
+                    existingBrokerSessionID: existingBrokerSession?.id
+                )
+            }
+            channel.delegate = windowController
+            channel.activate()
+            windowController?.switchToChannel(channel.channelId)
+        } else if let first = channelManager.allChannels().first {
+            windowController?.switchToChannel(first.channelId)
+        }
+    }
+
     /// Restore the saved tab list, then surface broker sessions that survived a
     /// hard crash without a saved tab entry.
     ///
@@ -261,9 +419,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // starts a replacement and must not transfer the old process's attention.
         if let persistentState = metadata.persistentState,
            let savedBrokerSessionID = metadata.brokerSessionID,
-           let agentController = controller as? AgentChannelController,
-           agentController.brokerSessionID == savedBrokerSessionID {
-            agentController.restorePersistentAttentionState(persistentState)
+           let agentController = controller as? AgentChannelController {
+            agentController.restorePersistentAttentionState(
+                persistentState,
+                afterReattaching: savedBrokerSessionID
+            )
         }
         return controller
     }

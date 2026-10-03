@@ -25,9 +25,11 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .terminate(id: sessionID, exitCode: 0),
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
-            .readAvailableOutput(id: sessionID),
+            .snapshotAvailableOutput(id: sessionID),
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
+            .snapshotScrollbackReplay(id: sessionID, maxBytes: 4096),
+            .acknowledgeOutput(id: sessionID, throughGeneration: 42),
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
             .terminationStatus(id: sessionID),
@@ -50,6 +52,24 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
                 BrokerSessionID(rawValue: "response-session-b"),
             ]),
             .output(Data([0x00, 0x01, 0x02, 0x0A, 0xFF])),
+            .scrollbackReplay(
+                ScrollbackReplay(
+                    data: Data("replay".utf8),
+                    source: .liveBrokerMemory,
+                    maxBytes: 4096
+                )
+            ),
+            .outputSnapshot(BrokerOutputSnapshot(data: Data("snapshot".utf8), generation: 42)),
+            .scrollbackReplaySnapshot(
+                BrokerScrollbackReplaySnapshot(
+                    replay: ScrollbackReplay(
+                        data: Data("snapshot-replay".utf8),
+                        source: .liveBrokerMemory,
+                        maxBytes: 4096
+                    ),
+                    generation: 43
+                )
+            ),
             .outputAvailable(true),
             .outputAvailable(false),
             .running(true),
@@ -121,11 +141,29 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.listSessions)), try codec.encodeResponse(.sessionIDs([sessionID])))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
-        XCTAssertEqual(try host.handle(codec.encodeRequest(.readAvailableOutput(id: sessionID))), try codec.encodeResponse(.output(Data("broker-output".utf8))))
+        XCTAssertEqual(
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID))),
+            try codec.encodeResponse(.outputSnapshot(BrokerOutputSnapshot(data: Data("broker-output".utf8), generation: 1)))
+        )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.isRunning(id: sessionID))), try codec.encodeResponse(.running(true)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readScrollbackTail(id: sessionID, maxBytes: 64))), try codec.encodeResponse(.output(Data("scrollback-tail".utf8))))
+        XCTAssertEqual(
+            try host.handle(codec.encodeRequest(.snapshotScrollbackReplay(id: sessionID, maxBytes: 64))),
+            try codec.encodeResponse(
+                .scrollbackReplaySnapshot(
+                    BrokerScrollbackReplaySnapshot(
+                        replay: ScrollbackReplay(
+                            data: Data("scrollback-replay".utf8),
+                            source: .liveBrokerMemory,
+                            maxBytes: 64
+                        ),
+                        generation: nil
+                    )
+                )
+            )
+        )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.resize(id: sessionID, size: TerminalGridSize(columns: 100, rows: 30)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.detach(id: sessionID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminate(id: sessionID, exitCode: 9))), try codec.encodeResponse(.ok))
@@ -140,6 +178,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "isRunning host-dispatch-test",
             "terminationStatus host-dispatch-test",
             "readScrollbackTail host-dispatch-test 64",
+            "readScrollbackReplay host-dispatch-test 64",
             "resize host-dispatch-test 100x30",
             "detach host-dispatch-test",
             "terminate host-dispatch-test 9",
@@ -210,6 +249,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(failure.message.contains("missingSession"), failure.message)
     }
 
+    func testHostTurnsScrollbackPersistenceErrorsIntoTypedFailureFrames() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let sessionID = BrokerSessionID(rawValue: "failed-scrollback-host-session")
+        runtime.error = NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(
+            sessionID,
+            reason: "disk full"
+        )
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+        )
+
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected failure response, got \(response)")
+        }
+        XCTAssertEqual(failure.code, "scrollback-persistence-failed")
+        XCTAssertTrue(failure.message.contains(sessionID.rawValue), failure.message)
+        XCTAssertTrue(failure.message.contains("disk full"), failure.message)
+    }
+
     func testClientRuntimeSendsRequestsThroughHostTransportAndDecodesResponses() throws {
         let hostedRuntime = RecordingBrokerSessionRuntime()
         hostedRuntime.output = Data("client-output".utf8)
@@ -237,6 +297,14 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(try client.isRunning(id: sessionID))
         XCTAssertEqual(try client.terminationStatus(id: sessionID), 12)
         XCTAssertEqual(try client.readScrollbackTail(id: sessionID, maxBytes: 32), Data("scrollback-tail".utf8))
+        XCTAssertEqual(
+            try client.readScrollbackReplay(id: sessionID, maxBytes: 32),
+            ScrollbackReplay(
+                data: Data("scrollback-replay".utf8),
+                source: .liveBrokerMemory,
+                maxBytes: 32
+            )
+        )
         try client.resizeSession(id: sessionID, size: TerminalGridSize(columns: 120, rows: 40))
         try client.detachSession(id: sessionID)
         try client.terminateSession(id: sessionID, exitCode: 12)
@@ -248,14 +316,241 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "attach client-runtime-test 00000000-0000-0000-0000-000000009003",
             "sendInput client-runtime-test pwd\\n",
             "readAvailableOutput client-runtime-test",
+            "acknowledgeOutput client-runtime-test 1",
             "isRunning client-runtime-test",
             "terminationStatus client-runtime-test",
             "readScrollbackTail client-runtime-test 32",
+            "readScrollbackReplay client-runtime-test 32",
             "resize client-runtime-test 120x40",
             "detach client-runtime-test",
             "terminate client-runtime-test 12",
             "markErrored client-runtime-test",
         ])
+    }
+
+    func testHostClientLiveReplayConsumesDetachedOutputExactlyOnce() throws {
+        let nativeRuntime = NativePTYBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: nativeRuntime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "host-client-live-replay-once")
+        try client.createSession(
+            id: sessionID,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf host-client-replay-marker; sleep 5"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? client.markSessionErrored(id: sessionID) }
+
+        let deadline = Date().addingTimeInterval(3)
+        var tail = Data()
+        while Date() < deadline {
+            tail = try client.readScrollbackTail(id: sessionID, maxBytes: 4096)
+            if String(decoding: tail, as: UTF8.self).contains("host-client-replay-marker") { break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(String(decoding: tail, as: UTF8.self).contains("host-client-replay-marker"))
+
+        let replay = try client.readScrollbackReplay(id: sessionID, maxBytes: 4096)
+
+        XCTAssertEqual(replay.source, .liveBrokerMemory)
+        XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("host-client-replay-marker"))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+    }
+
+    func testLostOutputResponseLeavesSnapshotAvailableForRetry() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("response-loss-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let readAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let response = try host.handle(frame)
+            if case .snapshotAvailableOutput = try codec.decodeRequest(frame), readAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("lost after host snapshot")
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "lost-output-response")
+
+        XCTAssertThrowsError(try client.readAvailableOutput(id: sessionID))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("response-loss-output".utf8))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+    }
+
+    func testLostAcknowledgementResponseIsRetriedBeforeNextRead() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("ack-loss-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let ackAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let response = try host.handle(frame)
+            if case .acknowledgeOutput = try codec.decodeRequest(frame), ackAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("lost after host ack")
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "lost-output-ack")
+
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("ack-loss-output".utf8))
+        XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
+        XCTAssertEqual(ackAttempts.value, 2)
+    }
+
+    func testConcurrentLegacyOutputReadsDeliverGenerationOnce() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("single-output-generation".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let firstSnapshotEntered = DispatchSemaphore(value: 0)
+        let releaseFirstSnapshot = DispatchSemaphore(value: 0)
+        let snapshotAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let request = try codec.decodeRequest(frame)
+            let response = try host.handle(frame)
+            if case .snapshotAvailableOutput = request, snapshotAttempts.increment() == 1 {
+                firstSnapshotEntered.signal()
+                _ = releaseFirstSnapshot.wait(timeout: .now() + 2)
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "concurrent-legacy-output")
+        let results = LockedDataResults()
+        let errors = LockedErrorBox()
+        let firstFinished = expectation(description: "first legacy output read")
+        let secondFinished = expectation(description: "second legacy output read")
+        let secondStarted = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { results.append(try client.readAvailableOutput(id: sessionID)) } catch { errors.set(error) }
+            firstFinished.fulfill()
+        }
+        XCTAssertEqual(firstSnapshotEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondStarted.signal()
+            do { results.append(try client.readAvailableOutput(id: sessionID)) } catch { errors.set(error) }
+            secondFinished.fulfill()
+        }
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 1), .success)
+        usleep(20_000)
+        releaseFirstSnapshot.signal()
+        wait(for: [firstFinished, secondFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }, [Data("single-output-generation".utf8)])
+        XCTAssertEqual(snapshotAttempts.value, 2)
+    }
+
+    func testConcurrentLegacyReplayReadsDeliverGenerationOnce() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("unread-replay-generation".utf8)
+        runtime.scrollbackReplayGeneration = 1
+        let host = BrokerSessionHost(runtime: runtime)
+        let firstSnapshotEntered = DispatchSemaphore(value: 0)
+        let releaseFirstSnapshot = DispatchSemaphore(value: 0)
+        let snapshotAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let request = try codec.decodeRequest(frame)
+            let response = try host.handle(frame)
+            if case .snapshotScrollbackReplay = request, snapshotAttempts.increment() == 1 {
+                firstSnapshotEntered.signal()
+                _ = releaseFirstSnapshot.wait(timeout: .now() + 2)
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "concurrent-legacy-replay")
+        let results = LockedDataResults()
+        let errors = LockedErrorBox()
+        let firstFinished = expectation(description: "first legacy replay read")
+        let secondFinished = expectation(description: "second legacy replay read")
+        let secondStarted = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { results.append(try client.readScrollbackReplay(id: sessionID, maxBytes: 4096).data) } catch { errors.set(error) }
+            firstFinished.fulfill()
+        }
+        XCTAssertEqual(firstSnapshotEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondStarted.signal()
+            do { results.append(try client.readScrollbackReplay(id: sessionID, maxBytes: 4096).data) } catch { errors.set(error) }
+            secondFinished.fulfill()
+        }
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 1), .success)
+        usleep(20_000)
+        releaseFirstSnapshot.signal()
+        wait(for: [firstFinished, secondFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }, [Data("scrollback-replay".utf8)])
+        XCTAssertEqual(snapshotAttempts.value, 2)
+    }
+
+    func testTransactionalAcknowledgementFailureThrowsAndRemainsPendingForRetry() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("strict-ack-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let ackAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            if case .acknowledgeOutput = try codec.decodeRequest(frame), ackAttempts.increment() == 1 {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.timedOut("ack never reached host")
+            }
+            return try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "strict-output-ack")
+        let transactionalClient: any BrokerTransactionalOutputRuntime = client
+        let snapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+        let generation = try XCTUnwrap(snapshot.generation)
+
+        XCTAssertThrowsError(
+            try transactionalClient.acknowledgeOutput(id: sessionID, through: generation),
+            "A delivery owner must not publish exit or retire the runtime without confirmed acknowledgement"
+        )
+        XCTAssertEqual(runtime.output, Data("strict-ack-output".utf8))
+
+        let nextSnapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+        XCTAssertEqual(nextSnapshot.data, Data())
+        XCTAssertEqual(ackAttempts.value, 2)
+    }
+
+    func testTransactionalSnapshotRequestUsesProtocolShapeLegacyHostCannotDispatch() throws {
+        let codec = BrokerSessionHostCodec()
+        let frame = try codec.encodeRequest(
+            .snapshotAvailableOutput(id: BrokerSessionID(rawValue: "version-separated-output"))
+        )
+        let json = String(decoding: frame, as: UTF8.self)
+
+        XCTAssertTrue(json.contains("snapshotAvailableOutput"), json)
+        XCTAssertFalse(json.contains("\"readAvailableOutput\""), json)
+    }
+
+    func testTransactionalClientDefersAcknowledgementUntilDeliveryOwnerAcceptsSnapshot() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("delivery-owned-output".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let sessionID = BrokerSessionID(rawValue: "delivery-owned-output")
+
+        let transactionalClient: any BrokerTransactionalOutputRuntime = client
+        let snapshot = try transactionalClient.snapshotAvailableOutput(id: sessionID)
+
+        XCTAssertEqual(snapshot.data, Data("delivery-owned-output".utf8))
+        XCTAssertFalse(runtime.events.contains("acknowledgeOutput delivery-owned-output 1"))
+        XCTAssertEqual(runtime.output, Data("delivery-owned-output".utf8))
+
+        try transactionalClient.acknowledgeOutput(id: sessionID, through: try XCTUnwrap(snapshot.generation))
+
+        XCTAssertTrue(runtime.events.contains("acknowledgeOutput delivery-owned-output 1"))
+        XCTAssertEqual(runtime.output, Data())
     }
 
     func testClientRuntimeTurnsHostFailureFramesIntoTypedErrors() throws {
@@ -394,6 +689,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testClientRuntimeTreatsMalformedResponseAsAmbiguousTransportFailure() {
+        let client = BrokerSessionHostClientRuntime { _ in Data("not-json\n".utf8) }
+
+        XCTAssertThrowsError(
+            try client.createSession(
+                id: BrokerSessionID(rawValue: "malformed-create-response"),
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/zsh",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.transportFailed(message) = error else {
+                return XCTFail("Expected ambiguous transport failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("responseDecodeFailed"))
+        }
+    }
+
     func testClientRuntimeFailsLoudlyWhenListSessionsReturnsUnexpectedResponseShape() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime { _ in
@@ -424,7 +740,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             readChunkSize: 7
         )
 
-        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.readAvailableOutput(id: sessionID)))
+        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
         try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
         try inputPipe.fileHandleForWriting.close()
 
@@ -436,7 +752,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .map { Data("\($0)\n".utf8) }
 
         XCTAssertEqual(frames.count, 2)
-        XCTAssertEqual(try codec.decodeResponse(frames[0]), .output(Data("stdio-output".utf8)))
+        XCTAssertEqual(
+            try codec.decodeResponse(frames[0]),
+            .outputSnapshot(BrokerOutputSnapshot(data: Data("stdio-output".utf8), generation: 1))
+        )
         XCTAssertEqual(try codec.decodeResponse(frames[1]), .running(false))
         XCTAssertEqual(runtime.events, [
             "readAvailableOutput stdio-server-session",
@@ -1832,7 +2151,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 12)
+                try server.run(maxConnections: 64)
             } catch {
                 serverError.set(error)
             }
@@ -1866,9 +2185,24 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             )
         }
         firstShell.activate()
+        let firstStartDeadline = Date().addingTimeInterval(1)
+        while Date() < firstStartDeadline,
+              (firstShell as? ShellChannelController)?.brokerSessionID == nil {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
         firstLaunchManager.saveState()
         firstLaunchManager.detachAllChannelsForAppTermination()
+        let detachDeadline = Date().addingTimeInterval(1)
+        while Date() < detachDeadline,
+              try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle != .detached {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(
+            try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle,
+            .detached,
+            "The asynchronous host detach must commit before simulating the relaunched UI"
+        )
 
         XCTAssertEqual(configService.load().channels.count, 1)
         XCTAssertEqual(configService.load().channels.first?.brokerSessionID, brokerSessionID)
@@ -1894,15 +2228,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(appDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 0)
         XCTAssertEqual(secondLaunchManager.count, 1)
         let restoredShell = try XCTUnwrap(secondLaunchManager.allChannels().first as? ShellChannelController)
+        let reattachDeadline = Date().addingTimeInterval(1)
+        while Date() < reattachDeadline, restoredShell.brokerSessionID != brokerSessionID {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
         XCTAssertEqual(restoredShell.workingDirectory, tempDirectory.path)
         XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
         try secondCoordinator.sendInput(brokerSessionID, bytes: Array("hosted-shell-relaunch-reattach\n".utf8))
-        let output = try waitForCoordinatorOutput(
-            from: secondCoordinator,
-            id: brokerSessionID,
-            containing: "hosted-shell-relaunch-reattach"
-        )
+        let outputDeadline = Date().addingTimeInterval(3)
+        while Date() < outputDeadline,
+              !restoredShell.lastLines(20).joined(separator: "\n").contains("hosted-shell-relaunch-reattach") {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        let output = restoredShell.lastLines(20).joined(separator: "\n")
         XCTAssertTrue(output.contains("hosted-shell-relaunch-reattach"), output)
 
         let records = try registry.load()
@@ -1913,6 +2252,13 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(records[0].lastAttachedChannelID, restoredShell.channelId)
         XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
 
+        // The terminal's off-main start/reattach lanes make the exact number of
+        // background output polls scheduling-dependent. Drain the bounded test
+        // server deterministically instead of coupling this integration test to
+        // one incidental connection count.
+        for _ in 0..<64 {
+            guard (try? secondCoordinator.isRunning(brokerSessionID)) != nil else { break }
+        }
         wait(for: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
@@ -1965,6 +2311,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             execName: "cat",
             currentDirectory: tempDirectory.path
         )
+        let firstStartDeadline = Date().addingTimeInterval(1)
+        while Date() < firstStartDeadline, firstTerminal.brokerSessionID == nil {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         let brokerSessionID = try XCTUnwrap(firstTerminal.brokerSessionID)
         firstTerminal.detachBrokerSession()
 
@@ -1991,6 +2341,11 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             currentDirectory: tempDirectory.path
         )
 
+        let reattachDeadline = Date().addingTimeInterval(1)
+        while Date() < reattachDeadline {
+            if (try? registry.load().first?.lifecycle) == .running { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
         XCTAssertEqual(restoredTerminal.brokerSessionID, brokerSessionID)
         XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
         let records = try registry.load()
@@ -2279,6 +2634,19 @@ private final class LockedErrorBox: @unchecked Sendable {
     }
 }
 
+private final class LockedDataResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Data] = []
+
+    var values: [Data] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ value: Data) {
+        lock.withLock { storedValues.append(value) }
+    }
+}
+
 private final class LockedBrokerResponseBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storedResponse: BrokerSessionHostResponse?
@@ -2342,7 +2710,7 @@ private final class SignalingBrokerSessionRuntime: BrokerSessionRuntime, BrokerO
     func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
 }
 
-private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecked Sendable {
+private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     private let lock = NSLock()
     private var readDelays: [BrokerSessionID: TimeInterval] = [:]
     private var sendDelays: [(needle: String, seconds: TimeInterval)] = []
@@ -2427,6 +2795,19 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
         return Data("delayed-output".utf8)
     }
 
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: try readAvailableOutput(id: id), generation: nil)
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: ScrollbackReplay(data: Data(), source: .liveBrokerMemory, maxBytes: maxBytes),
+            generation: nil
+        )
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {}
+
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
         appendEvent("readScrollbackTail \(id.rawValue)")
         return Data()
@@ -2478,9 +2859,10 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, @unchecke
     }
 }
 
-private class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
+private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerTransactionalOutputRuntime {
     var events: [String] = []
     var output = Data()
+    var scrollbackReplayGeneration: UInt64?
     var isRunning = false
     var terminationStatus: Int32?
     var error: Error?
@@ -2532,10 +2914,41 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime {
         return output
     }
 
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        let data = try readAvailableOutput(id: id)
+        return BrokerOutputSnapshot(data: data, generation: data.isEmpty ? nil : 1)
+    }
+
+    func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+        try throwIfNeeded()
+        events.append("acknowledgeOutput \(id.rawValue) \(generation)")
+        if generation >= 1 {
+            output.removeAll()
+            scrollbackReplayGeneration = nil
+        }
+    }
+
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
         try throwIfNeeded()
         events.append("readScrollbackTail \(id.rawValue) \(maxBytes)")
         return Data("scrollback-tail".utf8)
+    }
+
+    func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
+        try throwIfNeeded()
+        events.append("readScrollbackReplay \(id.rawValue) \(maxBytes)")
+        return ScrollbackReplay(
+            data: Data("scrollback-replay".utf8),
+            source: .liveBrokerMemory,
+            maxBytes: maxBytes
+        )
+    }
+
+    func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+        BrokerScrollbackReplaySnapshot(
+            replay: try readScrollbackReplay(id: id, maxBytes: maxBytes),
+            generation: scrollbackReplayGeneration
+        )
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {

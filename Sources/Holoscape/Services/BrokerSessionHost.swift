@@ -83,12 +83,38 @@ struct BrokerSessionHost {
         case let .sendInput(id, bytes):
             try runtime.sendInput(id: id, bytes: Array(bytes))
             return .ok
-        case let .readAvailableOutput(id):
-            return .output(try runtime.readAvailableOutput(id: id))
+        case let .snapshotAvailableOutput(id):
+            guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else {
+                throw BrokerTransactionalOutputRequiredError()
+            }
+            return .outputSnapshot(try transactionalRuntime.snapshotAvailableOutput(id: id))
         case let .waitForOutputAvailability(id, timeoutMilliseconds):
             return .outputAvailable(try waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
         case let .readScrollbackTail(id, maxBytes):
             return .output(try runtime.readScrollbackTail(id: id, maxBytes: maxBytes))
+        case let .snapshotScrollbackReplay(id, maxBytes):
+            if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+                return .scrollbackReplaySnapshot(
+                    try transactionalRuntime.snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+                )
+            }
+            // Non-consuming tails have no unread-output watermark. Return no
+            // replay rather than duplicating bytes when the live pump starts.
+            // Preserve tail-read errors so clients can report corrupt storage.
+            _ = try runtime.readScrollbackTail(id: id, maxBytes: maxBytes)
+            return .scrollbackReplay(
+                ScrollbackReplay(
+                    data: Data(),
+                    source: .unknown,
+                    maxBytes: maxBytes
+                )
+            )
+        case let .acknowledgeOutput(id, generation):
+            guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else {
+                throw BrokerTransactionalOutputRequiredError()
+            }
+            try transactionalRuntime.acknowledgeOutput(id: id, through: generation)
+            return .ok
         case let .resize(id, size):
             try runtime.resizeSession(id: id, size: size)
             return .ok
@@ -117,6 +143,9 @@ struct BrokerSessionHost {
     private func failureCode(for error: Error) -> String {
         if case NativePTYBrokerSessionRuntime.RuntimeError.missingSession = error {
             return "missing-session"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed = error {
+            return "scrollback-persistence-failed"
         }
         return "runtime-error"
     }
@@ -156,13 +185,19 @@ private extension BrokerSessionHostRequest {
              let .terminate(id, _),
              let .markErrored(id),
              let .sendInput(id, _),
-             let .readAvailableOutput(id),
+             let .snapshotAvailableOutput(id),
              let .waitForOutputAvailability(id, _),
              let .readScrollbackTail(id, _),
+             let .snapshotScrollbackReplay(id, _),
+             let .acknowledgeOutput(id, _),
              let .resize(id, _),
              let .isRunning(id),
              let .terminationStatus(id):
             return id
         }
     }
+}
+
+private struct BrokerTransactionalOutputRequiredError: Error, CustomStringConvertible {
+    var description: String { "broker runtime does not support transactional output delivery" }
 }

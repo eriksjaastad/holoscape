@@ -16,6 +16,9 @@ class ChannelManager {
     private let configService: ConfigService
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
+    private let brokerRecoveryCoordinator: BrokerRecoveryCoordinator
+    private var didPrepareBrokerRecovery = false
+    private var preparedBrokerRecoverySessions: [BrokerSessionRecord]?
 
     var brokerBackedTerminalCoordinator: any BrokerSessionCoordinating {
         brokerBackedShellCoordinator
@@ -28,8 +31,10 @@ class ChannelManager {
     ) {
         self.configService = configService
         self.brokerSessionCoordinator = brokerSessionCoordinator
-        self.brokerBackedShellCoordinator = brokerBackedShellCoordinator
+        let shellCoordinator = brokerBackedShellCoordinator
             ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
+        self.brokerBackedShellCoordinator = shellCoordinator
+        self.brokerRecoveryCoordinator = BrokerRecoveryCoordinator(shellCoordinator)
     }
 
     /// Create a new channel and add it to the registry (V1 factory pattern).
@@ -142,9 +147,24 @@ class ChannelManager {
     /// saved tab registry. Broker-backed sessions must remain durable and
     /// reattachable after the UI process exits; this is intentionally different
     /// from `closeChannel`, which removes a tab from Holoscape's model.
-    func detachAllChannelsForAppTermination() {
-        for channel in allChannels() where channel.state != .disconnected {
-            channel.deactivate()
+    func detachAllChannelsForAppTermination(completion: @escaping @MainActor () -> Void = {}) {
+        // A disconnected tab can still own an untracked broker generation when
+        // startup created the process but registry persistence and rollback both
+        // failed. Give every controller its teardown opportunity; deactivate is
+        // idempotent for ordinary disconnected channels.
+        let channels = allChannels()
+        guard !channels.isEmpty else {
+            completion()
+            return
+        }
+        var remaining = channels.count
+        for channel in channels {
+            channel.deactivate {
+                remaining -= 1
+                if remaining == 0 {
+                    completion()
+                }
+            }
         }
     }
 
@@ -273,18 +293,27 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) {
         let config = configService.load()
+        var claimedBrokerSessionIDs: Set<BrokerSessionID> = []
         for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         for metadata in config.channels {
-            if let controller = factory(metadata) {
+            // The factory may activate a controller and mutate broker ownership.
+            // Reject duplicate persisted identities before invoking it so a
+            // discarded duplicate cannot launch or reattach a hidden process.
+            guard channels[metadata.id] == nil else { continue }
+            if let brokerSessionID = metadata.brokerSessionID {
+                guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
+            }
+            if let controller = factory(metadata), channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
                 recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
+                    claimedBrokerSessionIDs.insert(brokerSessionID)
                     restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
                 }
                 if let pinnedAt = metadata.pinnedAt {
@@ -316,7 +345,32 @@ class ChannelManager {
     /// identity instead of replacing the session, and the failure is recorded in
     /// `brokerRegistryReadFailure` so the launch fails loudly instead of silently
     /// discarding what it could not read.
+    /// Prepare broker recovery before any restore code performs synchronous
+    /// record classification. All socket/status/retirement RPCs happen off-main.
+    @discardableResult
+    func prepareBrokerRecovery() async -> Bool {
+        didPrepareBrokerRecovery = true
+        do {
+            let sessions = try await withCheckedThrowingContinuation { continuation in
+                brokerRecoveryCoordinator.load { result in
+                    continuation.resume(with: result)
+                }
+            }
+            preparedBrokerRecoverySessions = sessions
+            brokerRegistryReadFailure = nil
+            return true
+        } catch {
+            preparedBrokerRecoverySessions = nil
+            brokerRegistryReadFailure = String(describing: error)
+            NSLog("ChannelManager could not read broker sessions during launch recovery: \(error)")
+            return false
+        }
+    }
+
     private func reattachableBrokerSessions(context: String) -> [BrokerSessionRecord]? {
+        if didPrepareBrokerRecovery {
+            return preparedBrokerRecoverySessions
+        }
         do {
             let sessions = try brokerBackedShellCoordinator.reattachableSessions()
             brokerRegistryReadFailure = nil
@@ -334,7 +388,9 @@ class ChannelManager {
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
         guard let sessions = reattachableBrokerSessions(context: "shell tab restore") else { return nil }
-        let liveSessions = sessions.filter { $0.lifecycle == .running || $0.lifecycle == .detached }
+        let liveSessions = sessions.filter {
+            $0.lifecycle == .running || $0.lifecycle == .detached || $0.lifecycle == .exited
+        }
         if let brokerSessionID,
            let exactMatch = liveSessions.first(where: { $0.channelType == .shell && $0.id == brokerSessionID }) {
             return exactMatch
@@ -350,7 +406,9 @@ class ChannelManager {
         brokerSessionID: BrokerSessionID? = nil
     ) -> BrokerSessionRecord? {
         guard let sessions = reattachableBrokerSessions(context: "agent tab restore") else { return nil }
-        let liveSessions = sessions.filter { $0.lifecycle == .running || $0.lifecycle == .detached }
+        let liveSessions = sessions.filter {
+            $0.lifecycle == .running || $0.lifecycle == .detached || $0.lifecycle == .exited
+        }
         if let brokerSessionID,
            let exactMatch = liveSessions.first(where: { $0.channelType == channelType && $0.id == brokerSessionID }) {
             return exactMatch
@@ -460,11 +518,7 @@ class ChannelManager {
         // session it went stale on. Both count as known so a dead session is
         // never resurrected as an extra "recovered" tab next to the tab that
         // already reports its recreate guidance.
-        let persistedBrokerSessionIDs = Set(
-            configService.load().channels
-                .flatMap { [$0.brokerSessionID, $0.staleBrokerSessionID] }
-                .compactMap { $0 }
-        )
+        let restoredBrokerSessionIdentities = Set(restoredBrokerSessionIDs.values)
         let liveBrokerSessionIDs = Set(allChannels().flatMap { channel -> [BrokerSessionID] in
             switch channel {
             case let shell as ShellChannelController:
@@ -475,7 +529,7 @@ class ChannelManager {
                 return []
             }
         })
-        let knownBrokerSessionIDs = persistedBrokerSessionIDs.union(liveBrokerSessionIDs)
+        let knownBrokerSessionIDs = restoredBrokerSessionIdentities.union(liveBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {
@@ -548,5 +602,22 @@ class ChannelManager {
             }
         }
         return ""
+    }
+}
+
+final class BrokerRecoveryCoordinator: @unchecked Sendable {
+    private let coordinator: any BrokerSessionCoordinating
+    private let queue = DispatchQueue(label: "holoscape.broker.launch-recovery", qos: .userInitiated)
+
+    init(_ coordinator: any BrokerSessionCoordinating) {
+        self.coordinator = coordinator
+    }
+
+    func load(
+        completion: @escaping @Sendable (Result<[BrokerSessionRecord], Error>) -> Void
+    ) {
+        queue.async { [self] in
+            completion(Result { try coordinator.reattachableSessions() })
+        }
     }
 }

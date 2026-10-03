@@ -557,6 +557,295 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readScrollbackTail(id: id, maxBytes: 0), Data())
     }
 
+    func testLiveScrollbackReplayConsumesOnlyTheReplayedUnreadGeneration() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "live-replay-consumes-unread-generation-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf detached-replay-marker; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let replay = try runtime.readScrollbackReplay(id: id, maxBytes: 4096)
+
+        XCTAssertEqual(replay.source, .liveBrokerMemory)
+        XCTAssertTrue(String(decoding: replay.data, as: UTF8.self).contains("detached-replay-marker"))
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+    }
+
+    func testConcurrentLegacyOutputReadsDeliverNativeGenerationOnce() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "concurrent-native-output-generation")
+        let marker = "single-native-output-generation"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let results = NativeLockedDataResults()
+        let errors = LockedRuntimeErrorBox()
+        let start = DispatchSemaphore(value: 0)
+        let readsFinished = expectation(description: "concurrent native output reads")
+        readsFinished.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = start.wait(timeout: .now() + 1)
+                do { results.append(try runtime.readAvailableOutput(id: id)) } catch { errors.store(error) }
+                readsFinished.fulfill()
+            }
+        }
+        start.signal()
+        start.signal()
+        wait(for: [readsFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }.count, 1)
+        XCTAssertNotNil(results.values.reduce(into: Data()) { $0.append($1) }.range(of: Data(marker.utf8)))
+    }
+
+    func testConcurrentLegacyReplayReadsDeliverNativeGenerationOnce() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "concurrent-native-replay-generation")
+        let marker = "single-native-replay-generation"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let results = NativeLockedDataResults()
+        let errors = LockedRuntimeErrorBox()
+        let start = DispatchSemaphore(value: 0)
+        let readsFinished = expectation(description: "concurrent native replay reads")
+        readsFinished.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = start.wait(timeout: .now() + 1)
+                do { results.append(try runtime.readScrollbackReplay(id: id, maxBytes: 4096).data) } catch { errors.store(error) }
+                readsFinished.fulfill()
+            }
+        }
+        start.signal()
+        start.signal()
+        wait(for: [readsFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }.count, 1)
+        XCTAssertNotNil(results.values.reduce(into: Data()) { $0.append($1) }.range(of: Data(marker.utf8)))
+    }
+
+    func testLiveScrollbackTailDoesNotConsumeUnreadOutput() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "live-tail-preserves-unread-output-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf tail-preserves-output-marker; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let tail = try runtime.readScrollbackTail(id: id, maxBytes: 4096)
+        let unreadOutput = try runtime.readAvailableOutput(id: id)
+
+        XCTAssertTrue(String(decoding: tail, as: UTF8.self).contains("tail-preserves-output-marker"))
+        XCTAssertTrue(String(decoding: unreadOutput, as: UTF8.self).contains("tail-preserves-output-marker"))
+    }
+
+    func testLiveReplayLeavesUnreadOutputIntactWhenReplayLimitCannotContainIt() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "limited-live-replay-preserves-output-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf output-larger-than-replay-limit; sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let replay = try runtime.readScrollbackReplay(id: id, maxBytes: 4)
+        let unreadOutput = try runtime.readAvailableOutput(id: id)
+
+        XCTAssertEqual(replay.data, Data())
+        XCTAssertTrue(String(decoding: unreadOutput, as: UTF8.self).contains("output-larger-than-replay-limit"))
+    }
+
+    func testLiveReplayDoesNotConsumePendingOrFailedPersistenceOutput() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: true)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "failed-persistence-live-replay-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        try runtime.sendInput(id: id, bytes: Array("failed-replay-persistence-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        XCTAssertEqual(try runtime.readScrollbackReplay(id: id, maxBytes: 4096).data, Data())
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        XCTAssertThrowsError(try runtime.readScrollbackReplay(id: id, maxBytes: 4096)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, _) = error else {
+                return XCTFail("Expected retained persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+        }
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id))
+    }
+
+    func testScrollbackPersistenceFailureDefersOutputWithoutBlockingPollingReads() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: true)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "failed-disk-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            outputAvailable.signal()
+        }
+
+        try runtime.sendInput(id: id, bytes: Array("unpersisted-scrollback-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        // A stalled filesystem write must not retain a broker scheduler lane.
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        var retainedReason = ""
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, reason) = error else {
+                return XCTFail("Expected retained scrollback persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertFalse(reason.isEmpty)
+            retainedReason = reason
+        }
+
+        let liveTail = String(decoding: try runtime.readScrollbackTail(id: id, maxBytes: 4096), as: UTF8.self)
+        XCTAssertTrue(liveTail.contains("unpersisted-scrollback-marker"), liveTail)
+        XCTAssertThrowsError(try runtime.readAvailableOutput(id: id)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(failedID, reason) = error else {
+                return XCTFail("Expected repeated reads to retain the persistence failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(reason, retainedReason)
+        }
+    }
+
+    func testPollingReadDefersOutputUntilScrollbackPersistenceSucceedsWithoutBlocking() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "delayed-disk-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            outputAvailable.signal()
+        }
+
+        try runtime.sendInput(id: id, bytes: Array("persisted-scrollback-marker\n".utf8))
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 0.1), .timedOut)
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
+        XCTAssertTrue(output.contains("persisted-scrollback-marker"), output)
+    }
+
+    func testTerminatedSessionDefersFinalStatusAndOutputUntilPersistenceCompletes() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(scrollbackAppender: appender.append)
+        let id = BrokerSessionID(rawValue: "terminated-delayed-scrollback-native-pty-runtime-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf final-persisted-scrollback"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            outputAvailable.signal()
+        }
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        // The process may already have exited, but neither its final status nor
+        // bytes are authoritative until the PTY monitor and persistence settle.
+        XCTAssertNil(try runtime.terminationStatus(id: id))
+        XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
+
+        appender.release()
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+        let output = String(decoding: try runtime.readAvailableOutput(id: id), as: UTF8.self)
+        XCTAssertTrue(output.contains("final-persisted-scrollback"), output)
+    }
+
     func testDiskBackedScrollbackCanBeReadAfterRuntimeInstanceLoss() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("NativePTYBrokerSessionRuntimeScrollbackTests-")
@@ -865,6 +1154,19 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     }
 }
 
+private final class NativeLockedDataResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Data] = []
+
+    var values: [Data] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ value: Data) {
+        lock.withLock { storedValues.append(value) }
+    }
+}
+
 private final class LockedRuntimeErrorBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storedError: Error?
@@ -879,6 +1181,44 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+}
+
+private final class BlockingScrollbackAppender: @unchecked Sendable {
+    private let shouldFail: Bool
+    private let entered = DispatchSemaphore(value: 0)
+    private let releaseCondition = NSCondition()
+    private var isReleased = false
+
+    init(shouldFail: Bool) {
+        self.shouldFail = shouldFail
+    }
+
+    func append(_ data: Data, for id: BrokerSessionID) throws {
+        entered.signal()
+        releaseCondition.lock()
+        let deadline = Date().addingTimeInterval(3)
+        while !isReleased {
+            guard releaseCondition.wait(until: deadline) else {
+                releaseCondition.unlock()
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        releaseCondition.unlock()
+        if shouldFail {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
+    func waitUntilEntered() -> DispatchTimeoutResult {
+        entered.wait(timeout: .now() + 3)
+    }
+
+    func release() {
+        releaseCondition.lock()
+        isReleased = true
+        releaseCondition.broadcast()
+        releaseCondition.unlock()
     }
 }
 

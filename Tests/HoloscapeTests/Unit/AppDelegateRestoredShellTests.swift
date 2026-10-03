@@ -1,8 +1,176 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    private final class RecordingAPIServer: HoloscapeAPIServer {
+        var startCallCount = 0
+        var stopCallCount = 0
+
+        override func start() { startCallCount += 1 }
+        override func stop() { stopCallCount += 1 }
+    }
+
+    func testStoppedAPIServerRejectsAlreadyAdmittedMutation() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIAdmissionTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = HoloscapeAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.start()
+        let listResponse = await apiServer.route(HTTPRequest(
+            method: "GET",
+            path: "/channels",
+            queryParams: [:],
+            body: nil
+        ))
+        XCTAssertEqual(listResponse.status, 200)
+
+        apiServer.stop()
+        let createResponse = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: ["type": "shell"])
+        ))
+
+        XCTAssertEqual(createResponse.status, 503)
+        XCTAssertEqual(createResponse.statusText, "Service Unavailable")
+        XCTAssertEqual(manager.count, 0, "A request accepted before stop must not mutate the teardown snapshot")
+    }
+
+    func testTerminationDeadlineRestartsSameAPIServerWithMuteStateIntact() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIRestartTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = RecordingAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.setNotificationMuted(true, for: channel.channelId)
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.windowControllerRef = windowController
+        appDelegate.launchRecoveryComplete = true
+        appDelegate.apiServer = apiServer
+        appDelegate.terminationTeardownTimeout = 0.01
+
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertFalse(windowController.channelMutationEnabled)
+        let deadline = Date().addingTimeInterval(1)
+        while apiServer.startCallCount == 0, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(apiServer.stopCallCount, 1)
+        XCTAssertEqual(apiServer.startCallCount, 1)
+        XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
+        XCTAssertTrue(appDelegate.apiServer === apiServer)
+        XCTAssertTrue(windowController.channelMutationEnabled)
+    }
+
+    func testTerminationTeardownDeadlineDeniesQuitInsteadOfWaitingForever() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationDeadlineTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let appDelegate = AppDelegate()
+        appDelegate.terminationTeardownTimeout = 0.01
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        let deadline = Date().addingTimeInterval(1)
+        while replies.isEmpty, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(replies, [false])
+        XCTAssertEqual(channel.deactivateCallCount, 1)
+    }
+
+    func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
+        let mainMenu = NSMenu(title: "Main")
+        let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Holoscape")
+        let settings = NSMenuItem(
+            title: "Settings",
+            action: #selector(AppDelegate.openSettings),
+            keyEquivalent: ","
+        )
+        let quit = NSMenuItem(
+            title: "Quit",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        quit.target = NSApplication.shared
+        appMenu.addItem(settings)
+        appMenu.addItem(quit)
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        let newShell = NSMenuItem(
+            title: "New Shell Channel",
+            action: #selector(MainWindowController.createShellChannel),
+            keyEquivalent: "n"
+        )
+        fileMenu.addItem(newShell)
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+        quit.isEnabled = true
+
+        let appDelegate = AppDelegate()
+        appDelegate.setLaunchRecoveryInteractionEnabled(false, menu: mainMenu)
+
+        XCTAssertFalse(settings.isEnabled)
+        XCTAssertFalse(newShell.isEnabled)
+        XCTAssertFalse(AppDelegate.shouldDisableDuringLaunchRecovery(quit))
+        XCTAssertTrue(AppDelegate.shouldDisableDuringLaunchRecovery(newShell))
+
+        appDelegate.setLaunchRecoveryInteractionEnabled(true, menu: mainMenu)
+
+        XCTAssertTrue(settings.isEnabled)
+        XCTAssertTrue(newShell.isEnabled)
+    }
+
     private enum RecordingError: Error {
         case unexpectedStart
         case missingSession
@@ -31,6 +199,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         }
 
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             reattachCalls.append((id: id, attachedChannelID: attachedChannelID))
