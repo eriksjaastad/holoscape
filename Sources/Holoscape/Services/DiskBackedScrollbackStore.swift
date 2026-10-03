@@ -29,109 +29,46 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
 
     func withLock<T>(for fileURL: URL, _ operation: () throws -> T) throws -> T {
         let standardizedURL = fileURL.standardizedFileURL
-        // Canonicalize the containing directory so callers using equivalent
-        // directory aliases share authority, but never resolve the session-file
-        // leaf. A concurrent leaf symlink swap must not redirect the advisory
-        // lock outside the scrollback directory.
-        let canonicalURL = standardizedURL
-            .deletingLastPathComponent()
-            .resolvingSymlinksInPath()
-            .appendingPathComponent(standardizedURL.lastPathComponent)
-        let key = canonicalURL.path
-        let lockBox = registryLock.withLock {
-            locksByPath = locksByPath.filter { $0.value.value != nil }
-            if let existing = locksByPath[key]?.value {
-                return existing
-            }
-            let created = LockBox()
-            locksByPath[key] = WeakLockBox(created)
-            return created
-        }
-        return try lockBox.lock.withLock {
-            let lockURL = canonicalURL.appendingPathExtension("lock")
-            do {
-                try FileManager.default.createDirectory(
-                    at: lockURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                throw LockError(
-                    message: "createDirectory failed for \(lockURL.deletingLastPathComponent().path): \(error)"
-                )
-            }
-
-            // The lock leaf is persistent authority, not an aliasable path.
-            // Refuse symlinks atomically at open so a concurrent replacement
-            // cannot redirect flock to a file outside the scrollback directory.
-            var created = false
-            var descriptor = Darwin.open(
-                lockURL.path,
-                O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
-                S_IRUSR | S_IWUSR
+        let canonicalDirectory = standardizedURL.deletingLastPathComponent().resolvingSymlinksInPath()
+        let canonicalURL = canonicalDirectory.appendingPathComponent(standardizedURL.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(
+                at: canonicalDirectory,
+                withIntermediateDirectories: true
             )
-            if descriptor >= 0 {
-                created = true
-            } else if errno == EEXIST {
-                descriptor = Darwin.open(lockURL.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
-            }
-            guard descriptor >= 0 else {
-                throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
-            }
-            guard flock(descriptor, LOCK_EX) == 0 else {
-                let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
-                if Darwin.close(descriptor) != 0 {
-                    let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
-                    throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
-                }
-                throw LockError(message: lockFailure)
-            }
-            do {
-                try Self.validateLockedDescriptor(
-                    descriptor,
-                    lockName: lockURL.lastPathComponent,
-                    displayPath: lockURL.path,
-                    mayClaimUnowned: created
-                ) {
-                    var status = stat()
-                    guard lstat(lockURL.path, &status) == 0 else {
-                        throw LockError(message: Self.posixFailure("lstat", path: lockURL.path, code: errno))
-                    }
-                    return status
-                }
-            } catch {
-                let cleanup = Self.cleanup(descriptor, path: lockURL.path)
-                guard cleanup.isEmpty else {
-                    throw LockError(message: "\(error); cleanup also failed: \(cleanup.joined(separator: "; "))")
-                }
-                throw error
-            }
-
-            let result: Result<T, Error>
-            do {
-                result = .success(try operation())
-            } catch {
-                result = .failure(error)
-            }
-
-            var cleanupFailures: [String] = []
-            if flock(descriptor, LOCK_UN) != 0 {
-                cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
-            }
-            if Darwin.close(descriptor) != 0 {
-                cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
-            }
-            if !cleanupFailures.isEmpty {
-                let operationFailure: String
-                switch result {
-                case .success:
-                    operationFailure = ""
-                case .failure(let error):
-                    operationFailure = "operation failed: \(error); "
-                }
-                throw LockError(message: operationFailure + cleanupFailures.joined(separator: "; "))
-            }
-            return try result.get()
+        } catch {
+            throw LockError(message: "createDirectory failed for \(canonicalDirectory.path): \(error)")
         }
+        let directoryDescriptor = Darwin.open(
+            canonicalDirectory.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard directoryDescriptor >= 0 else {
+            throw LockError(message: Self.posixFailure("open", path: canonicalDirectory.path, code: errno))
+        }
+        var directoryStatus = stat()
+        guard fstat(directoryDescriptor, &directoryStatus) == 0 else {
+            let failure = Self.posixFailure("fstat", path: canonicalDirectory.path, code: errno)
+            _ = Darwin.close(directoryDescriptor)
+            throw LockError(message: failure)
+        }
+        let result = Result {
+            try withLock(
+                directoryDescriptor: directoryDescriptor,
+                directoryStatus: directoryStatus,
+                fileName: canonicalURL.lastPathComponent,
+                displayPath: canonicalURL.path,
+                operation
+            )
+        }
+        if Darwin.close(directoryDescriptor) != 0 {
+            let closeFailure = Self.posixFailure("close", path: canonicalDirectory.path, code: errno)
+            if case .failure(let error) = result {
+                throw LockError(message: "\(error); cleanup also failed: \(closeFailure)")
+            }
+            throw LockError(message: closeFailure)
+        }
+        return try result.get()
     }
 
     func withLock<T>(
@@ -152,34 +89,81 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         return try lockBox.lock.withLock {
             let lockName = fileName + ".lock"
             let lockPath = displayPath + ".lock"
-            var created = false
+            let directoryPath = (displayPath as NSString).deletingLastPathComponent
+            let directoryMarkerName = Self.directoryMarkerXattr(lockName: lockName)
+            var directoryMarker = try Self.getXattr(
+                descriptor: directoryDescriptor,
+                name: directoryMarkerName,
+                allowMissing: true,
+                displayPath: directoryPath
+            )
             var descriptor = Darwin.openat(
                 directoryDescriptor,
                 lockName,
-                O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
-                S_IRUSR | S_IWUSR
+                O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
             )
-            if descriptor >= 0 {
-                created = true
-            } else if errno == EEXIST {
+            if descriptor < 0, errno == ENOENT {
+                guard directoryMarker == nil else {
+                    throw LockError(message: "missing authoritative lock file at \(lockPath)")
+                }
+                let token = Self.ownerMarker(
+                    lockName: lockName,
+                    directoryStatus: directoryStatus,
+                    nonce: UUID().uuidString
+                )
+                let temporaryName = ".\(lockName).creating-\(UUID().uuidString)"
                 descriptor = Darwin.openat(
                     directoryDescriptor,
-                    lockName,
-                    O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                    temporaryName,
+                    O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+                    S_IRUSR | S_IWUSR
                 )
+                guard descriptor >= 0 else {
+                    throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
+                }
+                do {
+                    try Self.setXattr(
+                        descriptor: descriptor,
+                        name: Self.ownerXattr,
+                        value: token,
+                        flags: XATTR_CREATE,
+                        displayPath: lockPath
+                    )
+                    guard fsync(descriptor) == 0 else {
+                        throw LockError(message: Self.posixFailure("fsync", path: lockPath, code: errno))
+                    }
+                    guard renameatx_np(
+                        directoryDescriptor,
+                        temporaryName,
+                        directoryDescriptor,
+                        lockName,
+                        UInt32(RENAME_EXCL)
+                    ) == 0 else {
+                        throw LockError(message: Self.posixFailure("renameatx_np", path: lockPath, code: errno))
+                    }
+                    guard fsync(directoryDescriptor) == 0 else {
+                        throw LockError(message: Self.posixFailure("fsync", path: directoryPath, code: errno))
+                    }
+                    try Self.setXattr(
+                        descriptor: directoryDescriptor,
+                        name: directoryMarkerName,
+                        value: token,
+                        flags: XATTR_CREATE,
+                        displayPath: directoryPath
+                    )
+                    guard fsync(directoryDescriptor) == 0 else {
+                        throw LockError(message: Self.posixFailure("fsync", path: directoryPath, code: errno))
+                    }
+                    directoryMarker = token
+                } catch {
+                    if Darwin.close(descriptor) != 0 {
+                        throw LockError(message: "\(error); cleanup also failed: \(Self.posixFailure("close", path: lockPath, code: errno))")
+                    }
+                    throw error
+                }
             }
             guard descriptor >= 0 else {
                 throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
-            }
-            var status = stat()
-            guard fstat(descriptor, &status) == 0,
-                  status.st_mode & S_IFMT == S_IFREG else {
-                let code = errno == 0 ? EINVAL : errno
-                let failure = Self.posixFailure("fstat", path: lockPath, code: code)
-                if Darwin.close(descriptor) != 0 {
-                    throw LockError(message: "\(failure); cleanup also failed: \(Self.posixFailure("close", path: lockPath, code: errno))")
-                }
-                throw LockError(message: failure)
             }
             guard flock(descriptor, LOCK_EX) == 0 else {
                 let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockPath, code: errno)
@@ -188,12 +172,15 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 }
                 throw LockError(message: lockFailure)
             }
-            do {
-                try Self.validateLockedDescriptor(
+
+            let result: Result<T, Error> = Result {
+                let fileMarker = try Self.validateAuthorityDescriptor(
                     descriptor,
-                    lockName: lockName,
-                    displayPath: lockPath,
-                    mayClaimUnowned: created
+                    expectedPrefix: Self.ownerMarkerPrefix(
+                        lockName: lockName,
+                        directoryStatus: directoryStatus
+                    ),
+                    displayPath: lockPath
                 ) {
                     var pathStatus = stat()
                     guard fstatat(directoryDescriptor, lockName, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0 else {
@@ -201,15 +188,27 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     }
                     return pathStatus
                 }
-            } catch {
-                let cleanup = Self.cleanup(descriptor, path: lockPath)
-                guard cleanup.isEmpty else {
-                    throw LockError(message: "\(error); cleanup also failed: \(cleanup.joined(separator: "; "))")
+                if let directoryMarker {
+                    guard directoryMarker == fileMarker else {
+                        throw LockError(message: "foreign lock file at \(lockPath)")
+                    }
+                } else {
+                    // Recover creation interrupted after atomic publication, or
+                    // adopt a legitimate legacy lock during one-time migration.
+                    try Self.setXattr(
+                        descriptor: directoryDescriptor,
+                        name: directoryMarkerName,
+                        value: fileMarker,
+                        flags: XATTR_CREATE,
+                        displayPath: directoryPath
+                    )
+                    guard fsync(directoryDescriptor) == 0 else {
+                        throw LockError(message: Self.posixFailure("fsync", path: directoryPath, code: errno))
+                    }
                 }
-                throw error
+                return try operation()
             }
 
-            let result = Result { try operation() }
             var cleanupFailures: [String] = []
             if flock(descriptor, LOCK_UN) != 0 {
                 cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockPath, code: errno))
@@ -240,20 +239,71 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             throw LockError(message: Self.posixFailure("openat", path: displayPath, code: errno))
         }
         let result: Result<Void, Error> = Result {
-            // Migration only establishes durable identity. It must not wait for
-            // a legacy session lock, because doing so would hold the global
-            // migration lock and serialize unrelated sessions behind it.
-            try Self.validateLockedDescriptor(
-                descriptor,
-                lockName: lockName,
-                displayPath: displayPath,
-                mayClaimUnowned: true
-            ) {
-                var status = stat()
-                guard fstatat(directoryDescriptor, lockName, &status, AT_SYMLINK_NOFOLLOW) == 0 else {
-                    throw LockError(message: Self.posixFailure("fstatat", path: displayPath, code: errno))
+            var directoryStatus = stat()
+            var fileStatus = stat()
+            guard fstat(directoryDescriptor, &directoryStatus) == 0,
+                  fstat(descriptor, &fileStatus) == 0,
+                  fileStatus.st_mode & S_IFMT == S_IFREG else {
+                throw LockError(message: Self.posixFailure("fstat", path: displayPath, code: errno == 0 ? EINVAL : errno))
+            }
+            var pathStatus = stat()
+            guard fstatat(directoryDescriptor, lockName, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0,
+                  pathStatus.st_dev == fileStatus.st_dev,
+                  pathStatus.st_ino == fileStatus.st_ino else {
+                throw LockError(message: "lock pathname identity changed at \(displayPath)")
+            }
+            let prefix = Self.ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+            let existing = try Self.getXattr(
+                descriptor: descriptor,
+                name: Self.ownerXattr,
+                allowMissing: true,
+                displayPath: displayPath
+            )
+            let token: Data
+            if let existing {
+                guard existing.starts(with: prefix), existing.count > prefix.count else {
+                    throw LockError(message: "unowned lock file at \(displayPath)")
                 }
-                return status
+                token = existing
+            } else {
+                token = Self.ownerMarker(
+                    lockName: lockName,
+                    directoryStatus: directoryStatus,
+                    nonce: UUID().uuidString
+                )
+                try Self.setXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    value: token,
+                    flags: XATTR_CREATE,
+                    displayPath: displayPath
+                )
+                guard fsync(descriptor) == 0 else {
+                    throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
+                }
+            }
+            let directoryPath = (displayPath as NSString).deletingLastPathComponent
+            let markerName = Self.directoryMarkerXattr(lockName: lockName)
+            if let directoryToken = try Self.getXattr(
+                descriptor: directoryDescriptor,
+                name: markerName,
+                allowMissing: true,
+                displayPath: directoryPath
+            ) {
+                guard directoryToken == token else {
+                    throw LockError(message: "foreign lock file at \(displayPath)")
+                }
+            } else {
+                try Self.setXattr(
+                    descriptor: directoryDescriptor,
+                    name: markerName,
+                    value: token,
+                    flags: XATTR_CREATE,
+                    displayPath: directoryPath
+                )
+                guard fsync(directoryDescriptor) == 0 else {
+                    throw LockError(message: Self.posixFailure("fsync", path: directoryPath, code: errno))
+                }
             }
         }
         if Darwin.close(descriptor) != 0 {
@@ -266,46 +316,42 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         return try result.get()
     }
 
-    private static func validateLockedDescriptor(
+
+    private static func ownerMarkerPrefix(lockName: String, directoryStatus: stat) -> Data {
+        Data(
+            "holoscape-scrollback-lock-v3:\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(lockName):".utf8
+        )
+    }
+
+    private static func ownerMarker(lockName: String, directoryStatus: stat, nonce: String) -> Data {
+        var marker = ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+        marker.append(Data(nonce.utf8))
+        return marker
+    }
+
+    private static func directoryMarkerXattr(lockName: String) -> String {
+        let digest = SHA256.hash(data: Data(lockName.utf8))
+        return "com.holoscape.scrollback.lock-\(digest.map { String(format: "%02x", $0) }.joined())"
+    }
+
+    private static func validateAuthorityDescriptor(
         _ descriptor: Int32,
-        lockName: String,
+        expectedPrefix: Data,
         displayPath: String,
-        mayClaimUnowned: Bool,
         currentPathStatus: () throws -> stat
-    ) throws {
+    ) throws -> Data {
         var descriptorStatus = stat()
         guard fstat(descriptor, &descriptorStatus) == 0,
               descriptorStatus.st_mode & S_IFMT == S_IFREG else {
             let code = errno == 0 ? EINVAL : errno
             throw LockError(message: Self.posixFailure("fstat", path: displayPath, code: code))
         }
-        let expected = Data("holoscape-scrollback-lock-v1:\(lockName)".utf8)
-        let size = fgetxattr(descriptor, ownerXattr, nil, 0, 0, 0)
-        if size < 0, errno == ENOATTR, mayClaimUnowned {
-            let setResult = expected.withUnsafeBytes { bytes in
-                fsetxattr(descriptor, ownerXattr, bytes.baseAddress, expected.count, 0, XATTR_CREATE)
-            }
-            guard setResult == 0 else {
-                throw LockError(message: Self.posixFailure("fsetxattr", path: displayPath, code: errno))
-            }
-            guard fsync(descriptor) == 0 else {
-                throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
-            }
-        } else if size < 0 {
-            if errno == ENOATTR {
-                throw LockError(message: "unowned lock file at \(displayPath)")
-            }
-            throw LockError(message: Self.posixFailure("fgetxattr", path: displayPath, code: errno))
-        }
-        let verifiedSize = fgetxattr(descriptor, ownerXattr, nil, 0, 0, 0)
-        guard verifiedSize >= 0 else {
-            throw LockError(message: Self.posixFailure("fgetxattr", path: displayPath, code: errno))
-        }
-        var marker = Data(count: verifiedSize)
-        let readCount = marker.withUnsafeMutableBytes { bytes in
-            fgetxattr(descriptor, ownerXattr, bytes.baseAddress, verifiedSize, 0, 0)
-        }
-        guard readCount == verifiedSize, marker == expected else {
+        guard let marker = try getXattr(
+            descriptor: descriptor,
+            name: ownerXattr,
+            allowMissing: true,
+            displayPath: displayPath
+        ), marker.starts(with: expectedPrefix), marker.count > expectedPrefix.count else {
             throw LockError(message: "unowned lock file at \(displayPath)")
         }
         let pathStatus = try currentPathStatus()
@@ -314,18 +360,48 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
               pathStatus.st_ino == descriptorStatus.st_ino else {
             throw LockError(message: "lock pathname identity changed at \(displayPath)")
         }
+        return marker
     }
 
-    private static func cleanup(_ descriptor: Int32, path: String) -> [String] {
-        var failures: [String] = []
-        if flock(descriptor, LOCK_UN) != 0 {
-            failures.append(Self.posixFailure("flock(LOCK_UN)", path: path, code: errno))
+    private static func getXattr(
+        descriptor: Int32,
+        name: String,
+        allowMissing: Bool,
+        displayPath: String
+    ) throws -> Data? {
+        let size = fgetxattr(descriptor, name, nil, 0, 0, 0)
+        guard size >= 0 else {
+            let code = errno
+            if allowMissing, code == ENOATTR { return nil }
+            throw LockError(message: posixFailure("fgetxattr", path: displayPath, code: code))
         }
-        if Darwin.close(descriptor) != 0 {
-            failures.append(Self.posixFailure("close", path: path, code: errno))
+        guard size <= 4_096 else { throw LockError(message: "oversized lock marker at \(displayPath)") }
+        var value = Data(count: size)
+        let count = value.withUnsafeMutableBytes { bytes in
+            fgetxattr(descriptor, name, bytes.baseAddress, size, 0, 0)
         }
-        return failures
+        guard count == size else {
+            let code = count < 0 ? errno : EIO
+            throw LockError(message: posixFailure("fgetxattr", path: displayPath, code: code))
+        }
+        return value
     }
+
+    private static func setXattr(
+        descriptor: Int32,
+        name: String,
+        value: Data,
+        flags: Int32,
+        displayPath: String
+    ) throws {
+        let result = value.withUnsafeBytes { bytes in
+            fsetxattr(descriptor, name, bytes.baseAddress, value.count, 0, flags)
+        }
+        guard result == 0 else {
+            throw LockError(message: posixFailure("fsetxattr", path: displayPath, code: errno))
+        }
+    }
+
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
@@ -371,11 +447,11 @@ struct DiskBackedScrollbackStore: Sendable {
         case main
         case recovery
 
-        func marker(forPath path: String) -> Data {
-            let fileName = (path as NSString).lastPathComponent
+        func marker(fileName: String, directoryStatus: stat) -> Data {
+            let identity = "\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(fileName)"
             switch self {
-            case .main: return Data("holoscape-scrollback-main-v1:\(fileName)".utf8)
-            case .recovery: return Data("holoscape-scrollback-recovery-v1:\(fileName)".utf8)
+            case .main: return Data("holoscape-scrollback-main-v2:\(identity)".utf8)
+            case .recovery: return Data("holoscape-scrollback-recovery-v2:\(identity)".utf8)
             }
         }
     }
@@ -477,6 +553,10 @@ struct DiskBackedScrollbackStore: Sendable {
     private let descriptorClose: @Sendable (Int32) -> Int32
     private let listingMetadata: @Sendable (Int32) throws -> stat
     private let beforeDirectoryStreamOpen: @Sendable (Int32) -> Void
+    private let directoryEntryRead: @Sendable (UnsafeMutablePointer<DIR>) -> UnsafeMutablePointer<dirent>?
+    private let directoryStreamClose: @Sendable (UnsafeMutablePointer<DIR>) -> Int32
+    private let beforeOwnedFilePublish: @Sendable (URL) throws -> Void
+    private let beforeFormatMarkerPublish: @Sendable () throws -> Void
 
     init(
         directory: URL,
@@ -493,7 +573,11 @@ struct DiskBackedScrollbackStore: Sendable {
             }
             return status
         },
-        beforeDirectoryStreamOpen: @escaping @Sendable (Int32) -> Void = { _ in }
+        beforeDirectoryStreamOpen: @escaping @Sendable (Int32) -> Void = { _ in },
+        directoryEntryRead: @escaping @Sendable (UnsafeMutablePointer<DIR>) -> UnsafeMutablePointer<dirent>? = { readdir($0) },
+        directoryStreamClose: @escaping @Sendable (UnsafeMutablePointer<DIR>) -> Int32 = { closedir($0) },
+        beforeOwnedFilePublish: @escaping @Sendable (URL) throws -> Void = { _ in },
+        beforeFormatMarkerPublish: @escaping @Sendable () throws -> Void = {}
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
@@ -504,6 +588,10 @@ struct DiskBackedScrollbackStore: Sendable {
         self.descriptorClose = descriptorClose
         self.listingMetadata = listingMetadata
         self.beforeDirectoryStreamOpen = beforeDirectoryStreamOpen
+        self.directoryEntryRead = directoryEntryRead
+        self.directoryStreamClose = directoryStreamClose
+        self.beforeOwnedFilePublish = beforeOwnedFilePublish
+        self.beforeFormatMarkerPublish = beforeFormatMarkerPublish
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -876,7 +964,7 @@ struct DiskBackedScrollbackStore: Sendable {
         }
         var names: [String] = []
         errno = 0
-        while let entry = readdir(stream) {
+        while let entry = directoryEntryRead(stream) {
             let name = withUnsafePointer(to: entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
                     String(cString: $0)
@@ -886,7 +974,13 @@ struct DiskBackedScrollbackStore: Sendable {
             errno = 0
         }
         let readCode = errno
-        let closeCode = closedir(stream) == 0 ? 0 : errno
+        let closeCode = directoryStreamClose(stream) == 0 ? 0 : errno
+        if readCode != 0, closeCode != 0 {
+            throw StoreError.fileOperationAndCloseFailed(
+                operation: "readdir failed for \(directory.path): \(String(cString: strerror(readCode))) (errno \(readCode))",
+                close: "closedir failed for \(directory.path): \(String(cString: strerror(closeCode))) (errno \(closeCode))"
+            )
+        }
         if readCode != 0 { throw Self.posixError(code: readCode) }
         if closeCode != 0 { throw Self.posixError(code: closeCode) }
         return names
@@ -930,7 +1024,10 @@ struct DiskBackedScrollbackStore: Sendable {
                     var status = stat()
                     guard fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno) }
                     guard status.st_mode & S_IFMT == S_IFREG else { return }
-                    let expected = FileKind.main.marker(forPath: url.path)
+                    let expected = FileKind.main.marker(
+                        fileName: name,
+                        directoryStatus: authority.status
+                    )
                     let existing = try getXattr(
                         descriptor: descriptor,
                         name: Self.ownerXattr,
@@ -975,20 +1072,32 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func createFormatMarker(_ authority: DirectoryAuthority) throws {
+        let temporaryName = ".\(Self.formatMarkerName).creating-\(UUID().uuidString)"
         let descriptor = Darwin.openat(
             authority.descriptor,
-            Self.formatMarkerName,
+            temporaryName,
             O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
             S_IRUSR | S_IWUSR
         )
         guard descriptor >= 0 else { throw Self.posixError(code: errno) }
-        let result: Result<Void, Error>
-        do {
+        let initialization: Result<Void, Error> = Result {
             try writeAll(descriptor, data: Self.formatMarkerContents, offset: 0)
             try sync(descriptor)
-            result = .success(())
-        } catch { result = .failure(error) }
-        _ = try close(descriptor, after: result)
+            try beforeFormatMarkerPublish()
+        }
+        _ = try close(descriptor, after: initialization)
+
+        guard renameatx_np(
+            authority.descriptor,
+            temporaryName,
+            authority.descriptor,
+            Self.formatMarkerName,
+            UInt32(RENAME_EXCL)
+        ) == 0 else {
+            let code = errno
+            if code == EEXIST, try formatMarkerExists(authority) { return }
+            throw Self.posixError(code: code)
+        }
         try sync(authority.descriptor)
     }
 
@@ -1216,22 +1325,79 @@ struct DiskBackedScrollbackStore: Sendable {
         createIfMissing: Bool,
         kind: FileKind
     ) throws -> OpenedDescriptor? {
+        var descriptor = Darwin.openat(
+            authority.descriptor,
+            url.lastPathComponent,
+            flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        )
         var created = false
-        var descriptor: Int32
-        if createIfMissing {
+        if descriptor < 0, errno == ENOENT, createIfMissing {
+            let temporaryName = ".\(url.lastPathComponent).creating-\(UUID().uuidString)"
             descriptor = Darwin.openat(
                 authority.descriptor,
-                url.lastPathComponent,
-                flags | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+                temporaryName,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
                 S_IRUSR | S_IWUSR
             )
-            if descriptor >= 0 {
-                created = true
-            } else if errno == EEXIST {
-                descriptor = Darwin.openat(authority.descriptor, url.lastPathComponent, flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+            let initialization: Result<Void, Error> = Result {
+                try setXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    value: kind.marker(
+                        fileName: url.lastPathComponent,
+                        directoryStatus: authority.status
+                    )
+                )
+                if kind == .recovery { try setRecoveryPhase(.idle, descriptor: descriptor) }
+                try sync(descriptor)
+                try beforeOwnedFilePublish(url)
             }
-        } else {
-            descriptor = Darwin.openat(authority.descriptor, url.lastPathComponent, flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            if case .failure = initialization {
+                _ = try close(descriptor, after: initialization)
+            }
+
+            guard renameatx_np(
+                authority.descriptor,
+                temporaryName,
+                authority.descriptor,
+                url.lastPathComponent,
+                UInt32(RENAME_EXCL)
+            ) == 0 else {
+                let code = errno
+                do {
+                    _ = try close(descriptor, after: .success(()))
+                } catch {
+                    throw StoreError.fileOperationAndCloseFailed(
+                        operation: "renameatx_np failed for \(url.path): \(String(cString: strerror(code))) (errno \(code))",
+                        close: String(describing: error)
+                    )
+                }
+                if code == EEXIST {
+                    descriptor = Darwin.openat(
+                        authority.descriptor,
+                        url.lastPathComponent,
+                        flags | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                    )
+                } else {
+                    throw Self.posixError(code: code)
+                }
+                guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+                created = false
+                return try validateOpenedDescriptor(
+                    descriptor,
+                    authority: authority,
+                    url: url,
+                    kind: kind,
+                    created: created
+                )
+            }
+            created = true
+            do {
+                try sync(authority.descriptor)
+            } catch {
+                return try close(descriptor, after: .failure(error))
+            }
         }
         guard descriptor >= 0 else {
             let code = errno
@@ -1239,27 +1405,36 @@ struct DiskBackedScrollbackStore: Sendable {
             if code == ELOOP { throw StoreError.unsafeScrollbackFile(url.path) }
             throw Self.posixError(code: code)
         }
+        return try validateOpenedDescriptor(
+            descriptor,
+            authority: authority,
+            url: url,
+            kind: kind,
+            created: created
+        )
+    }
 
+    private func validateOpenedDescriptor(
+        _ descriptor: Int32,
+        authority: DirectoryAuthority,
+        url: URL,
+        kind: FileKind,
+        created: Bool
+    ) throws -> OpenedDescriptor {
         do {
             var status = stat()
             guard fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno) }
             guard status.st_mode & S_IFMT == S_IFREG else {
                 throw StoreError.unsafeScrollbackFile(url.path)
             }
-            if created {
-                try setXattr(
+            if !created {
+                try requireOwnership(
                     descriptor: descriptor,
-                    name: Self.ownerXattr,
-                    value: kind.marker(forPath: url.path)
+                    authority: authority,
+                    path: url.path,
+                    kind: kind
                 )
-                if kind == .recovery { try setRecoveryPhase(.idle, descriptor: descriptor) }
-                try sync(descriptor)
-                try sync(authority.descriptor)
-            } else {
-                try requireOwnership(descriptor: descriptor, path: url.path, kind: kind)
             }
-            // Creation authority is established through the new descriptor, then
-            // the path must still name that inode before any file data is changed.
             try requireIdentity(authority, at: url, matches: status, kind: kind)
             return OpenedDescriptor(descriptor: descriptor, status: status)
         } catch {
@@ -1282,18 +1457,31 @@ struct DiskBackedScrollbackStore: Sendable {
                   Self.isSameFile(currentStatus, expectedStatus) else {
                 throw StoreError.unsafeScrollbackFile(url.path)
             }
-            try requireOwnership(descriptor: descriptor, path: url.path, kind: kind)
+            try requireOwnership(
+                descriptor: descriptor,
+                authority: authority,
+                path: url.path,
+                kind: kind
+            )
             result = .success(())
         } catch { result = .failure(error) }
         try close(descriptor, after: result)
     }
 
-    private func requireOwnership(descriptor: Int32, path: String, kind: FileKind) throws {
+    private func requireOwnership(
+        descriptor: Int32,
+        authority: DirectoryAuthority,
+        path: String,
+        kind: FileKind
+    ) throws {
         guard try getXattr(
             descriptor: descriptor,
             name: Self.ownerXattr,
             allowMissing: true
-        ) == kind.marker(forPath: path) else { throw StoreError.unsafeScrollbackFile(path) }
+        ) == kind.marker(
+            fileName: (path as NSString).lastPathComponent,
+            directoryStatus: authority.status
+        ) else { throw StoreError.unsafeScrollbackFile(path) }
     }
 
     private func setRecoveryPhase(_ phase: RecoveryPhase, descriptor: Int32) throws {
