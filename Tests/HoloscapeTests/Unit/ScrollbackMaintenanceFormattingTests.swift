@@ -81,4 +81,23 @@ final class ScrollbackMaintenanceFormattingTests: XCTestCase {
             "2024-01-01 02:30"
         )
     }
+
+    func testMaintenanceCopyDescribesClearingBytesWithoutClaimingFileDeletion() {
+        let header = ScrollbackMaintenanceCopy.header
+        let single = ScrollbackMaintenanceCopy.singleConfirmation(
+            sessionID: "session-a",
+            formattedSize: "12 KB"
+        )
+        let bulk = ScrollbackMaintenanceCopy.bulkConfirmation(count: 2, formattedSize: "24 KB")
+
+        for copy in [header, single, bulk] {
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("delete"), copy)
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("removes the saved file"), copy)
+            XCTAssertTrue(copy.localizedCaseInsensitiveContains("clear"), copy)
+        }
+        XCTAssertTrue(single.contains("session-a"))
+        XCTAssertTrue(single.contains("12 KB"))
+        XCTAssertTrue(bulk.contains("2"))
+        XCTAssertTrue(bulk.contains("24 KB"))
+    }
 }
