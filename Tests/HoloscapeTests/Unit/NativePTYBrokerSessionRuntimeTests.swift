@@ -599,7 +599,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let id = BrokerSessionID(rawValue: "handler-during-persistence-test")
         let marker = "handler-during-persistence-marker"
         let request = BrokerSessionLaunchRequest(
-            command: "/bin/cat",
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
             initialSize: TerminalGridSize(columns: 80, rows: 24)
@@ -607,7 +608,6 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         try runtime.createSession(id: id, request: request)
         defer { try? runtime.markSessionErrored(id: id) }
-        try runtime.sendInput(id: id, bytes: Array("\(marker)\n".utf8))
         XCTAssertEqual(appender.waitUntilEntered(), .success)
 
         let outputAvailable = DispatchSemaphore(value: 0)
