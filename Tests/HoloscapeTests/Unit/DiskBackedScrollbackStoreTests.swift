@@ -69,6 +69,33 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: foreign.path), [])
     }
 
+    func testFreshStoreRejectsConfiguredDirectoryReplacementBetweenOperations() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let configured = parent.appendingPathComponent("configured")
+        let displaced = parent.appendingPathComponent("displaced")
+        try FileManager.default.createDirectory(at: configured, withIntermediateDirectories: false)
+        let id = BrokerSessionID(rawValue: "directory-reanchoring")
+        let store = DiskBackedScrollbackStore(directory: configured, maxRetainedBytes: 64)
+
+        try store.append(Data("original".utf8), for: id)
+        try FileManager.default.moveItem(at: configured, to: displaced)
+        try FileManager.default.createDirectory(at: configured, withIntermediateDirectories: false)
+        let replacementStore = DiskBackedScrollbackStore(directory: configured, maxRetainedBytes: 64)
+
+        XCTAssertThrowsError(try replacementStore.append(Data("replacement".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(configured.path)
+            )
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: displaced.appendingPathComponent("directory-reanchoring.scrollback")),
+            Data("original".utf8)
+        )
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: configured.path), [])
+    }
+
     func testOwnedFilesPublishOnlyAfterDurableInitialization() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -84,6 +111,10 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         XCTAssertThrowsError(try interrupted.append(Data("payload".utf8), for: id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: tailURL.path))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains(where: { $0.contains(".creating-") })
+        )
 
         let recovered = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         try recovered.append(Data("payload".utf8), for: id)
@@ -103,75 +134,44 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         XCTAssertThrowsError(try interrupted.append(Data("payload".utf8), for: id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: markerURL.path))
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains(where: { $0.contains(".creating-") })
+        )
 
         let recovered = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         try recovered.append(Data("payload".utf8), for: id)
         XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
     }
 
-    func testPriorV1OwnedDirectoryUpgradesWithoutStrandingData() throws {
+    func testAmbiguousV1OwnedDirectoryFailsClosedWithoutMutatingData() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "prior-v1-owned")
         let tailURL = directory.appendingPathComponent("\(id.rawValue).scrollback")
-        let recoveryURL = tailURL.appendingPathExtension("recovery")
-        let sessionLockURL = tailURL.appendingPathExtension("lock")
-        let migrationLockURL = directory.appendingPathComponent(".holoscape-scrollback-migration.lock")
         let legacyMarkerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v1")
-        let currentMarkerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2")
+        let legacyOwner = Data("holoscape-scrollback-main-v1:\(tailURL.lastPathComponent)".utf8)
 
         try Data("legacy-owned-tail".utf8).write(to: tailURL)
-        XCTAssertTrue(FileManager.default.createFile(atPath: recoveryURL.path, contents: Data()))
-        XCTAssertTrue(FileManager.default.createFile(atPath: sessionLockURL.path, contents: Data()))
-        XCTAssertTrue(FileManager.default.createFile(atPath: migrationLockURL.path, contents: Data()))
         try Data("HoloScapeScrollbackDirectoryV1\n".utf8).write(to: legacyMarkerURL)
         try setExtendedAttribute(
             at: tailURL,
             name: "com.holoscape.scrollback.owner",
-            value: Data("holoscape-scrollback-main-v1:\(tailURL.lastPathComponent)".utf8)
+            value: legacyOwner
         )
-        try setExtendedAttribute(
-            at: recoveryURL,
-            name: "com.holoscape.scrollback.owner",
-            value: Data("holoscape-scrollback-recovery-v1:\(recoveryURL.lastPathComponent)".utf8)
-        )
-        try setExtendedAttribute(
-            at: recoveryURL,
-            name: "com.holoscape.scrollback.recovery-phase",
-            value: Data("idle".utf8)
-        )
-        for lockURL in [sessionLockURL, migrationLockURL] {
-            try setExtendedAttribute(
-                at: lockURL,
-                name: "com.holoscape.scrollback.lock-owner",
-                value: Data("holoscape-scrollback-lock-v1:\(lockURL.lastPathComponent)".utf8)
-            )
-        }
 
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
-        XCTAssertEqual(try store.readTail(for: id, maxBytes: 1_024), Data("legacy-owned-tail".utf8))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: currentMarkerURL.path))
-
-        var directoryStatus = stat()
-        XCTAssertEqual(lstat(directory.path, &directoryStatus), 0)
-        let identity = "\(directoryStatus.st_dev):\(directoryStatus.st_ino):"
-        XCTAssertEqual(
-            try extendedAttribute(at: tailURL, name: "com.holoscape.scrollback.owner"),
-            Data("holoscape-scrollback-main-v2:\(identity)\(tailURL.lastPathComponent)".utf8)
-        )
-        XCTAssertEqual(
-            try extendedAttribute(at: recoveryURL, name: "com.holoscape.scrollback.owner"),
-            Data("holoscape-scrollback-recovery-v2:\(identity)\(recoveryURL.lastPathComponent)".utf8)
-        )
-        for lockURL in [sessionLockURL, migrationLockURL] {
-            let marker = try extendedAttribute(
-                at: lockURL,
-                name: "com.holoscape.scrollback.lock-owner"
-            )
-            XCTAssertTrue(
-                marker.starts(with: Data("holoscape-scrollback-lock-v3:\(identity)\(lockURL.lastPathComponent):".utf8))
+        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 1_024)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
             )
         }
+        XCTAssertEqual(try Data(contentsOf: tailURL), Data("legacy-owned-tail".utf8))
+        XCTAssertEqual(
+            try extendedAttribute(at: tailURL, name: "com.holoscape.scrollback.owner"),
+            legacyOwner
+        )
     }
 
     func testLegacyTailMigratesOnceAndPostMarkerUnmarkedTailRemainsForeign() throws {
@@ -668,6 +668,26 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             XCTAssertEqual((error as NSError).code, Int(EACCES))
         }
         XCTAssertEqual(try Data(contentsOf: tailURL), payload)
+    }
+
+    func testSubCapAppendPropagatesDurabilityFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "append-fsync-failure")
+        try DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+            .append(Data("initial".utf8), for: id)
+        let failing = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            descriptorSync: { _ in
+                errno = EIO
+                return -1
+            }
+        )
+
+        XCTAssertThrowsError(try failing.append(Data("unacknowledged".utf8), for: id)) { error in
+            XCTAssertEqual((error as? POSIXError)?.code, .EIO)
+        }
     }
 
     func testSmallAppendsDoNotCreateRecoverySidecar() throws {
@@ -1772,6 +1792,37 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
                 .unsafeScrollbackDirectory(regularFile.path)
             )
         }
+    }
+
+    func testAppendRejectsMissingPreviouslyOwnedMainWithoutRecreatingIt() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let id = BrokerSessionID(rawValue: "deleted-owned-main")
+        let tailURL = directory.appendingPathComponent("deleted-owned-main.scrollback")
+
+        try store.append(Data("durable".utf8), for: id)
+        try FileManager.default.removeItem(at: tailURL)
+
+        XCTAssertThrowsError(try store.append(Data("replacement".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tailURL.path))
+    }
+
+    func testClearReturnsExactByteCountFromSameLockedMutation() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let id = BrokerSessionID(rawValue: "clear-byte-count")
+        try store.append(Data("exact-count".utf8), for: id)
+
+        XCTAssertEqual(try store.clearAndReturnByteCount(for: id), 11)
+        XCTAssertEqual(try store.storedByteCount(for: id), 0)
+        XCTAssertEqual(try store.clearAndReturnByteCount(for: id), 0)
     }
 
     func testRemoveMissingTailIsSafeNoOp() throws {
