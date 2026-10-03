@@ -96,6 +96,34 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: configured.path), [])
     }
 
+    func testFreshProcessRejectsConfiguredDirectoryReplacement() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let configured = parent.appendingPathComponent("configured")
+        let displaced = parent.appendingPathComponent("displaced")
+        try FileManager.default.createDirectory(at: configured, withIntermediateDirectories: false)
+
+        let seed = makeStoreHelper(
+            mode: "seed-directory-authority",
+            directory: configured
+        )
+        try seed.run()
+        seed.waitUntilExit()
+        XCTAssertEqual(seed.terminationStatus, 0)
+
+        try FileManager.default.moveItem(at: configured, to: displaced)
+        try FileManager.default.createDirectory(at: configured, withIntermediateDirectories: false)
+
+        let replacement = makeStoreHelper(
+            mode: "reject-replaced-directory",
+            directory: configured
+        )
+        try replacement.run()
+        replacement.waitUntilExit()
+        XCTAssertEqual(replacement.terminationStatus, 0)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: configured.path), [])
+    }
+
     func testOwnedFilesPublishOnlyAfterDurableInitialization() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -207,6 +235,71 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: markerURL.path))
     }
 
+    func testFormatMarkerRejectsStagingReplacementAfterValidationBeforeRename() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let markerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2")
+        let stagingURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2.staging")
+        let displacedURL = directory.appendingPathComponent("validated-format-staging")
+        let foreign = Data("foreign-after-validation".utf8)
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            afterFormatMarkerValidationBeforePublish: {
+                try FileManager.default.moveItem(at: stagingURL, to: displacedURL)
+                try foreign.write(to: stagingURL)
+            }
+        )
+
+        XCTAssertThrowsError(
+            try store.append(
+                Data("payload".utf8),
+                for: BrokerSessionID(rawValue: "format-post-validation-race")
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: markerURL), foreign)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("format-post-validation-race.scrollback").path
+            )
+        )
+    }
+
+    func testFormatMarkerValidationRejectsPathReplacementAfterOpen() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "format-marker-validation-race")
+        let payload = Data("persisted".utf8)
+        try DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+            .append(payload, for: id)
+        let markerURL = directory.appendingPathComponent(".holoscape-scrollback-format-v2")
+        let displacedURL = directory.appendingPathComponent("format-marker-displaced")
+        let validContents = try Data(contentsOf: markerURL)
+        let mutation = OneShotScrollbackLeafMutation { _ in
+            try FileManager.default.moveItem(at: markerURL, to: displacedURL)
+            try validContents.write(to: markerURL)
+        }
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            afterFormatMarkerOpen: mutation.run
+        )
+
+        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 1_024)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackDirectory(directory.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: markerURL), validContents)
+        XCTAssertEqual(try Data(contentsOf: displacedURL), validContents)
+    }
+
     func testLegacyMarkerPublicationRaceFailsBeforeV2Authority() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -300,7 +393,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(attributes[.size] as? UInt64, 4 * 1_024 * 1_024 * 1_024)
     }
 
-    func testAmbiguousV1OwnedDirectoryFailsClosedWithoutMutatingData() throws {
+    func testEstablishedV1OwnedDirectoryMigratesToV2() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "prior-v1-owned")
@@ -316,34 +409,59 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             value: legacyOwner
         )
 
+        let lockURL = tailURL.appendingPathExtension("lock")
+        FileManager.default.createFile(atPath: lockURL.path, contents: Data())
+        try setExtendedAttribute(
+            at: lockURL,
+            name: "com.holoscape.scrollback.lock-owner",
+            value: Data("holoscape-scrollback-lock-v1:\(lockURL.lastPathComponent)".utf8)
+        )
+
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
-        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 1_024)) { error in
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 1_024), Data("legacy-owned-tail".utf8))
+        XCTAssertEqual(try Data(contentsOf: tailURL), Data("legacy-owned-tail".utf8))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".holoscape-scrollback-format-v2").path
+            )
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent(".holoscape-scrollback-format-v1.staging")),
+            Data("HoloScapeScrollbackDirectoryV1\n".utf8)
+        )
+    }
+
+    func testUnmarkedNonemptyDirectoryIsNeverAdopted() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "unmarked-nonempty")
+        let tailURL = directory.appendingPathComponent("unmarked-nonempty.scrollback")
+        try Data("foreign".utf8).write(to: tailURL)
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
+
+        XCTAssertThrowsError(try store.append(Data("payload".utf8), for: id)) { error in
             XCTAssertEqual(
                 error as? DiskBackedScrollbackStore.StoreError,
                 .unsafeScrollbackDirectory(directory.path)
             )
         }
-        XCTAssertEqual(try Data(contentsOf: tailURL), Data("legacy-owned-tail".utf8))
-        XCTAssertEqual(
-            try extendedAttribute(at: tailURL, name: "com.holoscape.scrollback.owner"),
-            legacyOwner
+        XCTAssertEqual(try Data(contentsOf: tailURL), Data("foreign".utf8))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(".holoscape-scrollback-format-v2").path
+            )
         )
     }
 
-    func testLegacyTailMigratesOnceAndPostMarkerUnmarkedTailRemainsForeign() throws {
+    func testPostMarkerUnmarkedTailRemainsForeign() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let legacyID = BrokerSessionID(rawValue: "legacy-tail")
+        let ownedID = BrokerSessionID(rawValue: "owned-tail")
         let foreignID = BrokerSessionID(rawValue: "post-marker-foreign")
-        let legacyURL = directory.appendingPathComponent("legacy-tail.scrollback")
         let foreignURL = directory.appendingPathComponent("post-marker-foreign.scrollback")
-        try Data("legacy".utf8).write(to: legacyURL)
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
 
-        // Listing is intentionally the first operation: migration and the
-        // requested enumeration must use independent directory stream offsets.
-        XCTAssertEqual(try store.listStoredTails().map(\.sessionID), [legacyID])
-        XCTAssertEqual(try store.readTail(for: legacyID, maxBytes: 64), Data("legacy".utf8))
+        try store.append(Data("owned".utf8), for: ownedID)
         try Data("foreign".utf8).write(to: foreignURL)
 
         XCTAssertThrowsError(try store.readTail(for: foreignID, maxBytes: 64)) { error in
@@ -352,7 +470,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
                 .unsafeScrollbackFile(foreignURL.path)
             )
         }
-        XCTAssertEqual(try store.listStoredTails().map(\.sessionID), [legacyID])
+        XCTAssertEqual(try store.listStoredTails().map(\.sessionID), [ownedID])
         XCTAssertEqual(try Data(contentsOf: foreignURL), Data("foreign".utf8))
     }
 
@@ -476,6 +594,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let removeDone = DispatchSemaphore(value: 0)
         let errors = ScrollbackStoreErrorRecorder()
         let firstPayload = Data("first-payload".utf8)
+        try writer.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
 
         DispatchQueue.global().async {
             defer { holderDone.signal() }
@@ -543,6 +662,8 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "cross-process-session")
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
+        try store.append(Data(), for: id)
         let scrollbackURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
@@ -610,11 +731,12 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
     }
 
     func testConcurrentFirstAuthorityCreationConvergesAcrossProcesses() throws {
-        let directory = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let startURL = directory.appendingPathComponent("first-create-start")
-        let readyA = directory.appendingPathComponent("first-create-ready-a")
-        let readyB = directory.appendingPathComponent("first-create-ready-b")
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("scrollback")
+        let startURL = parent.appendingPathComponent("first-create-start")
+        let readyA = parent.appendingPathComponent("first-create-ready-a")
+        let readyB = parent.appendingPathComponent("first-create-ready-b")
         let id = BrokerSessionID(rawValue: "cross-process-first-create")
 
         func makeChild(payload: String, readyURL: URL) -> Process {
@@ -787,6 +909,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
         let original = Data("foreign-original".utf8)
+        try store.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
         try original.write(to: targetURL)
         try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
 
@@ -908,6 +1031,47 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertThrowsError(try failing.append(Data("unacknowledged".utf8), for: id)) { error in
             XCTAssertEqual((error as? POSIXError)?.code, .EIO)
         }
+    }
+
+    func testEstablishedV2ReadsNeedNeitherWritableLocksNorMigrationAuthority() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "established-read-only")
+        let payload = Data("read-only-established-v2".utf8)
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(payload, for: id)
+
+        let sessionLock = directory.appendingPathComponent("\(id.rawValue).scrollback.lock")
+        let migrationLock = directory.appendingPathComponent(".holoscape-scrollback-migration.lock")
+        let displacedMigrationLock = directory.appendingPathComponent("migration-lock-displaced")
+        try FileManager.default.moveItem(at: migrationLock, to: displacedMigrationLock)
+        try FileManager.default.createSymbolicLink(
+            at: migrationLock,
+            withDestinationURL: directory.appendingPathComponent("foreign-migration-target")
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: sessionLock.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sessionLock.path)
+        }
+
+        let reader = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        XCTAssertEqual(try reader.readTail(for: id, maxBytes: 1_024), payload)
+        XCTAssertEqual(try reader.storedByteCount(for: id), payload.count)
+        XCTAssertEqual(try reader.listStoredTails().map(\.sessionID), [id])
+    }
+
+    func testEstablishedV2MissingSessionReadsDoNotCreateLockAuthority() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("seed".utf8), for: BrokerSessionID(rawValue: "seed"))
+        let missing = BrokerSessionID(rawValue: "missing-session")
+        let lockURL = directory.appendingPathComponent("missing-session.scrollback.lock")
+
+        XCTAssertEqual(try store.readTail(for: missing, maxBytes: 1_024), Data())
+        XCTAssertEqual(try store.storedByteCount(for: missing), 0)
+        XCTAssertEqual(try store.listStoredTails().map(\.sessionID), [BrokerSessionID(rawValue: "seed")])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL.path))
     }
 
     func testSmallAppendsDoNotCreateRecoverySidecar() throws {
@@ -1090,6 +1254,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let tailURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
+        try store.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
         try Data("foreign-secret".utf8).write(to: targetURL)
         try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
 
@@ -1117,6 +1282,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
         let original = Data("foreign-preserved".utf8)
+        try store.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
         try original.write(to: targetURL)
         try FileManager.default.createSymbolicLink(at: tailURL, withDestinationURL: targetURL)
 
@@ -1138,6 +1304,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let tailURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
+        try store.append(Data(), for: BrokerSessionID(rawValue: "format-seed"))
         XCTAssertEqual(mkfifo(tailURL.path, S_IRUSR | S_IWUSR), 0)
 
         let done = DispatchSemaphore(value: 0)
@@ -1167,9 +1334,9 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathExtension("scrollback")
         let targetURL = directory.appendingPathComponent("remove-swap-target")
         let targetData = Data("preserve-target".utf8)
-        try targetData.write(to: targetURL)
         let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         try setupStore.append(Data("tail".utf8), for: id)
+        try targetData.write(to: targetURL)
         let mutation = OneShotScrollbackLeafMutation { url in
             try FileManager.default.removeItem(at: url)
             try FileManager.default.createSymbolicLink(at: url, withDestinationURL: targetURL)
@@ -1199,9 +1366,9 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathExtension("scrollback")
         let targetURL = directory.appendingPathComponent("prune-swap-target")
         let targetData = Data("preserve-target".utf8)
-        try targetData.write(to: targetURL)
         let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 4)
         try setupStore.append(Data("ABCD".utf8), for: id)
+        try targetData.write(to: targetURL)
         let mutation = OneShotScrollbackLeafMutation { url in
             try FileManager.default.removeItem(at: url)
             try FileManager.default.createSymbolicLink(at: url, withDestinationURL: targetURL)
@@ -1778,6 +1945,69 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
     }
 
+    func testEstablishedV2ReadBypassesHeldGlobalMigrationLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "migration-lock-bypass")
+        let payload = Data("parallel-read".utf8)
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(payload, for: id)
+
+        let readyURL = directory.appendingPathComponent("migration-holder-ready")
+        let releaseURL = directory.appendingPathComponent("migration-holder-release")
+        let child = makeLockHelper(
+            lockPath: directory.appendingPathComponent(".holoscape-scrollback-migration.lock").path,
+            readyURL: readyURL,
+            releaseURL: releaseURL
+        )
+        try child.run()
+        defer {
+            try? Data().write(to: releaseURL)
+            if child.isRunning { child.terminate() }
+        }
+        let readyDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let readDone = DispatchSemaphore(value: 0)
+        let result = ScrollbackDataRecorder()
+        DispatchQueue.global().async {
+            defer { readDone.signal() }
+            result.record(Result { try store.readTail(for: id, maxBytes: 1_024) })
+        }
+        XCTAssertEqual(readDone.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(try result.value?.get(), payload)
+
+        try Data().write(to: releaseURL)
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
+    func testFirstDirectoryComponentCreationSyncsParentAndSurfacesFailure() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("new/scrollback")
+        let parentStatus = try metadata(at: parent)
+        let syncProbe = ParentDirectorySyncFailure(expectedParent: parentStatus)
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            descriptorSync: syncProbe.sync
+        )
+
+        XCTAssertThrowsError(
+            try store.append(Data("payload".utf8), for: BrokerSessionID(rawValue: "parent-sync"))
+        ) { error in
+            XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual((error as NSError).code, Int(EIO))
+        }
+        XCTAssertTrue(syncProbe.didFailExpectedParent)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: parent.appendingPathComponent("new").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
     func testConcurrentFirstCreationHelper() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["HOLOSCAPE_SCROLLBACK_FIRST_CREATE_HELPER"] == "1" else {
@@ -1802,6 +2032,32 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: startPath))
         try DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
             .append(payload, for: id)
+    }
+
+    func testConfiguredDirectoryAuthorityHelper() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let mode = environment["HOLOSCAPE_SCROLLBACK_DIRECTORY_AUTHORITY_HELPER"] else {
+            throw XCTSkip("Subprocess-only configured-directory authority helper")
+        }
+        let directory = URL(
+            fileURLWithPath: try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_DIRECTORY"]),
+            isDirectory: true
+        )
+        let id = BrokerSessionID(rawValue: "cross-process-directory-authority")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        switch mode {
+        case "seed-directory-authority":
+            try store.append(Data("original".utf8), for: id)
+        case "reject-replaced-directory":
+            XCTAssertThrowsError(try store.append(Data("replacement".utf8), for: id)) { error in
+                XCTAssertEqual(
+                    error as? DiskBackedScrollbackStore.StoreError,
+                    .unsafeScrollbackDirectory(directory.path)
+                )
+            }
+        default:
+            XCTFail("Unknown configured-directory authority helper mode: \(mode)")
+        }
     }
 
     func testProcessSharedLockHelper() throws {
@@ -2180,6 +2436,52 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         return directory
     }
 
+    private func makeStoreHelper(mode: String, directory: URL) -> Process {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testConfiguredDirectoryAuthorityHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_DIRECTORY_AUTHORITY_HELPER": mode,
+            "HOLOSCAPE_SCROLLBACK_DIRECTORY": directory.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        return child
+    }
+
+    private func makeLockHelper(lockPath: String, readyURL: URL, releaseURL: URL) -> Process {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
+            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": lockPath,
+            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
+            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        return child
+    }
+
+    private func metadata(at url: URL) throws -> stat {
+        var status = stat()
+        guard lstat(url.path, &status) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return status
+    }
+
     private func assertOperationUsesPinnedDirectory(
         _ operation: (
             DiskBackedScrollbackStore,
@@ -2363,6 +2665,52 @@ private final class ScrollbackTailListRecorder: @unchecked Sendable {
         lock.withLock {
             storage = result
         }
+    }
+}
+
+private final class ScrollbackDataRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Result<Data, Error>?
+
+    var value: Result<Data, Error>? {
+        lock.withLock { storage }
+    }
+
+    func record(_ result: Result<Data, Error>) {
+        lock.withLock {
+            storage = result
+        }
+    }
+}
+
+private final class ParentDirectorySyncFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private let expectedDevice: dev_t
+    private let expectedInode: ino_t
+    private var failedExpectedParent = false
+
+    init(expectedParent: stat) {
+        expectedDevice = expectedParent.st_dev
+        expectedInode = expectedParent.st_ino
+    }
+
+    var didFailExpectedParent: Bool {
+        lock.withLock { failedExpectedParent }
+    }
+
+    func sync(_ descriptor: Int32) -> Int32 {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else { return -1 }
+        let shouldFail = lock.withLock {
+            guard !failedExpectedParent,
+                  status.st_dev == expectedDevice,
+                  status.st_ino == expectedInode else { return false }
+            failedExpectedParent = true
+            return true
+        }
+        guard shouldFail else { return Darwin.fsync(descriptor) }
+        errno = EIO
+        return -1
     }
 }
 
