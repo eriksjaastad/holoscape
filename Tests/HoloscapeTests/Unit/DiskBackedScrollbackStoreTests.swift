@@ -947,6 +947,70 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: foreignTarget.path))
     }
 
+    func testRegularLockReplacementCannotCreateSplitProcessAuthority() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let directoryDescriptor = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(directoryDescriptor, 0)
+        defer { _ = Darwin.close(directoryDescriptor) }
+        var mutableDirectoryStatus = stat()
+        XCTAssertEqual(fstat(directoryDescriptor, &mutableDirectoryStatus), 0)
+        let directoryStatus = mutableDirectoryStatus
+        let fileName = "split-authority.scrollback"
+        let displayPath = directory.appendingPathComponent(fileName).path
+        let lockURL = directory.appendingPathComponent(fileName + ".lock")
+        let firstLocks = ScrollbackSessionOperationLocks()
+        let secondLocks = ScrollbackSessionOperationLocks()
+        let firstHeld = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let firstDone = DispatchSemaphore(value: 0)
+        let secondEntered = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+
+        DispatchQueue.global().async {
+            defer { firstDone.signal() }
+            do {
+                try firstLocks.withLock(
+                    directoryDescriptor: directoryDescriptor,
+                    directoryStatus: directoryStatus,
+                    fileName: fileName,
+                    displayPath: displayPath
+                ) {
+                    firstHeld.signal()
+                    releaseFirst.wait()
+                }
+            } catch {
+                errors.record(error)
+                firstHeld.signal()
+            }
+        }
+        XCTAssertEqual(firstHeld.wait(timeout: .now() + 2), .success)
+        try FileManager.default.moveItem(
+            at: lockURL,
+            to: directory.appendingPathComponent("displaced.lock")
+        )
+        XCTAssertTrue(FileManager.default.createFile(atPath: lockURL.path, contents: Data()))
+
+        XCTAssertThrowsError(
+            try secondLocks.withLock(
+                directoryDescriptor: directoryDescriptor,
+                directoryStatus: directoryStatus,
+                fileName: fileName,
+                displayPath: displayPath
+            ) {
+                secondEntered.signal()
+            }
+        ) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("unowned lock file") == true)
+        }
+        XCTAssertEqual(secondEntered.wait(timeout: .now() + 0.1), .timedOut)
+        releaseFirst.signal()
+        XCTAssertEqual(firstDone.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected holder errors: \(errors.values)")
+    }
+
     func testListStoredTailsRejectsSymlinkSwappedAfterPreflightWithoutForeignLock() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1027,6 +1091,27 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             guard case .descriptorCloseFailed = error as? DiskBackedScrollbackStore.StoreError else {
                 return XCTFail("Expected descriptor close failure, got \(error)")
             }
+        }
+    }
+
+    func testDirectoryEnumerationReportsOpenAndCleanupFailures() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeDirectoryStreamOpen: { descriptor in
+                XCTAssertEqual(Darwin.close(descriptor), 0)
+            }
+        )
+
+        XCTAssertThrowsError(try store.listStoredTails()) { error in
+            guard case .fileOperationAndCloseFailed(let operation, let close) =
+                error as? DiskBackedScrollbackStore.StoreError else {
+                return XCTFail("Expected combined enumeration cleanup failure, got \(error)")
+            }
+            XCTAssertTrue(operation.contains("fdopendir"))
+            XCTAssertTrue(close.contains("close"))
         }
     }
 

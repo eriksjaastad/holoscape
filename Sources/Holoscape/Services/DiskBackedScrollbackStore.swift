@@ -19,6 +19,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
 
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
+    private static let ownerXattr = "com.holoscape.scrollback.lock-owner"
 
     struct LockError: LocalizedError {
         let message: String
@@ -62,11 +63,17 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             // The lock leaf is persistent authority, not an aliasable path.
             // Refuse symlinks atomically at open so a concurrent replacement
             // cannot redirect flock to a file outside the scrollback directory.
-            let descriptor = Darwin.open(
+            var created = false
+            var descriptor = Darwin.open(
                 lockURL.path,
-                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
                 S_IRUSR | S_IWUSR
             )
+            if descriptor >= 0 {
+                created = true
+            } else if errno == EEXIST {
+                descriptor = Darwin.open(lockURL.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            }
             guard descriptor >= 0 else {
                 throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
             }
@@ -77,6 +84,26 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
                 }
                 throw LockError(message: lockFailure)
+            }
+            do {
+                try Self.validateLockedDescriptor(
+                    descriptor,
+                    lockName: lockURL.lastPathComponent,
+                    displayPath: lockURL.path,
+                    mayClaimUnowned: created
+                ) {
+                    var status = stat()
+                    guard lstat(lockURL.path, &status) == 0 else {
+                        throw LockError(message: Self.posixFailure("lstat", path: lockURL.path, code: errno))
+                    }
+                    return status
+                }
+            } catch {
+                let cleanup = Self.cleanup(descriptor, path: lockURL.path)
+                guard cleanup.isEmpty else {
+                    throw LockError(message: "\(error); cleanup also failed: \(cleanup.joined(separator: "; "))")
+                }
+                throw error
             }
 
             let result: Result<T, Error>
@@ -125,12 +152,22 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         return try lockBox.lock.withLock {
             let lockName = fileName + ".lock"
             let lockPath = displayPath + ".lock"
-            let descriptor = Darwin.openat(
+            var created = false
+            var descriptor = Darwin.openat(
                 directoryDescriptor,
                 lockName,
-                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+                O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
                 S_IRUSR | S_IWUSR
             )
+            if descriptor >= 0 {
+                created = true
+            } else if errno == EEXIST {
+                descriptor = Darwin.openat(
+                    directoryDescriptor,
+                    lockName,
+                    O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                )
+            }
             guard descriptor >= 0 else {
                 throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
             }
@@ -151,6 +188,26 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 }
                 throw LockError(message: lockFailure)
             }
+            do {
+                try Self.validateLockedDescriptor(
+                    descriptor,
+                    lockName: lockName,
+                    displayPath: lockPath,
+                    mayClaimUnowned: created
+                ) {
+                    var pathStatus = stat()
+                    guard fstatat(directoryDescriptor, lockName, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0 else {
+                        throw LockError(message: Self.posixFailure("fstatat", path: lockPath, code: errno))
+                    }
+                    return pathStatus
+                }
+            } catch {
+                let cleanup = Self.cleanup(descriptor, path: lockPath)
+                guard cleanup.isEmpty else {
+                    throw LockError(message: "\(error); cleanup also failed: \(cleanup.joined(separator: "; "))")
+                }
+                throw error
+            }
 
             let result = Result { try operation() }
             var cleanupFailures: [String] = []
@@ -166,6 +223,108 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             }
             return try result.get()
         }
+    }
+
+    func adoptLegacyLock(
+        directoryDescriptor: Int32,
+        lockName: String,
+        displayPath: String
+    ) throws {
+        let descriptor = Darwin.openat(
+            directoryDescriptor,
+            lockName,
+            O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        )
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return }
+            throw LockError(message: Self.posixFailure("openat", path: displayPath, code: errno))
+        }
+        let result: Result<Void, Error> = Result {
+            // Migration only establishes durable identity. It must not wait for
+            // a legacy session lock, because doing so would hold the global
+            // migration lock and serialize unrelated sessions behind it.
+            try Self.validateLockedDescriptor(
+                descriptor,
+                lockName: lockName,
+                displayPath: displayPath,
+                mayClaimUnowned: true
+            ) {
+                var status = stat()
+                guard fstatat(directoryDescriptor, lockName, &status, AT_SYMLINK_NOFOLLOW) == 0 else {
+                    throw LockError(message: Self.posixFailure("fstatat", path: displayPath, code: errno))
+                }
+                return status
+            }
+        }
+        if Darwin.close(descriptor) != 0 {
+            let closeFailure = Self.posixFailure("close", path: displayPath, code: errno)
+            if case .failure(let error) = result {
+                throw LockError(message: "\(error); cleanup also failed: \(closeFailure)")
+            }
+            throw LockError(message: closeFailure)
+        }
+        return try result.get()
+    }
+
+    private static func validateLockedDescriptor(
+        _ descriptor: Int32,
+        lockName: String,
+        displayPath: String,
+        mayClaimUnowned: Bool,
+        currentPathStatus: () throws -> stat
+    ) throws {
+        var descriptorStatus = stat()
+        guard fstat(descriptor, &descriptorStatus) == 0,
+              descriptorStatus.st_mode & S_IFMT == S_IFREG else {
+            let code = errno == 0 ? EINVAL : errno
+            throw LockError(message: Self.posixFailure("fstat", path: displayPath, code: code))
+        }
+        let expected = Data("holoscape-scrollback-lock-v1:\(lockName)".utf8)
+        let size = fgetxattr(descriptor, ownerXattr, nil, 0, 0, 0)
+        if size < 0, errno == ENOATTR, mayClaimUnowned {
+            let setResult = expected.withUnsafeBytes { bytes in
+                fsetxattr(descriptor, ownerXattr, bytes.baseAddress, expected.count, 0, XATTR_CREATE)
+            }
+            guard setResult == 0 else {
+                throw LockError(message: Self.posixFailure("fsetxattr", path: displayPath, code: errno))
+            }
+            guard fsync(descriptor) == 0 else {
+                throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
+            }
+        } else if size < 0 {
+            if errno == ENOATTR {
+                throw LockError(message: "unowned lock file at \(displayPath)")
+            }
+            throw LockError(message: Self.posixFailure("fgetxattr", path: displayPath, code: errno))
+        }
+        let verifiedSize = fgetxattr(descriptor, ownerXattr, nil, 0, 0, 0)
+        guard verifiedSize >= 0 else {
+            throw LockError(message: Self.posixFailure("fgetxattr", path: displayPath, code: errno))
+        }
+        var marker = Data(count: verifiedSize)
+        let readCount = marker.withUnsafeMutableBytes { bytes in
+            fgetxattr(descriptor, ownerXattr, bytes.baseAddress, verifiedSize, 0, 0)
+        }
+        guard readCount == verifiedSize, marker == expected else {
+            throw LockError(message: "unowned lock file at \(displayPath)")
+        }
+        let pathStatus = try currentPathStatus()
+        guard pathStatus.st_mode & S_IFMT == S_IFREG,
+              pathStatus.st_dev == descriptorStatus.st_dev,
+              pathStatus.st_ino == descriptorStatus.st_ino else {
+            throw LockError(message: "lock pathname identity changed at \(displayPath)")
+        }
+    }
+
+    private static func cleanup(_ descriptor: Int32, path: String) -> [String] {
+        var failures: [String] = []
+        if flock(descriptor, LOCK_UN) != 0 {
+            failures.append(Self.posixFailure("flock(LOCK_UN)", path: path, code: errno))
+        }
+        if Darwin.close(descriptor) != 0 {
+            failures.append(Self.posixFailure("close", path: path, code: errno))
+        }
+        return failures
     }
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
@@ -317,6 +476,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private let transactionPhaseHook: @Sendable (TransactionPhase) throws -> Void
     private let descriptorClose: @Sendable (Int32) -> Int32
     private let listingMetadata: @Sendable (Int32) throws -> stat
+    private let beforeDirectoryStreamOpen: @Sendable (Int32) -> Void
 
     init(
         directory: URL,
@@ -332,7 +492,8 @@ struct DiskBackedScrollbackStore: Sendable {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
             return status
-        }
+        },
+        beforeDirectoryStreamOpen: @escaping @Sendable (Int32) -> Void = { _ in }
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
@@ -342,6 +503,7 @@ struct DiskBackedScrollbackStore: Sendable {
         self.transactionPhaseHook = transactionPhaseHook
         self.descriptorClose = descriptorClose
         self.listingMetadata = listingMetadata
+        self.beforeDirectoryStreamOpen = beforeDirectoryStreamOpen
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -699,9 +861,17 @@ struct DiskBackedScrollbackStore: Sendable {
             O_RDONLY | O_DIRECTORY | O_CLOEXEC
         )
         guard enumerationDescriptor >= 0 else { throw Self.posixError(code: errno) }
+        beforeDirectoryStreamOpen(enumerationDescriptor)
         guard let stream = fdopendir(enumerationDescriptor) else {
             let code = errno
-            _ = Darwin.close(enumerationDescriptor)
+            let operationFailure = String(describing: Self.posixError(code: code))
+            if descriptorClose(enumerationDescriptor) != 0 {
+                let closeCode = errno
+                throw StoreError.fileOperationAndCloseFailed(
+                    operation: "fdopendir failed: \(operationFailure)",
+                    close: "close failed for \(directory.path): \(String(cString: strerror(closeCode))) (errno \(closeCode))"
+                )
+            }
             throw Self.posixError(code: code)
         }
         var names: [String] = []
@@ -733,6 +903,18 @@ struct DiskBackedScrollbackStore: Sendable {
             if try formatMarkerExists(authority) { return }
             for name in try directoryEntryNames(authority) {
                 let url = directory.appendingPathComponent(name)
+                if url.pathExtension == "lock" {
+                    let dataURL = url.deletingPathExtension()
+                    if dataURL.pathExtension == "scrollback",
+                       Self.isValidSessionID(dataURL.deletingPathExtension().lastPathComponent) {
+                        try operationLocks.adoptLegacyLock(
+                            directoryDescriptor: authority.descriptor,
+                            lockName: name,
+                            displayPath: url.path
+                        )
+                    }
+                    continue
+                }
                 guard url.pathExtension == "scrollback",
                       Self.isValidSessionID(url.deletingPathExtension().lastPathComponent) else { continue }
                 let descriptor = Darwin.openat(
