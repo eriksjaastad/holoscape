@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Holoscape
@@ -30,6 +31,233 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         let restored = String(decoding: try store.readTail(for: id, maxBytes: 64), as: UTF8.self)
         XCTAssertEqual(restored, "-kept-suffix")
+    }
+
+    func testConcurrentAppendsForSameSessionPreserveEveryPayload() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "concurrent-append-session")
+        let payloadSize = 4_096
+        let payloadCount = 64
+        let expectedSize = payloadSize * payloadCount
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: expectedSize)
+        let start = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+        let errors = ScrollbackStoreErrorRecorder()
+
+        for payloadIndex in 0..<payloadCount {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                start.wait()
+                do {
+                    try store.append(
+                        Data(repeating: UInt8(payloadIndex), count: payloadSize),
+                        for: id
+                    )
+                } catch {
+                    errors.record(error)
+                }
+            }
+        }
+        for _ in 0..<payloadCount {
+            start.signal()
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected append errors: \(errors.values)")
+
+        let persisted = try store.readTail(for: id, maxBytes: expectedSize)
+        XCTAssertEqual(persisted.count, expectedSize)
+        for payloadIndex in 0..<payloadCount {
+            XCTAssertEqual(
+                persisted.filter { $0 == UInt8(payloadIndex) }.count,
+                payloadSize,
+                "Payload \(payloadIndex) was overwritten or duplicated"
+            )
+        }
+    }
+
+    func testAppendAndRemoveSerializePerSessionAcrossStoreInstances() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let locks = ScrollbackSessionOperationLocks.shared
+        let writer = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024
+        )
+        let remover = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024
+        )
+        let blockedID = BrokerSessionID(rawValue: "blocked-session")
+        let independentID = BrokerSessionID(rawValue: "independent-session")
+        let blockedURL = directory
+            .appendingPathComponent(blockedID.rawValue)
+            .appendingPathExtension("scrollback")
+        let lockHeld = DispatchSemaphore(value: 0)
+        let releaseLock = DispatchSemaphore(value: 0)
+        let holderDone = DispatchSemaphore(value: 0)
+        let appendStarted = DispatchSemaphore(value: 0)
+        let appendDone = DispatchSemaphore(value: 0)
+        let removeStarted = DispatchSemaphore(value: 0)
+        let removeDone = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+        let firstPayload = Data("first-payload".utf8)
+
+        DispatchQueue.global().async {
+            defer { holderDone.signal() }
+            do {
+                try locks.withLock(for: blockedURL) {
+                    lockHeld.signal()
+                    releaseLock.wait()
+                }
+            } catch {
+                errors.record(error)
+                lockHeld.signal()
+            }
+        }
+        XCTAssertEqual(lockHeld.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            appendStarted.signal()
+            do {
+                try writer.append(firstPayload, for: blockedID)
+            } catch {
+                errors.record(error)
+            }
+            appendDone.signal()
+        }
+        DispatchQueue.global().async {
+            removeStarted.signal()
+            do {
+                try remover.remove(for: blockedID)
+            } catch {
+                errors.record(error)
+            }
+            removeDone.signal()
+        }
+
+        XCTAssertEqual(appendStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(removeStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(removeDone.wait(timeout: .now() + 0.1), .timedOut)
+
+        let independentPayload = Data("independent".utf8)
+        try writer.append(independentPayload, for: independentID)
+        XCTAssertEqual(
+            try writer.readTail(for: independentID, maxBytes: 1_024),
+            independentPayload
+        )
+
+        releaseLock.signal()
+        XCTAssertEqual(holderDone.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(removeDone.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected operation errors: \(errors.values)")
+
+        let racedTail = try writer.readTail(for: blockedID, maxBytes: 1_024)
+        XCTAssertTrue(racedTail.isEmpty || racedTail == firstPayload)
+
+        let postRacePayload = Data("post-race".utf8)
+        try writer.append(postRacePayload, for: blockedID)
+        XCTAssertTrue(
+            try writer.readTail(for: blockedID, maxBytes: 1_024).suffix(postRacePayload.count) == postRacePayload
+        )
+    }
+
+    func testAppendWaitsForProcessSharedSessionLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "cross-process-session")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let scrollbackURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let lockPath = scrollbackURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .appendingPathExtension("lock")
+            .path
+        let readyURL = directory.appendingPathComponent("child-ready")
+        let releaseURL = directory.appendingPathComponent("child-release")
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
+            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": lockPath,
+            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
+            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            try? Data().write(to: releaseURL)
+            if child.isRunning {
+                child.terminate()
+            }
+        }
+
+        let readyDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let appendDone = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+        DispatchQueue.global().async {
+            defer { appendDone.signal() }
+            do {
+                try store.append(Data("cross-process-payload".utf8), for: id)
+            } catch {
+                errors.record(error)
+            }
+        }
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 0.1), .timedOut)
+
+        try Data().write(to: releaseURL)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected append errors: \(errors.values)")
+        XCTAssertEqual(
+            try store.readTail(for: id, maxBytes: 1_024),
+            Data("cross-process-payload".utf8)
+        )
+
+        let childExited = expectation(description: "process-shared lock helper exited")
+        child.terminationHandler = { _ in childExited.fulfill() }
+        wait(for: [childExited], timeout: 3)
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
+    func testProcessSharedLockHelper() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HOLOSCAPE_SCROLLBACK_LOCK_HELPER"] == "1" else {
+            throw XCTSkip("Subprocess-only lock helper")
+        }
+        let lockPath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_LOCK_PATH"])
+        let readyPath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_READY_PATH"])
+        let releasePath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_RELEASE_PATH"])
+        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { _ = Darwin.close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX), 0)
+        defer { _ = flock(descriptor, LOCK_UN) }
+        try Data().write(to: URL(fileURLWithPath: readyPath))
+
+        let releaseDeadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: releasePath), Date() < releaseDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: releasePath))
     }
 
     func testReadTailRepairsOversizedPersistedFile() throws {
@@ -288,5 +516,20 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+private final class ScrollbackStoreErrorRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Error] = []
+
+    var values: [Error] {
+        lock.withLock { storage }
+    }
+
+    func record(_ error: Error) {
+        lock.withLock {
+            storage.append(error)
+        }
     }
 }
