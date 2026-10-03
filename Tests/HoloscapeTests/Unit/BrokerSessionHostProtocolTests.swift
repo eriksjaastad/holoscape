@@ -596,6 +596,58 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(runtime.handlerIsInstalled)
     }
 
+    func testHostWaitForOutputAvailabilityReturnsImmediatelyForBufferedNativeOutput() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-prebuffered-output-availability")
+        let marker = "host-prebuffered-output-marker"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: sessionID, request: request)
+        defer { try? runtime.markSessionErrored(id: sessionID) }
+
+        let bufferedDeadline = Date().addingTimeInterval(3)
+        while Date() < bufferedDeadline {
+            let scrollback = try runtime.readScrollbackTail(id: sessionID, maxBytes: 4096)
+            if scrollback.contains(Data(marker.utf8)) { break }
+            usleep(20_000)
+        }
+        XCTAssertTrue(
+            try runtime.readScrollbackTail(id: sessionID, maxBytes: 4096).contains(Data(marker.utf8)),
+            "fixture output never reached the runtime buffer"
+        )
+
+        let startedAt = Date()
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 1_000)))
+        )
+
+        XCTAssertEqual(response, .outputAvailable(true))
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
+
+        let snapshotResponse = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+        )
+        guard case let .outputSnapshot(snapshot) = snapshotResponse else {
+            return XCTFail("Expected output snapshot, got \(snapshotResponse)")
+        }
+        XCTAssertTrue(snapshot.data.contains(Data(marker.utf8)))
+        let generation = try XCTUnwrap(snapshot.generation)
+        XCTAssertEqual(
+            try codec.decodeResponse(
+                try host.handle(codec.encodeRequest(.acknowledgeOutput(id: sessionID, throughGeneration: generation)))
+            ),
+            .ok
+        )
+    }
+
     func testHostWaitForOutputAvailabilityReturnsFalseOnTimeout() throws {
         let runtime = SignalingBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
