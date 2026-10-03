@@ -581,6 +581,82 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.readAvailableOutput(id: id), Data())
     }
 
+    func testConcurrentLegacyOutputReadsDeliverNativeGenerationOnce() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "concurrent-native-output-generation")
+        let marker = "single-native-output-generation"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let results = NativeLockedDataResults()
+        let errors = LockedRuntimeErrorBox()
+        let start = DispatchSemaphore(value: 0)
+        let readsFinished = expectation(description: "concurrent native output reads")
+        readsFinished.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = start.wait(timeout: .now() + 1)
+                do { results.append(try runtime.readAvailableOutput(id: id)) } catch { errors.store(error) }
+                readsFinished.fulfill()
+            }
+        }
+        start.signal()
+        start.signal()
+        wait(for: [readsFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }.count, 1)
+        XCTAssertNotNil(results.values.reduce(into: Data()) { $0.append($1) }.range(of: Data(marker.utf8)))
+    }
+
+    func testConcurrentLegacyReplayReadsDeliverNativeGenerationOnce() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "concurrent-native-replay-generation")
+        let marker = "single-native-replay-generation"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "printf \(marker); sleep 5"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let outputAvailable = DispatchSemaphore(value: 0)
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in outputAvailable.signal() }
+        XCTAssertEqual(outputAvailable.wait(timeout: .now() + 3), .success)
+
+        let results = NativeLockedDataResults()
+        let errors = LockedRuntimeErrorBox()
+        let start = DispatchSemaphore(value: 0)
+        let readsFinished = expectation(description: "concurrent native replay reads")
+        readsFinished.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = start.wait(timeout: .now() + 1)
+                do { results.append(try runtime.readScrollbackReplay(id: id, maxBytes: 4096).data) } catch { errors.store(error) }
+                readsFinished.fulfill()
+            }
+        }
+        start.signal()
+        start.signal()
+        wait(for: [readsFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }.count, 1)
+        XCTAssertNotNil(results.values.reduce(into: Data()) { $0.append($1) }.range(of: Data(marker.utf8)))
+    }
+
     func testLiveScrollbackTailDoesNotConsumeUnreadOutput() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "live-tail-preserves-unread-output-test")
@@ -1075,6 +1151,19 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let output = String(decoding: collected, as: UTF8.self)
         XCTFail("Timed out collecting PTY output. Output: \(output)", file: file, line: line)
         return output
+    }
+}
+
+private final class NativeLockedDataResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Data] = []
+
+    var values: [Data] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ value: Data) {
+        lock.withLock { storedValues.append(value) }
     }
 }
 

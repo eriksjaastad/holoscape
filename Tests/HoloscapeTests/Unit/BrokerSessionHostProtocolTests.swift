@@ -403,6 +403,95 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(ackAttempts.value, 2)
     }
 
+    func testConcurrentLegacyOutputReadsDeliverGenerationOnce() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("single-output-generation".utf8)
+        let host = BrokerSessionHost(runtime: runtime)
+        let firstSnapshotEntered = DispatchSemaphore(value: 0)
+        let releaseFirstSnapshot = DispatchSemaphore(value: 0)
+        let snapshotAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let request = try codec.decodeRequest(frame)
+            let response = try host.handle(frame)
+            if case .snapshotAvailableOutput = request, snapshotAttempts.increment() == 1 {
+                firstSnapshotEntered.signal()
+                _ = releaseFirstSnapshot.wait(timeout: .now() + 2)
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "concurrent-legacy-output")
+        let results = LockedDataResults()
+        let errors = LockedErrorBox()
+        let firstFinished = expectation(description: "first legacy output read")
+        let secondFinished = expectation(description: "second legacy output read")
+        let secondStarted = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { results.append(try client.readAvailableOutput(id: sessionID)) } catch { errors.set(error) }
+            firstFinished.fulfill()
+        }
+        XCTAssertEqual(firstSnapshotEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondStarted.signal()
+            do { results.append(try client.readAvailableOutput(id: sessionID)) } catch { errors.set(error) }
+            secondFinished.fulfill()
+        }
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 1), .success)
+        usleep(20_000)
+        releaseFirstSnapshot.signal()
+        wait(for: [firstFinished, secondFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }, [Data("single-output-generation".utf8)])
+        XCTAssertEqual(snapshotAttempts.value, 2)
+    }
+
+    func testConcurrentLegacyReplayReadsDeliverGenerationOnce() throws {
+        let codec = BrokerSessionHostCodec()
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.output = Data("unread-replay-generation".utf8)
+        runtime.scrollbackReplayGeneration = 1
+        let host = BrokerSessionHost(runtime: runtime)
+        let firstSnapshotEntered = DispatchSemaphore(value: 0)
+        let releaseFirstSnapshot = DispatchSemaphore(value: 0)
+        let snapshotAttempts = LockedCounter()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            let request = try codec.decodeRequest(frame)
+            let response = try host.handle(frame)
+            if case .snapshotScrollbackReplay = request, snapshotAttempts.increment() == 1 {
+                firstSnapshotEntered.signal()
+                _ = releaseFirstSnapshot.wait(timeout: .now() + 2)
+            }
+            return response
+        }
+        let sessionID = BrokerSessionID(rawValue: "concurrent-legacy-replay")
+        let results = LockedDataResults()
+        let errors = LockedErrorBox()
+        let firstFinished = expectation(description: "first legacy replay read")
+        let secondFinished = expectation(description: "second legacy replay read")
+        let secondStarted = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { results.append(try client.readScrollbackReplay(id: sessionID, maxBytes: 4096).data) } catch { errors.set(error) }
+            firstFinished.fulfill()
+        }
+        XCTAssertEqual(firstSnapshotEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondStarted.signal()
+            do { results.append(try client.readScrollbackReplay(id: sessionID, maxBytes: 4096).data) } catch { errors.set(error) }
+            secondFinished.fulfill()
+        }
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 1), .success)
+        usleep(20_000)
+        releaseFirstSnapshot.signal()
+        wait(for: [firstFinished, secondFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(results.values.filter { !$0.isEmpty }, [Data("scrollback-replay".utf8)])
+        XCTAssertEqual(snapshotAttempts.value, 2)
+    }
+
     func testTransactionalAcknowledgementFailureThrowsAndRemainsPendingForRetry() throws {
         let codec = BrokerSessionHostCodec()
         let runtime = RecordingBrokerSessionRuntime()
@@ -2545,6 +2634,19 @@ private final class LockedErrorBox: @unchecked Sendable {
     }
 }
 
+private final class LockedDataResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Data] = []
+
+    var values: [Data] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ value: Data) {
+        lock.withLock { storedValues.append(value) }
+    }
+}
+
 private final class LockedBrokerResponseBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storedResponse: BrokerSessionHostResponse?
@@ -2760,6 +2862,7 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTra
 private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerTransactionalOutputRuntime {
     var events: [String] = []
     var output = Data()
+    var scrollbackReplayGeneration: UInt64?
     var isRunning = false
     var terminationStatus: Int32?
     var error: Error?
@@ -2819,7 +2922,10 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
     func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
         try throwIfNeeded()
         events.append("acknowledgeOutput \(id.rawValue) \(generation)")
-        if generation >= 1 { output.removeAll() }
+        if generation >= 1 {
+            output.removeAll()
+            scrollbackReplayGeneration = nil
+        }
     }
 
     func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
@@ -2841,7 +2947,7 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
     func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
         BrokerScrollbackReplaySnapshot(
             replay: try readScrollbackReplay(id: id, maxBytes: maxBytes),
-            generation: nil
+            generation: scrollbackReplayGeneration
         )
     }
 

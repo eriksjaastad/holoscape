@@ -33,6 +33,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         var output = Data()
         private var outputStartOffset: UInt64 = 0
         private var outputEndOffset: UInt64 = 0
+        private var legacyReplayPresented = false
         var scrollback = Data()
         private var scrollbackPersistenceFailureReason: String?
         private var pendingScrollbackPersistenceWrites = 0
@@ -114,6 +115,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         func acknowledgeOutput(through generation: UInt64) {
             lock.lock()
             defer { lock.unlock() }
+            acknowledgeOutputLocked(through: generation)
+        }
+
+        private func acknowledgeOutputLocked(through generation: UInt64) {
             guard generation > outputStartOffset else { return }
             let boundedGeneration = min(generation, outputEndOffset)
             let acknowledgedCount = boundedGeneration - outputStartOffset
@@ -123,9 +128,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         }
 
         func readOutput() throws -> Data {
-            let snapshot = try snapshotOutput()
+            lock.lock()
+            defer { lock.unlock() }
+            if let reason = scrollbackPersistenceFailureReason {
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+            guard pendingScrollbackPersistenceWrites == 0 else { return Data() }
+            let snapshot = BrokerOutputSnapshot(
+                data: output,
+                generation: output.isEmpty ? nil : outputEndOffset
+            )
             if let generation = snapshot.generation {
-                acknowledgeOutput(through: generation)
+                acknowledgeOutputLocked(through: generation)
             }
             return snapshot.data
         }
@@ -170,11 +184,27 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         }
 
         func readScrollbackReplay(maxBytes: Int) throws -> Data {
-            let snapshot = try snapshotScrollbackReplay(maxBytes: maxBytes)
-            if let generation = snapshot.generation {
-                acknowledgeOutput(through: generation)
+            lock.lock()
+            defer { lock.unlock() }
+            if let reason = scrollbackPersistenceFailureReason {
+                throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
             }
-            return snapshot.replay.data
+            guard pendingScrollbackPersistenceWrites == 0,
+                  maxBytes > 0,
+                  output.count <= maxBytes,
+                  output.count <= scrollback.count else { return Data() }
+            guard !output.isEmpty || !legacyReplayPresented else { return Data() }
+            let replay = scrollback.count > maxBytes
+                ? Data(scrollback.suffix(maxBytes))
+                : scrollback
+            let generation = output.isEmpty ? nil : outputEndOffset
+            if !replay.isEmpty {
+                legacyReplayPresented = true
+            }
+            if let generation {
+                acknowledgeOutputLocked(through: generation)
+            }
+            return replay
         }
 
         func writeInput(_ data: Data) throws {

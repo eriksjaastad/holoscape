@@ -132,13 +132,13 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
-        let snapshot = try snapshotAvailableOutput(id: id)
-        if let generation = snapshot.generation {
-            outputTransactions.withSession(id) {
+        try outputTransactions.withSession(id) {
+            let snapshot = try snapshotAvailableOutput(id: id)
+            if let generation = snapshot.generation {
                 deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
             }
+            return snapshot.data
         }
-        return snapshot.data
     }
 
     func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
@@ -180,13 +180,24 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func readScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
-        let snapshot = try snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
-        if let generation = snapshot.generation {
-            outputTransactions.withSession(id) {
+        try outputTransactions.withSession(id) {
+            let snapshot = try snapshotScrollbackReplay(id: id, maxBytes: maxBytes)
+            guard outputTransactions.claimLegacyReplay(
+                id: id,
+                hasNewGeneration: snapshot.generation != nil,
+                hasData: !snapshot.replay.data.isEmpty
+            ) else {
+                return ScrollbackReplay(
+                    data: Data(),
+                    source: snapshot.replay.source,
+                    maxBytes: snapshot.replay.maxBytes
+                )
+            }
+            if let generation = snapshot.generation {
                 deferAcknowledgmentAfterLegacyDelivery(id: id, generation: generation)
             }
+            return snapshot.replay
         }
-        return snapshot.replay
     }
 
     func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
@@ -316,6 +327,7 @@ private final class BrokerSessionHostClientOutputTransactions: @unchecked Sendab
     private let stateLock = NSLock()
     private var sessionLocks: [BrokerSessionID: NSRecursiveLock] = [:]
     private var pendingAcknowledgments: [BrokerSessionID: UInt64] = [:]
+    private var legacyReplayPresented: Set<BrokerSessionID> = []
 
     func withSession<T>(_ id: BrokerSessionID, operation: () throws -> T) rethrows -> T {
         stateLock.lock()
@@ -345,6 +357,18 @@ private final class BrokerSessionHostClientOutputTransactions: @unchecked Sendab
             pendingAcknowledgments.removeValue(forKey: id)
         }
         stateLock.unlock()
+    }
+
+    func claimLegacyReplay(id: BrokerSessionID, hasNewGeneration: Bool, hasData: Bool) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if !hasNewGeneration, legacyReplayPresented.contains(id) {
+            return false
+        }
+        if hasData {
+            legacyReplayPresented.insert(id)
+        }
+        return true
     }
 }
 
