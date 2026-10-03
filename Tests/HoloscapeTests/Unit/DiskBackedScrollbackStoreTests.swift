@@ -326,6 +326,117 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tailURL.path), targetURL.path)
     }
 
+    func testFIFOLeafIsRejectedWithoutBlocking() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "fifo-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        XCTAssertEqual(mkfifo(tailURL.path, S_IRUSR | S_IWUSR), 0)
+
+        let done = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+        DispatchQueue.global().async {
+            defer { done.signal() }
+            do {
+                _ = try store.readTail(for: id, maxBytes: 1_024)
+            } catch {
+                errors.record(error)
+            }
+        }
+
+        XCTAssertEqual(done.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            errors.values.first as? DiskBackedScrollbackStore.StoreError,
+            .unsafeScrollbackFile(tailURL.path)
+        )
+    }
+
+    func testRemoveRestoresSymlinkSwappedAfterDescriptorValidation() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "remove-swap-tail")
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let targetURL = directory.appendingPathComponent("remove-swap-target")
+        let targetData = Data("preserve-target".utf8)
+        try targetData.write(to: targetURL)
+        let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try setupStore.append(Data("tail".utf8), for: id)
+        let mutation = OneShotScrollbackLeafMutation { url in
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.createSymbolicLink(at: url, withDestinationURL: targetURL)
+        }
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            beforeLeafMutation: mutation.run
+        )
+
+        XCTAssertThrowsError(try store.remove(for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tailURL.path), targetURL.path)
+        XCTAssertEqual(try Data(contentsOf: targetURL), targetData)
+    }
+
+    func testPruneRestoresSymlinkSwappedAfterDescriptorValidation() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "prune-swap-tail")
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let targetURL = directory.appendingPathComponent("prune-swap-target")
+        let targetData = Data("preserve-target".utf8)
+        try targetData.write(to: targetURL)
+        let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 4)
+        try setupStore.append(Data("ABCD".utf8), for: id)
+        let mutation = OneShotScrollbackLeafMutation { url in
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.createSymbolicLink(at: url, withDestinationURL: targetURL)
+        }
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 4,
+            beforeLeafMutation: mutation.run
+        )
+
+        XCTAssertThrowsError(try store.append(Data("E".utf8), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tailURL.path)
+            )
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tailURL.path), targetURL.path)
+        XCTAssertEqual(try Data(contentsOf: targetURL), targetData)
+    }
+
+    func testTemporaryCollisionDoesNotDeleteUnownedEntry() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "temporary-collision-tail")
+        let temporaryURL = directory.appendingPathComponent("preexisting.tmp")
+        let temporaryData = Data("must-remain".utf8)
+        try temporaryData.write(to: temporaryURL)
+        let setupStore = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 4)
+        try setupStore.append(Data("ABCD".utf8), for: id)
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 4,
+            replacementTemporaryURL: { _ in temporaryURL }
+        )
+
+        XCTAssertThrowsError(try store.append(Data("E".utf8), for: id))
+        XCTAssertEqual(try Data(contentsOf: temporaryURL), temporaryData)
+    }
+
     func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -757,6 +868,30 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+private final class OneShotScrollbackLeafMutation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasRun = false
+    private let action: (URL) throws -> Void
+
+    init(action: @escaping (URL) throws -> Void) {
+        self.action = action
+    }
+
+    func run(_ url: URL) {
+        let shouldRun = lock.withLock {
+            guard !hasRun else { return false }
+            hasRun = true
+            return true
+        }
+        guard shouldRun else { return }
+        do {
+            try action(url)
+        } catch {
+            XCTFail("Leaf mutation failed: \(error)")
+        }
     }
 }
 

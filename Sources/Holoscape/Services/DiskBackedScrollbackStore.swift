@@ -124,6 +124,7 @@ struct DiskBackedScrollbackStore: Sendable {
         case unsafeScrollbackFile(String)
         case fileOperationAndCloseFailed(operation: String, close: String)
         case fileOperationAndCleanupFailed(operation: String, cleanup: String)
+        case fileOperationAndRollbackFailed(operation: String, rollback: String)
     }
 
     /// Maintenance-facing metadata for one persisted per-session scrollback tail.
@@ -136,13 +137,22 @@ struct DiskBackedScrollbackStore: Sendable {
     let directory: URL
     private let maxRetainedBytes: Int
     private let operationLocks = ScrollbackSessionOperationLocks.shared
+    private let beforeLeafMutation: @Sendable (URL) -> Void
+    private let replacementTemporaryURL: @Sendable (URL) -> URL
 
     init(
         directory: URL,
-        maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
+        beforeLeafMutation: @escaping @Sendable (URL) -> Void = { _ in },
+        replacementTemporaryURL: @escaping @Sendable (URL) -> URL = { url in
+            url.deletingLastPathComponent()
+                .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        }
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
+        self.beforeLeafMutation = beforeLeafMutation
+        self.replacementTemporaryURL = replacementTemporaryURL
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -195,10 +205,9 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
-            guard try inspectRegularFile(at: url) != nil else { return }
-            guard Darwin.unlink(url.path) == 0 else {
-                throw Self.posixError(code: errno)
-            }
+            guard let expectedStatus = try inspectRegularFile(at: url) else { return }
+            beforeLeafMutation(url)
+            try quarantineAndRemoveRegularFile(at: url, expectedStatus: expectedStatus)
         }
     }
 
@@ -301,15 +310,17 @@ struct DiskBackedScrollbackStore: Sendable {
         at url: URL,
         flags: Int32,
         allowMissing: Bool = true,
+        didOpen: () -> Void = {},
         _ operation: (Int32) throws -> T
     ) throws -> T? {
-        let descriptor = Darwin.open(url.path, flags, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(url.path, flags | O_NONBLOCK, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else {
             let code = errno
             if allowMissing, code == ENOENT { return nil }
             if code == ELOOP { throw StoreError.unsafeScrollbackFile(url.path) }
             throw Self.posixError(code: code)
         }
+        didOpen()
 
         var status = stat()
         guard fstat(descriptor, &status) == 0 else {
@@ -349,30 +360,130 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func replaceRegularFileAtomically(at url: URL, with data: Data) throws {
-        let temporaryURL = url
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        let temporaryURL = replacementTemporaryURL(url)
+        guard let expectedStatus = try inspectRegularFile(at: url) else {
+            throw Self.posixError(code: ENOENT)
+        }
+        var ownsTemporaryFile = false
         do {
             _ = try withRegularFileDescriptor(
                 at: temporaryURL,
                 flags: O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
-                allowMissing: false
+                allowMissing: false,
+                didOpen: { ownsTemporaryFile = true }
             ) { descriptor in
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 try handle.write(contentsOf: data)
             }
-            guard Darwin.rename(temporaryURL.path, url.path) == 0 else {
+
+            beforeLeafMutation(url)
+            guard renameatx_np(
+                AT_FDCWD,
+                temporaryURL.path,
+                AT_FDCWD,
+                url.path,
+                UInt32(RENAME_SWAP)
+            ) == 0 else {
                 throw Self.posixError(code: errno)
             }
+            do {
+                guard let displacedStatus = try inspectRegularFile(at: temporaryURL),
+                      Self.isSameFile(displacedStatus, expectedStatus) else {
+                    throw StoreError.unsafeScrollbackFile(url.path)
+                }
+            } catch {
+                let validationError = error
+                guard renameatx_np(
+                    AT_FDCWD,
+                    temporaryURL.path,
+                    AT_FDCWD,
+                    url.path,
+                    UInt32(RENAME_SWAP)
+                ) == 0 else {
+                    throw StoreError.fileOperationAndRollbackFailed(
+                        operation: String(describing: validationError),
+                        rollback: String(describing: Self.posixError(code: errno))
+                    )
+                }
+                throw StoreError.unsafeScrollbackFile(url.path)
+            }
+
+            guard Darwin.unlink(temporaryURL.path) == 0 else {
+                throw StoreError.fileOperationAndCleanupFailed(
+                    operation: "atomic replacement completed",
+                    cleanup: String(describing: Self.posixError(code: errno))
+                )
+            }
+            ownsTemporaryFile = false
         } catch {
             let operationError = error
-            if Darwin.unlink(temporaryURL.path) != 0, errno != ENOENT {
+            if ownsTemporaryFile,
+               Darwin.unlink(temporaryURL.path) != 0,
+               errno != ENOENT {
                 throw StoreError.fileOperationAndCleanupFailed(
                     operation: String(describing: operationError),
                     cleanup: String(describing: Self.posixError(code: errno))
                 )
             }
             throw operationError
+        }
+    }
+
+    private func quarantineAndRemoveRegularFile(at url: URL, expectedStatus: stat) throws {
+        let quarantineURL = url
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).remove")
+        guard renameatx_np(
+            AT_FDCWD,
+            url.path,
+            AT_FDCWD,
+            quarantineURL.path,
+            UInt32(RENAME_EXCL)
+        ) == 0 else {
+            throw Self.posixError(code: errno)
+        }
+
+        do {
+            guard let quarantinedStatus = try inspectRegularFile(at: quarantineURL),
+                  Self.isSameFile(quarantinedStatus, expectedStatus) else {
+                throw StoreError.unsafeScrollbackFile(url.path)
+            }
+        } catch {
+            let validationError = error
+            do {
+                try restoreQuarantinedLeaf(from: quarantineURL, to: url)
+            } catch {
+                throw StoreError.fileOperationAndRollbackFailed(
+                    operation: String(describing: validationError),
+                    rollback: String(describing: error)
+                )
+            }
+            throw StoreError.unsafeScrollbackFile(url.path)
+        }
+
+        guard Darwin.unlink(quarantineURL.path) == 0 else {
+            let removalError = Self.posixError(code: errno)
+            do {
+                try restoreQuarantinedLeaf(from: quarantineURL, to: url)
+            } catch {
+                throw StoreError.fileOperationAndRollbackFailed(
+                    operation: String(describing: removalError),
+                    rollback: String(describing: error)
+                )
+            }
+            throw removalError
+        }
+    }
+
+    private func restoreQuarantinedLeaf(from quarantineURL: URL, to url: URL) throws {
+        guard renameatx_np(
+            AT_FDCWD,
+            quarantineURL.path,
+            AT_FDCWD,
+            url.path,
+            UInt32(RENAME_EXCL)
+        ) == 0 else {
+            throw Self.posixError(code: errno)
         }
     }
 
@@ -397,5 +508,9 @@ struct DiskBackedScrollbackStore: Sendable {
 
     private static func posixError(code: Int32) -> POSIXError {
         POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+    }
+
+    private static func isSameFile(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 }
