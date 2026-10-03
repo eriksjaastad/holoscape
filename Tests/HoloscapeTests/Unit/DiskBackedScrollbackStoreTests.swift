@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Holoscape
@@ -105,11 +106,16 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let firstPayload = Data("first-payload".utf8)
 
         DispatchQueue.global().async {
-            locks.withLock(for: blockedURL) {
+            defer { holderDone.signal() }
+            do {
+                try locks.withLock(for: blockedURL) {
+                    lockHeld.signal()
+                    releaseLock.wait()
+                }
+            } catch {
+                errors.record(error)
                 lockHeld.signal()
-                releaseLock.wait()
             }
-            holderDone.signal()
         }
         XCTAssertEqual(lockHeld.wait(timeout: .now() + 2), .success)
 
@@ -158,6 +164,100 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertTrue(
             try writer.readTail(for: blockedID, maxBytes: 1_024).suffix(postRacePayload.count) == postRacePayload
         )
+    }
+
+    func testAppendWaitsForProcessSharedSessionLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "cross-process-session")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        let scrollbackURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let lockPath = scrollbackURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .appendingPathExtension("lock")
+            .path
+        let readyURL = directory.appendingPathComponent("child-ready")
+        let releaseURL = directory.appendingPathComponent("child-release")
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
+            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": lockPath,
+            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
+            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            try? Data().write(to: releaseURL)
+            if child.isRunning {
+                child.terminate()
+            }
+        }
+
+        let readyDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let appendDone = DispatchSemaphore(value: 0)
+        let errors = ScrollbackStoreErrorRecorder()
+        DispatchQueue.global().async {
+            defer { appendDone.signal() }
+            do {
+                try store.append(Data("cross-process-payload".utf8), for: id)
+            } catch {
+                errors.record(error)
+            }
+        }
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 0.1), .timedOut)
+
+        try Data().write(to: releaseURL)
+        XCTAssertEqual(appendDone.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(errors.values.isEmpty, "Unexpected append errors: \(errors.values)")
+        XCTAssertEqual(
+            try store.readTail(for: id, maxBytes: 1_024),
+            Data("cross-process-payload".utf8)
+        )
+
+        let childExited = expectation(description: "process-shared lock helper exited")
+        child.terminationHandler = { _ in childExited.fulfill() }
+        wait(for: [childExited], timeout: 3)
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
+    func testProcessSharedLockHelper() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HOLOSCAPE_SCROLLBACK_LOCK_HELPER"] == "1" else {
+            throw XCTSkip("Subprocess-only lock helper")
+        }
+        let lockPath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_LOCK_PATH"])
+        let readyPath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_READY_PATH"])
+        let releasePath = try XCTUnwrap(environment["HOLOSCAPE_SCROLLBACK_RELEASE_PATH"])
+        let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { _ = Darwin.close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX), 0)
+        defer { _ = flock(descriptor, LOCK_UN) }
+        try Data().write(to: URL(fileURLWithPath: readyPath))
+
+        let releaseDeadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: releasePath), Date() < releaseDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: releasePath))
     }
 
     func testReadTailRepairsOversizedPersistedFile() throws {

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class ScrollbackSessionOperationLocks: @unchecked Sendable {
@@ -18,8 +19,15 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
 
-    func withLock<T>(for fileURL: URL, _ operation: () throws -> T) rethrows -> T {
-        let key = fileURL.standardizedFileURL.resolvingSymlinksInPath().path
+    struct LockError: LocalizedError {
+        let message: String
+
+        var errorDescription: String? { message }
+    }
+
+    func withLock<T>(for fileURL: URL, _ operation: () throws -> T) throws -> T {
+        let canonicalURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        let key = canonicalURL.path
         let lockBox = registryLock.withLock {
             locksByPath = locksByPath.filter { $0.value.value != nil }
             if let existing = locksByPath[key]?.value {
@@ -29,7 +37,56 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             locksByPath[key] = WeakLockBox(created)
             return created
         }
-        return try lockBox.lock.withLock(operation)
+        return try lockBox.lock.withLock {
+            let lockURL = canonicalURL.appendingPathExtension("lock")
+            try FileManager.default.createDirectory(
+                at: lockURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
+            let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            guard descriptor >= 0 else {
+                throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
+            }
+            guard flock(descriptor, LOCK_EX) == 0 else {
+                let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
+                if Darwin.close(descriptor) != 0 {
+                    let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
+                    throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
+                }
+                throw LockError(message: lockFailure)
+            }
+
+            let result: Result<T, Error>
+            do {
+                result = .success(try operation())
+            } catch {
+                result = .failure(error)
+            }
+
+            var cleanupFailures: [String] = []
+            if flock(descriptor, LOCK_UN) != 0 {
+                cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
+            }
+            if Darwin.close(descriptor) != 0 {
+                cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
+            }
+            if !cleanupFailures.isEmpty {
+                let operationFailure: String
+                switch result {
+                case .success:
+                    operationFailure = ""
+                case .failure(let error):
+                    operationFailure = "operation failed: \(error); "
+                }
+                throw LockError(message: operationFailure + cleanupFailures.joined(separator: "; "))
+            }
+            return try result.get()
+        }
+    }
+
+    private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
+        "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
     }
 }
 
@@ -43,6 +100,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
 struct DiskBackedScrollbackStore: Sendable {
     enum StoreError: Error, Equatable {
         case invalidSessionID(String)
+        case fileOperationAndCloseFailed(operation: String, close: String)
     }
 
     /// Maintenance-facing metadata for one persisted per-session scrollback tail.
@@ -74,9 +132,22 @@ struct DiskBackedScrollbackStore: Sendable {
                 fileManager.createFile(atPath: url.path, contents: nil)
             }
             let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } catch {
+                let operationError = error
+                do {
+                    try handle.close()
+                } catch {
+                    throw StoreError.fileOperationAndCloseFailed(
+                        operation: String(describing: operationError),
+                        close: String(describing: error)
+                    )
+                }
+                throw operationError
+            }
+            try handle.close()
             try prune(url)
         }
     }
