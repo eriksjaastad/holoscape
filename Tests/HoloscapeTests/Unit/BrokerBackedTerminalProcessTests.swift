@@ -16,6 +16,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let resizeRelease = DispatchSemaphore(value: 0)
         private let outputSnapshotEntered = DispatchSemaphore(value: 0)
         private let outputSnapshotRelease = DispatchSemaphore(value: 0)
+        private let inputWriteEntered = DispatchSemaphore(value: 0)
+        private let inputWriteRelease = DispatchSemaphore(value: 0)
         private let lock = NSLock()
         private(set) var detachCalls: [BrokerSessionID] = []
         private(set) var markErroredCalls: [BrokerSessionID] = []
@@ -27,7 +29,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockStart = false
         private var shouldBlockResize = false
         private var shouldBlockOutputSnapshot = false
+        private var shouldBlockInputWrite = false
+        private var blockedInputWriteShouldFail = false
         private var storedAcknowledgedOutputGenerations: [UInt64] = []
+        private var storedSuccessfulInputWrites = 0
         var untrackedStartID: BrokerSessionID?
         private(set) var reattachCallCount = 0
 
@@ -68,6 +73,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var acknowledgedOutputGenerations: [UInt64] {
             lock.withLock { storedAcknowledgedOutputGenerations }
         }
+
+        func blockNextInputWrite(fail: Bool) {
+            lock.withLock {
+                shouldBlockInputWrite = true
+                blockedInputWriteShouldFail = fail
+            }
+        }
+        func waitForInputWrite(timeout: TimeInterval = 1) -> Bool {
+            inputWriteEntered.wait(timeout: .now() + timeout) == .success
+        }
+        func finishInputWrite() { inputWriteRelease.signal() }
+        var successfulInputWrites: Int { lock.withLock { storedSuccessfulInputWrites } }
 
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
             let shouldBlock = lock.withLock { () -> Bool in
@@ -124,7 +141,22 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return record(id: id, ownerToken: nil, lifecycle: .errored)
         }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
-        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
+            let blocked: (shouldBlock: Bool, shouldFail: Bool) = lock.withLock {
+                let result = (shouldBlockInputWrite, blockedInputWriteShouldFail)
+                shouldBlockInputWrite = false
+                blockedInputWriteShouldFail = false
+                return result
+            }
+            if blocked.shouldBlock {
+                inputWriteEntered.signal()
+                _ = inputWriteRelease.wait(timeout: .now() + 2)
+            }
+            if blocked.shouldFail {
+                throw RuntimeError.createFailed
+            }
+            lock.withLock { storedSuccessfulInputWrites += 1 }
+        }
         func readAvailableOutput(_ id: BrokerSessionID) throws -> Data {
             lock.withLock { outputReadCount += 1 }
             return Data()
@@ -901,6 +933,75 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
         XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
+    }
+
+    func testOldOutputLaneCannotCloseSameSessionIDAfterReattach() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "same-id-output-generation",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        try waitUntil { terminal.brokerSessionID != nil }
+        let sessionID = try XCTUnwrap(terminal.brokerSessionID)
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        let detached = expectation(description: "old output generation detached")
+        terminal.detachBrokerSession { detached.fulfill() }
+        wait(for: [detached], timeout: 1)
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        coordinator.finishOutputSnapshot()
+        try waitUntil { coordinator.outputReadCount >= 2 }
+
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertNil(terminal.sessionFailure)
+        let cleanup = expectation(description: "replacement output generation detached")
+        terminal.detachBrokerSession { cleanup.fulfill() }
+        coordinator.finishOutputSnapshot()
+        wait(for: [cleanup], timeout: 1)
+    }
+
+    func testOldInputFailureCannotCloseSameSessionIDAfterReattach() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockNextInputWrite(fail: true)
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "same-id-input-generation",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        try waitUntil { terminal.brokerSessionID != nil }
+        let sessionID = try XCTUnwrap(terminal.brokerSessionID)
+        terminal.send(Array("old-write".utf8))
+        XCTAssertTrue(coordinator.waitForInputWrite())
+
+        let detached = expectation(description: "old input generation detached")
+        terminal.detachBrokerSession { detached.fulfill() }
+        wait(for: [detached], timeout: 1)
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        coordinator.finishInputWrite()
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertNil(terminal.sessionFailure)
+
+        terminal.send(Array("replacement-write".utf8))
+        try waitUntil { coordinator.successfulInputWrites == 1 }
+        terminal.detachBrokerSession()
     }
 
     func testOutputPumpDeliversFinalBytesBeforeReportingTermination() throws {

@@ -1322,6 +1322,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     private let pollingInterval: TimeInterval
     private let lock = NSLock()
     private var openSessionID: BrokerSessionID?
+    private var nextRunGeneration: UInt = 0
+    private var openRunGeneration: UInt?
     private var semaphore: DispatchSemaphore?
 
     init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
@@ -1342,42 +1344,45 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     ) {
         stop()
         let semaphore = DispatchSemaphore(value: 0)
-        lock.withLock {
+        let runGeneration = lock.withLock { () -> UInt in
+            nextRunGeneration &+= 1
             openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
             self.semaphore = semaphore
+            return nextRunGeneration
         }
 
         queue.async { [weak self] in
             semaphore.signal()
             while true {
-                guard let self, self.isOpen(for: sessionID) else { return }
+                guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 switch mode {
                 case .outputAvailabilitySignal:
                     _ = semaphore.wait(timeout: .now() + self.signalTerminationCheckInterval)
                 case .periodicPolling:
                     _ = semaphore.wait(timeout: .now() + self.pollingInterval)
                 }
-                guard self.isOpen(for: sessionID) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 do {
                     let snapshot = try read(sessionID)
-                    guard self.isOpen(for: sessionID) else { return }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                     guard onSample(sessionID, snapshot.data) else {
-                        self.closeIfCurrent(sessionID)
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                         return
                     }
                     if let generation = snapshot.generation {
                         try acknowledge(sessionID, generation)
                     }
-                    guard self.isOpen(for: sessionID) else { return }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                     if let exitCode = try terminationStatus(sessionID) {
                         // Termination observation and the PTY readability callback
                         // can race. Once termination is observable, monitoring is
                         // complete, so one final drain captures bytes appended
                         // after the first read and before exit authority.
                         let finalSnapshot = try read(sessionID)
-                        guard self.isOpen(for: sessionID) else { return }
+                        guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                         guard onSample(sessionID, finalSnapshot.data) else {
-                            self.closeIfCurrent(sessionID)
+                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                             return
                         }
                         if let generation = finalSnapshot.generation {
@@ -1386,13 +1391,14 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
                         try finishTermination(sessionID, exitCode)
-                        self.closeIfCurrent(sessionID)
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                         onTermination(sessionID, exitCode)
                         return
                     }
                 } catch {
-                    self.closeIfCurrent(sessionID)
-                    onFailure(sessionID, error)
+                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                        onFailure(sessionID, error)
+                    }
                     return
                 }
             }
@@ -1413,24 +1419,45 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             wake(sessionID: sessionID)
             return
         }
+        let runGeneration = lock.withLock { () -> UInt in
+            nextRunGeneration &+= 1
+            openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
+            semaphore = nil
+            return nextRunGeneration
+        }
         queue.async {
             do {
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 let snapshot = try read(sessionID)
-                guard onSample(sessionID, snapshot.data) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                guard onSample(sessionID, snapshot.data) else {
+                    self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                    return
+                }
                 if let generation = snapshot.generation {
                     try acknowledge(sessionID, generation)
                 }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 if let exitCode = try terminationStatus(sessionID) {
                     let finalSnapshot = try read(sessionID)
-                    guard onSample(sessionID, finalSnapshot.data) else { return }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    guard onSample(sessionID, finalSnapshot.data) else {
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                        return
+                    }
                     if let generation = finalSnapshot.generation {
                         try acknowledge(sessionID, generation)
                     }
+                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                     try finishTermination(sessionID, exitCode)
                     onTermination(sessionID, exitCode)
                 }
+                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
             } catch {
-                onFailure(sessionID, error)
+                if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    onFailure(sessionID, error)
+                }
             }
         }
     }
@@ -1443,6 +1470,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     func stop() {
         let semaphore = lock.withLock { () -> DispatchSemaphore? in
             openSessionID = nil
+            openRunGeneration = nil
             let current = self.semaphore
             self.semaphore = nil
             return current
@@ -1454,13 +1482,21 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         lock.withLock { openSessionID == sessionID }
     }
 
-    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+    private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
+        lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
+    }
+
+    @discardableResult
+    private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
         lock.withLock {
-            if openSessionID == sessionID {
+            if openSessionID == sessionID, openRunGeneration == runGeneration {
                 openSessionID = nil
+                openRunGeneration = nil
                 semaphore?.signal()
                 semaphore = nil
+                return true
             }
+            return false
         }
     }
 }
@@ -1469,16 +1505,21 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
     private let queue = DispatchQueue(label: "holoscape.broker.input.write-lane", qos: .userInteractive)
     private let lock = NSLock()
     private var openSessionID: BrokerSessionID?
+    private var nextRunGeneration: UInt = 0
+    private var openRunGeneration: UInt?
 
     func open(for sessionID: BrokerSessionID) {
         lock.withLock {
+            nextRunGeneration &+= 1
             openSessionID = sessionID
+            openRunGeneration = nextRunGeneration
         }
     }
 
     func close() {
         lock.withLock {
             openSessionID = nil
+            openRunGeneration = nil
         }
     }
 
@@ -1489,29 +1530,38 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
         onSuccess: @escaping @Sendable (BrokerSessionID) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
-        guard isOpen(for: sessionID) else { return }
+        guard let runGeneration = runGeneration(for: sessionID) else { return }
         queue.async { [weak self] in
-            guard let self, self.isOpen(for: sessionID) else { return }
+            guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
             do {
                 try write(sessionID, bytes)
-                guard self.isOpen(for: sessionID) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 onSuccess(sessionID)
             } catch {
-                self.closeIfCurrent(sessionID)
-                onFailure(sessionID, error)
+                if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    onFailure(sessionID, error)
+                }
             }
         }
     }
 
-    private func isOpen(for sessionID: BrokerSessionID) -> Bool {
-        lock.withLock { openSessionID == sessionID }
+    private func runGeneration(for sessionID: BrokerSessionID) -> UInt? {
+        lock.withLock { openSessionID == sessionID ? openRunGeneration : nil }
     }
 
-    private func closeIfCurrent(_ sessionID: BrokerSessionID) {
+    private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
+        lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
+    }
+
+    @discardableResult
+    private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
         lock.withLock {
-            if openSessionID == sessionID {
+            if openSessionID == sessionID, openRunGeneration == runGeneration {
                 openSessionID = nil
+                openRunGeneration = nil
+                return true
             }
+            return false
         }
     }
 }
