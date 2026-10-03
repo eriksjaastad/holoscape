@@ -872,6 +872,11 @@ struct DiskBackedScrollbackStore: Sendable {
         case repair
     }
 
+    private enum DirectoryAccess {
+        case readOnly
+        case mutating
+    }
+
     private enum LegacyRetirementProvenance: String, CaseIterable {
         case fresh
         case legacy
@@ -1006,6 +1011,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private let afterDirectoryOpen: @Sendable (URL) -> Void
     private let transactionPhaseHook: @Sendable (TransactionPhase) throws -> Void
     private let descriptorSync: @Sendable (Int32) -> Int32
+    private let directoryEntrySync: @Sendable (Int32) -> Int32
     private let descriptorClose: @Sendable (Int32) -> Int32
     private let listingMetadata: @Sendable (Int32) throws -> stat
     private let beforeDirectoryStreamOpen: @Sendable (Int32) -> Void
@@ -1016,6 +1022,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private let beforeLegacyRetirementMarkerPublish: @Sendable () throws -> Void
     private let afterFormatMarkerOpen: @Sendable (URL) -> Void
     private let afterFormatMarkerValidationBeforePublish: @Sendable () throws -> Void
+    private let directoryIdentityAuthorityDirectory: URL
 
     init(
         directory: URL,
@@ -1025,6 +1032,7 @@ struct DiskBackedScrollbackStore: Sendable {
         afterDirectoryOpen: @escaping @Sendable (URL) -> Void = { _ in },
         transactionPhaseHook: @escaping @Sendable (TransactionPhase) throws -> Void = { _ in },
         descriptorSync: @escaping @Sendable (Int32) -> Int32 = { fsync($0) },
+        directoryEntrySync: @escaping @Sendable (Int32) -> Int32 = { fsync($0) },
         descriptorClose: @escaping @Sendable (Int32) -> Int32 = { Darwin.close($0) },
         listingMetadata: @escaping @Sendable (Int32) throws -> stat = { descriptor in
             var status = stat()
@@ -1040,7 +1048,8 @@ struct DiskBackedScrollbackStore: Sendable {
         beforeFormatMarkerPublish: @escaping @Sendable () throws -> Void = {},
         beforeLegacyRetirementMarkerPublish: @escaping @Sendable () throws -> Void = {},
         afterFormatMarkerOpen: @escaping @Sendable (URL) -> Void = { _ in },
-        afterFormatMarkerValidationBeforePublish: @escaping @Sendable () throws -> Void = {}
+        afterFormatMarkerValidationBeforePublish: @escaping @Sendable () throws -> Void = {},
+        directoryIdentityAuthorityDirectory: URL? = nil
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
@@ -1052,6 +1061,7 @@ struct DiskBackedScrollbackStore: Sendable {
         self.afterDirectoryOpen = afterDirectoryOpen
         self.transactionPhaseHook = transactionPhaseHook
         self.descriptorSync = descriptorSync
+        self.directoryEntrySync = directoryEntrySync
         self.descriptorClose = descriptorClose
         self.listingMetadata = listingMetadata
         self.beforeDirectoryStreamOpen = beforeDirectoryStreamOpen
@@ -1062,11 +1072,13 @@ struct DiskBackedScrollbackStore: Sendable {
         self.beforeLegacyRetirementMarkerPublish = beforeLegacyRetirementMarkerPublish
         self.afterFormatMarkerOpen = afterFormatMarkerOpen
         self.afterFormatMarkerValidationBeforePublish = afterFormatMarkerValidationBeforePublish
+        self.directoryIdentityAuthorityDirectory = directoryIdentityAuthorityDirectory
+            ?? Self.defaultDirectoryIdentityAuthorityDirectory()
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
-        try withDirectoryAuthority(createIfMissing: true) { authority in
+        try withDirectoryAuthority(createIfMissing: true, access: .mutating) { authority in
             try withSessionLock(authority, url: url) {
                 let mainExists = try pathExists(authority, name: url.lastPathComponent)
                 let hadMainAuthority = try hasMainAuthority(authority, fileName: url.lastPathComponent)
@@ -1120,7 +1132,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     func readTail(for id: BrokerSessionID, maxBytes: Int) throws -> Data {
         let url = try fileURL(for: id)
-        guard let result = try withExistingDirectoryAuthority({ authority in
+        guard let result = try withExistingDirectoryAuthority(access: .readOnly, { authority in
             let decision = try withExistingSessionLock(authority, url: url) {
                 let inspected = try withOwnedDescriptor(
                     authority,
@@ -1150,6 +1162,7 @@ struct DiskBackedScrollbackStore: Sendable {
             case .result(let data):
                 return data
             case .repair:
+                try ensurePersistentDirectoryIdentity(authority)
                 return try withSessionLock(authority, url: url) {
                     try withRepairedWritableMain(authority, at: url) { descriptor, _ in
                         cappedTail(try readAll(descriptor), requestedBytes: maxBytes)
@@ -1171,7 +1184,7 @@ struct DiskBackedScrollbackStore: Sendable {
     /// that performs the clear, so maintenance UI never reports a stale count.
     func clearAndReturnByteCount(for id: BrokerSessionID) throws -> Int {
         let url = try fileURL(for: id)
-        guard let clearedBytes = try withExistingDirectoryAuthority({ authority in
+        guard let clearedBytes = try withExistingDirectoryAuthority(access: .mutating, { authority in
             try withSessionLock(authority, url: url) {
                 let removed: Int? = try withOwnedDescriptor(
                     authority,
@@ -1203,7 +1216,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     func storedByteCount(for id: BrokerSessionID) throws -> Int {
         let url = try fileURL(for: id)
-        guard let result = try withExistingDirectoryAuthority({ authority in
+        guard let result = try withExistingDirectoryAuthority(access: .readOnly, { authority in
             let decision = try withExistingSessionLock(authority, url: url) {
                 let inspected = try withOwnedDescriptor(
                     authority,
@@ -1233,6 +1246,7 @@ struct DiskBackedScrollbackStore: Sendable {
             case .result(let count):
                 return count
             case .repair:
+                try ensurePersistentDirectoryIdentity(authority)
                 return try withSessionLock(authority, url: url) {
                     try withRepairedWritableMain(authority, at: url) { descriptor, _ in
                         var status = stat()
@@ -1248,7 +1262,7 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     func listStoredTails() throws -> [StoredScrollbackTail] {
-        guard let result = try withExistingDirectoryAuthority({ authority in
+        guard let result = try withExistingDirectoryAuthority(access: .readOnly, { authority in
             let names = try directoryEntryNames(authority)
             var tails: [StoredScrollbackTail] = []
             for name in names {
@@ -1288,6 +1302,7 @@ struct DiskBackedScrollbackStore: Sendable {
                     case .result(let currentStatus):
                         metadata = currentStatus
                     case .repair:
+                        try ensurePersistentDirectoryIdentity(authority)
                         metadata = try withSessionLock(authority, url: url) {
                             try withRepairedWritableMain(authority, at: url) { descriptor, _ in
                                 let currentStatus = try listingMetadata(descriptor)
@@ -1306,7 +1321,9 @@ struct DiskBackedScrollbackStore: Sendable {
                         throw error
                     case .unsafeScrollbackFile(let path) where path.hasSuffix(".scrollback.recovery"):
                         throw error
-                    case .invalidSessionID, .unsafeScrollbackDirectory, .unsafeScrollbackFile:
+                    case .unsafeScrollbackDirectory:
+                        throw error
+                    case .invalidSessionID, .unsafeScrollbackFile:
                         continue
                     case .corruptRecoveryFile:
                         throw error
@@ -1331,6 +1348,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     private func withDirectoryAuthority<T>(
         createIfMissing: Bool,
+        access: DirectoryAccess,
         _ operation: (DirectoryAuthority) throws -> T
     ) throws -> T? {
         // Resolve stable aliases (including macOS's `/var` -> `/private/var`)
@@ -1356,7 +1374,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 )
                 if next < 0, errno == ENOENT, createIfMissing {
                     if mkdirat(descriptor, component, S_IRWXU) == 0 {
-                        try sync(descriptor)
+                        try syncDirectoryEntry(descriptor)
                     } else if errno != EEXIST {
                         throw Self.posixError(code: errno)
                     }
@@ -1386,8 +1404,6 @@ struct DiskBackedScrollbackStore: Sendable {
             guard directoryStatus.st_mode & S_IFMT == S_IFDIR else {
                 throw StoreError.unsafeScrollbackDirectory(directory.path)
             }
-            try directoryIdentity.validate(directoryStatus, path: directory.path)
-            try validatePersistentDirectoryIdentity(directoryStatus)
         } catch {
             return try close(descriptor, after: .failure(error))
         }
@@ -1396,22 +1412,53 @@ struct DiskBackedScrollbackStore: Sendable {
             descriptor: descriptor,
             status: directoryStatus
         )
-        afterDirectoryOpen(directory)
         do {
-            if try !formatMarkerExists(authority) {
-                try migrateLegacyFilesIfNeeded(authority)
+            if try formatMarkerExists(authority) {
+                try directoryIdentity.validate(directoryStatus, path: directory.path)
+                if access == .readOnly {
+                    _ = try validatePersistentDirectoryIdentity(directoryStatus, allowCreation: false)
+                } else {
+                    try synchronizeDirectoryComponents(at: standardized)
+                    _ = try validatePersistentDirectoryIdentity(directoryStatus, allowCreation: true)
+                }
+            } else {
+                try withExclusiveDirectoryLock(authority) {
+                    if try formatMarkerExists(authority) {
+                        try directoryIdentity.validate(directoryStatus, path: directory.path)
+                        if access == .readOnly {
+                            _ = try validatePersistentDirectoryIdentity(
+                                directoryStatus,
+                                allowCreation: false
+                            )
+                        } else {
+                            try synchronizeDirectoryComponents(at: standardized)
+                            _ = try validatePersistentDirectoryIdentity(
+                                directoryStatus,
+                                allowCreation: true
+                            )
+                        }
+                        return
+                    }
+                    try classifyLegacyDirectory(authority)
+                    try directoryIdentity.validate(directoryStatus, path: directory.path)
+                    try synchronizeDirectoryComponents(at: standardized)
+                    _ = try validatePersistentDirectoryIdentity(directoryStatus, allowCreation: true)
+                    try migrateLegacyFilesIfNeeded(authority)
+                }
             }
         } catch {
             return try close(descriptor, after: .failure(error))
         }
+        afterDirectoryOpen(directory)
         let result = Result { try operation(authority) }
         return try close(descriptor, after: result)
     }
 
     private func withExistingDirectoryAuthority<T>(
+        access: DirectoryAccess,
         _ operation: (DirectoryAuthority) throws -> T
     ) throws -> T? {
-        try withDirectoryAuthority(createIfMissing: false, operation)
+        try withDirectoryAuthority(createIfMissing: false, access: access, operation)
     }
 
     private func canonicalDirectoryURL() throws -> URL {
@@ -1450,25 +1497,56 @@ struct DiskBackedScrollbackStore: Sendable {
         }
     }
 
-    private func validatePersistentDirectoryIdentity(_ status: stat) throws {
+    @discardableResult
+    private func validatePersistentDirectoryIdentity(
+        _ status: stat,
+        allowCreation: Bool
+    ) throws -> Bool {
         let configuredPath = directory.standardizedFileURL.path
-        let configuredParent = directory.standardizedFileURL.deletingLastPathComponent()
-        guard let resolvedParent = realpath(configuredParent.path, nil) else {
-            throw Self.posixError(code: errno)
-        }
-        defer { free(resolvedParent) }
-        let parentPath = String(cString: resolvedParent)
-        let descriptor = Darwin.open(
-            parentPath,
+        let authorityPath = directoryIdentityAuthorityDirectory.standardizedFileURL.path
+        var descriptor = Darwin.open(
+            authorityPath,
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         )
-        guard descriptor >= 0 else { throw Self.posixError(code: errno) }
-
-        let result: Result<Void, Error> = Result {
-            let name = Self.directoryIdentityXattr(configuredPath: configuredPath)
-            let expected = Data(
-                "holoscape-scrollback-directory-v1:\(status.st_dev):\(status.st_ino)".utf8
+        if descriptor < 0, errno == ENOENT, allowCreation {
+            let existed = FileManager.default.fileExists(atPath: authorityPath)
+            try FileManager.default.createDirectory(
+                at: directoryIdentityAuthorityDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
             )
+            if !existed {
+                guard let resolved = realpath(authorityPath, nil) else {
+                    throw Self.posixError(code: errno)
+                }
+                defer { free(resolved) }
+                try synchronizeDirectoryComponents(at: URL(
+                    fileURLWithPath: String(cString: resolved),
+                    isDirectory: true
+                ))
+            }
+            descriptor = Darwin.open(
+                authorityPath,
+                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            )
+        }
+        if descriptor < 0, errno == ENOENT, !allowCreation { return false }
+        guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            let code = errno
+            _ = descriptorClose(descriptor)
+            throw Self.posixError(code: code)
+        }
+
+        let result: Result<Bool, Error> = Result {
+            if allowCreation {
+                try cleanupStaleTestDirectoryIdentities(
+                    descriptor: descriptor,
+                    preserving: configuredPath
+                )
+            }
+            let name = Self.directoryIdentityXattr(configuredPath: configuredPath)
+            let expected = Self.directoryIdentityValue(configuredPath: configuredPath, status: status)
             if let existing = try getXattr(
                 descriptor: descriptor,
                 name: name,
@@ -1477,9 +1555,13 @@ struct DiskBackedScrollbackStore: Sendable {
                 guard existing == expected else {
                     throw StoreError.unsafeScrollbackDirectory(directory.path)
                 }
-                return
+                // A failed publication fsync can leave a visible xattr that is
+                // not durable. Never accept it without syncing again.
+                try sync(descriptor)
+                return true
             }
 
+            guard allowCreation else { return false }
             do {
                 try setXattr(
                     descriptor: descriptor,
@@ -1496,9 +1578,155 @@ struct DiskBackedScrollbackStore: Sendable {
                 ) == expected else {
                     throw StoreError.unsafeScrollbackDirectory(directory.path)
                 }
+                try sync(descriptor)
+            }
+            return true
+        }
+
+        let unlocked: Result<Bool, Error>
+        if flock(descriptor, LOCK_UN) == 0 {
+            unlocked = result
+        } else {
+            let unlockError = Self.posixError(code: errno)
+            switch result {
+            case .success:
+                unlocked = .failure(unlockError)
+            case .failure(let operationError):
+                unlocked = .failure(StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: operationError),
+                    close: String(describing: unlockError)
+                ))
             }
         }
-        _ = try close(descriptor, after: result)
+        return try close(descriptor, after: unlocked)
+    }
+
+    private func ensurePersistentDirectoryIdentity(_ authority: DirectoryAuthority) throws {
+        try synchronizeDirectoryComponents(at: try canonicalDirectoryURL())
+        _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+    }
+
+    private func classifyLegacyDirectory(_ authority: DirectoryAuthority) throws {
+        if case .missing = try legacyMarkerState(authority) {
+            _ = try unmarkedRetirementProvenance(authority)
+        }
+    }
+
+    private func withExclusiveDirectoryLock<T>(
+        _ authority: DirectoryAuthority,
+        _ operation: () throws -> T
+    ) throws -> T {
+        guard flock(authority.descriptor, LOCK_EX) == 0 else {
+            throw Self.posixError(code: errno)
+        }
+        let result = Result { try operation() }
+        guard flock(authority.descriptor, LOCK_UN) == 0 else {
+            let unlockError = Self.posixError(code: errno)
+            if case .failure(let operationError) = result {
+                throw StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: operationError),
+                    close: String(describing: unlockError)
+                )
+            }
+            throw unlockError
+        }
+        return try result.get()
+    }
+
+    private func synchronizeDirectoryComponents(at url: URL) throws {
+        guard url.isFileURL, url.path.hasPrefix("/") else {
+            throw StoreError.unsafeScrollbackDirectory(url.path)
+        }
+        var descriptor = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+
+        do {
+            for component in url.pathComponents.dropFirst() where component != "/" {
+                let next = Darwin.openat(
+                    descriptor,
+                    component,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+                )
+                guard next >= 0 else { throw Self.posixError(code: errno) }
+                do {
+                    try syncDirectoryEntry(descriptor)
+                } catch {
+                    _ = descriptorClose(next)
+                    throw error
+                }
+                let previous = descriptor
+                descriptor = next
+                try close(previous, after: .success(()))
+            }
+        } catch {
+            return try close(descriptor, after: .failure(error))
+        }
+        _ = try close(descriptor, after: .success(()))
+    }
+
+    private func syncDirectoryEntry(_ descriptor: Int32) throws {
+        guard directoryEntrySync(descriptor) == 0 else {
+            throw Self.posixError(code: errno)
+        }
+    }
+
+    private static func defaultDirectoryIdentityAuthorityDirectory() -> URL {
+        if isRunningTests {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("HoloscapeTests", isDirectory: true)
+                .appendingPathComponent("ScrollbackDirectoryIdentityAuthority", isDirectory: true)
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base
+            .appendingPathComponent("Holoscape", isDirectory: true)
+            .appendingPathComponent("ScrollbackDirectoryIdentityAuthority", isDirectory: true)
+    }
+
+    private static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.arguments.contains(where: { $0.contains(".xctest") })
+    }
+
+    private static func directoryIdentityValue(configuredPath: String, status: stat) -> Data {
+        Data(
+            "holoscape-scrollback-directory-v2:\(status.st_dev):\(status.st_ino)\n\(configuredPath)".utf8
+        )
+    }
+
+    private func cleanupStaleTestDirectoryIdentities(
+        descriptor: Int32,
+        preserving configuredPath: String
+    ) throws {
+        guard Self.isRunningTests else { return }
+        let size = flistxattr(descriptor, nil, 0, 0)
+        guard size >= 0 else { throw Self.posixError(code: errno) }
+        guard size > 0 else { return }
+        var names = [CChar](repeating: 0, count: size)
+        let count = flistxattr(descriptor, &names, names.count, 0)
+        guard count == size else {
+            if count < 0 { throw Self.posixError(code: errno) }
+            throw Self.posixError(code: EIO)
+        }
+        var removed = false
+        var offset = 0
+        while offset < names.count {
+            let name = names.withUnsafeBufferPointer { buffer in
+                String(cString: buffer.baseAddress!.advanced(by: offset))
+            }
+            offset += name.utf8.count + 1
+            guard name.hasPrefix("com.holoscape.scrollback.directory-") else { continue }
+            guard let value = try getXattr(descriptor: descriptor, name: name, allowMissing: true),
+                  let newline = value.lastIndex(of: 0x0A) else { continue }
+            let path = String(decoding: value[value.index(after: newline)...], as: UTF8.self)
+            guard path != configuredPath, !FileManager.default.fileExists(atPath: path) else { continue }
+            if fremovexattr(descriptor, name, 0) == 0 {
+                removed = true
+            } else if errno != ENOATTR {
+                throw Self.posixError(code: errno)
+            }
+        }
+        if removed { try sync(descriptor) }
     }
 
     private static func directoryIdentityXattr(configuredPath: String) -> String {
@@ -1988,6 +2216,15 @@ struct DiskBackedScrollbackStore: Sendable {
                   try readAll(descriptor) == contents else {
                 throw StoreError.unsafeScrollbackDirectory(directory.path)
             }
+            if name == Self.formatMarkerName {
+                guard try getXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    allowMissing: true
+                ) == formatMarkerOwner(authority) else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+            }
             try requirePathIdentity(
                 authority,
                 name: name,
@@ -2001,9 +2238,7 @@ struct DiskBackedScrollbackStore: Sendable {
 
     private func createFormatMarker(_ authority: DirectoryAuthority) throws {
         let temporaryName = "\(Self.formatMarkerName).staging"
-        let expectedMarker = Data(
-            "holoscape-scrollback-format-v2-staging:\(authority.status.st_dev):\(authority.status.st_ino)".utf8
-        )
+        let expectedMarker = formatMarkerOwner(authority)
         var stagingWasCreated = true
         var descriptor = Darwin.openat(
             authority.descriptor,
@@ -2089,6 +2324,12 @@ struct DiskBackedScrollbackStore: Sendable {
         }
         _ = try close(descriptor, after: .success(()))
         try sync(authority.descriptor)
+    }
+
+    private func formatMarkerOwner(_ authority: DirectoryAuthority) -> Data {
+        Data(
+            "holoscape-scrollback-format-v2-staging:\(authority.status.st_dev):\(authority.status.st_ino)".utf8
+        )
     }
 
     private func withRepairedWritableMain<T>(
