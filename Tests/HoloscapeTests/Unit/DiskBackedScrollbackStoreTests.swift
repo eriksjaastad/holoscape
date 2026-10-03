@@ -237,6 +237,172 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
     }
 
+    func testLockSetupWrapsParentDirectoryFailureAsLockError() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentFile = directory.appendingPathComponent("not-a-directory")
+        FileManager.default.createFile(atPath: parentFile.path, contents: Data("x".utf8))
+        let sessionURL = parentFile.appendingPathComponent("session.scrollback")
+
+        XCTAssertThrowsError(
+            try ScrollbackSessionOperationLocks.shared.withLock(for: sessionURL) {}
+        ) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("createDirectory failed") == true)
+            XCTAssertTrue(lockError?.message.contains(parentFile.path) == true)
+        }
+    }
+
+    func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-symlink-lock")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+        let lockURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+            .appendingPathExtension("lock")
+        let foreignTarget = directory.appendingPathComponent("foreign-lock-target")
+        try FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createSymbolicLink(at: lockURL, withDestinationURL: foreignTarget)
+
+        XCTAssertThrowsError(try store.listStoredTails()) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("open failed") == true)
+            XCTAssertTrue(lockError?.message.contains(lockURL.path) == true)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: foreignTarget.path))
+    }
+
+    func testListStoredTailsRejectsSymlinkSwappedAfterPreflightWithoutForeignLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-symlink-swap")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let foreignTarget = directory.appendingPathComponent("swap-target.txt")
+        try Data("foreign".utf8).write(to: foreignTarget)
+        var didSwap = false
+
+        let tails = try store.listStoredTails(resourceValues: { url in
+            if url.lastPathComponent == tailURL.lastPathComponent, !didSwap {
+                try FileManager.default.removeItem(at: url)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: foreignTarget)
+                didSwap = true
+            }
+            return try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ])
+        })
+
+        XCTAssertTrue(didSwap)
+        XCTAssertTrue(tails.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: foreignTarget.appendingPathExtension("lock").path
+        ))
+    }
+
+    func testListStoredTailsPropagatesProcessSharedLockOpenFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "list-lock-open-failure")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+
+        let lockURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+            .appendingPathExtension("lock")
+        try FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: false)
+
+        XCTAssertThrowsError(try store.listStoredTails()) { error in
+            let lockError = error as? ScrollbackSessionOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("open failed") == true)
+            XCTAssertTrue(lockError?.message.contains(lockURL.path) == true)
+        }
+    }
+
+    func testListStoredTailsWaitsForProcessSharedSessionLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "cross-process-list-session")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
+        try store.append(Data("persisted-tail".utf8), for: id)
+
+        let scrollbackURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        let lockPath = scrollbackURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .appendingPathExtension("lock")
+            .path
+        let readyURL = directory.appendingPathComponent("list-child-ready")
+        let releaseURL = directory.appendingPathComponent("list-child-release")
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
+            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": lockPath,
+            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
+            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            try? Data().write(to: releaseURL)
+            if child.isRunning {
+                child.terminate()
+            }
+        }
+
+        let readyDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let listDone = DispatchSemaphore(value: 0)
+        let result = ScrollbackTailListRecorder()
+        DispatchQueue.global().async {
+            defer { listDone.signal() }
+            do {
+                result.record(.success(try store.listStoredTails()))
+            } catch {
+                result.record(.failure(error))
+            }
+        }
+        XCTAssertEqual(listDone.wait(timeout: .now() + 0.1), .timedOut)
+
+        try Data().write(to: releaseURL)
+        XCTAssertEqual(listDone.wait(timeout: .now() + 2), .success)
+        let tails = try result.value?.get()
+        XCTAssertEqual(tails?.map(\.sessionID), [id])
+
+        let childExited = expectation(description: "process-shared list lock helper exited")
+        child.terminationHandler = { _ in childExited.fulfill() }
+        wait(for: [childExited], timeout: 3)
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
     func testProcessSharedLockHelper() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["HOLOSCAPE_SCROLLBACK_LOCK_HELPER"] == "1" else {
@@ -391,14 +557,17 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let phantomDirectory = directory.appendingPathComponent("phantom").appendingPathExtension("scrollback")
         try FileManager.default.createDirectory(at: phantomDirectory, withIntermediateDirectories: true)
 
-        // A symlink named like a session tail must not be reported either.
-        let realFile = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        // A symlink named like a session tail must not be reported or cause a
+        // lock file to be created beside its foreign target.
+        let foreignTarget = directory.appendingPathComponent("foreign-target.txt")
+        FileManager.default.createFile(atPath: foreignTarget.path, contents: Data("foreign\n".utf8))
         let phantomSymlink = directory.appendingPathComponent("linked").appendingPathExtension("scrollback")
-        try FileManager.default.createSymbolicLink(at: phantomSymlink, withDestinationURL: realFile)
+        try FileManager.default.createSymbolicLink(at: phantomSymlink, withDestinationURL: foreignTarget)
 
         let tails = try store.listStoredTails()
         XCTAssertEqual(tails.map(\.sessionID), [id])
         XCTAssertEqual(tails.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: foreignTarget.appendingPathExtension("lock").path))
     }
 
     func testListStoredTailsReturnsEmptyWhenDirectoryMissing() throws {
@@ -516,6 +685,21 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+private final class ScrollbackTailListRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Result<[DiskBackedScrollbackStore.StoredScrollbackTail], Error>?
+
+    var value: Result<[DiskBackedScrollbackStore.StoredScrollbackTail], Error>? {
+        lock.withLock { storage }
+    }
+
+    func record(_ result: Result<[DiskBackedScrollbackStore.StoredScrollbackTail], Error>) {
+        lock.withLock {
+            storage = result
+        }
     }
 }
 

@@ -26,7 +26,15 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
     }
 
     func withLock<T>(for fileURL: URL, _ operation: () throws -> T) throws -> T {
-        let canonicalURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        let standardizedURL = fileURL.standardizedFileURL
+        // Canonicalize the containing directory so callers using equivalent
+        // directory aliases share authority, but never resolve the session-file
+        // leaf. A concurrent leaf symlink swap must not redirect the advisory
+        // lock outside the scrollback directory.
+        let canonicalURL = standardizedURL
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .appendingPathComponent(standardizedURL.lastPathComponent)
         let key = canonicalURL.path
         let lockBox = registryLock.withLock {
             locksByPath = locksByPath.filter { $0.value.value != nil }
@@ -39,12 +47,25 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         }
         return try lockBox.lock.withLock {
             let lockURL = canonicalURL.appendingPathExtension("lock")
-            try FileManager.default.createDirectory(
-                at: lockURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            do {
+                try FileManager.default.createDirectory(
+                    at: lockURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                throw LockError(
+                    message: "createDirectory failed for \(lockURL.deletingLastPathComponent().path): \(error)"
+                )
+            }
 
-            let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            // The lock leaf is persistent authority, not an aliasable path.
+            // Refuse symlinks atomically at open so a concurrent replacement
+            // cannot redirect flock to a file outside the scrollback directory.
+            let descriptor = Darwin.open(
+                lockURL.path,
+                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
             guard descriptor >= 0 else {
                 throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
             }
@@ -195,17 +216,24 @@ struct DiskBackedScrollbackStore: Sendable {
     /// Enumerates the persisted per-session scrollback tails in the configured
     /// directory, exposing just enough metadata for a settings or manual
     /// maintenance UI. Only valid `.scrollback` session files are reported;
-    /// foreign files and malformed session names are skipped, and a single
-    /// entry whose metadata cannot be read (for example a tail deleted between
-    /// directory enumeration and this read) is skipped rather than failing the
-    /// whole listing, so maintenance still surfaces every tail it can.
+    /// foreign files and malformed session names are skipped. Each valid
+    /// session's metadata read shares the same deletion-stable process lock as
+    /// append/read/count/remove, so GUI maintenance cannot inspect a tail while
+    /// the broker is replacing it. Entry metadata failures (for example a tail
+    /// deleted before its lock is acquired) remain non-fatal; lock acquisition
+    /// and cleanup failures propagate so maintenance cannot report false success.
     ///
     /// `resourceValues` is a seam over the per-entry metadata read so the
     /// resilience path can be exercised deterministically in tests; callers
     /// that omit it get the real `URL.resourceValues(forKeys:)` read.
     func listStoredTails(
         resourceValues: (URL) throws -> URLResourceValues = { url in
-            try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ])
         }
     ) throws -> [StoredScrollbackTail] {
         let fileManager = FileManager.default
@@ -219,17 +247,30 @@ struct DiskBackedScrollbackStore: Sendable {
         var tails: [StoredScrollbackTail] = []
         for url in urls {
             guard url.pathExtension == "scrollback" else { continue }
-            let values: URLResourceValues
+            let rawID = url.deletingPathExtension().lastPathComponent
+            guard Self.isValidSessionID(rawID) else { continue }
+            // Reject foreign directories and symlinks before acquiring their
+            // advisory lock. The check is repeated under that lock below so a
+            // concurrent leaf replacement cannot be reported as a tail.
+            guard Self.isRegularFileWithoutFollowingSymlinks(url) else { continue }
+            let values: URLResourceValues?
             do {
-                values = try resourceValues(url)
+                values = try operationLocks.withLock(for: url) {
+                    guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
+                    let values = try resourceValues(url)
+                    guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
+                    return values
+                }
+            } catch let error as ScrollbackSessionOperationLocks.LockError {
+                throw error
             } catch {
                 // A per-entry metadata/readability race must not throw out the
                 // entire listing; skip the bad entry and surface the rest.
                 continue
             }
-            guard values.isRegularFile == true else { continue }
-            let rawID = url.deletingPathExtension().lastPathComponent
-            guard Self.isValidSessionID(rawID) else { continue }
+            guard let values else { continue }
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true else { continue }
             tails.append(StoredScrollbackTail(
                 sessionID: BrokerSessionID(rawValue: rawID),
                 byteCount: values.fileSize ?? 0,
@@ -260,5 +301,11 @@ struct DiskBackedScrollbackStore: Sendable {
         guard !rawValue.isEmpty else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
         return rawValue.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    private static func isRegularFileWithoutFollowingSymlinks(_ url: URL) -> Bool {
+        var fileStatus = stat()
+        guard lstat(url.path, &fileStatus) == 0 else { return false }
+        return fileStatus.st_mode & S_IFMT == S_IFREG
     }
 }
