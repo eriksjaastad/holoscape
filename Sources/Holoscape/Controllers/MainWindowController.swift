@@ -2173,8 +2173,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             )
         } catch {
             presentScrollbackMaintenanceResult(
-                title: "Could Not Clear Scrollback Tail",
-                message: "Holoscape could not clear persisted scrollback for session \(brokerSessionID.rawValue): \(error)"
+                title: "Could Not Confirm Scrollback Clear",
+                message: ScrollbackMaintenanceFormatting.clearFailure(error: String(describing: error))
             )
             NSLog("MainWindowController: failed to clear scrollback tail for \(brokerSessionID.rawValue): \(error)")
         }

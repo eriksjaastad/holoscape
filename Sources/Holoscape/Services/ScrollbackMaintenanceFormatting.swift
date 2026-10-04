@@ -5,11 +5,23 @@ import Foundation
 /// formatting deterministically without constructing any AppKit views.
 enum ScrollbackMaintenanceFormatting {
 
-    static func bulkClearFailure(clearedCount: Int, totalCount: Int, error: String) -> String {
+    static func clearFailure(error: String) -> String {
+        "Holoscape could not confirm whether the clear completed before the error. Refresh storage before retrying: \(error)"
+    }
+
+    static func bulkClearFailure(
+        clearedCount: Int,
+        totalCount: Int,
+        listingRefreshed: Bool,
+        error: String
+    ) -> String {
+        let refreshStatus = listingRefreshed
+            ? "The refreshed list shows current state."
+            : "Holoscape could not refresh current state. Refresh storage before retrying."
         guard clearedCount > 0 else {
-            return "Holoscape could not confirm any completed clears before the error. The refreshed list shows current state: \(error)"
+            return "Holoscape could not confirm any completed clears before the error. \(refreshStatus) Error: \(error)"
         }
-        return "Holoscape confirmed \(clearedCount) of \(totalCount) clears before the error. The refreshed list shows current state: \(error)"
+        return "Holoscape confirmed \(clearedCount) of \(totalCount) clears before the error. \(refreshStatus) Error: \(error)"
     }
 
     /// Formats a byte count as a short human-readable size, e.g. "512 B",

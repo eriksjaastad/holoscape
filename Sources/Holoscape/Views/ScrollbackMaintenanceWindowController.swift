@@ -126,11 +126,15 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
 
     /// Reloads the persisted-tail listing from disk so the UI reflects reality.
     /// Called on open and after any removal.
-    func refreshListing() {
+    @discardableResult
+    func refreshListing() -> Bool {
+        let succeeded: Bool
         do {
             tails = try store.listStoredTails()
+            succeeded = true
         } catch {
             tails = []
+            succeeded = false
             presentMessage(
                 "Could Not List Scrollback",
                 message: "Holoscape could not read the stored scrollback directory: \(error)"
@@ -140,6 +144,7 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
         scrollView.isHidden = tails.isEmpty
         emptyStateLabel.isHidden = !tails.isEmpty
         updateButtonState()
+        return succeeded
     }
 
     private func updateButtonState() {
@@ -217,8 +222,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             } catch {
                 self.refreshListing()
                 self.presentMessage(
-                    "Could Not Clear Scrollback",
-                    message: "Holoscape could not clear scrollback for session \(tail.sessionID.rawValue): \(error)"
+                    "Could Not Confirm Scrollback Clear",
+                    message: ScrollbackMaintenanceFormatting.clearFailure(error: String(describing: error))
                 )
                 return
             }
@@ -245,12 +250,13 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
                     clearedCount += 1
                 }
             } catch {
-                self.refreshListing()
+                let listingRefreshed = self.refreshListing()
                 self.presentMessage(
                     "Could Not Clear All Scrollback",
                     message: ScrollbackMaintenanceFormatting.bulkClearFailure(
                         clearedCount: clearedCount,
                         totalCount: count,
+                        listingRefreshed: listingRefreshed,
                         error: String(describing: error)
                     )
                 )

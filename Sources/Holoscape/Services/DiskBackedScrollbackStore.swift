@@ -210,6 +210,11 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
+            // Finish any already-durable compaction intent before publishing a
+            // new clear intent. Reusing and truncating a nonempty journal would
+            // otherwise destroy the only recovery copy if the clear journal
+            // write were interrupted.
+            try recoverCompactionIfNeeded(at: url)
             // Clearing is deliberately descriptor-bound: the validated inode is
             // truncated instead of unlinking a pathname that could be rebound
             // between validation and mutation. The caller therefore needs write
@@ -281,6 +286,9 @@ struct DiskBackedScrollbackStore: Sendable {
                 .fileSizeKey,
                 .contentModificationDateKey,
             ])
+        },
+        isRegularFile: (URL) throws -> Bool = { url in
+            try Self.isRegularFileWithoutFollowingSymlinks(url)
         }
     ) throws -> [StoredScrollbackTail] {
         let fileManager = FileManager.default
@@ -299,17 +307,17 @@ struct DiskBackedScrollbackStore: Sendable {
             // Reject foreign directories and symlinks before acquiring their
             // advisory lock. The check is repeated under that lock below so a
             // concurrent leaf replacement cannot be reported as a tail.
-            guard Self.isRegularFileWithoutFollowingSymlinks(url) else { continue }
+            guard try isRegularFile(url) else { continue }
             let values: URLResourceValues?
             do {
                 values = try operationLocks.withLock(for: url) {
-                    guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
+                    guard try isRegularFile(url) else { return nil }
                     try recoverCompactionIfNeeded(at: url)
                     // `contentsOfDirectory` may vend URLs carrying prefetched
                     // metadata from before recovery rewrote the file. Rebuild
                     // the URL so the post-recovery size is read afresh.
                     let values = try resourceValues(URL(fileURLWithPath: url.path))
-                    guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
+                    guard try isRegularFile(url) else { return nil }
                     return values
                 }
             } catch let error as ScrollbackSessionOperationLocks.LockError {
@@ -420,25 +428,30 @@ struct DiskBackedScrollbackStore: Sendable {
         try Self.fullSync(descriptor)
     }
 
+    private enum CompactionJournalObservation {
+        case empty
+        case valid(Data)
+        case invalid
+    }
+
     private func readCompactionJournal(at journalURL: URL) throws -> Data? {
-        try withOpenRegularFile(
+        let observation = try withOpenRegularFile(
             at: journalURL,
-            flags: O_RDWR | O_NONBLOCK,
+            flags: O_RDONLY | O_NONBLOCK,
             missingIsAbsent: true
         ) { descriptor in
             var status = stat()
             guard fstat(descriptor, &status) == 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            guard status.st_size > 0 else { return nil }
+            guard status.st_size > 0 else { return CompactionJournalObservation.empty }
             let maximumPayload = max(
                 max(0, maxRetainedBytes),
                 ScrollbackPersistencePolicy.maxRetainedBytesPerSession
             )
             let maximumRecord = Self.compactionJournalHeaderSize + maximumPayload
             guard status.st_size <= off_t(maximumRecord) else {
-                try Self.clearCompactionJournal(descriptor)
-                return nil
+                return CompactionJournalObservation.invalid
             }
             let record = try Self.readExactly(
                 from: descriptor,
@@ -449,15 +462,22 @@ struct DiskBackedScrollbackStore: Sendable {
                 // The main file is never mutated until a complete journal has
                 // been synced. An incomplete/torn record therefore belongs to a
                 // pre-mutation interruption and is safe to discard.
-                try Self.clearCompactionJournal(descriptor)
-                return nil
+                return CompactionJournalObservation.invalid
             }
+            return CompactionJournalObservation.valid(retained)
+        }
+        switch observation {
+        case nil, .some(.empty):
+            return nil
+        case .some(.valid(let retained)):
             return retained
-        } ?? nil
+        case .some(.invalid):
+            try clearCompactionJournal(at: journalURL)
+            return nil
+        }
     }
 
-    private func clearCompactionJournalIfPresent(at url: URL) throws {
-        let journalURL = url.appendingPathExtension("compaction")
+    private func clearCompactionJournal(at journalURL: URL) throws {
         _ = try withOpenRegularFile(
             at: journalURL,
             flags: O_RDWR | O_NONBLOCK,
@@ -465,6 +485,10 @@ struct DiskBackedScrollbackStore: Sendable {
         ) { descriptor in
             try Self.clearCompactionJournal(descriptor)
         }
+    }
+
+    private func clearCompactionJournalIfPresent(at url: URL) throws {
+        try clearCompactionJournal(at: url.appendingPathExtension("compaction"))
     }
 
     private static let compactionJournalMagic = Data("HSCMP001".utf8)
@@ -710,9 +734,13 @@ struct DiskBackedScrollbackStore: Sendable {
         return rawValue.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
-    private static func isRegularFileWithoutFollowingSymlinks(_ url: URL) -> Bool {
+    private static func isRegularFileWithoutFollowingSymlinks(_ url: URL) throws -> Bool {
         var fileStatus = stat()
-        guard lstat(url.path, &fileStatus) == 0 else { return false }
+        guard lstat(url.path, &fileStatus) == 0 else {
+            let code = errno
+            if code == ENOENT { return false }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
         return fileStatus.st_mode & S_IFMT == S_IFREG
     }
 
