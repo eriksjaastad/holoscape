@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Lightweight struct capturing a channel's name, type, and state for reports.
@@ -43,6 +44,21 @@ struct HistorySnapshot: Codable, Sendable {
     let recentSettingsChanges: [SettingsChangeEntry]
     let recentErrors: [ErrorEntry]
     let capturedAt: Date
+}
+
+struct HistorySnapshotLoadFailure: Error, Equatable, LocalizedError, Sendable {
+    enum Operation: String, Sendable {
+        case read
+        case decode
+    }
+
+    let operation: Operation
+    let path: String
+    let message: String
+
+    var errorDescription: String? {
+        "History snapshot \(operation.rawValue) failed for \(path): \(message)"
+    }
 }
 
 /// Rolling event buffer that runs in the background.
@@ -154,13 +170,47 @@ final class HistoryBuffer {
         }
     }
 
-    /// Load the last persisted snapshot (for crash recovery).
-    static func loadPersistedSnapshot(from url: URL? = nil) -> HistorySnapshot? {
+    /// Load the last persisted snapshot (for crash recovery). A missing file is
+    /// expected absence; unreadable or invalid data remains observable.
+    static func loadPersistedSnapshot(
+        from url: URL? = nil
+    ) -> Result<HistorySnapshot?, HistorySnapshotLoadFailure> {
         let url = url ?? defaultPersistURL
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        var fileStatus = stat()
+        guard lstat(url.path, &fileStatus) == 0 else {
+            let code = errno
+            if code == ENOENT {
+                return .success(nil)
+            }
+            return .failure(HistorySnapshotLoadFailure(
+                operation: .read,
+                path: url.path,
+                message: String(cString: strerror(code))
+            ))
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return .failure(HistorySnapshotLoadFailure(
+                operation: .read,
+                path: url.path,
+                message: error.localizedDescription
+            ))
+        }
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(HistorySnapshot.self, from: data)
+        do {
+            return .success(try decoder.decode(HistorySnapshot.self, from: data))
+        } catch {
+            return .failure(HistorySnapshotLoadFailure(
+                operation: .decode,
+                path: url.path,
+                message: error.localizedDescription
+            ))
+        }
     }
 
     private func startPeriodicFlush() {

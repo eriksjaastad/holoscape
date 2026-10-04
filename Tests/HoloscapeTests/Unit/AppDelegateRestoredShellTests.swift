@@ -4,6 +4,44 @@ import XCTest
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    func testCrashContextReportsUnavailablePersistedHistory() {
+        let failure = HistorySnapshotLoadFailure(
+            operation: .decode,
+            path: "/tmp/history-buffer.json",
+            message: "invalid JSON"
+        )
+
+        let lines = AppDelegate.crashContextLines(
+            persistedHistory: nil,
+            historyRecoveryFailure: failure,
+            activeChannelCount: 0
+        )
+
+        XCTAssertTrue(lines.contains("Historical command and error context is unavailable."))
+        XCTAssertTrue(lines.contains("\nSubmit a crash report?"))
+    }
+
+    func testCrashContextPreservesRecoveredCountsAndActiveChannels() {
+        let history = HistorySnapshot(
+            recentCommands: [CommandEntry(command: "pwd", channelName: "Shell", timestamp: Date())],
+            recentChannelSwitches: [],
+            recentSettingsChanges: [],
+            recentErrors: [ErrorEntry(message: "failed", context: nil, timestamp: Date())],
+            capturedAt: Date()
+        )
+
+        let lines = AppDelegate.crashContextLines(
+            persistedHistory: history,
+            historyRecoveryFailure: nil,
+            activeChannelCount: 2
+        )
+
+        XCTAssertTrue(lines.contains("Last 1 commands captured."))
+        XCTAssertTrue(lines.contains("1 errors logged before crash."))
+        XCTAssertTrue(lines.contains("2 channels were active."))
+        XCTAssertFalse(lines.contains("Historical command and error context is unavailable."))
+    }
+
     private final class RecordingAPIServer: HoloscapeAPIServer {
         var startCallCount = 0
         var stopCallCount = 0
