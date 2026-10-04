@@ -677,29 +677,56 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         window.alphaValue = CGFloat(appearance.transparency)
     }
 
+    static func crashContextLines(
+        persistedHistory: HistorySnapshot?,
+        historyRecoveryFailure: HistorySnapshotLoadFailure?,
+        activeChannelCount: Int
+    ) -> [String] {
+        var contextLines = ["A crash was detected from a previous session."]
+        if historyRecoveryFailure != nil {
+            contextLines.append("Historical command and error context is unavailable.")
+        } else if let persistedHistory {
+            let commandCount = persistedHistory.recentCommands.count
+            let errorCount = persistedHistory.recentErrors.count
+            if commandCount > 0 { contextLines.append("Last \(commandCount) commands captured.") }
+            if errorCount > 0 { contextLines.append("\(errorCount) errors logged before crash.") }
+        }
+        if activeChannelCount > 0 {
+            contextLines.append("\(activeChannelCount) channels were active.")
+        }
+        contextLines.append("\nSubmit a crash report?")
+        return contextLines
+    }
+
     private func checkForCrashes(lastLaunch: Date?) {
         let since = lastLaunch ?? Date.distantPast
         let crashes = crashScanner.scanForCrashes(since: since)
         guard let crash = crashes.first else { return }
 
-        // Load persisted state for context
+        // Load persisted state for context. Missing history is expected; an
+        // unreadable/corrupt snapshot remains visible while report submission
+        // continues without that optional context.
         let config = configService.load()
-        let persistedHistory = HistoryBuffer.loadPersistedSnapshot()
+        let persistedHistory: HistorySnapshot?
+        let historyRecoveryFailure: HistorySnapshotLoadFailure?
+        switch HistoryBuffer.loadPersistedSnapshot() {
+        case .success(let snapshot):
+            persistedHistory = snapshot
+            historyRecoveryFailure = nil
+        case .failure(let failure):
+            persistedHistory = nil
+            historyRecoveryFailure = failure
+            NSLog("Crash history recovery failed: %@", failure.localizedDescription)
+        }
 
         let alert = NSAlert()
         alert.messageText = "Holoscape Crashed"
 
-        var contextLines: [String] = ["A crash was detected from a previous session."]
-        if let history = persistedHistory {
-            let cmdCount = history.recentCommands.count
-            let errorCount = history.recentErrors.count
-            if cmdCount > 0 { contextLines.append("Last \(cmdCount) commands captured.") }
-            if errorCount > 0 { contextLines.append("\(errorCount) errors logged before crash.") }
-        }
-        if !config.channels.isEmpty {
-            contextLines.append("\(config.channels.count) channels were active.")
-        }
-        contextLines.append("\nSubmit a crash report?")
+        let contextLines = Self.crashContextLines(
+            persistedHistory: persistedHistory,
+            historyRecoveryFailure: historyRecoveryFailure,
+            activeChannelCount: config.channels.count
+        )
         alert.informativeText = contextLines.joined(separator: " ")
 
         alert.addButton(withTitle: "Submit Report")

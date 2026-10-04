@@ -153,7 +153,7 @@ final class HistoryBufferTests: XCTestCase {
         guard case .success = buffer.flush() else {
             return XCTFail("A failed flush should stay dirty and retry the same snapshot")
         }
-        let loaded = HistoryBuffer.loadPersistedSnapshot(from: persistURL)
+        let loaded = try HistoryBuffer.loadPersistedSnapshot(from: persistURL).get()
         XCTAssertEqual(loaded?.recentCommands.map(\.command), ["retry-test"])
     }
 
@@ -161,16 +161,50 @@ final class HistoryBufferTests: XCTestCase {
         let missingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)/history-buffer.json")
 
-        XCTAssertNil(HistoryBuffer.loadPersistedSnapshot(from: missingURL))
+        let result = HistoryBuffer.loadPersistedSnapshot(from: missingURL)
+
+        XCTAssertNoThrow(try result.get())
+        XCTAssertNil(try result.get())
     }
 
-    func testLoadPersistedSnapshot() {
+    func testLoadCorruptPersistedSnapshotReturnsDecodeFailureWithPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)", isDirectory: true)
+        let persistURL = root.appendingPathComponent("history-buffer.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("not-json".utf8).write(to: persistURL)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        guard case let .failure(failure) = HistoryBuffer.loadPersistedSnapshot(from: persistURL) else {
+            return XCTFail("Corrupt persisted history must not become a successful empty snapshot")
+        }
+        XCTAssertEqual(failure.operation, .decode)
+        XCTAssertEqual(failure.path, persistURL.path)
+        XCTAssertFalse(failure.message.isEmpty)
+    }
+
+    func testLoadUnreadablePersistedSnapshotReturnsReadFailureWithPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)", isDirectory: true)
+        let persistURL = root.appendingPathComponent("history-buffer.json", isDirectory: true)
+        try FileManager.default.createDirectory(at: persistURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        guard case let .failure(failure) = HistoryBuffer.loadPersistedSnapshot(from: persistURL) else {
+            return XCTFail("Unreadable persisted history must not become a successful empty snapshot")
+        }
+        XCTAssertEqual(failure.operation, .read)
+        XCTAssertEqual(failure.path, persistURL.path)
+        XCTAssertFalse(failure.message.isEmpty)
+    }
+
+    func testLoadPersistedSnapshot() throws {
         let buffer = HistoryBuffer()
         buffer.recordCommand("persist-test", channelName: "Shell")
         buffer.recordError("persist-error")
         buffer.flush()
 
-        let loaded = HistoryBuffer.loadPersistedSnapshot()
+        let loaded = try HistoryBuffer.loadPersistedSnapshot().get()
         XCTAssertNotNil(loaded, "Should load persisted snapshot")
         XCTAssertEqual(loaded?.recentCommands.count, 1)
         XCTAssertEqual(loaded?.recentCommands.first?.command, "persist-test")
