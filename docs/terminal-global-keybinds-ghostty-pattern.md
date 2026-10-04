@@ -6,6 +6,8 @@ Status: read-only spike for card #5932.
 
 This spike reads Ghostty's macOS global-keybind implementation in `~/projects/github-repos/ghostty/macos/Sources/Features/Global Keybinds/` plus the config and action paths that decide when the event tap exists and what a captured key does.
 
+Source snapshot: clean Ghostty `main` at `7c40388b2c63b7dcc5d6c9b9804e40fb2574444f`.
+
 Holoscape should **not add a global event tap now**. Card #5862 already delivered an in-app shortcut for opening a shell, and no current requirement needs a shortcut while another app is active. A global tap would add an Accessibility permission dependency and a system-wide input interception surface for no present daily-driver benefit.
 
 If Holoscape later adds a quick-terminal or summon-window feature, Ghostty's pattern is a useful starting point: enable capture only when an explicit global binding exists, reuse the same typed action resolver used for local shortcuts, and consume an event only after that resolver confirms it handled the action.
@@ -15,7 +17,7 @@ If Holoscape later adds a quick-terminal or summon-window feature, Ghostty's pat
 Ghostty divides the feature into four responsibilities:
 
 1. **Configuration owns intent.** A binding marked `global:` is stored with a `global` flag. Global/all bindings cannot be multi-key sequences.
-2. **Core action routing owns semantics.** `ghostty_app_key` resolves the event through the same binding set used for local keys. When the app is unfocused it rejects non-global bindings; global actions are dispatched through the app-wide action path.
+2. **Core action routing owns semantics.** Inactive capture and active-window input enter through different C APIs but converge on Ghostty's shared binding/action machinery. `ghostty_app_key` handles inactive capture and active input when no main window exists; a focused terminal surface enters through `ghostty_surface_key`. When the app is unfocused, the app path rejects non-global bindings. Both paths dispatch global actions through the app-wide action path.
 3. **AppDelegate owns lifecycle.** After config load or reload, it asks `ghostty_app_has_global_keybinds(...)` whether any global binding exists, enabling or disabling the singleton event tap accordingly.
 4. **GlobalEventTap owns only OS capture.** It converts `CGEvent` to `NSEvent`, then to Ghostty's existing key-event model. It does not maintain a second shortcut registry or execute UI commands itself.
 
@@ -41,7 +43,7 @@ The distinction in steps 3-5 is deliberate. The source notes that repeatedly att
 
 `disable()` is also idempotent. It invalidates the permission timer and the tap's Mach port, then clears both references. Deinitialization calls `disable()`.
 
-On app startup, Ghostty delays enabling for two seconds so the Accessibility prompt is not buried beneath initial windows. On later config reloads it enables immediately. If config no longer contains global bindings, AppDelegate disables the tap.
+During the first five seconds after app launch, Ghostty schedules enabling two seconds later so the Accessibility prompt is not buried beneath initial windows. A config reload inside that five-second window can schedule another uncancelled delayed enable; only updates after five seconds enable immediately. If config no longer contains global bindings, AppDelegate disables the tap, but an earlier delayed enable can still run afterward.
 
 ## Capture and dispatch behavior
 
@@ -51,13 +53,15 @@ The tap source is installed on the main run loop in common modes. The callback m
 
 1. Return the original event for everything except `keyDown` and tap-disabled notifications.
 2. Re-enable the existing tap if macOS disabled it because of timeout or user input.
-3. Ignore captured keys while Ghostty is active, because AppDelegate's local `NSEvent` monitor handles those.
+3. Ignore captured keys while Ghostty is active. With a main window, the responder chain routes input through the focused surface and `ghostty_surface_key`. Without a main window, AppDelegate's local `NSEvent` monitor can route bindings through `ghostty_app_key`.
 4. Resolve AppDelegate and the Ghostty app instance.
 5. Convert the `CGEvent` to `NSEvent`, then to Ghostty's core key-event representation.
 6. Call `ghostty_app_key`.
 7. Return `nil` only when the core reports that it handled the key; otherwise return the original event unchanged.
 
-This produces exactly one routing path for active and inactive application states. The difference is capture source, not command semantics.
+This produces two input entry points that converge on shared binding/action machinery. The capture source and C entry point differ, but global actions ultimately use the same app-wide dispatcher.
+
+Ghostty treats a matched global binding as consumed. `App.keyEvent` invokes `performAllChainedAction` and returns `true` even if an individual action later logs a dispatch error. Its surface path likewise makes `global:` and `all:` bindings consuming regardless of the `unconsumed:` or `performable:` flags. Event consumption therefore means "a global binding matched and dispatch was attempted," not "the action completed successfully."
 
 ## Permission and failure contract
 
@@ -81,7 +85,7 @@ Ghostty logs tap-creation failure but exposes no user-facing state in this modul
 
 A shortcut descriptor should contain a typed action and a scope such as `local` or `global`. Both AppKit menu shortcuts and a future global capture adapter should invoke the same resolver. Do not duplicate selectors, closures, or key parsing in the event-tap service.
 
-The resolver should return an explicit handled result. The global adapter may suppress the system event only after receiving `handled`; unavailable, invalid, or failed actions should leave the event untouched unless the action contract explicitly says otherwise.
+The resolver should return an explicit dispatch result. As a deliberate improvement over Ghostty, the global adapter should suppress the system event only after the dispatcher accepts a valid, available typed action. Unknown, invalid, or synchronously unavailable actions should leave the event untouched. An accepted asynchronous action may still fail later, so the contract must distinguish dispatch acceptance from eventual action completion rather than claim that the original key can be replayed after a later failure.
 
 ### 2. Demand-driven capture
 
@@ -137,7 +141,8 @@ Only create implementation cards when Holoscape has a concrete cross-application
 | Binding removed while polling | Polling stops; stale delayed work cannot create a tap |
 | Permission granted | One tap creation attempt; state becomes enabled or a visible failure |
 | Tap creation fails despite trust | No infinite retry; diagnostic remains actionable |
-| App active | Local monitor handles the binding; global callback passes the event through |
+| App active with a focused surface | Responder chain routes through the surface resolver; global callback passes the event through |
+| App active without a main window | Local monitor routes app bindings; global callback passes the event through |
 | App inactive, matching global binding | Typed action runs once; event is consumed only when handled |
 | App inactive, local-only or unknown binding | Event passes through unchanged |
 | macOS disables tap | Existing tap is re-enabled without duplicating sources |
@@ -166,7 +171,11 @@ A real app-hosted smoke test should verify an actual configured shortcut while a
 
 - `macos/Sources/Features/Global Keybinds/GlobalEventTap.swift` — permission prompt/polling, event-tap creation, run-loop attachment, callback filtering, tap recovery, and event consumption.
 - `macos/Sources/App/AppDelegate.swift` — local event monitor plus config-driven global tap enable/disable and launch-delay behavior.
+- `macos/Sources/Ghostty/Ghostty.App.swift` — app wrapper that publishes active/inactive focus state to the embedded core.
+- `macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift` — focused-surface key entry point used while a terminal window owns input.
+- `src/config/Config.zig` — user-facing `global:`, `all:`, `unconsumed:`, and `performable:` semantics.
 - `src/input/Binding.zig` — global binding flag, parser restrictions, and action definitions.
 - `src/App.zig` — app-scope key resolution, focused/unfocused filtering, and global action dispatch.
+- `src/Surface.zig` — surface binding resolution and unconditional consumption/dispatch behavior for global and all-surface bindings.
 - `src/apprt/embedded.zig` — `hasGlobalKeybinds` scan and exported C API.
 - `include/ghostty.h` — public `ghostty_app_has_global_keybinds` declaration.
