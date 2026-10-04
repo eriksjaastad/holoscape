@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Holoscape
 
@@ -79,6 +80,84 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertEqual(Set(try registry.load().map(\.id)), Set(records.map(\.id)))
     }
 
+    func testSpawnedProcessesPreserveEverySessionRecord() throws {
+        if let registryPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_CHILD_PATH"],
+           let gatePath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_CHILD_GATE"],
+           let prefix = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_CHILD_PREFIX"],
+           let countValue = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_CHILD_COUNT"],
+           let count = Int(countValue) {
+            let deadline = Date().addingTimeInterval(5)
+            while !FileManager.default.fileExists(atPath: gatePath) {
+                guard Date() < deadline else {
+                    return XCTFail("Timed out waiting for parent process gate")
+                }
+                usleep(1_000)
+            }
+
+            let registry = BrokerSessionRegistry(fileURL: URL(fileURLWithPath: registryPath))
+            for index in 0..<count {
+                try registry.upsert(makeRecord(
+                    id: "\(prefix)-\(index)",
+                    lifecycle: .running,
+                    updatedAt: TimeInterval(index + 1)
+                ))
+            }
+            return
+        }
+
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let gateURL = tempDirectory.appendingPathComponent("start-gate")
+        let processCount = 4
+        let recordsPerProcess = 30
+        var children: [(process: Process, exited: DispatchSemaphore, output: Pipe)] = []
+
+        for childIndex in 0..<processCount {
+            let child = Process()
+            let output = Pipe()
+            let exited = DispatchSemaphore(value: 0)
+            child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            child.arguments = [
+                "-XCTest",
+                "HoloscapeTests.BrokerSessionRegistryTests/testSpawnedProcessesPreserveEverySessionRecord",
+                Bundle(for: Self.self).bundleURL.path,
+            ]
+            child.environment = ProcessInfo.processInfo.environment.merging([
+                "HOLOSCAPE_REGISTRY_CHILD_PATH": registryURL.path,
+                "HOLOSCAPE_REGISTRY_CHILD_GATE": gateURL.path,
+                "HOLOSCAPE_REGISTRY_CHILD_PREFIX": "child-\(childIndex)",
+                "HOLOSCAPE_REGISTRY_CHILD_COUNT": String(recordsPerProcess),
+            ]) { _, childValue in childValue }
+            child.standardOutput = output
+            child.standardError = output
+            child.terminationHandler = { _ in exited.signal() }
+            try child.run()
+            children.append((child, exited, output))
+        }
+
+        try Data().write(to: gateURL)
+        for child in children {
+            let result = child.exited.wait(timeout: .now() + 15)
+            if result == .timedOut {
+                child.process.terminate()
+                if child.exited.wait(timeout: .now() + 1) == .timedOut {
+                    _ = Darwin.kill(child.process.processIdentifier, SIGKILL)
+                    _ = child.exited.wait(timeout: .now() + 1)
+                }
+            }
+            let diagnostic = String(
+                data: child.output.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            XCTAssertEqual(result, .success, "Child process timed out: \(diagnostic)")
+            XCTAssertEqual(child.process.terminationReason, .exit, "Child process was signaled: \(diagnostic)")
+            XCTAssertEqual(child.process.terminationStatus, 0, "Child process failed: \(diagnostic)")
+        }
+
+        let records = try BrokerSessionRegistry(fileURL: registryURL).load()
+        XCTAssertEqual(records.count, processCount * recordsPerProcess)
+        XCTAssertEqual(Set(records.map(\.id)).count, processCount * recordsPerProcess)
+    }
+
     func testConditionalReplaceDoesNotOverwriteNewerLifecycle() throws {
         let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
         let running = makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1.125)
@@ -91,10 +170,101 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertEqual(try registry.load().map(\.lifecycle), [.terminating])
     }
 
+    func testSpawnedProcessConditionalReplacesAllowOnlyOneWinner() throws {
+        if let registryPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_REPLACE_CHILD_PATH"],
+           let gatePath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_REPLACE_CHILD_GATE"],
+           let resultPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_REPLACE_CHILD_RESULT"],
+           let lifecycleValue = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_REPLACE_CHILD_LIFECYCLE"] {
+            let deadline = Date().addingTimeInterval(5)
+            while !FileManager.default.fileExists(atPath: gatePath) {
+                guard Date() < deadline else {
+                    return XCTFail("Timed out waiting for parent process gate")
+                }
+                usleep(1_000)
+            }
+
+            let lifecycle: BrokerSessionLifecycle = lifecycleValue == "detached" ? .detached : .terminating
+            let expected = makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1)
+            let replacement = makeRecord(id: "session-race", lifecycle: lifecycle, updatedAt: 2)
+            let replaced = try BrokerSessionRegistry(fileURL: URL(fileURLWithPath: registryPath))
+                .replace(replacement, ifUnchangedFrom: expected)
+            try Data(replaced ? "1".utf8 : "0".utf8).write(to: URL(fileURLWithPath: resultPath))
+            return
+        }
+
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let gateURL = tempDirectory.appendingPathComponent("replace-gate")
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+        try registry.save([makeRecord(id: "session-race", lifecycle: .running, updatedAt: 1)])
+        var children: [(process: Process, exited: DispatchSemaphore, output: Pipe, resultURL: URL)] = []
+
+        for lifecycle in ["detached", "terminating"] {
+            let child = Process()
+            let output = Pipe()
+            let exited = DispatchSemaphore(value: 0)
+            let resultURL = tempDirectory.appendingPathComponent("replace-\(lifecycle)-result")
+            child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            child.arguments = [
+                "-XCTest",
+                "HoloscapeTests.BrokerSessionRegistryTests/testSpawnedProcessConditionalReplacesAllowOnlyOneWinner",
+                Bundle(for: Self.self).bundleURL.path,
+            ]
+            child.environment = ProcessInfo.processInfo.environment.merging([
+                "HOLOSCAPE_REGISTRY_REPLACE_CHILD_PATH": registryURL.path,
+                "HOLOSCAPE_REGISTRY_REPLACE_CHILD_GATE": gateURL.path,
+                "HOLOSCAPE_REGISTRY_REPLACE_CHILD_RESULT": resultURL.path,
+                "HOLOSCAPE_REGISTRY_REPLACE_CHILD_LIFECYCLE": lifecycle,
+            ]) { _, childValue in childValue }
+            child.standardOutput = output
+            child.standardError = output
+            child.terminationHandler = { _ in exited.signal() }
+            try child.run()
+            children.append((child, exited, output, resultURL))
+        }
+
+        try Data().write(to: gateURL)
+        var results: [String] = []
+        for child in children {
+            let waitResult = child.exited.wait(timeout: .now() + 10)
+            if waitResult == .timedOut {
+                child.process.terminate()
+                if child.exited.wait(timeout: .now() + 1) == .timedOut {
+                    _ = Darwin.kill(child.process.processIdentifier, SIGKILL)
+                    _ = child.exited.wait(timeout: .now() + 1)
+                }
+            }
+            let diagnostic = String(
+                data: child.output.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            XCTAssertEqual(waitResult, .success, "Child process timed out: \(diagnostic)")
+            XCTAssertEqual(child.process.terminationStatus, 0, "Child process failed: \(diagnostic)")
+            if FileManager.default.fileExists(atPath: child.resultURL.path) {
+                results.append(try String(contentsOf: child.resultURL, encoding: .utf8))
+            }
+        }
+
+        XCTAssertEqual(results.sorted(), ["0", "1"])
+        XCTAssertTrue([BrokerSessionLifecycle.detached, .terminating].contains(try registry.load()[0].lifecycle))
+    }
+
     func testLoadMissingRegistryReturnsEmptyList() throws {
         let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("missing/sessions.json"))
 
         XCTAssertEqual(try registry.load(), [])
+    }
+
+    func testLoadPropagatesPersistentLockSetupFailure() throws {
+        let parentFile = tempDirectory.appendingPathComponent("not-a-directory")
+        FileManager.default.createFile(atPath: parentFile.path, contents: Data("x".utf8))
+        let registry = BrokerSessionRegistry(fileURL: parentFile.appendingPathComponent("sessions.json"))
+
+        XCTAssertThrowsError(try registry.load()) { error in
+            let lockError = error as? PersistentFileOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("createDirectory failed") == true)
+            XCTAssertTrue(lockError?.message.contains(parentFile.path) == true)
+        }
     }
 
     func testSaveValidatesRecordsBeforeWriting() throws {

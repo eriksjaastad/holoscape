@@ -580,7 +580,10 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             [.create(createdID, request), .markErrored(createdID)],
             "A start whose registry write fails must remove the session it just created"
         )
-        XCTAssertEqual(try registry.load(), [], "A rolled-back start must not persist a record")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: registry.fileURL.path),
+            "A rolled-back start must not persist a record"
+        )
     }
 
     /// #7377 — when rollback fails, the typed error preserves both the registry
@@ -1255,9 +1258,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
     }
 
-    /// A registry whose reads succeed but whose writes cannot land: the parent
-    /// path is an ordinary file, so `createDirectory` fails the way a
-    /// permission-denied or unwritable registry location does.
+    /// A registry whose lock setup and writes cannot land: the parent path is
+    /// an ordinary file, so failures surface instead of becoming empty state.
     private func makeUnwritableRegistry() throws -> BrokerSessionRegistry {
         let blocker = tempDirectory.appendingPathComponent("blocked")
         try Data("not a directory".utf8).write(to: blocker)
