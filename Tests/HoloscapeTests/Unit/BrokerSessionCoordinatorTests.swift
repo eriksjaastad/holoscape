@@ -98,6 +98,37 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
     }
 
+    private final class ConcurrentExitResults: @unchecked Sendable {
+        private let lock = NSLock()
+        private var exitRecordStorage: BrokerSessionRecord?
+        private var retirementRecordStorage: BrokerSessionRecord?
+        private var errorsStorage: [Error] = []
+
+        var exitRecord: BrokerSessionRecord? { lock.withLock { exitRecordStorage } }
+        var retirementRecord: BrokerSessionRecord? { lock.withLock { retirementRecordStorage } }
+        var errors: [Error] { lock.withLock { errorsStorage } }
+
+        func recordExit(_ record: BrokerSessionRecord) {
+            lock.withLock { exitRecordStorage = record }
+        }
+
+        func recordRetirement(_ record: BrokerSessionRecord) {
+            lock.withLock { retirementRecordStorage = record }
+        }
+
+        func recordError(_ error: Error) {
+            lock.withLock { errorsStorage.append(error) }
+        }
+    }
+
+    private final class ConcurrentCoordinator: @unchecked Sendable {
+        let value: BrokerSessionCoordinator
+
+        init(_ value: BrokerSessionCoordinator) {
+            self.value = value
+        }
+    }
+
     private var tempDirectory: URL!
 
     override func setUpWithError() throws {
@@ -461,6 +492,97 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         let recovered = try XCTUnwrap(coordinator.reattachableSessions().first)
         XCTAssertEqual(recovered.lifecycle, .exited)
         XCTAssertEqual(recovered.exitCode, 0)
+    }
+
+    func testExitRetrySurfacesMismatchAfterAmbiguousResponse() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 135) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/ambiguous-mismatch"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
+
+        runtime.terminateError = nil
+        runtime.statusError = nil
+        runtime.observedTerminationStatus = 7
+        runtime.listedSessionIDs = [record.id]
+        let recovered = try XCTUnwrap(coordinator.reattachableSessions().first)
+        XCTAssertEqual(recovered.lifecycle, .exited)
+        XCTAssertEqual(recovered.exitCode, 7)
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .exitCodeMismatch(record.id, expected: 0, observed: 7)
+            )
+        }
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+    }
+
+    func testExitFinalizationPreservesConcurrentRetirementAuthority() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 138) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/concurrent-retirement"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let terminationEntered = expectation(description: "termination entered runtime")
+        let retirementEntered = expectation(description: "retirement entered runtime")
+        let exitCompleted = expectation(description: "exit completed")
+        let retirementCompleted = expectation(description: "retirement completed")
+        let allowTermination = DispatchSemaphore(value: 0)
+        let allowRetirement = DispatchSemaphore(value: 0)
+        let results = ConcurrentExitResults()
+        let concurrentCoordinator = ConcurrentCoordinator(coordinator)
+        runtime.onTerminate = {
+            terminationEntered.fulfill()
+            XCTAssertEqual(allowTermination.wait(timeout: .now() + 5), .success)
+        }
+        runtime.onMarkErrored = {
+            retirementEntered.fulfill()
+            XCTAssertEqual(allowRetirement.wait(timeout: .now() + 5), .success)
+        }
+
+        DispatchQueue.global().async {
+            defer { exitCompleted.fulfill() }
+            do {
+                results.recordExit(try concurrentCoordinator.value.exit(record.id, exitCode: 0))
+            } catch {
+                results.recordError(error)
+            }
+        }
+        wait(for: [terminationEntered], timeout: 5)
+
+        DispatchQueue.global().async {
+            defer { retirementCompleted.fulfill() }
+            do {
+                results.recordRetirement(try concurrentCoordinator.value.markErrored(record.id))
+            } catch {
+                results.recordError(error)
+            }
+        }
+        wait(for: [retirementEntered], timeout: 5)
+
+        allowTermination.signal()
+        wait(for: [exitCompleted], timeout: 5)
+        XCTAssertEqual(results.exitRecord?.lifecycle, .terminating)
+
+        allowRetirement.signal()
+        wait(for: [retirementCompleted], timeout: 5)
+        XCTAssertTrue(results.errors.isEmpty)
+        XCTAssertEqual(results.retirementRecord?.lifecycle, .errored)
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
     }
 
     func testExitRollsBackIntentWhenRuntimeProvesChildIsStillRunning() throws {

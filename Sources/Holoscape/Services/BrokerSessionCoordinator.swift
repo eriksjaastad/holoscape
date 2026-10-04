@@ -89,6 +89,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
         case exitRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case exitFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case exitCodeMismatch(BrokerSessionID, expected: Int32, observed: Int32)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
@@ -490,11 +491,28 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         while true {
             let current = try record(for: id)
             switch current.lifecycle {
-            case .exited, .errored:
+            case .exited:
+                if let observedExitCode = current.exitCode, observedExitCode != exitCode {
+                    throw CoordinatorError.exitCodeMismatch(
+                        id,
+                        expected: exitCode,
+                        observed: observedExitCode
+                    )
+                }
+                return current
+            case .errored:
                 return current
             case .exiting:
                 if let observedExitCode = try runtime.terminationStatus(id: id) {
-                    return try finalizeExit(id, exitCode: observedExitCode)
+                    let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                    if finalized.lifecycle == .exited, observedExitCode != exitCode {
+                        throw CoordinatorError.exitCodeMismatch(
+                            id,
+                            expected: exitCode,
+                            observed: observedExitCode
+                        )
+                    }
+                    return finalized
                 }
                 return current
             case .terminating:
@@ -570,10 +588,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             switch current.lifecycle {
             case .exited:
                 return current
-            case .errored:
-                // Persistence-failure retirement owns the stronger final truth.
+            case .errored, .terminating:
+                // Retirement owns the stronger final truth and may already be
+                // removing the retained runtime object needed for final replay.
                 return current
-            case .creating, .running, .detached, .reattaching, .stale, .exiting, .terminating:
+            case .creating, .running, .detached, .reattaching, .stale, .exiting:
                 let candidate = current.withLifecycle(
                     .exited,
                     exitCode: exitCode,
