@@ -2165,16 +2165,15 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
         let store = DiskBackedScrollbackStore(directory: ScrollbackPersistencePolicy.defaultDiskDirectory)
         do {
-            let bytes = try store.storedByteCount(for: brokerSessionID)
             try store.remove(for: brokerSessionID)
             presentScrollbackMaintenanceResult(
                 title: "Scrollback Tail Cleared",
-                message: "Removed \(bytes) bytes of persisted disk scrollback for \(channel.displayLabel). The live terminal contents remain visible until overwritten or the tab is relaunched."
+                message: "Cleared persisted disk scrollback for \(channel.displayLabel). The live terminal contents remain visible until overwritten or the tab is relaunched."
             )
         } catch {
             presentScrollbackMaintenanceResult(
-                title: "Could Not Clear Scrollback Tail",
-                message: "Holoscape could not remove persisted scrollback for session \(brokerSessionID.rawValue): \(error)"
+                title: "Could Not Confirm Scrollback Clear",
+                message: ScrollbackMaintenanceFormatting.clearFailure(error: String(describing: error))
             )
             NSLog("MainWindowController: failed to clear scrollback tail for \(brokerSessionID.rawValue): \(error)")
         }

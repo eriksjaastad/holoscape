@@ -4,6 +4,49 @@ import XCTest
 
 final class ScrollbackMaintenanceFormattingTests: XCTestCase {
 
+    func testSingleClearFailureDoesNotClaimClearFailed() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.clearFailure(error: "close failed"),
+            "Holoscape could not confirm whether the clear completed before the error. Refresh storage before retrying: close failed"
+        )
+    }
+
+    func testBulkClearFailureBeforeAnySuccessIsTruthful() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.bulkClearFailure(
+                clearedCount: 0,
+                totalCount: 3,
+                listingRefreshed: true,
+                error: "permission denied"
+            ),
+            "Holoscape could not confirm any completed clears before the error. The refreshed list shows current state. Error: permission denied"
+        )
+    }
+
+    func testBulkClearFailureAfterPartialSuccessReportsExactCount() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.bulkClearFailure(
+                clearedCount: 2,
+                totalCount: 5,
+                listingRefreshed: true,
+                error: "unsafe file"
+            ),
+            "Holoscape confirmed 2 of 5 clears before the error. The refreshed list shows current state. Error: unsafe file"
+        )
+    }
+
+    func testBulkClearFailureDoesNotClaimRefreshSucceededWhenItFailed() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.bulkClearFailure(
+                clearedCount: 1,
+                totalCount: 3,
+                listingRefreshed: false,
+                error: "cleanup failed"
+            ),
+            "Holoscape confirmed 1 of 3 clears before the error. Holoscape could not refresh current state. Refresh storage before retrying. Error: cleanup failed"
+        )
+    }
+
     // MARK: - byteSize
 
     func testByteSizeZeroAndBytes() {
