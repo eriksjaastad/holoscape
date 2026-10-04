@@ -1,5 +1,15 @@
 import Foundation
 
+enum BrokerSessionHostProtocolLimits {
+    /// Includes the newline delimiter. Large enough for multi-megabyte input
+    /// pastes while bounding malformed request accumulation in broker hosts.
+    static let maximumRequestFrameSize = 8 * 1024 * 1024
+}
+
+enum BrokerSessionHostProtocolError: Error, Equatable {
+    case frameTooLarge(maximumBytes: Int)
+}
+
 /// JSON-lines protocol shared by the app-side broker client and the future
 /// out-of-process Holoscape session broker host.
 ///

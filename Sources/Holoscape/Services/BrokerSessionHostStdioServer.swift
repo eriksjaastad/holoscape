@@ -13,24 +13,29 @@ struct BrokerSessionHostStdioServer {
     private let input: FileHandle
     private let output: FileHandle
     private let readChunkSize: Int
+    private let maximumFrameSize: Int
 
     init(
         host: BrokerSessionHost,
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
         input: FileHandle = .standardInput,
         output: FileHandle = .standardOutput,
-        readChunkSize: Int = 4096
+        readChunkSize: Int = 4096,
+        maximumFrameSize: Int = BrokerSessionHostProtocolLimits.maximumRequestFrameSize
     ) {
         precondition(readChunkSize > 0, "Broker host stdio read chunk size must be positive")
+        precondition(maximumFrameSize > 0, "Broker host stdio maximum frame size must be positive")
         self.host = host
         self.codec = codec
         self.input = input
         self.output = output
         self.readChunkSize = readChunkSize
+        self.maximumFrameSize = maximumFrameSize
     }
 
     func runUntilEOF() throws {
         var buffer = Data()
+        var discardingOversizedFrame = false
 
         while true {
             let chunk = input.readData(ofLength: readChunkSize)
@@ -38,13 +43,51 @@ struct BrokerSessionHostStdioServer {
                 return
             }
 
-            buffer.append(chunk)
-            while let newlineIndex = buffer.firstIndex(of: 0x0A) {
-                let frame = buffer.prefix(through: newlineIndex)
-                buffer.removeSubrange(...newlineIndex)
-                try output.write(contentsOf: responseFrame(for: Data(frame)))
+            var offset = chunk.startIndex
+            while offset < chunk.endIndex {
+                if discardingOversizedFrame {
+                    guard let newlineIndex = chunk[offset...].firstIndex(of: 0x0A) else {
+                        break
+                    }
+                    discardingOversizedFrame = false
+                    offset = chunk.index(after: newlineIndex)
+                    continue
+                }
+
+                if let newlineIndex = chunk[offset...].firstIndex(of: 0x0A) {
+                    let end = chunk.index(after: newlineIndex)
+                    let segment = chunk[offset..<end]
+                    if segment.count > maximumFrameSize - buffer.count {
+                        try writeOversizedFrameFailure()
+                        buffer.removeAll(keepingCapacity: false)
+                    } else {
+                        buffer.append(contentsOf: segment)
+                        try output.write(contentsOf: responseFrame(for: buffer))
+                        buffer.removeAll(keepingCapacity: true)
+                    }
+                    offset = end
+                    continue
+                }
+
+                let segment = chunk[offset...]
+                if segment.count > maximumFrameSize - buffer.count {
+                    try writeOversizedFrameFailure()
+                    buffer.removeAll(keepingCapacity: false)
+                    discardingOversizedFrame = true
+                } else {
+                    buffer.append(contentsOf: segment)
+                }
+                break
             }
         }
+    }
+
+    private func writeOversizedFrameFailure() throws {
+        try output.write(
+            contentsOf: protocolFailureFrame(
+                for: BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        )
     }
 
     private func responseFrame(for frame: Data) -> Data {

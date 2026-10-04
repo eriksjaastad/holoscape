@@ -32,6 +32,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     private let readChunkSize: Int
     private let maxConcurrentHandlers: Int
     private let requestTimeoutMilliseconds: Int
+    private let maximumFrameSize: Int
 
     init(
         socketPath: String,
@@ -40,8 +41,11 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         backlog: Int32 = 16,
         readChunkSize: Int = 4096,
         maxConcurrentHandlers: Int = 8,
-        requestTimeoutMilliseconds: Int = 10_000
+        requestTimeoutMilliseconds: Int = 10_000,
+        maximumFrameSize: Int = BrokerSessionHostProtocolLimits.maximumRequestFrameSize
     ) {
+        precondition(readChunkSize > 0, "Broker host socket read chunk size must be positive")
+        precondition(maximumFrameSize > 0, "Broker host socket maximum frame size must be positive")
         self.socketPath = socketPath
         self.host = host
         self.codec = codec
@@ -49,6 +53,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         self.readChunkSize = readChunkSize
         self.maxConcurrentHandlers = max(1, maxConcurrentHandlers)
         self.requestTimeoutMilliseconds = max(1, requestTimeoutMilliseconds)
+        self.maximumFrameSize = maximumFrameSize
     }
 
     func run(maxConnections: Int? = nil) throws {
@@ -267,7 +272,16 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
     private func handleConnection(_ clientFD: Int32, deadline acceptanceDeadline: UInt64) throws {
         defer { Darwin.close(clientFD) }
-        let requestFrame = try readFrame(from: clientFD, deadline: acceptanceDeadline)
+        let requestFrame: Data
+        do {
+            requestFrame = try readFrame(from: clientFD, deadline: acceptanceDeadline)
+        } catch let error as BrokerSessionHostProtocolError {
+            let failure = BrokerSessionHostResponse.failure(
+                BrokerSessionHostFailure(code: "protocol-error", message: String(describing: error))
+            )
+            try writeAll(try codec.encodeResponse(failure), to: clientFD, deadline: acceptanceDeadline)
+            return
+        }
         let deadline = min(
             acceptanceDeadline,
             BrokerSessionHostUnixSocketTransport.requestDeadline(from: requestFrame)
@@ -300,6 +314,9 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
             if count < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw ServerError.readFailed(String(cString: strerror(errno)))
+            }
+            guard count <= maximumFrameSize - buffer.count else {
+                throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumFrameSize)
             }
             buffer.append(contentsOf: chunk.prefix(count))
             if buffer.last == 0x0A { return buffer }

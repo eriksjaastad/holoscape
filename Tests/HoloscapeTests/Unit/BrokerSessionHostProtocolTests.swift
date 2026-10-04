@@ -851,6 +851,77 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(runtime.events, ["isRunning stdio-server-protocol-error-session"])
     }
 
+    func testStdioServerRejectsOversizedUnterminatedFrameAndProcessesNextFrame() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let sessionID = BrokerSessionID(rawValue: "stdio-server-after-oversized-frame")
+        let validFrame = try codec.encodeRequest(.isRunning(id: sessionID))
+        let maximumFrameSize = validFrame.count
+
+        let server = BrokerSessionHostStdioServer(
+            host: host,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            readChunkSize: 4,
+            maximumFrameSize: maximumFrameSize
+        )
+
+        try inputPipe.fileHandleForWriting.write(
+            contentsOf: Data(repeating: 0x78, count: maximumFrameSize + 1)
+        )
+        try inputPipe.fileHandleForWriting.write(contentsOf: Data([0x0A]))
+        try inputPipe.fileHandleForWriting.write(contentsOf: validFrame)
+        try inputPipe.fileHandleForWriting.close()
+
+        try server.runUntilEOF()
+        try outputPipe.fileHandleForWriting.close()
+
+        let frames = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n")
+            .map { Data("\($0)\n".utf8) }
+
+        XCTAssertEqual(frames.count, 2)
+        guard case let .failure(failure) = try codec.decodeResponse(frames[0]) else {
+            return XCTFail("Expected oversized-frame protocol failure response")
+        }
+        XCTAssertEqual(failure.code, "protocol-error")
+        XCTAssertTrue(failure.message.contains("frameTooLarge"), failure.message)
+        XCTAssertTrue(failure.message.contains("\(maximumFrameSize)"), failure.message)
+        XCTAssertEqual(try codec.decodeResponse(frames[1]), .running(false))
+        XCTAssertEqual(runtime.events, ["isRunning stdio-server-after-oversized-frame"])
+    }
+
+    func testStdioServerAcceptsFrameExactlyAtMaximumSize() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let sessionID = BrokerSessionID(rawValue: "stdio-server-exact-frame-limit")
+        let frame = try codec.encodeRequest(.isRunning(id: sessionID))
+
+        let server = BrokerSessionHostStdioServer(
+            host: host,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            readChunkSize: 5,
+            maximumFrameSize: frame.count
+        )
+
+        try inputPipe.fileHandleForWriting.write(contentsOf: frame)
+        try inputPipe.fileHandleForWriting.close()
+
+        try server.runUntilEOF()
+        try outputPipe.fileHandleForWriting.close()
+
+        let response = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(try codec.decodeResponse(response), .running(false))
+        XCTAssertEqual(runtime.events, ["isRunning stdio-server-exact-frame-limit"])
+    }
+
     func testProcessTransportRoundTripsOneDelimitedFrameThroughHelperStdio() throws {
         let transport = try BrokerSessionHostProcessTransport(
             executableURL: URL(fileURLWithPath: "/bin/cat")
@@ -1398,6 +1469,47 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(scrollback.contains("reattached-hosted-native-pty"), scrollback)
         try secondClient.markSessionErrored(id: sessionID)
         XCTAssertEqual(try secondClient.listSessions(), [])
+    }
+
+    func testUnixSocketServerRejectsOversizedRequestWithoutDispatchingRuntime() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let socketPath = "/tmp/hs-oversized-frame-\(UUID().uuidString).sock"
+        let frame = try codec.encodeRequest(
+            .isRunning(id: BrokerSessionID(rawValue: "unix-socket-oversized-frame"))
+        )
+        let maximumFrameSize = frame.count - 1
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: host,
+            maximumFrameSize: maximumFrameSize
+        )
+        let serverFinished = expectation(description: "socket broker rejected oversized request")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 1)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
+        let response = try codec.decodeResponse(transport.sendFrame(frame))
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected oversized-frame protocol failure response")
+        }
+        XCTAssertEqual(failure.code, "protocol-error")
+        XCTAssertTrue(failure.message.contains("frameTooLarge"), failure.message)
+        XCTAssertTrue(failure.message.contains("\(maximumFrameSize)"), failure.message)
+        XCTAssertEqual(runtime.events, [])
     }
 
     func testUnixSocketBrokerKeepsRuntimeAcrossDisconnectedClients() throws {
