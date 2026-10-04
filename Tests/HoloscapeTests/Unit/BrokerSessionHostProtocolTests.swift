@@ -2516,7 +2516,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testBrokerBackedShellTabRestoresThroughUnixSocketHostRuntimeAcrossAppRelaunch() throws {
+    func testBrokerBackedShellTabRestoresThroughUnixSocketHostRuntimeAcrossAppRelaunch() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SocketHostedShellRelaunchTests-")
             .appendingPathComponent(UUID().uuidString)
@@ -2570,16 +2570,19 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let firstStartDeadline = Date().addingTimeInterval(1)
         while Date() < firstStartDeadline,
               (firstShell as? ShellChannelController)?.brokerSessionID == nil {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            try await Task.sleep(for: .milliseconds(10))
         }
         let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
         firstLaunchManager.saveState()
-        firstLaunchManager.detachAllChannelsForAppTermination()
-        let detachDeadline = Date().addingTimeInterval(1)
-        while Date() < detachDeadline,
-              try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle != .detached {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        var detachCompleted = false
+        firstLaunchManager.detachAllChannelsForAppTermination {
+            detachCompleted = true
         }
+        let detachDeadline = Date().addingTimeInterval(1)
+        while Date() < detachDeadline, !detachCompleted {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(detachCompleted, "The asynchronous host detach must finish before simulating the relaunched UI")
         XCTAssertEqual(
             try registry.load().first(where: { $0.id == brokerSessionID })?.lifecycle,
             .detached,
@@ -2599,6 +2602,8 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             configService: configService,
             brokerBackedShellCoordinator: secondCoordinator
         )
+        let recoveryPrepared = await secondLaunchManager.prepareBrokerRecovery()
+        XCTAssertTrue(recoveryPrepared)
         let appDelegate = AppDelegate()
         appDelegate.channelManagerRef = secondLaunchManager
         secondLaunchManager.restoreState { metadata in
@@ -2612,7 +2617,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let restoredShell = try XCTUnwrap(secondLaunchManager.allChannels().first as? ShellChannelController)
         let reattachDeadline = Date().addingTimeInterval(1)
         while Date() < reattachDeadline, restoredShell.brokerSessionID != brokerSessionID {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
         XCTAssertEqual(restoredShell.workingDirectory, tempDirectory.path)
@@ -2621,7 +2626,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let outputDeadline = Date().addingTimeInterval(3)
         while Date() < outputDeadline,
               !restoredShell.lastLines(20).joined(separator: "\n").contains("hosted-shell-relaunch-reattach") {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            try await Task.sleep(for: .milliseconds(10))
         }
         let output = restoredShell.lastLines(20).joined(separator: "\n")
         XCTAssertTrue(output.contains("hosted-shell-relaunch-reattach"), output)
@@ -2641,7 +2646,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         for _ in 0..<64 {
             guard (try? secondCoordinator.isRunning(brokerSessionID)) != nil else { break }
         }
-        wait(for: [serverFinished], timeout: 2)
+        await fulfillment(of: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
 
