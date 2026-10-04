@@ -110,6 +110,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         directoryStatus: stat,
         fileName: String,
         displayPath: String,
+        legacyIdentityValidator: (String, stat) throws -> Bool = { _, _ in false },
         _ operation: () throws -> T
     ) throws -> T {
         let key = "\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(fileName)"
@@ -149,11 +150,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     throw LockError(message: "missing authoritative lock file at \(lockPath)")
                 }
 
-                var token = Self.ownerMarker(
-                    lockName: lockName,
-                    directoryStatus: directoryStatus,
-                    nonce: UUID().uuidString
-                )
+                var token = Data()
                 let temporaryName = ".\(lockName).staging"
                 var stagingWasCreated = true
                 opened = Darwin.openat(
@@ -174,7 +171,23 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
                 }
                 do {
+                    var stagingStatus = stat()
+                    guard fstat(opened, &stagingStatus) == 0,
+                          stagingStatus.st_mode & S_IFMT == S_IFREG else {
+                        throw LockError(message: Self.posixFailure("fstat", path: lockPath, code: errno == 0 ? EINVAL : errno))
+                    }
+                    let prefix = Self.ownerMarkerPrefix(
+                        lockName: lockName,
+                        directoryStatus: directoryStatus,
+                        fileStatus: stagingStatus
+                    )
                     if stagingWasCreated {
+                        token = Self.ownerMarker(
+                            lockName: lockName,
+                            directoryStatus: directoryStatus,
+                            fileStatus: stagingStatus,
+                            nonce: UUID().uuidString
+                        )
                         try Self.setXattr(
                             descriptor: opened,
                             name: Self.ownerXattr,
@@ -188,10 +201,6 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                             name: Self.ownerXattr,
                             allowMissing: true,
                             displayPath: lockPath
-                        )
-                        let prefix = Self.ownerMarkerPrefix(
-                            lockName: lockName,
-                            directoryStatus: directoryStatus
                         )
                         guard let existing,
                               existing.starts(with: prefix),
@@ -250,14 +259,16 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     lockName: lockName,
                     directoryStatus: directoryStatus,
                     allowLegacyV1: false,
-                    displayPath: lockPath
-                ) {
+                    displayPath: lockPath,
+                    currentPathStatus: {
                     var pathStatus = stat()
                     guard fstatat(directoryDescriptor, lockName, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0 else {
                         throw LockError(message: Self.posixFailure("fstatat", path: lockPath, code: errno))
                     }
                     return pathStatus
-                }
+                    },
+                    legacyIdentityValidator: { try legacyIdentityValidator(lockName, $0) }
+                )
                 try Self.establishDirectoryMarker(
                     descriptor: directoryDescriptor,
                     name: directoryMarkerName,
@@ -287,6 +298,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         directoryStatus: stat,
         fileName: String,
         displayPath: String,
+        legacyIdentityValidator: (String, stat) throws -> Bool = { _, _ in false },
         _ operation: () throws -> T
     ) throws -> T {
         let key = "\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(fileName)"
@@ -301,60 +313,43 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             let lockName = fileName + ".lock"
             let lockPath = displayPath + ".lock"
             let directoryPath = (displayPath as NSString).deletingLastPathComponent
-            var directoryMarker = try Self.getXattr(
-                descriptor: directoryDescriptor,
-                name: Self.directoryMarkerXattr(lockName: lockName),
-                allowMissing: true,
-                displayPath: directoryPath
-            )
-            var descriptor = Darwin.openat(
+            let acquisition = try Self.withDirectoryReadLock(
                 directoryDescriptor,
-                lockName,
-                O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
-            )
-            if descriptor < 0, errno == ENOENT, directoryMarker == nil {
-                let acquisition = try Self.withDirectoryReadLock(
-                    directoryDescriptor,
+                displayPath: directoryPath
+            ) {
+                let currentMarker = try Self.getXattr(
+                    descriptor: directoryDescriptor,
+                    name: Self.directoryMarkerXattr(lockName: lockName),
+                    allowMissing: true,
                     displayPath: directoryPath
-                ) {
-                    let currentMarker = try Self.getXattr(
-                        descriptor: directoryDescriptor,
-                        name: Self.directoryMarkerXattr(lockName: lockName),
-                        allowMissing: true,
-                        displayPath: directoryPath
-                    )
-                    let opened = Darwin.openat(
-                        directoryDescriptor,
-                        lockName,
-                        O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
-                    )
-                    if opened < 0, errno == ENOENT, currentMarker == nil {
-                        return ExistingLockAcquisition.completed(try operation())
-                    }
-                    guard opened >= 0 else {
-                        if errno == ENOENT {
-                            throw LockError(message: "missing authoritative lock file at \(lockPath)")
-                        }
-                        throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
-                    }
-                    return ExistingLockAcquisition.opened(
-                        descriptor: opened,
-                        directoryMarker: currentMarker
-                    )
+                )
+                let opened = Darwin.openat(
+                    directoryDescriptor,
+                    lockName,
+                    O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                )
+                if opened < 0, errno == ENOENT, currentMarker == nil {
+                    return ExistingLockAcquisition.completed(try operation())
                 }
-                switch acquisition {
-                case .completed(let value):
-                    return value
-                case .opened(let opened, let currentMarker):
-                    descriptor = opened
-                    directoryMarker = currentMarker
+                guard opened >= 0 else {
+                    if errno == ENOENT {
+                        throw LockError(message: "missing authoritative lock file at \(lockPath)")
+                    }
+                    throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
                 }
+                return ExistingLockAcquisition.opened(
+                    descriptor: opened,
+                    directoryMarker: currentMarker
+                )
             }
-            guard descriptor >= 0 else {
-                if errno == ENOENT {
-                    throw LockError(message: "missing authoritative lock file at \(lockPath)")
-                }
-                throw LockError(message: Self.posixFailure("openat", path: lockPath, code: errno))
+            let descriptor: Int32
+            let directoryMarker: Data?
+            switch acquisition {
+            case .completed(let value):
+                return value
+            case .opened(let opened, let currentMarker):
+                descriptor = opened
+                directoryMarker = currentMarker
             }
 
             var descriptorStatus = stat()
@@ -381,14 +376,16 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                     descriptorStatus: descriptorStatus,
                     lockName: lockName,
                     directoryStatus: directoryStatus,
-                    displayPath: lockPath
-                ) {
+                    displayPath: lockPath,
+                    currentPathStatus: {
                     var pathStatus = stat()
                     guard fstatat(directoryDescriptor, lockName, &pathStatus, AT_SYMLINK_NOFOLLOW) == 0 else {
                         throw LockError(message: Self.posixFailure("fstatat", path: lockPath, code: errno))
                     }
                     return pathStatus
-                }
+                    },
+                    legacyIdentityValidator: { try legacyIdentityValidator(lockName, $0) }
+                )
                 guard directoryMarker == fileMarker else {
                     throw LockError(message: "foreign lock authority at \(directoryPath)")
                 }
@@ -440,7 +437,11 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                   pathStatus.st_ino == fileStatus.st_ino else {
                 throw LockError(message: "lock pathname identity changed at \(displayPath)")
             }
-            let prefix = Self.ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+            let prefix = Self.ownerMarkerPrefix(
+                lockName: lockName,
+                directoryStatus: directoryStatus,
+                fileStatus: fileStatus
+            )
             let existing = try Self.getXattr(
                 descriptor: descriptor,
                 name: Self.ownerXattr,
@@ -459,6 +460,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 token = Self.ownerMarker(
                     lockName: lockName,
                     directoryStatus: directoryStatus,
+                    fileStatus: fileStatus,
                     nonce: UUID().uuidString
                 )
                 try Self.setXattr(
@@ -475,6 +477,7 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 token = Self.ownerMarker(
                     lockName: lockName,
                     directoryStatus: directoryStatus,
+                    fileStatus: fileStatus,
                     nonce: UUID().uuidString
                 )
                 try Self.setXattr(
@@ -511,14 +514,36 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         return try result.get()
     }
 
-    private static func ownerMarkerPrefix(lockName: String, directoryStatus: stat) -> Data {
+    private static func ownerMarkerPrefix(
+        lockName: String,
+        directoryStatus: stat,
+        fileStatus: stat
+    ) -> Data {
+        Data(
+            "holoscape-scrollback-lock-v4:\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(lockName):\(fileStatus.st_dev):\(fileStatus.st_ino):".utf8
+        )
+    }
+
+    private static func legacyV3OwnerMarkerPrefix(
+        lockName: String,
+        directoryStatus: stat
+    ) -> Data {
         Data(
             "holoscape-scrollback-lock-v3:\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(lockName):".utf8
         )
     }
 
-    private static func ownerMarker(lockName: String, directoryStatus: stat, nonce: String) -> Data {
-        var marker = ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+    private static func ownerMarker(
+        lockName: String,
+        directoryStatus: stat,
+        fileStatus: stat,
+        nonce: String
+    ) -> Data {
+        var marker = ownerMarkerPrefix(
+            lockName: lockName,
+            directoryStatus: directoryStatus,
+            fileStatus: fileStatus
+        )
         marker.append(Data(nonce.utf8))
         return marker
     }
@@ -538,7 +563,8 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         directoryStatus: stat,
         allowLegacyV1: Bool,
         displayPath: String,
-        currentPathStatus: () throws -> stat
+        currentPathStatus: () throws -> stat,
+        legacyIdentityValidator: (stat) throws -> Bool
     ) throws -> Data {
         var descriptorStatus = stat()
         guard fstat(descriptor, &descriptorStatus) == 0,
@@ -546,7 +572,11 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
             let code = errno == 0 ? EINVAL : errno
             throw LockError(message: Self.posixFailure("fstat", path: displayPath, code: code))
         }
-        let expectedPrefix = ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+        let expectedPrefix = ownerMarkerPrefix(
+            lockName: lockName,
+            directoryStatus: directoryStatus,
+            fileStatus: descriptorStatus
+        )
         let existing = try getXattr(
             descriptor: descriptor,
             name: ownerXattr,
@@ -560,11 +590,19 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
                 throw LockError(message: Self.posixFailure("fsync", path: displayPath, code: errno))
             }
         } else if let existing,
+                  existing.starts(with: legacyV3OwnerMarkerPrefix(
+                    lockName: lockName,
+                    directoryStatus: directoryStatus
+                  )),
+                  try legacyIdentityValidator(descriptorStatus) {
+            marker = existing
+        } else if let existing,
                   allowLegacyV1,
                   existing == legacyOwnerMarker(lockName: lockName) {
             marker = ownerMarker(
                 lockName: lockName,
                 directoryStatus: directoryStatus,
+                fileStatus: descriptorStatus,
                 nonce: UUID().uuidString
             )
             try setXattr(
@@ -595,15 +633,28 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
         lockName: String,
         directoryStatus: stat,
         displayPath: String,
-        currentPathStatus: () throws -> stat
+        currentPathStatus: () throws -> stat,
+        legacyIdentityValidator: (stat) throws -> Bool
     ) throws -> Data {
-        let expectedPrefix = ownerMarkerPrefix(lockName: lockName, directoryStatus: directoryStatus)
+        let expectedPrefix = ownerMarkerPrefix(
+            lockName: lockName,
+            directoryStatus: directoryStatus,
+            fileStatus: descriptorStatus
+        )
         guard let marker = try getXattr(
             descriptor: descriptor,
             name: ownerXattr,
             allowMissing: true,
             displayPath: displayPath
-        ), marker.starts(with: expectedPrefix), marker.count > expectedPrefix.count else {
+        ) else {
+            throw LockError(message: "unowned lock file at \(displayPath)")
+        }
+        let isCurrent = marker.starts(with: expectedPrefix) && marker.count > expectedPrefix.count
+        let isPreAnchor = try marker.starts(with: legacyV3OwnerMarkerPrefix(
+            lockName: lockName,
+            directoryStatus: directoryStatus
+        )) && legacyIdentityValidator(descriptorStatus)
+        guard isCurrent || isPreAnchor else {
             throw LockError(message: "unowned lock file at \(displayPath)")
         }
         let pathStatus = try currentPathStatus()
@@ -814,6 +865,11 @@ private extension Result {
 /// Retention rewrites use a descriptor-bound recovery record so interruption
 /// cannot expose a mixed prefix/suffix or discard the last durable tail.
 struct DiskBackedScrollbackStore: Sendable {
+    enum LegacyDirectoryHandoff: Equatable, Sendable {
+        case denied
+        case trustedDeployedStore
+    }
+
     enum StoreError: Error, Equatable {
         case invalidSessionID(String)
         case unsafeScrollbackDirectory(String)
@@ -838,7 +894,30 @@ struct DiskBackedScrollbackStore: Sendable {
         case main
         case recovery
 
-        func marker(fileName: String, directoryStatus: stat) -> Data {
+        private var markerLabel: String {
+            switch self {
+            case .main: return "main"
+            case .recovery: return "recovery"
+            }
+        }
+
+        func markerPrefix(fileName: String, directoryStatus: stat, fileStatus: stat) -> Data {
+            Data(
+                "holoscape-scrollback-\(markerLabel)-v3:\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(fileName):\(fileStatus.st_dev):\(fileStatus.st_ino):".utf8
+            )
+        }
+
+        func marker(fileName: String, directoryStatus: stat, fileStatus: stat, nonce: String) -> Data {
+            var value = markerPrefix(
+                fileName: fileName,
+                directoryStatus: directoryStatus,
+                fileStatus: fileStatus
+            )
+            value.append(Data(nonce.utf8))
+            return value
+        }
+
+        func deterministicV2Marker(fileName: String, directoryStatus: stat) -> Data {
             let identity = "\(directoryStatus.st_dev):\(directoryStatus.st_ino):\(fileName)"
             switch self {
             case .main: return Data("holoscape-scrollback-main-v2:\(identity)".utf8)
@@ -880,6 +959,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private enum LegacyRetirementProvenance: String, CaseIterable {
         case fresh
         case legacy
+        case deployed
     }
 
     private enum LegacyMarkerState {
@@ -1000,6 +1080,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private static let legacyFormatMarkerContents = Data("HoloScapeScrollbackDirectoryV1\n".utf8)
     private static let formatMarkerName = ".holoscape-scrollback-format-v2"
     private static let formatMarkerContents = Data("HoloScapeScrollbackDirectoryV2\n".utf8)
+    private static let formatAuthorityXattr = "com.holoscape.scrollback.format-owner"
     private static let migrationLockName = ".holoscape-scrollback-migration.lock"
 
     let directory: URL
@@ -1023,6 +1104,7 @@ struct DiskBackedScrollbackStore: Sendable {
     private let afterFormatMarkerOpen: @Sendable (URL) -> Void
     private let afterFormatMarkerValidationBeforePublish: @Sendable () throws -> Void
     private let directoryIdentityAuthorityDirectory: URL
+    private let legacyDirectoryHandoff: LegacyDirectoryHandoff
 
     init(
         directory: URL,
@@ -1049,7 +1131,8 @@ struct DiskBackedScrollbackStore: Sendable {
         beforeLegacyRetirementMarkerPublish: @escaping @Sendable () throws -> Void = {},
         afterFormatMarkerOpen: @escaping @Sendable (URL) -> Void = { _ in },
         afterFormatMarkerValidationBeforePublish: @escaping @Sendable () throws -> Void = {},
-        directoryIdentityAuthorityDirectory: URL? = nil
+        directoryIdentityAuthorityDirectory: URL? = nil,
+        legacyDirectoryHandoff: LegacyDirectoryHandoff? = nil
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
@@ -1074,6 +1157,10 @@ struct DiskBackedScrollbackStore: Sendable {
         self.afterFormatMarkerValidationBeforePublish = afterFormatMarkerValidationBeforePublish
         self.directoryIdentityAuthorityDirectory = directoryIdentityAuthorityDirectory
             ?? Self.defaultDirectoryIdentityAuthorityDirectory()
+        self.legacyDirectoryHandoff = legacyDirectoryHandoff
+            ?? (directory.standardizedFileURL == ScrollbackPersistencePolicy.defaultDiskDirectory.standardizedFileURL
+                ? .trustedDeployedStore
+                : .denied)
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -1413,30 +1500,20 @@ struct DiskBackedScrollbackStore: Sendable {
             status: directoryStatus
         )
         do {
-            if try formatMarkerExists(authority) {
-                try directoryIdentity.validate(directoryStatus, path: directory.path)
-                if access == .readOnly {
-                    _ = try validatePersistentDirectoryIdentity(directoryStatus, allowCreation: false)
-                } else {
-                    try synchronizeDirectoryComponents(at: standardized)
-                    _ = try validatePersistentDirectoryIdentity(directoryStatus, allowCreation: true)
-                }
+            if try pathExists(authority, name: Self.formatMarkerName) {
+                try prepareEstablishedFormatAuthority(
+                    authority,
+                    standardized: standardized,
+                    access: access
+                )
             } else {
                 try withExclusiveDirectoryLock(authority) {
-                    if try formatMarkerExists(authority) {
-                        try directoryIdentity.validate(directoryStatus, path: directory.path)
-                        if access == .readOnly {
-                            _ = try validatePersistentDirectoryIdentity(
-                                directoryStatus,
-                                allowCreation: false
-                            )
-                        } else {
-                            try synchronizeDirectoryComponents(at: standardized)
-                            _ = try validatePersistentDirectoryIdentity(
-                                directoryStatus,
-                                allowCreation: true
-                            )
-                        }
+                    if try pathExists(authority, name: Self.formatMarkerName) {
+                        try prepareEstablishedFormatAuthority(
+                            authority,
+                            standardized: standardized,
+                            access: access
+                        )
                         return
                     }
                     try classifyLegacyDirectory(authority)
@@ -1452,6 +1529,33 @@ struct DiskBackedScrollbackStore: Sendable {
         afterDirectoryOpen(directory)
         let result = Result { try operation(authority) }
         return try close(descriptor, after: result)
+    }
+
+    private func prepareEstablishedFormatAuthority(
+        _ authority: DirectoryAuthority,
+        standardized: URL,
+        access: DirectoryAccess
+    ) throws {
+        try directoryIdentity.validate(authority.status, path: directory.path)
+        let hasPersistentIdentity = try validatePersistentDirectoryIdentity(
+            authority.status,
+            allowCreation: false
+        )
+        if !hasPersistentIdentity {
+            guard legacyDirectoryHandoff == .trustedDeployedStore else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            if access == .mutating {
+                try synchronizeDirectoryComponents(at: standardized)
+                _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+            }
+        } else if access == .mutating {
+            try synchronizeDirectoryComponents(at: standardized)
+            _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+        }
+        guard try formatMarkerExists(authority) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
     }
 
     private func withExistingDirectoryAuthority<T>(
@@ -1533,9 +1637,8 @@ struct DiskBackedScrollbackStore: Sendable {
         if descriptor < 0, errno == ENOENT, !allowCreation { return false }
         guard descriptor >= 0 else { throw Self.posixError(code: errno) }
         guard flock(descriptor, LOCK_EX) == 0 else {
-            let code = errno
-            _ = descriptorClose(descriptor)
-            throw Self.posixError(code: code)
+            let lockError = Self.posixError(code: errno)
+            return try close(descriptor, after: .failure(lockError))
         }
 
         let result: Result<Bool, Error> = Result {
@@ -1606,6 +1709,76 @@ struct DiskBackedScrollbackStore: Sendable {
         _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
     }
 
+    private func validatePersistentFileIdentity(
+        name: String,
+        status: stat,
+        allowCreation: Bool
+    ) throws -> Bool {
+        let authorityPath = directoryIdentityAuthorityDirectory.standardizedFileURL.path
+        let descriptor = Darwin.open(
+            authorityPath,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        if descriptor < 0,
+           errno == ENOENT,
+           allowCreation,
+           legacyDirectoryHandoff == .trustedDeployedStore {
+            // A caller-authorized one-time handoff may inspect the exact
+            // deployed v2 inodes without making read-only storage writable.
+            // The first mutation publishes the external identity authority.
+            return true
+        }
+        if descriptor < 0, errno == ENOENT, !allowCreation { return false }
+        guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            let lockError = Self.posixError(code: errno)
+            return try close(descriptor, after: .failure(lockError))
+        }
+        let result: Result<Bool, Error> = Result {
+            let xattr = Self.persistentFileIdentityXattr(
+                configuredPath: directory.standardizedFileURL.path,
+                name: name
+            )
+            let expected = Self.persistentFileIdentityValue(name: name, status: status)
+            if let existing = try getXattr(
+                descriptor: descriptor,
+                name: xattr,
+                allowMissing: true
+            ) {
+                guard existing == expected else {
+                    throw StoreError.unsafeScrollbackFile(directory.appendingPathComponent(name).path)
+                }
+                try sync(descriptor)
+                return true
+            }
+            guard allowCreation else { return false }
+            try setXattr(
+                descriptor: descriptor,
+                name: xattr,
+                value: expected,
+                flags: XATTR_CREATE
+            )
+            try sync(descriptor)
+            return true
+        }
+        let unlocked: Result<Bool, Error>
+        if flock(descriptor, LOCK_UN) == 0 {
+            unlocked = result
+        } else {
+            let unlockError = Self.posixError(code: errno)
+            switch result {
+            case .success:
+                unlocked = .failure(unlockError)
+            case .failure(let operationError):
+                unlocked = .failure(StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: operationError),
+                    close: String(describing: unlockError)
+                ))
+            }
+        }
+        return try close(descriptor, after: unlocked)
+    }
+
     private func classifyLegacyDirectory(_ authority: DirectoryAuthority) throws {
         if case .missing = try legacyMarkerState(authority) {
             _ = try unmarkedRetirementProvenance(authority)
@@ -1651,8 +1824,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 do {
                     try syncDirectoryEntry(descriptor)
                 } catch {
-                    _ = descriptorClose(next)
-                    throw error
+                    return try close(next, after: .failure(error))
                 }
                 let previous = descriptor
                 descriptor = next
@@ -1734,6 +1906,15 @@ struct DiskBackedScrollbackStore: Sendable {
         return "com.holoscape.scrollback.directory-\(digest.map { String(format: "%02x", $0) }.joined())"
     }
 
+    private static func persistentFileIdentityXattr(configuredPath: String, name: String) -> String {
+        let digest = SHA256.hash(data: Data("\(configuredPath)\n\(name)".utf8))
+        return "com.holoscape.scrollback.file-\(digest.map { String(format: "%02x", $0) }.joined())"
+    }
+
+    private static func persistentFileIdentityValue(name: String, status: stat) -> Data {
+        Data("holoscape-scrollback-file-v1:\(status.st_dev):\(status.st_ino):\(name)".utf8)
+    }
+
     private func withSessionLock<T>(
         _ authority: DirectoryAuthority,
         url: URL,
@@ -1744,6 +1925,13 @@ struct DiskBackedScrollbackStore: Sendable {
             directoryStatus: authority.status,
             fileName: url.lastPathComponent,
             displayPath: url.path,
+            legacyIdentityValidator: { name, status in
+                try validatePersistentFileIdentity(
+                    name: name,
+                    status: status,
+                    allowCreation: legacyDirectoryHandoff == .trustedDeployedStore
+                )
+            },
             operation
         )
     }
@@ -1758,6 +1946,13 @@ struct DiskBackedScrollbackStore: Sendable {
             directoryStatus: authority.status,
             fileName: url.lastPathComponent,
             displayPath: url.path,
+            legacyIdentityValidator: { name, status in
+                try validatePersistentFileIdentity(
+                    name: name,
+                    status: status,
+                    allowCreation: legacyDirectoryHandoff == .trustedDeployedStore
+                )
+            },
             operation
         )
     }
@@ -1841,7 +2036,7 @@ struct DiskBackedScrollbackStore: Sendable {
                             lockName: name,
                             displayPath: url.path,
                             allowLegacyV1: provenance == .legacy,
-                            allowUnowned: false
+                            allowUnowned: provenance == .deployed
                         )
                     }
                     continue
@@ -1866,7 +2061,8 @@ struct DiskBackedScrollbackStore: Sendable {
                     name: name,
                     url: url,
                     kind: kind,
-                    legacyFormatExists: provenance == .legacy
+                    legacyFormatExists: provenance == .legacy,
+                    allowUnowned: provenance == .deployed
                 )
             }
             _ = try requireLegacyRetirementMarker(authority)
@@ -1879,7 +2075,8 @@ struct DiskBackedScrollbackStore: Sendable {
         name: String,
         url: URL,
         kind: FileKind,
-        legacyFormatExists: Bool
+        legacyFormatExists: Bool,
+        allowUnowned: Bool
     ) throws {
         let descriptor = Darwin.openat(
             authority.descriptor,
@@ -1894,17 +2091,25 @@ struct DiskBackedScrollbackStore: Sendable {
             var status = stat()
             guard fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno) }
             guard status.st_mode & S_IFMT == S_IFREG else { return }
-            let expected = kind.marker(fileName: name, directoryStatus: authority.status)
+            let expected = kind.marker(
+                fileName: name,
+                directoryStatus: authority.status,
+                fileStatus: status,
+                nonce: UUID().uuidString
+            )
             let existing = try getXattr(
                 descriptor: descriptor,
                 name: Self.ownerXattr,
                 allowMissing: true
             )
-            if existing == expected {
+            let currentPrefix = kind.markerPrefix(
+                fileName: name,
+                directoryStatus: authority.status,
+                fileStatus: status
+            )
+            if let existing, existing.starts(with: currentPrefix), existing.count > currentPrefix.count {
                 try sync(descriptor)
-                if kind == .main {
-                    try establishMainAuthority(authority, fileName: name)
-                }
+                try establishFileAuthority(authority, kind: kind, fileName: name, marker: existing)
                 return
             }
             if legacyFormatExists, existing == kind.legacyMarker(fileName: name) {
@@ -1915,9 +2120,18 @@ struct DiskBackedScrollbackStore: Sendable {
                     flags: XATTR_REPLACE
                 )
                 try sync(descriptor)
-                if kind == .main {
-                    try establishMainAuthority(authority, fileName: name)
-                }
+                try establishFileAuthority(authority, kind: kind, fileName: name, marker: expected)
+                return
+            }
+            if existing == nil, allowUnowned {
+                try setXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    value: expected,
+                    flags: XATTR_CREATE
+                )
+                try sync(descriptor)
+                try establishFileAuthority(authority, kind: kind, fileName: name, marker: expected)
                 return
             }
             if existing == nil { return }
@@ -2149,6 +2363,13 @@ struct DiskBackedScrollbackStore: Sendable {
         let names = try directoryEntryNames(authority)
         guard !names.isEmpty else { return .fresh }
         let temporaryName = "\(Self.legacyFormatMarkerName).staging"
+        if names != [temporaryName] {
+            guard legacyDirectoryHandoff == .trustedDeployedStore,
+                  try isDeployedUnmarkedStore(authority, names: names) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            return .deployed
+        }
         guard names == [temporaryName] else {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
         }
@@ -2179,6 +2400,53 @@ struct DiskBackedScrollbackStore: Sendable {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
         }
         return try close(descriptor, after: result)
+    }
+
+    private func isDeployedUnmarkedStore(
+        _ authority: DirectoryAuthority,
+        names: [String]
+    ) throws -> Bool {
+        let visible = Set(names)
+        let tails = names.filter { name in
+            let url = URL(fileURLWithPath: name)
+            return url.pathExtension == "scrollback"
+                && Self.isValidSessionID(url.deletingPathExtension().lastPathComponent)
+        }
+        guard !tails.isEmpty, visible.count == tails.count * 2 else { return false }
+        for tail in tails {
+            let lock = tail + ".lock"
+            guard visible.contains(lock) else { return false }
+            for name in [tail, lock] {
+                let descriptor = Darwin.openat(
+                    authority.descriptor,
+                    name,
+                    O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+                )
+                guard descriptor >= 0 else { return false }
+                let result: Result<Bool, Error> = Result {
+                    var status = stat()
+                    guard fstat(descriptor, &status) == 0,
+                          status.st_mode & S_IFMT == S_IFREG,
+                          try getXattr(
+                            descriptor: descriptor,
+                            name: name.hasSuffix(".lock")
+                                ? "com.holoscape.scrollback.lock-owner"
+                                : Self.ownerXattr,
+                            allowMissing: true
+                          ) == nil else { return false }
+                    if name.hasSuffix(".lock"), status.st_size != 0 { return false }
+                    try requirePathIdentity(
+                        authority,
+                        name: name,
+                        descriptor: descriptor,
+                        failure: .unsafeScrollbackDirectory(directory.path)
+                    )
+                    return true
+                }
+                guard try close(descriptor, after: result) else { return false }
+            }
+        }
+        return true
     }
 
     private func formatMarkerExists(_ authority: DirectoryAuthority) throws -> Bool {
@@ -2217,11 +2485,28 @@ struct DiskBackedScrollbackStore: Sendable {
                 throw StoreError.unsafeScrollbackDirectory(directory.path)
             }
             if name == Self.formatMarkerName {
-                guard try getXattr(
+                guard let marker = try getXattr(
                     descriptor: descriptor,
                     name: Self.ownerXattr,
                     allowMissing: true
-                ) == formatMarkerOwner(authority) else {
+                ) else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+                let prefix = formatMarkerPrefix(authority, fileStatus: status)
+                let isCurrent = try marker.starts(with: prefix)
+                    && marker.count > prefix.count
+                    && getXattr(
+                        descriptor: authority.descriptor,
+                        name: Self.formatAuthorityXattr,
+                        allowMissing: true
+                    ) == marker
+                let isPreAnchor = try marker == deterministicV2FormatMarker(authority)
+                    && validatePersistentFileIdentity(
+                        name: name,
+                        status: status,
+                        allowCreation: legacyDirectoryHandoff == .trustedDeployedStore
+                    )
+                guard isCurrent || isPreAnchor else {
                     throw StoreError.unsafeScrollbackDirectory(directory.path)
                 }
             }
@@ -2238,7 +2523,6 @@ struct DiskBackedScrollbackStore: Sendable {
 
     private func createFormatMarker(_ authority: DirectoryAuthority) throws {
         let temporaryName = "\(Self.formatMarkerName).staging"
-        let expectedMarker = formatMarkerOwner(authority)
         var stagingWasCreated = true
         var descriptor = Darwin.openat(
             authority.descriptor,
@@ -2256,19 +2540,29 @@ struct DiskBackedScrollbackStore: Sendable {
         }
         guard descriptor >= 0 else { throw Self.posixError(code: errno) }
         let initialization: Result<Void, Error> = Result {
+            var stagingStatus = stat()
+            guard fstat(descriptor, &stagingStatus) == 0,
+                  stagingStatus.st_mode & S_IFMT == S_IFREG else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            let prefix = formatMarkerPrefix(authority, fileStatus: stagingStatus)
             if stagingWasCreated {
                 try setXattr(
                     descriptor: descriptor,
                     name: Self.ownerXattr,
-                    value: expectedMarker,
+                    value: formatMarker(
+                        authority,
+                        fileStatus: stagingStatus,
+                        nonce: UUID().uuidString
+                    ),
                     flags: XATTR_CREATE
                 )
             } else {
-                guard try getXattr(
+                guard let existing = try getXattr(
                     descriptor: descriptor,
                     name: Self.ownerXattr,
                     allowMissing: true
-                ) == expectedMarker else {
+                ), existing.starts(with: prefix), existing.count > prefix.count else {
                     throw StoreError.unsafeScrollbackDirectory(directory.path)
                 }
             }
@@ -2324,9 +2618,56 @@ struct DiskBackedScrollbackStore: Sendable {
         }
         _ = try close(descriptor, after: .success(()))
         try sync(authority.descriptor)
+        let publishedDescriptor = Darwin.openat(
+            authority.descriptor,
+            Self.formatMarkerName,
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+        )
+        guard publishedDescriptor >= 0 else { throw Self.posixError(code: errno) }
+        let publication: Result<Void, Error> = Result {
+            guard let marker = try getXattr(
+                descriptor: publishedDescriptor,
+                name: Self.ownerXattr,
+                allowMissing: false
+            ) else { throw StoreError.unsafeScrollbackDirectory(directory.path) }
+            if let existing = try getXattr(
+                descriptor: authority.descriptor,
+                name: Self.formatAuthorityXattr,
+                allowMissing: true
+            ) {
+                guard existing == marker else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+            } else {
+                try setXattr(
+                    descriptor: authority.descriptor,
+                    name: Self.formatAuthorityXattr,
+                    value: marker,
+                    flags: XATTR_CREATE
+                )
+            }
+            try sync(authority.descriptor)
+        }
+        _ = try close(publishedDescriptor, after: publication)
     }
 
-    private func formatMarkerOwner(_ authority: DirectoryAuthority) -> Data {
+    private func formatMarkerPrefix(_ authority: DirectoryAuthority, fileStatus: stat) -> Data {
+        Data(
+            "holoscape-scrollback-format-v3:\(authority.status.st_dev):\(authority.status.st_ino):\(fileStatus.st_dev):\(fileStatus.st_ino):".utf8
+        )
+    }
+
+    private func formatMarker(
+        _ authority: DirectoryAuthority,
+        fileStatus: stat,
+        nonce: String
+    ) -> Data {
+        var marker = formatMarkerPrefix(authority, fileStatus: fileStatus)
+        marker.append(Data(nonce.utf8))
+        return marker
+    }
+
+    private func deterministicV2FormatMarker(_ authority: DirectoryAuthority) -> Data {
         Data(
             "holoscape-scrollback-format-v2-staging:\(authority.status.st_dev):\(authority.status.st_ino)".utf8
         )
@@ -2580,24 +2921,37 @@ struct DiskBackedScrollbackStore: Sendable {
                 )
             }
             guard descriptor >= 0 else { throw Self.posixError(code: errno) }
-            let expectedMarker = kind.marker(
-                fileName: url.lastPathComponent,
-                directoryStatus: authority.status
-            )
             let initialization: Result<Void, Error> = Result {
+                var stagingStatus = stat()
+                guard fstat(descriptor, &stagingStatus) == 0,
+                      stagingStatus.st_mode & S_IFMT == S_IFREG else {
+                    throw StoreError.unsafeScrollbackFile(
+                        directory.appendingPathComponent(temporaryName).path
+                    )
+                }
+                let prefix = kind.markerPrefix(
+                    fileName: url.lastPathComponent,
+                    directoryStatus: authority.status,
+                    fileStatus: stagingStatus
+                )
                 if stagingWasCreated {
                     try setXattr(
                         descriptor: descriptor,
                         name: Self.ownerXattr,
-                        value: expectedMarker,
+                        value: kind.marker(
+                            fileName: url.lastPathComponent,
+                            directoryStatus: authority.status,
+                            fileStatus: stagingStatus,
+                            nonce: UUID().uuidString
+                        ),
                         flags: XATTR_CREATE
                     )
                 } else {
-                    guard try getXattr(
+                    guard let existing = try getXattr(
                         descriptor: descriptor,
                         name: Self.ownerXattr,
                         allowMissing: true
-                    ) == expectedMarker else {
+                    ), existing.starts(with: prefix), existing.count > prefix.count else {
                         throw StoreError.unsafeScrollbackFile(
                             directory.appendingPathComponent(temporaryName).path
                         )
@@ -2658,6 +3012,23 @@ struct DiskBackedScrollbackStore: Sendable {
             created = true
             do {
                 try sync(authority.descriptor)
+                var publishedStatus = stat()
+                guard fstat(descriptor, &publishedStatus) == 0 else {
+                    throw Self.posixError(code: errno)
+                }
+                guard let marker = try getXattr(
+                    descriptor: descriptor,
+                    name: Self.ownerXattr,
+                    allowMissing: false
+                ) else {
+                    throw StoreError.unsafeScrollbackFile(url.path)
+                }
+                try establishFileAuthority(
+                    authority,
+                    kind: kind,
+                    fileName: url.lastPathComponent,
+                    marker: marker
+                )
             } catch {
                 return try close(descriptor, after: .failure(error))
             }
@@ -2690,18 +3061,14 @@ struct DiskBackedScrollbackStore: Sendable {
             guard status.st_mode & S_IFMT == S_IFREG else {
                 throw StoreError.unsafeScrollbackFile(url.path)
             }
-            if !created {
-                try requireOwnership(
-                    descriptor: descriptor,
-                    authority: authority,
-                    path: url.path,
-                    kind: kind
-                )
-            }
+            try requireOwnership(
+                descriptor: descriptor,
+                status: status,
+                authority: authority,
+                path: url.path,
+                kind: kind
+            )
             try requireIdentity(authority, at: url, matches: status, kind: kind)
-            if kind == .main {
-                try establishMainAuthority(authority, fileName: url.lastPathComponent)
-            }
             return OpenedDescriptor(descriptor: descriptor, status: status)
         } catch {
             return try close(descriptor, after: .failure(error))
@@ -2725,6 +3092,7 @@ struct DiskBackedScrollbackStore: Sendable {
             }
             try requireOwnership(
                 descriptor: descriptor,
+                status: currentStatus,
                 authority: authority,
                 path: url.path,
                 kind: kind
@@ -2754,24 +3122,35 @@ struct DiskBackedScrollbackStore: Sendable {
     private func hasMainAuthority(_ authority: DirectoryAuthority, fileName: String) throws -> Bool {
         guard let marker = try getXattr(
             descriptor: authority.descriptor,
-            name: Self.mainAuthorityXattr(fileName: fileName),
+            name: Self.fileAuthorityXattr(kind: .main, fileName: fileName),
             allowMissing: true
         ) else { return false }
-        guard marker == FileKind.main.marker(fileName: fileName, directoryStatus: authority.status) else {
+        let currentPrefix = Data(
+            "holoscape-scrollback-main-v3:\(authority.status.st_dev):\(authority.status.st_ino):\(fileName):".utf8
+        )
+        guard (marker.starts(with: currentPrefix) && marker.count > currentPrefix.count)
+                || marker == FileKind.main.deterministicV2Marker(
+                    fileName: fileName,
+                    directoryStatus: authority.status
+                ) else {
             throw StoreError.unsafeScrollbackFile(directory.appendingPathComponent(fileName).path)
         }
         return true
     }
 
-    private func establishMainAuthority(_ authority: DirectoryAuthority, fileName: String) throws {
-        let name = Self.mainAuthorityXattr(fileName: fileName)
-        let expected = FileKind.main.marker(fileName: fileName, directoryStatus: authority.status)
+    private func establishFileAuthority(
+        _ authority: DirectoryAuthority,
+        kind: FileKind,
+        fileName: String,
+        marker: Data
+    ) throws {
+        let name = Self.fileAuthorityXattr(kind: kind, fileName: fileName)
         if let existing = try getXattr(
             descriptor: authority.descriptor,
             name: name,
             allowMissing: true
         ) {
-            guard existing == expected else {
+            guard existing == marker else {
                 throw StoreError.unsafeScrollbackFile(directory.appendingPathComponent(fileName).path)
             }
             try sync(authority.descriptor)
@@ -2780,31 +3159,58 @@ struct DiskBackedScrollbackStore: Sendable {
         try setXattr(
             descriptor: authority.descriptor,
             name: name,
-            value: expected,
+            value: marker,
             flags: XATTR_CREATE
         )
         try sync(authority.descriptor)
     }
 
-    private static func mainAuthorityXattr(fileName: String) -> String {
-        let digest = SHA256.hash(data: Data(fileName.utf8))
-        return "com.holoscape.scrollback.main-\(digest.map { String(format: "%02x", $0) }.joined())"
+    private static func fileAuthorityXattr(kind: FileKind, fileName: String) -> String {
+        let label: String
+        switch kind {
+        case .main: label = "main"
+        case .recovery: label = "recovery"
+        }
+        let digest = SHA256.hash(data: Data("\(label):\(fileName)".utf8))
+        return "com.holoscape.scrollback.\(label)-\(digest.map { String(format: "%02x", $0) }.joined())"
     }
 
     private func requireOwnership(
         descriptor: Int32,
+        status: stat,
         authority: DirectoryAuthority,
         path: String,
         kind: FileKind
     ) throws {
-        guard try getXattr(
+        let fileName = (path as NSString).lastPathComponent
+        guard let marker = try getXattr(
             descriptor: descriptor,
             name: Self.ownerXattr,
             allowMissing: true
-        ) == kind.marker(
-            fileName: (path as NSString).lastPathComponent,
-            directoryStatus: authority.status
         ) else { throw StoreError.unsafeScrollbackFile(path) }
+        let prefix = kind.markerPrefix(
+            fileName: fileName,
+            directoryStatus: authority.status,
+            fileStatus: status
+        )
+        let isCurrent = try marker.starts(with: prefix)
+            && marker.count > prefix.count
+            && getXattr(
+                descriptor: authority.descriptor,
+                name: Self.fileAuthorityXattr(kind: kind, fileName: fileName),
+                allowMissing: true
+            ) == marker
+        let isPreAnchor = try marker == kind.deterministicV2Marker(
+            fileName: fileName,
+            directoryStatus: authority.status
+        ) && validatePersistentFileIdentity(
+            name: fileName,
+            status: status,
+            allowCreation: legacyDirectoryHandoff == .trustedDeployedStore
+        )
+        guard isCurrent || isPreAnchor else {
+            throw StoreError.unsafeScrollbackFile(path)
+        }
     }
 
     private func setRecoveryPhase(_ phase: RecoveryPhase, descriptor: Int32) throws {
