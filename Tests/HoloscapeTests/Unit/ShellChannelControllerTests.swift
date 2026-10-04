@@ -128,6 +128,11 @@ final class ShellChannelControllerTests: XCTestCase {
             "en_US.UTF--8",
             "en_US.U-T-F-8",
             "en_US.UTF-16.UTF-8",
+            "@UTF-8",
+            ".UTF-8",
+            "en_US.UTF-8@",
+            "en_US.UTF-8@calendar=gregorian@currency=USD",
+            "en_US.@calendar=gregorian",
         ]
 
         for locale in nonUTF8Locales {

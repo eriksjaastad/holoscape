@@ -261,10 +261,15 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private static func isUTF8Locale(_ locale: String?) -> Bool {
-        guard let locale else { return false }
-        let base = locale.split(separator: "@", maxSplits: 1).first.map(String.init) ?? locale
+        guard let locale, !locale.isEmpty else { return false }
+        let modifierComponents = locale.split(separator: "@", omittingEmptySubsequences: false)
+        guard modifierComponents.count <= 2,
+              let base = modifierComponents.first,
+              !base.isEmpty else { return false }
+        if modifierComponents.count == 2, modifierComponents[1].isEmpty { return false }
         let components = base.split(separator: ".", omittingEmptySubsequences: false)
-        guard components.count <= 2 else { return false }
+        guard components.count <= 2,
+              components.allSatisfy({ !$0.isEmpty }) else { return false }
         let codeset = String(components.last ?? "")
         return codeset.caseInsensitiveCompare("utf8") == .orderedSame
             || codeset.caseInsensitiveCompare("utf-8") == .orderedSame
