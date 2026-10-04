@@ -1171,10 +1171,11 @@ struct DiskBackedScrollbackStore: Sendable {
         directoryIdentityAuthorityDirectory: URL? = nil,
         legacyDirectoryHandoff: LegacyDirectoryHandoff? = nil
     ) {
+        let configuredPath = directory.standardizedFileURL.path
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
         directoryIdentity = DirectoryIdentityRegistry.shared.anchor(
-            for: directory.standardizedFileURL.path
+            for: configuredPath
         )
         self.beforeLeafMutation = beforeLeafMutation
         self.beforeDescriptorMutation = beforeDescriptorMutation
@@ -1279,6 +1280,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
                 guard let inspected else {
                     try rejectRecoveryWithoutMain(authority, at: recoveryURL(for: url))
+                    try rejectMissingAuthoritativeMain(authority, at: url)
                     return ReadDecision.result(Data())
                 }
                 return inspected
@@ -1337,6 +1339,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
                 if let removed { return removed }
                 try rejectRecoveryWithoutMain(authority, at: recoveryURL(for: url))
+                try rejectMissingAuthoritativeMain(authority, at: url)
                 return 0
             }
         }) else { return 0 }
@@ -1367,6 +1370,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 }
                 guard let inspected else {
                     try rejectRecoveryWithoutMain(authority, at: recoveryURL(for: url))
+                    try rejectMissingAuthoritativeMain(authority, at: url)
                     return ReadDecision.result(0)
                 }
                 return inspected
@@ -1397,6 +1401,15 @@ struct DiskBackedScrollbackStore: Sendable {
     func listStoredTails() throws -> [StoredScrollbackTail] {
         guard let result = try withExistingDirectoryAuthority(access: .readOnly, { authority in
             let names = try directoryEntryNames(authority)
+            let visibleNames = Set(names)
+            for missingName in try authoritativeMainFileNames(authority)
+                .subtracting(visibleNames)
+                .sorted() {
+                let missingURL = directory.appendingPathComponent(missingName)
+                guard try hasRecoverablePublication(authority, at: missingURL, kind: .main) else {
+                    throw StoreError.unsafeScrollbackFile(missingURL.path)
+                }
+            }
             var tails: [StoredScrollbackTail] = []
             for name in names {
                 let url = directory.appendingPathComponent(name)
@@ -1527,6 +1540,9 @@ struct DiskBackedScrollbackStore: Sendable {
                         let missingParent = descriptor
                         descriptor = -1
                         try close(missingParent, after: .success(()))
+                        if try hasPersistentDirectoryIdentityRecord() {
+                            throw StoreError.unsafeScrollbackDirectory(directory.path)
+                        }
                         return nil
                     }
                     if code == ELOOP || code == ENOTDIR {
@@ -1746,7 +1762,11 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func canonicalDirectoryURL() throws -> URL {
-        var candidate = directory.standardizedFileURL
+        try canonicalDirectoryURL(for: directory)
+    }
+
+    private func canonicalDirectoryURL(for configuredURL: URL) throws -> URL {
+        var candidate = configuredURL.standardizedFileURL
         guard candidate.isFileURL, candidate.path.hasPrefix("/") else {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
         }
@@ -1882,6 +1902,33 @@ struct DiskBackedScrollbackStore: Sendable {
             }
         }
         return try close(descriptor, after: unlocked)
+    }
+
+    private func hasPersistentDirectoryIdentityRecord() throws -> Bool {
+        try withPersistentAuthorityDescriptor(createIfMissing: false) { descriptor in
+            let expectedCanonicalPath = try canonicalDirectoryURL().path
+            for name in try boundedXattrNames(descriptor: descriptor)
+                where name.hasPrefix("com.holoscape.scrollback.directory-") {
+                guard let value = try getXattr(
+                    descriptor: descriptor,
+                    name: name,
+                    allowMissing: false
+                ), let newline = value.lastIndex(of: 0x0A) else { continue }
+                let configuredPath = String(
+                    decoding: value[value.index(after: newline)...],
+                    as: UTF8.self
+                )
+                guard Self.directoryIdentityXattr(configuredPath: configuredPath) == name else {
+                    continue
+                }
+                if try canonicalDirectoryURL(
+                    for: URL(fileURLWithPath: configuredPath, isDirectory: true)
+                ).path == expectedCanonicalPath {
+                    return true
+                }
+            }
+            return false
+        } ?? false
     }
 
     private func withPersistentAuthorityDescriptor<T>(
@@ -3766,6 +3813,171 @@ struct DiskBackedScrollbackStore: Sendable {
             throw StoreError.unsafeScrollbackFile(directory.appendingPathComponent(fileName).path)
         }
         return true
+    }
+
+    private func rejectMissingAuthoritativeMain(
+        _ authority: DirectoryAuthority,
+        at url: URL
+    ) throws {
+        let hasAuthority = try hasMainAuthority(authority, fileName: url.lastPathComponent)
+            || hasPersistentFileIdentityRecord(name: url.lastPathComponent)
+        guard hasAuthority else { return }
+        if try hasRecoverablePublication(authority, at: url, kind: .main) { return }
+        throw StoreError.unsafeScrollbackFile(url.path)
+    }
+
+    private func hasPersistentFileIdentityRecord(name: String) throws -> Bool {
+        try withPersistentAuthorityDescriptor(createIfMissing: false) { descriptor in
+            let xattr = Self.persistentFileIdentityXattr(
+                configuredPath: directory.standardizedFileURL.path,
+                name: name
+            )
+            guard let value = try getXattr(
+                descriptor: descriptor,
+                name: xattr,
+                allowMissing: true
+            ) else { return false }
+            guard try persistentAuthorityFileName(value) == name else {
+                throw StoreError.unsafeScrollbackFile(
+                    directory.appendingPathComponent(name).path
+                )
+            }
+            return true
+        } ?? false
+    }
+
+    private func authoritativeMainFileNames(
+        _ authority: DirectoryAuthority
+    ) throws -> Set<String> {
+        var result = Set<String>()
+        let mainPrefix = "com.holoscape.scrollback.main-"
+        for xattr in try boundedXattrNames(descriptor: authority.descriptor)
+            where xattr.hasPrefix(mainPrefix) {
+            guard let value = try getXattr(
+                descriptor: authority.descriptor,
+                name: xattr,
+                allowMissing: false
+            ), let name = try mainAuthorityFileName(value, directoryStatus: authority.status),
+              xattr == Self.fileAuthorityXattr(kind: .main, fileName: name) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            result.insert(name)
+        }
+
+        if let persistentNames: Set<String> = try withPersistentAuthorityDescriptor(
+            createIfMissing: false,
+            { descriptor in
+                var names = Set<String>()
+                for xattr in try boundedXattrNames(descriptor: descriptor)
+                    where xattr.hasPrefix("com.holoscape.scrollback.file-") {
+                    guard let value = try getXattr(
+                        descriptor: descriptor,
+                        name: xattr,
+                        allowMissing: false
+                    ) else {
+                        throw StoreError.unsafeScrollbackDirectory(directory.path)
+                    }
+                    let name: String
+                    do {
+                        guard let parsed = try persistentAuthorityFileName(value) else { continue }
+                        name = parsed
+                    } catch {
+                        continue
+                    }
+                    guard xattr == Self.persistentFileIdentityXattr(
+                        configuredPath: directory.standardizedFileURL.path,
+                        name: name
+                    ) else { continue }
+                    names.insert(name)
+                }
+                return names
+            }
+        ) {
+            result.formUnion(persistentNames)
+        }
+        return result
+    }
+
+    private func mainAuthorityFileName(
+        _ value: Data,
+        directoryStatus: stat
+    ) throws -> String? {
+        guard let marker = String(data: value, encoding: .utf8) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+        let v3Prefix = "holoscape-scrollback-main-v3:\(directoryStatus.st_dev):\(directoryStatus.st_ino):"
+        let v2Prefix = "holoscape-scrollback-main-v2:\(directoryStatus.st_dev):\(directoryStatus.st_ino):"
+        let name: String
+        if marker.hasPrefix(v3Prefix) {
+            let fields = marker.dropFirst(v3Prefix.count).split(
+                separator: ":",
+                maxSplits: 3,
+                omittingEmptySubsequences: false
+            )
+            guard fields.count == 4,
+                  Int64(fields[1]) != nil,
+                  UInt64(fields[2]) != nil,
+                  !fields[3].isEmpty else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            name = String(fields[0])
+        } else if marker.hasPrefix(v2Prefix) {
+            name = String(marker.dropFirst(v2Prefix.count))
+        } else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+        guard Self.isValidMainFileName(name) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+        return name
+    }
+
+    private func persistentAuthorityFileName(_ value: Data) throws -> String? {
+        let prefix = "holoscape-scrollback-file-v1:"
+        guard let marker = String(data: value, encoding: .utf8), marker.hasPrefix(prefix) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+        let fields = marker.dropFirst(prefix.count).split(
+            separator: ":",
+            maxSplits: 2,
+            omittingEmptySubsequences: false
+        )
+        guard fields.count == 3,
+              Int64(fields[0]) != nil,
+              UInt64(fields[1]) != nil else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+        let name = String(fields[2])
+        return Self.isValidMainFileName(name) ? name : nil
+    }
+
+    private func boundedXattrNames(descriptor: Int32) throws -> [String] {
+        let size = flistxattr(descriptor, nil, 0, 0)
+        guard size >= 0 else { throw Self.posixError(code: errno) }
+        guard size <= 1_048_576 else { throw Self.posixError(code: EFBIG) }
+        guard size > 0 else { return [] }
+        var bytes = [CChar](repeating: 0, count: size)
+        let count = flistxattr(descriptor, &bytes, bytes.count, 0)
+        guard count == size else {
+            if count < 0 { throw Self.posixError(code: errno) }
+            throw Self.posixError(code: EIO)
+        }
+        var names: [String] = []
+        var offset = 0
+        while offset < bytes.count {
+            let name = bytes.withUnsafeBufferPointer { buffer in
+                String(cString: buffer.baseAddress!.advanced(by: offset))
+            }
+            names.append(name)
+            offset += name.utf8.count + 1
+        }
+        return names
+    }
+
+    private static func isValidMainFileName(_ name: String) -> Bool {
+        guard name.hasSuffix(".scrollback") else { return false }
+        let sessionID = String(name.dropLast(".scrollback".count))
+        return isValidSessionID(sessionID) && name == "\(sessionID).scrollback"
     }
 
     private func hasRecoverablePublication(

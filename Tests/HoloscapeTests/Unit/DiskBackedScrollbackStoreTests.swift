@@ -3282,6 +3282,115 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tailURL.path))
     }
 
+    func testMissingAuthoritativeMainFailsReadCountClearAndList() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("scrollback")
+        let authorityDirectory = parent.appendingPathComponent("authority")
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            directoryIdentityAuthorityDirectory: authorityDirectory
+        )
+        let id = BrokerSessionID(rawValue: "missing-authoritative-main")
+        let tailURL = directory.appendingPathComponent("\(id.rawValue).scrollback")
+        try store.append(Data("durable".utf8), for: id)
+        try FileManager.default.removeItem(at: tailURL)
+
+        for operation in [
+            { _ = try store.readTail(for: id, maxBytes: 1_024) },
+            { _ = try store.storedByteCount(for: id) },
+            { _ = try store.clearAndReturnByteCount(for: id) },
+            { _ = try store.listStoredTails() },
+        ] {
+            XCTAssertThrowsError(try operation()) { error in
+                XCTAssertEqual(
+                    error as? DiskBackedScrollbackStore.StoreError,
+                    .unsafeScrollbackFile(tailURL.path)
+                )
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tailURL.path))
+    }
+
+    func testMissingNeverCreatedSessionStillReturnsEmptyResults() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("scrollback")
+        let authorityDirectory = parent.appendingPathComponent("authority")
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            directoryIdentityAuthorityDirectory: authorityDirectory
+        )
+        let existing = BrokerSessionID(rawValue: "existing-control")
+        let missing = BrokerSessionID(rawValue: "never-created-control")
+        try store.append(Data("durable".utf8), for: existing)
+
+        XCTAssertEqual(try store.readTail(for: missing, maxBytes: 1_024), Data())
+        XCTAssertEqual(try store.storedByteCount(for: missing), 0)
+        XCTAssertEqual(try store.clearAndReturnByteCount(for: missing), 0)
+        XCTAssertEqual(try store.listStoredTails().map(\.sessionID), [existing])
+    }
+
+    func testNeverCreatedDirectoryStillReturnsEmptyResultsWithoutCreatingAuthority() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("missing-scrollback")
+        let authorityDirectory = parent.appendingPathComponent("missing-authority")
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            directoryIdentityAuthorityDirectory: authorityDirectory
+        )
+        let id = BrokerSessionID(rawValue: "never-created-directory")
+
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 1_024), Data())
+        XCTAssertEqual(try store.storedByteCount(for: id), 0)
+        XCTAssertEqual(try store.clearAndReturnByteCount(for: id), 0)
+        XCTAssertEqual(try store.listStoredTails(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: authorityDirectory.path))
+    }
+
+    func testDeletedAuthoritativeDirectoryFailsReadCountClearAndList() throws {
+        let parent = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("scrollback")
+        let authorityDirectory = parent.appendingPathComponent("authority")
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 1_024,
+            directoryIdentityAuthorityDirectory: authorityDirectory
+        )
+        let id = BrokerSessionID(rawValue: "deleted-authoritative-directory")
+        try store.append(Data("durable".utf8), for: id)
+        XCTAssertTrue(
+            try extendedAttributeNames(at: authorityDirectory)
+                .contains(where: { $0.hasPrefix("com.holoscape.scrollback.directory-") })
+        )
+        try FileManager.default.removeItem(at: directory)
+        XCTAssertTrue(
+            try extendedAttributeNames(at: authorityDirectory)
+                .contains(where: { $0.hasPrefix("com.holoscape.scrollback.directory-") })
+        )
+
+        for operation in [
+            { _ = try store.readTail(for: id, maxBytes: 1_024) },
+            { _ = try store.storedByteCount(for: id) },
+            { _ = try store.clearAndReturnByteCount(for: id) },
+            { _ = try store.listStoredTails() },
+        ] {
+            XCTAssertThrowsError(try operation()) { error in
+                XCTAssertEqual(
+                    error as? DiskBackedScrollbackStore.StoreError,
+                    .unsafeScrollbackDirectory(directory.path)
+                )
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
     func testClearReturnsExactByteCountFromSameLockedMutation() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
