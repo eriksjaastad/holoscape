@@ -513,16 +513,83 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
 
+        drainExitedOutput(
+            record,
+            exitCode: exitCode,
+            deliveryGeneration: deliveryGeneration,
+            notifyStartCompletion: notifyStartCompletion
+        )
+    }
+
+    private func drainExitedOutput(
+        _ record: BrokerSessionRecord,
+        exitCode: Int32,
+        deliveryGeneration: UInt,
+        notifyStartCompletion: Bool
+    ) {
+        let consume: @MainActor @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
+            guard let self,
+                  self.brokerSessionID == record.id,
+                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+            do {
+                let snapshot = try result.get()
+                self.handleOutputPumpSample(snapshot.data, for: record.id)
+                if let generation = snapshot.generation {
+                    self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
+                        DispatchQueue.main.async {
+                            guard self.brokerSessionID == record.id,
+                                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+                            if let error {
+                                self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                                return
+                            }
+                            self.drainExitedOutput(
+                                record,
+                                exitCode: exitCode,
+                                deliveryGeneration: deliveryGeneration,
+                                notifyStartCompletion: notifyStartCompletion
+                            )
+                        }
+                    }
+                } else {
+                    self.retireExitedSession(
+                        record,
+                        exitCode: exitCode,
+                        deliveryGeneration: deliveryGeneration,
+                        notifyStartCompletion: notifyStartCompletion
+                    )
+                }
+            } catch {
+                self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+            }
+        }
+
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.readAvailableOutput(record.id) { result in
+                DispatchQueue.main.async {
+                    consume(result)
+                }
+            }
+        } else {
+            consume(Result {
+                try coordinator.snapshotAvailableOutput(record.id)
+            })
+        }
+    }
+
+    private func retireExitedSession(
+        _ record: BrokerSessionRecord,
+        exitCode: Int32,
+        deliveryGeneration: UInt,
+        notifyStartCompletion: Bool
+    ) {
         let completion: @Sendable (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self,
                       self.brokerSessionID == record.id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                 if let error {
-                    self.revokeOutputDeliveryOwnership()
-                    self.startFailureDescription = String(describing: error)
-                    self.startFailureKind = self.classifyStartFailure(error)
-                    self.completeReattachStartIfNeeded(notifyStartCompletion)
+                    self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
                     return
                 }
                 self.revokeOutputDeliveryOwnership()
@@ -545,66 +612,23 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         }
 
-        let retireCompletedSession: @MainActor () -> Void = { [self] in
-            if coordinator.requiresOffMainBrokerWork {
-                failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
-                return
-            }
-            do {
-                try coordinator.retireCompletedSession(record.id)
-                completion(nil)
-            } catch {
-                completion(error)
-            }
-        }
-
-        let deliverFinalOutputAndRetire: @MainActor (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
-            guard let self,
-                  self.brokerSessionID == record.id,
-                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
-            do {
-                let snapshot = try result.get()
-                self.handleOutputPumpSample(snapshot.data, for: record.id)
-                if let generation = snapshot.generation {
-                    self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
-                        DispatchQueue.main.async {
-                            guard self.brokerSessionID == record.id,
-                                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
-                            if let error {
-                                self.startFailureDescription = String(describing: error)
-                                self.startFailureKind = self.classifyStartFailure(error)
-                                self.completeReattachStartIfNeeded(notifyStartCompletion)
-                                return
-                            }
-                            retireCompletedSession()
-                        }
-                    }
-                } else {
-                    retireCompletedSession()
-                }
-            } catch {
-                self.revokeOutputDeliveryOwnership()
-                self.startFailureDescription = String(describing: error)
-                self.startFailureKind = self.classifyStartFailure(error)
-                self.completeReattachStartIfNeeded(notifyStartCompletion)
-            }
-        }
-
-        // Replay intentionally leaves an unread generation untouched when it
-        // cannot fit in the replay cap. A running session's pump would own that
-        // generation; an exited session has no pump, so drain it exactly once
-        // before runtime retirement and exit publication.
         if coordinator.requiresOffMainBrokerWork {
-            failureRecoveryCoordinator.readAvailableOutput(record.id) { result in
-                DispatchQueue.main.async {
-                    deliverFinalOutputAndRetire(result)
-                }
-            }
-        } else {
-            deliverFinalOutputAndRetire(Result {
-                try coordinator.snapshotAvailableOutput(record.id)
-            })
+            failureRecoveryCoordinator.retireCompletedSession(record.id, completion: completion)
+            return
         }
+        do {
+            try coordinator.retireCompletedSession(record.id)
+            completion(nil)
+        } catch {
+            completion(error)
+        }
+    }
+
+    private func failExitedOutputDelivery(_ error: Error, notifyStartCompletion: Bool) {
+        revokeOutputDeliveryOwnership()
+        startFailureDescription = String(describing: error)
+        startFailureKind = classifyStartFailure(error)
+        completeReattachStartIfNeeded(notifyStartCompletion)
     }
 
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
@@ -1430,15 +1454,13 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // can race. Once termination is observable, monitoring is
                         // complete, so one final drain captures bytes appended
                         // after the first read and before exit authority.
-                        let finalSnapshot = try read(sessionID)
-                        guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                        guard onSample(sessionID, finalSnapshot.data) else {
-                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                            return
-                        }
-                        if let generation = finalSnapshot.generation {
-                            try acknowledge(sessionID, generation)
-                        }
+                        guard try self.drainRemainingOutput(
+                            sessionID: sessionID,
+                            runGeneration: runGeneration,
+                            read: read,
+                            acknowledge: acknowledge,
+                            onSample: onSample
+                        ) else { return }
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
                         try finishTermination(sessionID, exitCode)
@@ -1492,16 +1514,13 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 }
                 guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 if let exitCode = try terminationStatus(sessionID) {
-                    let finalSnapshot = try read(sessionID)
-                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                    guard onSample(sessionID, finalSnapshot.data) else {
-                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        return
-                    }
-                    if let generation = finalSnapshot.generation {
-                        try acknowledge(sessionID, generation)
-                    }
-                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                    guard try self.drainRemainingOutput(
+                        sessionID: sessionID,
+                        runGeneration: runGeneration,
+                        read: read,
+                        acknowledge: acknowledge,
+                        onSample: onSample
+                    ) else { return }
                     try finishTermination(sessionID, exitCode)
                     if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
                         onTermination(sessionID, exitCode)
@@ -1531,6 +1550,26 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             return current
         }
         semaphore?.signal()
+    }
+
+    private func drainRemainingOutput(
+        sessionID: BrokerSessionID,
+        runGeneration: UInt,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool
+    ) throws -> Bool {
+        while isOpen(for: sessionID, runGeneration: runGeneration) {
+            let snapshot = try read(sessionID)
+            guard isOpen(for: sessionID, runGeneration: runGeneration) else { return false }
+            guard onSample(sessionID, snapshot.data) else {
+                closeIfCurrent(sessionID, runGeneration: runGeneration)
+                return false
+            }
+            guard let generation = snapshot.generation else { return true }
+            try acknowledge(sessionID, generation)
+        }
+        return false
     }
 
     private func isOpen(for sessionID: BrokerSessionID) -> Bool {

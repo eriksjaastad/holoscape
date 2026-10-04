@@ -94,7 +94,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             handler?(id)
         }
 
-        func snapshotOutput() throws -> BrokerOutputSnapshot {
+        func snapshotOutput(maxBytes: Int) throws -> BrokerOutputSnapshot {
             lock.lock()
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
@@ -104,9 +104,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
                 lock.unlock()
                 return BrokerOutputSnapshot(data: Data(), generation: nil)
             }
+            let boundedCount = min(max(0, maxBytes), output.count)
+            let data = Data(output.prefix(boundedCount))
             let snapshot = BrokerOutputSnapshot(
-                data: output,
-                generation: output.isEmpty ? nil : outputEndOffset
+                data: data,
+                generation: data.isEmpty ? nil : outputStartOffset + UInt64(data.count)
             )
             lock.unlock()
             return snapshot
@@ -531,8 +533,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         try session(for: id).readOutput()
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-        try session(for: id).snapshotOutput()
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+        try session(for: id).snapshotOutput(maxBytes: maxBytes)
     }
 
     func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {

@@ -249,6 +249,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let requiresOffMainBrokerWork = true
         let sessionID = BrokerSessionID(rawValue: "exited-unread-output")
         private(set) var outputReadCount = 0
+        private(set) var acknowledgedGenerations: [UInt64] = []
         private(set) var retiredSessionIDs: [BrokerSessionID] = []
         private let outputReadRelease = DispatchSemaphore(value: 0)
         private var shouldBlockOutputRead = false
@@ -293,6 +294,23 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 _ = outputReadRelease.wait(timeout: .now() + 1)
             }
             return Data("detached-final-overflow\n".utf8)
+        }
+        func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+            outputReadCount += 1
+            if shouldBlockOutputRead {
+                _ = outputReadRelease.wait(timeout: .now() + 1)
+            }
+            switch outputReadCount {
+            case 1:
+                return BrokerOutputSnapshot(data: Data("detached-final-chunk-one\n".utf8), generation: 24)
+            case 2:
+                return BrokerOutputSnapshot(data: Data("detached-final-chunk-two\n".utf8), generation: 48)
+            default:
+                return BrokerOutputSnapshot(data: Data(), generation: nil)
+            }
+        }
+        func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
+            acknowledgedGenerations.append(generation)
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
@@ -714,14 +732,25 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
-    private final class FinalOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
+    private final class FinalOutputRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
         private let lock = NSLock()
+        private let transactionalChunkSize: Int
         private var createdIDs: [BrokerSessionID] = []
         private var retiredIDs: [BrokerSessionID] = []
         private var output = Data()
+        private var outputStartOffset: UInt64 = 0
+        private var storedAcknowledgedGenerations: [UInt64] = []
         private var running = true
         private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
+
+        init(transactionalChunkSize: Int = .max) {
+            self.transactionalChunkSize = transactionalChunkSize
+        }
+
+        var acknowledgedGenerations: [UInt64] {
+            lock.withLock { storedAcknowledgedGenerations }
+        }
 
         func triggerFinalOutput(_ text: String, afterTerminationCheck lateText: String = "", for id: BrokerSessionID) {
             let currentHandler: (@Sendable (BrokerSessionID) -> Void)? = lock.withLock {
@@ -749,9 +778,34 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func readAvailableOutput(id: BrokerSessionID) throws -> Data {
             lock.withLock {
                 let data = output
+                outputStartOffset += UInt64(data.count)
                 output.removeAll(keepingCapacity: true)
                 return data
             }
+        }
+        func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+            lock.withLock {
+                let count = min(output.count, max(0, min(maxBytes, transactionalChunkSize)))
+                let data = Data(output.prefix(count))
+                return BrokerOutputSnapshot(
+                    data: data,
+                    generation: data.isEmpty ? nil : outputStartOffset + UInt64(data.count)
+                )
+            }
+        }
+        func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws {
+            lock.withLock {
+                let count = min(output.count, Int(generation - outputStartOffset))
+                output.removeFirst(count)
+                outputStartOffset += UInt64(count)
+                storedAcknowledgedGenerations.append(generation)
+            }
+        }
+        func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
+            BrokerScrollbackReplaySnapshot(
+                replay: ScrollbackReplay(data: Data(), source: .liveBrokerMemory, maxBytes: maxBytes),
+                generation: nil
+            )
         }
         func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
             lock.withLock { self.handler = handler }
@@ -1105,6 +1159,24 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             try fixture.coordinator.reattachableSessions().isEmpty,
             "A naturally exited session must retire its runtime owner so closing the disconnected tab cannot resurrect it"
         )
+    }
+
+    func testOutputPumpDrainsEveryTransactionalChunkBeforeReportingTermination() throws {
+        let runtime = FinalOutputRuntime(transactionalChunkSize: 8)
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008021")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var events: [String] = []
+        fixture.terminal.setOutputHandler { events.append("output") }
+        fixture.terminal.setTerminationHandler { _ in events.append("termination") }
+
+        runtime.triggerFinalOutput("chunk-01chunk-02chunk-03\n", for: sessionID)
+
+        try waitUntil { events.last == "termination" }
+        XCTAssertEqual(runtime.acknowledgedGenerations, [8, 16, 24, 25])
+        XCTAssertEqual(events.last, "termination")
+        XCTAssertTrue(fixture.terminal.lastLines(5).joined(separator: "\n").contains("chunk-01chunk-02chunk-03"))
+        XCTAssertEqual(try runtime.listSessions(), [], "Runtime retirement must follow complete transactional drain")
     }
 
     func testTeardownAfterReplayDeliveryDoesNotReplaySameSessionAgain() throws {
@@ -2087,12 +2159,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         RunLoop.current.run(until: Date().addingTimeInterval(0.01))
 
-        XCTAssertEqual(coordinator.outputReadCount, 1)
+        XCTAssertEqual(coordinator.outputReadCount, 3)
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24, 48])
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
         XCTAssertEqual(events.first, "output", "Preserved unread bytes must render before exit authority")
         XCTAssertEqual(events.last, "exit:9")
         XCTAssertEqual(restoredTerminal.lastScrollbackReplay?.data, Data(), "Oversized unread generation must remain owned by the final drain")
-        XCTAssertTrue(restoredTerminal.lastLines(20).joined(separator: "\n").contains("detached-final-overflow"))
+        let finalLines = restoredTerminal.lastLines(20).joined(separator: "\n")
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-one"))
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-two"))
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 

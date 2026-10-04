@@ -25,7 +25,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .terminate(id: sessionID, exitCode: 0),
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
-            .snapshotAvailableOutput(id: sessionID),
+            .snapshotAvailableOutput(id: sessionID, maxBytes: 4096),
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
             .snapshotScrollbackReplay(id: sessionID, maxBytes: 4096),
@@ -86,6 +86,17 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testMaximumOutputPayloadFitsResponseFrameForSlashHeavyBase64() throws {
+        let codec = BrokerSessionHostCodec()
+        let output = Data(repeating: 0xFF, count: BrokerSessionHostProtocolLimits.maximumOutputPayloadSize)
+        let snapshot = BrokerOutputSnapshot(data: output, generation: UInt64(output.count))
+
+        let frame = try codec.encodeResponse(.outputSnapshot(snapshot))
+
+        XCTAssertLessThanOrEqual(frame.count, BrokerSessionHostProtocolLimits.maximumResponseFrameSize)
+        XCTAssertEqual(try codec.decodeResponse(frame), .outputSnapshot(snapshot))
+    }
+
     func testCreateRequestFrameDoesNotSerializeRawEnvironmentSecrets() throws {
         let codec = BrokerSessionHostCodec()
         let request = BrokerSessionHostRequest.create(
@@ -142,7 +153,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID))),
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096))),
             try codec.encodeResponse(.outputSnapshot(BrokerOutputSnapshot(data: Data("broker-output".utf8), generation: 1)))
         )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
@@ -259,7 +270,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let host = BrokerSessionHost(runtime: runtime)
         let codec = BrokerSessionHostCodec()
         let response = try codec.decodeResponse(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096)))
         )
 
         guard case let .failure(failure) = response else {
@@ -523,7 +534,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
     func testTransactionalSnapshotRequestUsesProtocolShapeLegacyHostCannotDispatch() throws {
         let codec = BrokerSessionHostCodec()
         let frame = try codec.encodeRequest(
-            .snapshotAvailableOutput(id: BrokerSessionID(rawValue: "version-separated-output"))
+            .snapshotAvailableOutput(
+                id: BrokerSessionID(rawValue: "version-separated-output"),
+                maxBytes: 4096
+            )
         )
         let json = String(decoding: frame, as: UTF8.self)
 
@@ -633,7 +647,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
 
         let snapshotResponse = try codec.decodeResponse(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096)))
         )
         guard case let .outputSnapshot(snapshot) = snapshotResponse else {
             return XCTFail("Expected output snapshot, got \(snapshotResponse)")
@@ -792,7 +806,9 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             readChunkSize: 7
         )
 
-        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+        try inputPipe.fileHandleForWriting.write(
+            contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096))
+        )
         try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
         try inputPipe.fileHandleForWriting.close()
 
@@ -933,6 +949,66 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         XCTAssertEqual(try transport.sendFrame(firstFrame), firstFrame)
         XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
+    }
+
+    func testProcessTransportAcceptsResponseAtMaximumFrameSize() throws {
+        let maximumFrameSize = 16
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+        var frame = Data(repeating: 0x78, count: maximumFrameSize - 1)
+        frame.append(0x0A)
+
+        XCTAssertEqual(try transport.sendFrame(frame), frame)
+    }
+
+    func testProcessTransportRejectsOversizedDelimitedResponse() throws {
+        let maximumFrameSize = 16
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+        var frame = Data(repeating: 0x78, count: maximumFrameSize)
+        frame.append(0x0A)
+
+        XCTAssertThrowsError(try transport.sendFrame(frame)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
+    }
+
+    func testProcessTransportRejectsOversizedResponseBeforeDelimiter() throws {
+        let maximumFrameSize = 16
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportOversizedResponseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("oversized-response")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        IFS= read -r line
+        printf xxxxxxxxxxxxxxxxx
+        while :; do sleep 1; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            responseTimeoutSeconds: 2,
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
     }
 
     func testProcessTransportDrainsHighVolumeStderrBeforeHelperResponse() throws {
@@ -1643,6 +1719,55 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.3)
         wait(for: [serverFinished], timeout: 1)
+    }
+
+    func testUnixSocketTransportAcceptsResponseAtMaximumFrameSize() throws {
+        let maximumFrameSize = 16
+        var response = Data(repeating: 0x78, count: maximumFrameSize - 1)
+        response.append(0x0A)
+
+        XCTAssertEqual(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get(),
+            response
+        )
+    }
+
+    func testUnixSocketTransportRejectsOversizedDelimitedResponse() throws {
+        let maximumFrameSize = 16
+        var response = Data(repeating: 0x78, count: maximumFrameSize)
+        response.append(0x0A)
+
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
+    }
+
+    func testUnixSocketTransportRejectsOversizedResponseBeforeDelimiter() throws {
+        let maximumFrameSize = 16
+        let response = Data(repeating: 0x78, count: maximumFrameSize + 1)
+
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
     }
 
     func testUnixSocketServerRefusesToReplaceSilentReachableSocket() throws {
@@ -2633,6 +2758,46 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    private func rawUnixSocketTransportResult(
+        response: Data,
+        maximumResponseFrameSize: Int
+    ) throws -> Result<Data, Error> {
+        let socketPath = "/tmp/hs-raw-response-\(UUID().uuidString).sock"
+        let serverFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(serverFD)
+            unlink(socketPath)
+        }
+        let serverFinished = expectation(description: "raw socket response sent")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(serverFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                response.withUnsafeBytes { bytes in
+                    guard let baseAddress = bytes.baseAddress else { return }
+                    var offset = 0
+                    while offset < bytes.count {
+                        let written = Darwin.write(clientFD, baseAddress.advanced(by: offset), bytes.count - offset)
+                        if written <= 0 { break }
+                        offset += written
+                    }
+                }
+                Darwin.close(clientFD)
+            }
+            serverFinished.fulfill()
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            readChunkSize: 3,
+            maximumResponseFrameSize: maximumResponseFrameSize
+        )
+        let result = Result { try transport.sendFrame(Data("{}\n".utf8)) }
+        wait(for: [serverFinished], timeout: 1)
+        return result
+    }
+
     private func makeListeningUnixSocket(at path: String) throws -> Int32 {
         let pathBytes = Array(path.utf8)
         var address = sockaddr_un()
@@ -3036,8 +3201,8 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTra
         return Data("delayed-output".utf8)
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-        BrokerOutputSnapshot(data: try readAvailableOutput(id: id), generation: nil)
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: Data(try readAvailableOutput(id: id).prefix(max(0, maxBytes))), generation: nil)
     }
 
     func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
@@ -3155,8 +3320,8 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
         return output
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-        let data = try readAvailableOutput(id: id)
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+        let data = Data(try readAvailableOutput(id: id).prefix(max(0, maxBytes)))
         return BrokerOutputSnapshot(data: data, generation: data.isEmpty ? nil : 1)
     }
 

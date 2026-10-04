@@ -613,7 +613,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
         _ = try record(for: id)
         if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
-            return try transactionalRuntime.snapshotAvailableOutput(id: id)
+            return try transactionalRuntime.snapshotAvailableOutput(
+                id: id,
+                maxBytes: BrokerSessionHostProtocolLimits.maximumOutputPayloadSize
+            )
         }
         return BrokerOutputSnapshot(data: try runtime.readAvailableOutput(id: id), generation: nil)
     }

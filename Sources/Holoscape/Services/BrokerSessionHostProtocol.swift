@@ -4,6 +4,15 @@ enum BrokerSessionHostProtocolLimits {
     /// Includes the newline delimiter. Large enough for multi-megabyte input
     /// pastes while bounding malformed request accumulation in broker hosts.
     static let maximumRequestFrameSize = 8 * 1024 * 1024
+
+    /// Includes the newline delimiter. Broker responses can carry binary output
+    /// as base64 JSON, so retain the request-size headroom while bounding a
+    /// malformed helper or socket peer before it can exhaust app memory.
+    static let maximumResponseFrameSize = 8 * 1024 * 1024
+
+    /// Raw output is base64-expanded inside JSON responses. Keep each
+    /// transactional output chunk comfortably below the encoded frame limit.
+    static let maximumOutputPayloadSize = 4 * 1024 * 1024
 }
 
 enum BrokerSessionHostProtocolError: Error, Equatable {
@@ -25,7 +34,7 @@ enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
     case terminate(id: BrokerSessionID, exitCode: Int32?)
     case markErrored(id: BrokerSessionID)
     case sendInput(id: BrokerSessionID, bytes: Data)
-    case snapshotAvailableOutput(id: BrokerSessionID)
+    case snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int)
     case waitForOutputAvailability(id: BrokerSessionID, timeoutMilliseconds: Int)
     case readScrollbackTail(id: BrokerSessionID, maxBytes: Int)
     case snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int)
@@ -72,7 +81,7 @@ struct BrokerSessionHostCodec: Sendable {
 
     init() {
         encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         decoder = JSONDecoder()
     }
 

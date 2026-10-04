@@ -141,15 +141,28 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         }
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
         try outputTransactions.withSession(id) {
             try flushPendingOutputAcknowledgment(id: id)
-            let response = try response(for: .snapshotAvailableOutput(id: id))
+            let boundedMaxBytes = max(
+                0,
+                min(maxBytes, BrokerSessionHostProtocolLimits.maximumOutputPayloadSize)
+            )
+            let response = try response(
+                for: .snapshotAvailableOutput(id: id, maxBytes: boundedMaxBytes)
+            )
             guard case let .outputSnapshot(snapshot) = response else {
                 throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
             }
             return snapshot
         }
+    }
+
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try snapshotAvailableOutput(
+            id: id,
+            maxBytes: BrokerSessionHostProtocolLimits.maximumOutputPayloadSize
+        )
     }
 
     func setOutputAvailabilityHandler(
