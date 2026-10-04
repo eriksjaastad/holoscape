@@ -252,12 +252,19 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         // GUI-launched apps can inherit no terminal identity or a non-interactive
         // value. Keep direct shells aligned with broker-owned shell sessions.
         environment["TERM"] = "xterm-256color"
-        if environment["LANG"]?.range(of: "utf", options: [.caseInsensitive]) == nil {
+        if !isUTF8Locale(environment["LANG"]) {
             environment["LANG"] = "en_US.UTF-8"
         }
         // Apple_Terminal for OSC 7 directory notifications from zsh.
         environment["TERM_PROGRAM"] = "Apple_Terminal"
         return environment
+    }
+
+    private static func isUTF8Locale(_ locale: String?) -> Bool {
+        guard let locale else { return false }
+        let base = locale.split(separator: "@", maxSplits: 1).first.map(String.init) ?? locale
+        let codeset = base.split(separator: ".", omittingEmptySubsequences: false).last.map(String.init) ?? base
+        return codeset.lowercased().replacingOccurrences(of: "-", with: "") == "utf8"
     }
 
     func deactivate() {
