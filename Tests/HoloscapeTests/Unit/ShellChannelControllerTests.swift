@@ -92,16 +92,57 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.recoveryAction, .retryBrokerHost)
     }
 
-    func testShellLaunchEnvironmentStripsInheritedAgentOwnerToken() {
+    func testShellLaunchEnvironmentGuaranteesTerminalBaselineAndStripsInheritedAgentOwnerToken() {
         let environment = ShellChannelController.launchEnvironment(from: [
             "PATH": "/usr/bin",
+            "TERM": "dumb",
+            "LANG": "C",
             "TERM_PROGRAM": "Holoscape",
             "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN": "parent-agent-token",
         ])
 
         XCTAssertNil(environment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"])
         XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
+        XCTAssertEqual(environment["LANG"], "en_US.UTF-8")
         XCTAssertEqual(environment["TERM_PROGRAM"], "Apple_Terminal")
+    }
+
+    func testShellLaunchEnvironmentPreservesExistingUTF8LocaleVariants() {
+        for locale in ["C.UTF-8", "en_US.UTF8", "en_GB.utf-8@calendar=gregorian", "UTF-8"] {
+            let environment = ShellChannelController.launchEnvironment(from: ["LANG": locale])
+
+            XCTAssertEqual(environment["LANG"], locale)
+            XCTAssertEqual(environment["TERM"], "xterm-256color")
+        }
+    }
+
+    func testShellLaunchEnvironmentNormalizesMissingAndNonUTF8Locales() {
+        let nonUTF8Locales: [String?] = [
+            nil,
+            "",
+            "C",
+            "POSIX",
+            "en_US.UTF-16",
+            "en_US.UTF-8x",
+            "en_US.UTF--8",
+            "en_US.U-T-F-8",
+            "en_US.UTF-16.UTF-8",
+            "@UTF-8",
+            ".UTF-8",
+            "en_US.UTF-8@",
+            "en_US.UTF-8@calendar=gregorian@currency=USD",
+            "en_US.@calendar=gregorian",
+        ]
+
+        for locale in nonUTF8Locales {
+            var parentEnvironment: [String: String] = [:]
+            parentEnvironment["LANG"] = locale
+
+            let environment = ShellChannelController.launchEnvironment(from: parentEnvironment)
+
+            XCTAssertEqual(environment["LANG"], "en_US.UTF-8", "locale: \(locale ?? "nil")")
+        }
     }
 
     func testShellOutputHandlerRoutesThroughTerminalProcessSeam() {
