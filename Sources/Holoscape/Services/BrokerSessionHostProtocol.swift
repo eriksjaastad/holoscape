@@ -81,7 +81,7 @@ struct BrokerSessionHostCodec: Sendable {
 
     init() {
         encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         decoder = JSONDecoder()
     }
 

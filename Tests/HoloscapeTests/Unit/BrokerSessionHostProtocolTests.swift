@@ -86,6 +86,17 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testMaximumOutputPayloadFitsResponseFrameForSlashHeavyBase64() throws {
+        let codec = BrokerSessionHostCodec()
+        let output = Data(repeating: 0xFF, count: BrokerSessionHostProtocolLimits.maximumOutputPayloadSize)
+        let snapshot = BrokerOutputSnapshot(data: output, generation: UInt64(output.count))
+
+        let frame = try codec.encodeResponse(.outputSnapshot(snapshot))
+
+        XCTAssertLessThanOrEqual(frame.count, BrokerSessionHostProtocolLimits.maximumResponseFrameSize)
+        XCTAssertEqual(try codec.decodeResponse(frame), .outputSnapshot(snapshot))
+    }
+
     func testCreateRequestFrameDoesNotSerializeRawEnvironmentSecrets() throws {
         let codec = BrokerSessionHostCodec()
         let request = BrokerSessionHostRequest.create(
