@@ -210,7 +210,6 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
-            try clearCompactionJournalIfPresent(at: url)
             // Clearing is deliberately descriptor-bound: the validated inode is
             // truncated instead of unlinking a pathname that could be rebound
             // between validation and mutation. The caller therefore needs write
@@ -220,9 +219,24 @@ struct DiskBackedScrollbackStore: Sendable {
                 flags: O_WRONLY | O_NONBLOCK,
                 missingIsAbsent: true
             ) { descriptor in
-                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-                try handle.truncate(atOffset: 0)
-                try Self.fullSync(descriptor)
+                let journalURL = url.appendingPathExtension("compaction")
+                _ = try withOpenRegularFile(
+                    at: journalURL,
+                    flags: O_CREAT | O_RDWR | O_NONBLOCK,
+                    mode: S_IRUSR | S_IWUSR,
+                    missingIsAbsent: false
+                ) { journalDescriptor in
+                    try Self.syncContainingDirectory(of: journalURL)
+                    // A valid empty journal is durable clear intent. If the
+                    // process stops after this point, recovery completes the
+                    // clear instead of resurrecting a partially compacted tail.
+                    try Self.writeCompactionJournal(Data(), to: journalDescriptor)
+                    guard ftruncate(descriptor, 0) == 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    try Self.fullSync(descriptor)
+                    try Self.clearCompactionJournal(journalDescriptor)
+                }
             }
         }
     }
@@ -290,16 +304,21 @@ struct DiskBackedScrollbackStore: Sendable {
             do {
                 values = try operationLocks.withLock(for: url) {
                     guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
-                    let values = try resourceValues(url)
+                    try recoverCompactionIfNeeded(at: url)
+                    // `contentsOfDirectory` may vend URLs carrying prefetched
+                    // metadata from before recovery rewrote the file. Rebuild
+                    // the URL so the post-recovery size is read afresh.
+                    let values = try resourceValues(URL(fileURLWithPath: url.path))
                     guard Self.isRegularFileWithoutFollowingSymlinks(url) else { return nil }
                     return values
                 }
             } catch let error as ScrollbackSessionOperationLocks.LockError {
                 throw error
             } catch {
-                // A per-entry metadata/readability race must not throw out the
-                // entire listing; skip the bad entry and surface the rest.
-                continue
+                // Disappearance between enumeration and inspection is expected;
+                // every other failure must remain visible to maintenance UI.
+                if Self.isMissingFileError(error) { continue }
+                throw error
             }
             guard let values else { continue }
             guard values.isRegularFile == true,
@@ -378,7 +397,7 @@ struct DiskBackedScrollbackStore: Sendable {
         guard let retained = try readCompactionJournal(at: journalURL) else { return }
         _ = try withOpenRegularFile(
             at: url,
-            flags: O_RDWR | O_NONBLOCK,
+            flags: (retained.isEmpty ? O_WRONLY : O_RDWR) | O_NONBLOCK,
             missingIsAbsent: false
         ) { descriptor in
             try restore(retained, to: descriptor)
@@ -421,9 +440,11 @@ struct DiskBackedScrollbackStore: Sendable {
                 try Self.clearCompactionJournal(descriptor)
                 return nil
             }
-            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-            try handle.seek(toOffset: 0)
-            let record = try handle.readToEnd() ?? Data()
+            let record = try Self.readExactly(
+                from: descriptor,
+                count: Int(status.st_size),
+                at: 0
+            )
             guard let retained = Self.decodeCompactionJournal(record) else {
                 // The main file is never mutated until a complete journal has
                 // been synced. An incomplete/torn record therefore belongs to a
@@ -511,6 +532,32 @@ struct DiskBackedScrollbackStore: Sendable {
                 written += result
             }
         }
+    }
+
+    private static func readExactly(from descriptor: Int32, count: Int, at offset: off_t) throws -> Data {
+        var data = Data(count: count)
+        var bytesRead = 0
+        try data.withUnsafeMutableBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            while bytesRead < bytes.count {
+                let result = Darwin.pread(
+                    descriptor,
+                    baseAddress.advanced(by: bytesRead),
+                    bytes.count - bytesRead,
+                    offset + off_t(bytesRead)
+                )
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard result > 0 else { break }
+                bytesRead += result
+            }
+        }
+        if bytesRead < data.count {
+            data.removeSubrange(bytesRead..<data.count)
+        }
+        return data
     }
 
     private static func fullSync(_ descriptor: Int32) throws {
@@ -673,5 +720,12 @@ struct DiskBackedScrollbackStore: Sendable {
         var fileStatus = stat()
         guard lstat(url.path, &fileStatus) == 0 else { return false }
         return fileStatus.st_mode & S_IFMT != S_IFREG
+    }
+
+    private static func isMissingFileError(_ error: Error) -> Bool {
+        if let posix = error as? POSIXError, posix.code == .ENOENT { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain
+            && (nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError)
     }
 }

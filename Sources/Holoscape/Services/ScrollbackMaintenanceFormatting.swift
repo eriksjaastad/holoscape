@@ -7,9 +7,9 @@ enum ScrollbackMaintenanceFormatting {
 
     static func bulkClearFailure(clearedCount: Int, totalCount: Int, error: String) -> String {
         guard clearedCount > 0 else {
-            return "Holoscape did not clear any tails: \(error)"
+            return "Holoscape could not confirm any completed clears before the error. The refreshed list shows current state: \(error)"
         }
-        return "Holoscape cleared \(clearedCount) of \(totalCount) tails before failing: \(error)"
+        return "Holoscape confirmed \(clearedCount) of \(totalCount) clears before the error. The refreshed list shows current state: \(error)"
     }
 
     /// Formats a byte count as a short human-readable size, e.g. "512 B",

@@ -511,6 +511,63 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testFailedClearPreservesPendingCompactionRecovery() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "failed-clear-preserves-recovery")
+        let suffix = Data("KEPTTAIL".utf8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let journalURL = url.appendingPathExtension("compaction")
+        try (Data("LEFTOVER-PREFIX-".utf8) + suffix).write(to: url)
+        let interrupted = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: suffix.count,
+            compactionCheckpoint: { checkpoint in
+                if checkpoint == .mainOverwriteStarted { throw CompactionInterruption.injected }
+            }
+        )
+        XCTAssertThrowsError(try interrupted.readTail(for: id, maxBytes: 64))
+        let journalSizeBefore = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: journalURL.path)[.size] as? Int
+        )
+        XCTAssertGreaterThan(journalSizeBefore, 0)
+
+        XCTAssertEqual(chmod(url.path, S_IRUSR), 0)
+        defer { _ = chmod(url.path, S_IRUSR | S_IWUSR) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: suffix.count)
+        XCTAssertThrowsError(try store.remove(for: id))
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: journalURL.path)[.size] as? Int,
+            journalSizeBefore
+        )
+    }
+
+    func testListingRecoversPendingCompactionBeforeReportingSize() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "listing-recovers-compaction")
+        let suffix = Data("KEPTTAIL".utf8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        try (Data("LEFTOVER-PREFIX-".utf8) + suffix).write(to: url)
+        let interrupted = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: suffix.count,
+            compactionCheckpoint: { checkpoint in
+                if checkpoint == .journalSynced { throw CompactionInterruption.injected }
+            }
+        )
+        XCTAssertThrowsError(try interrupted.readTail(for: id, maxBytes: 64))
+
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: suffix.count)
+        let tails = try store.listStoredTails()
+        XCTAssertEqual(tails.map(\.sessionID), [id])
+        XCTAssertEqual(tails.map(\.byteCount), [suffix.count])
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: url.appendingPathExtension("compaction").path)[.size] as? Int,
+            0
+        )
+    }
+
     func testCompactionRejectsUnsafeJournalLeafWithoutChangingTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -943,6 +1000,21 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         XCTAssertEqual(tails.map(\.sessionID), [surviving])
         XCTAssertEqual(tails.count, 1)
+    }
+
+    func testListStoredTailsPropagatesUnexpectedMetadataFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1024)
+        let id = BrokerSessionID(rawValue: "session-metadata-failure")
+        try store.append(Data("tail-bytes\n".utf8), for: id)
+
+        XCTAssertThrowsError(try store.listStoredTails(resourceValues: { _ in
+            throw CocoaError(.fileReadUnknown)
+        })) { error in
+            XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
+            XCTAssertEqual((error as NSError).code, NSFileReadUnknownError)
+        }
     }
 
     private func makeTempDirectory() throws -> URL {

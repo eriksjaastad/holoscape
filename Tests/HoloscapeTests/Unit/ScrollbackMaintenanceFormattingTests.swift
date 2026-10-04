@@ -11,7 +11,7 @@ final class ScrollbackMaintenanceFormattingTests: XCTestCase {
                 totalCount: 3,
                 error: "permission denied"
             ),
-            "Holoscape did not clear any tails: permission denied"
+            "Holoscape could not confirm any completed clears before the error. The refreshed list shows current state: permission denied"
         )
     }
 
@@ -22,7 +22,7 @@ final class ScrollbackMaintenanceFormattingTests: XCTestCase {
                 totalCount: 5,
                 error: "unsafe file"
             ),
-            "Holoscape cleared 2 of 5 tails before failing: unsafe file"
+            "Holoscape confirmed 2 of 5 clears before the error. The refreshed list shows current state: unsafe file"
         )
     }
 
