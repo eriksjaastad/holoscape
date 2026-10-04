@@ -118,7 +118,17 @@ final class ShellChannelControllerTests: XCTestCase {
     }
 
     func testShellLaunchEnvironmentNormalizesMissingAndNonUTF8Locales() {
-        let nonUTF8Locales: [String?] = [nil, "", "C", "POSIX", "en_US.UTF-16", "en_US.UTF-8x"]
+        let nonUTF8Locales: [String?] = [
+            nil,
+            "",
+            "C",
+            "POSIX",
+            "en_US.UTF-16",
+            "en_US.UTF-8x",
+            "en_US.UTF--8",
+            "en_US.U-T-F-8",
+            "en_US.UTF-16.UTF-8",
+        ]
 
         for locale in nonUTF8Locales {
             var parentEnvironment: [String: String] = [:]
