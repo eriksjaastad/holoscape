@@ -59,9 +59,15 @@ struct BrokerScrollbackReplaySnapshot: Codable, Equatable, Sendable {
 }
 
 protocol BrokerTransactionalOutputRuntime {
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot
     func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot
     func acknowledgeOutput(id: BrokerSessionID, through generation: UInt64) throws
+}
+
+extension BrokerTransactionalOutputRuntime {
+    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
+        try snapshotAvailableOutput(id: id, maxBytes: .max)
+    }
 }
 
 protocol ScrollbackReplayReportingRuntime {

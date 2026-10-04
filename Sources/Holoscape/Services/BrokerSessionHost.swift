@@ -83,11 +83,16 @@ struct BrokerSessionHost {
         case let .sendInput(id, bytes):
             try runtime.sendInput(id: id, bytes: Array(bytes))
             return .ok
-        case let .snapshotAvailableOutput(id):
+        case let .snapshotAvailableOutput(id, maxBytes):
             guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else {
                 throw BrokerTransactionalOutputRequiredError()
             }
-            return .outputSnapshot(try transactionalRuntime.snapshotAvailableOutput(id: id))
+            return .outputSnapshot(
+                try transactionalRuntime.snapshotAvailableOutput(
+                    id: id,
+                    maxBytes: max(0, min(maxBytes, BrokerSessionHostProtocolLimits.maximumOutputPayloadSize))
+                )
+            )
         case let .waitForOutputAvailability(id, timeoutMilliseconds):
             return .outputAvailable(try waitForOutputAvailability(id: id, timeoutMilliseconds: timeoutMilliseconds))
         case let .readScrollbackTail(id, maxBytes):
@@ -219,7 +224,7 @@ private extension BrokerSessionHostRequest {
              let .terminate(id, _),
              let .markErrored(id),
              let .sendInput(id, _),
-             let .snapshotAvailableOutput(id),
+             let .snapshotAvailableOutput(id, _),
              let .waitForOutputAvailability(id, _),
              let .readScrollbackTail(id, _),
              let .snapshotScrollbackReplay(id, _),

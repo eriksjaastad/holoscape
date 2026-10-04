@@ -528,16 +528,6 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: readChunkSize)
         while true {
-            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
-                let frameSize = buffer.distance(from: buffer.startIndex, to: newlineIndex) + 1
-                guard frameSize <= maximumResponseFrameSize else {
-                    throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
-                }
-                return Data(buffer.prefix(through: newlineIndex))
-            }
-            guard buffer.count < maximumResponseFrameSize else {
-                throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
-            }
             try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
             if count == 0 { return buffer }
@@ -545,7 +535,20 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw TransportError.readFailed(String(cString: strerror(errno)))
             }
-            buffer.append(contentsOf: chunk.prefix(count))
+
+            let incoming = chunk.prefix(count)
+            if let newlineIndex = incoming.firstIndex(of: 0x0A) {
+                let throughDelimiter = incoming.distance(from: incoming.startIndex, to: newlineIndex) + 1
+                guard throughDelimiter <= maximumResponseFrameSize - buffer.count else {
+                    throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
+                }
+                buffer.append(contentsOf: incoming.prefix(throughDelimiter))
+                return buffer
+            }
+            guard incoming.count < maximumResponseFrameSize - buffer.count else {
+                throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
+            }
+            buffer.append(contentsOf: incoming)
         }
     }
 

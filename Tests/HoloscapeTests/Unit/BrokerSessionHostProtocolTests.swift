@@ -25,7 +25,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .terminate(id: sessionID, exitCode: 0),
             .markErrored(id: sessionID),
             .sendInput(id: sessionID, bytes: Data("pwd\n".utf8)),
-            .snapshotAvailableOutput(id: sessionID),
+            .snapshotAvailableOutput(id: sessionID, maxBytes: 4096),
             .waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 250),
             .readScrollbackTail(id: sessionID, maxBytes: 4096),
             .snapshotScrollbackReplay(id: sessionID, maxBytes: 4096),
@@ -142,7 +142,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.attach(id: sessionID, channelID: channelID))), try codec.encodeResponse(.ok))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.sendInput(id: sessionID, bytes: Data("pwd\n".utf8)))), try codec.encodeResponse(.ok))
         XCTAssertEqual(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID))),
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096))),
             try codec.encodeResponse(.outputSnapshot(BrokerOutputSnapshot(data: Data("broker-output".utf8), generation: 1)))
         )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
@@ -259,7 +259,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let host = BrokerSessionHost(runtime: runtime)
         let codec = BrokerSessionHostCodec()
         let response = try codec.decodeResponse(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096)))
         )
 
         guard case let .failure(failure) = response else {
@@ -523,7 +523,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
     func testTransactionalSnapshotRequestUsesProtocolShapeLegacyHostCannotDispatch() throws {
         let codec = BrokerSessionHostCodec()
         let frame = try codec.encodeRequest(
-            .snapshotAvailableOutput(id: BrokerSessionID(rawValue: "version-separated-output"))
+            .snapshotAvailableOutput(
+                id: BrokerSessionID(rawValue: "version-separated-output"),
+                maxBytes: 4096
+            )
         )
         let json = String(decoding: frame, as: UTF8.self)
 
@@ -633,7 +636,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
 
         let snapshotResponse = try codec.decodeResponse(
-            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096)))
         )
         guard case let .outputSnapshot(snapshot) = snapshotResponse else {
             return XCTFail("Expected output snapshot, got \(snapshotResponse)")
@@ -792,7 +795,9 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             readChunkSize: 7
         )
 
-        try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID)))
+        try inputPipe.fileHandleForWriting.write(
+            contentsOf: codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096))
+        )
         try inputPipe.fileHandleForWriting.write(contentsOf: codec.encodeRequest(.isRunning(id: sessionID)))
         try inputPipe.fileHandleForWriting.close()
 
@@ -3185,8 +3190,8 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTra
         return Data("delayed-output".utf8)
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-        BrokerOutputSnapshot(data: try readAvailableOutput(id: id), generation: nil)
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+        BrokerOutputSnapshot(data: Data(try readAvailableOutput(id: id).prefix(max(0, maxBytes))), generation: nil)
     }
 
     func snapshotScrollbackReplay(id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
@@ -3304,8 +3309,8 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
         return output
     }
 
-    func snapshotAvailableOutput(id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-        let data = try readAvailableOutput(id: id)
+    func snapshotAvailableOutput(id: BrokerSessionID, maxBytes: Int) throws -> BrokerOutputSnapshot {
+        let data = Data(try readAvailableOutput(id: id).prefix(max(0, maxBytes)))
         return BrokerOutputSnapshot(data: data, generation: data.isEmpty ? nil : 1)
     }
 
