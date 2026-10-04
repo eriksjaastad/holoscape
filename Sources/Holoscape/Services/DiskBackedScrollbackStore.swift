@@ -880,6 +880,9 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     enum TransactionPhase: Equatable, Sendable {
+        case legacyHandoffIntentDurable
+        case legacyHandoffFileIdentityDurable
+        case legacyHandoffDirectoryIdentityDurable
         case formatPublicationIntentDurable
         case mainPublicationIntentDurable
         case recoveryPublicationIntentDurable
@@ -988,6 +991,7 @@ struct DiskBackedScrollbackStore: Sendable {
         let descriptor: Int32
         let status: stat
         let allowsLegacyInspection: Bool
+        let requiresLegacyHandoffSnapshot: Bool
     }
 
     private struct LegacyIdentitySnapshot {
@@ -1004,6 +1008,15 @@ struct DiskBackedScrollbackStore: Sendable {
         var isLock: Bool {
             if case .lock = self { return true }
             return false
+        }
+
+        var handoffLabel: String {
+            switch self {
+            case .format: return "format"
+            case .file(.main): return "main"
+            case .file(.recovery): return "recovery"
+            case .lock: return "lock"
+            }
         }
     }
 
@@ -1538,7 +1551,8 @@ struct DiskBackedScrollbackStore: Sendable {
         var authority = DirectoryAuthority(
             descriptor: descriptor,
             status: directoryStatus,
-            allowsLegacyInspection: false
+            allowsLegacyInspection: false,
+            requiresLegacyHandoffSnapshot: false
         )
         do {
             if try pathExists(authority, name: Self.formatMarkerName) {
@@ -1596,6 +1610,35 @@ struct DiskBackedScrollbackStore: Sendable {
         guard legacyDirectoryHandoff == .trustedDeployedStore else {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
         }
+        if try committedLegacyHandoffSnapshots(authority) != nil {
+            let inspectionAuthority = DirectoryAuthority(
+                descriptor: authority.descriptor,
+                status: authority.status,
+                allowsLegacyInspection: true,
+                requiresLegacyHandoffSnapshot: true
+            )
+            guard try formatMarkerExists(inspectionAuthority) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            guard access == .mutating else { return inspectionAuthority }
+            try withExclusiveDirectoryLock(authority) {
+                if try validatePersistentDirectoryIdentity(authority.status, allowCreation: false) {
+                    return
+                }
+                guard let currentSnapshots = try committedLegacyHandoffSnapshots(authority) else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+                try completeLegacyHandoff(
+                    authority,
+                    snapshots: currentSnapshots,
+                    standardized: standardized
+                )
+            }
+            guard try formatMarkerExists(authority) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            return authority
+        }
         if try hasPersistentFileIdentityRecord(authority) {
             guard try formatMarkerExists(authority) else {
                 throw StoreError.unsafeScrollbackDirectory(directory.path)
@@ -1609,7 +1652,8 @@ struct DiskBackedScrollbackStore: Sendable {
         let inspectionAuthority = DirectoryAuthority(
             descriptor: authority.descriptor,
             status: authority.status,
-            allowsLegacyInspection: true
+            allowsLegacyInspection: true,
+            requiresLegacyHandoffSnapshot: false
         )
         guard try formatMarkerExists(inspectionAuthority) else {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
@@ -1618,6 +1662,14 @@ struct DiskBackedScrollbackStore: Sendable {
 
         try withExclusiveDirectoryLock(authority) {
             if try validatePersistentDirectoryIdentity(authority.status, allowCreation: false) {
+                return
+            }
+            if let snapshots = try committedLegacyHandoffSnapshots(authority) {
+                try completeLegacyHandoff(
+                    authority,
+                    snapshots: snapshots,
+                    standardized: standardized
+                )
                 return
             }
             if try hasPersistentFileIdentityRecord(authority) {
@@ -1633,13 +1685,27 @@ struct DiskBackedScrollbackStore: Sendable {
             }
             let snapshots = try legacyIdentitySnapshots(inspectionAuthority)
             try synchronizeDirectoryComponents(at: standardized)
-            _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+            try publishLegacyHandoffIntent(authority, snapshots: snapshots)
+            try transactionPhaseHook(.legacyHandoffIntentDurable)
             try establishLegacyIdentitySnapshots(authority, snapshots: snapshots)
+            _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+            try transactionPhaseHook(.legacyHandoffDirectoryIdentityDurable)
         }
         guard try formatMarkerExists(authority) else {
             throw StoreError.unsafeScrollbackDirectory(directory.path)
         }
         return authority
+    }
+
+    private func completeLegacyHandoff(
+        _ authority: DirectoryAuthority,
+        snapshots: [LegacyIdentitySnapshot],
+        standardized: URL
+    ) throws {
+        try synchronizeDirectoryComponents(at: standardized)
+        try establishLegacyIdentitySnapshots(authority, snapshots: snapshots)
+        _ = try validatePersistentDirectoryIdentity(authority.status, allowCreation: true)
+        try transactionPhaseHook(.legacyHandoffDirectoryIdentityDurable)
     }
 
     private func hasPersistentFileIdentityRecord(
@@ -1818,11 +1884,67 @@ struct DiskBackedScrollbackStore: Sendable {
         return try close(descriptor, after: unlocked)
     }
 
+    private func withPersistentAuthorityDescriptor<T>(
+        createIfMissing: Bool,
+        _ operation: (Int32) throws -> T
+    ) throws -> T? {
+        let authorityPath = directoryIdentityAuthorityDirectory.standardizedFileURL.path
+        var descriptor = Darwin.open(
+            authorityPath,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        if descriptor < 0, errno == ENOENT, createIfMissing {
+            let existed = FileManager.default.fileExists(atPath: authorityPath)
+            try FileManager.default.createDirectory(
+                at: directoryIdentityAuthorityDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            if !existed {
+                guard let resolved = realpath(authorityPath, nil) else {
+                    throw Self.posixError(code: errno)
+                }
+                defer { free(resolved) }
+                try synchronizeDirectoryComponents(at: URL(
+                    fileURLWithPath: String(cString: resolved),
+                    isDirectory: true
+                ))
+            }
+            descriptor = Darwin.open(
+                authorityPath,
+                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            )
+        }
+        if descriptor < 0, errno == ENOENT, !createIfMissing { return nil }
+        guard descriptor >= 0 else { throw Self.posixError(code: errno) }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            return try close(descriptor, after: .failure(Self.posixError(code: errno)))
+        }
+        let result = Result { try operation(descriptor) }
+        let unlocked: Result<T, Error>
+        if flock(descriptor, LOCK_UN) == 0 {
+            unlocked = result
+        } else {
+            let unlockError = Self.posixError(code: errno)
+            switch result {
+            case .success:
+                unlocked = .failure(unlockError)
+            case .failure(let operationError):
+                unlocked = .failure(StoreError.fileOperationAndCloseFailed(
+                    operation: String(describing: operationError),
+                    close: String(describing: unlockError)
+                ))
+            }
+        }
+        return try close(descriptor, after: unlocked)
+    }
+
     private func validatePersistentFileIdentity(
         name: String,
         status: stat,
         allowCreation: Bool,
         allowUnanchoredInspection: Bool = false,
+        requireLegacyHandoffSnapshot: Bool = false,
         directoryStatus: stat? = nil
     ) throws -> Bool {
         let authorityPath = directoryIdentityAuthorityDirectory.standardizedFileURL.path
@@ -1855,6 +1977,20 @@ struct DiskBackedScrollbackStore: Sendable {
                 return true
             }
             if allowUnanchoredInspection {
+                if requireLegacyHandoffSnapshot {
+                    guard try getXattr(
+                        descriptor: descriptor,
+                        name: Self.legacyHandoffSnapshotXattr(
+                            configuredPath: directory.standardizedFileURL.path,
+                            name: name
+                        ),
+                        allowMissing: true
+                    ) == Self.persistentFileIdentityValue(name: name, status: status) else {
+                        throw StoreError.unsafeScrollbackFile(
+                            directory.appendingPathComponent(name).path
+                        )
+                    }
+                }
                 guard let directoryStatus else { return false }
                 let directoryIdentityName = Self.directoryIdentityXattr(
                     configuredPath: directory.standardizedFileURL.path
@@ -1900,6 +2036,138 @@ struct DiskBackedScrollbackStore: Sendable {
             }
         }
         return try close(descriptor, after: unlocked)
+    }
+
+    private func publishLegacyHandoffIntent(
+        _ authority: DirectoryAuthority,
+        snapshots: [LegacyIdentitySnapshot]
+    ) throws {
+        guard let _: Void = try withPersistentAuthorityDescriptor(createIfMissing: true, { descriptor in
+            let intentName = Self.legacyHandoffIntentXattr(
+                configuredPath: directory.standardizedFileURL.path
+            )
+            let expectedIntent = legacyHandoffIntentValue(authority, snapshots: snapshots)
+            if let existing = try getXattr(
+                descriptor: descriptor,
+                name: intentName,
+                allowMissing: true
+            ) {
+                guard existing == expectedIntent else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+                try validateLegacyHandoffSnapshots(
+                    descriptor: descriptor,
+                    snapshots: snapshots
+                )
+                return
+            }
+
+            for snapshot in snapshots {
+                try setXattr(
+                    descriptor: descriptor,
+                    name: Self.legacyHandoffSnapshotXattr(
+                        configuredPath: directory.standardizedFileURL.path,
+                        name: snapshot.name
+                    ),
+                    value: Self.persistentFileIdentityValue(
+                        name: snapshot.name,
+                        status: snapshot.status
+                    )
+                )
+            }
+            try sync(descriptor)
+            do {
+                try setXattr(
+                    descriptor: descriptor,
+                    name: intentName,
+                    value: expectedIntent,
+                    flags: XATTR_CREATE
+                )
+            } catch let error as POSIXError where error.code == .EEXIST {
+                guard try getXattr(
+                    descriptor: descriptor,
+                    name: intentName,
+                    allowMissing: false
+                ) == expectedIntent else {
+                    throw StoreError.unsafeScrollbackDirectory(directory.path)
+                }
+            }
+            try sync(descriptor)
+            try validateLegacyHandoffSnapshots(
+                descriptor: descriptor,
+                snapshots: snapshots
+            )
+        }) else {
+            throw StoreError.unsafeScrollbackDirectory(directory.path)
+        }
+    }
+
+    private func committedLegacyHandoffSnapshots(
+        _ authority: DirectoryAuthority
+    ) throws -> [LegacyIdentitySnapshot]? {
+        try withPersistentAuthorityDescriptor(createIfMissing: false) { descriptor in
+            let intentName = Self.legacyHandoffIntentXattr(
+                configuredPath: directory.standardizedFileURL.path
+            )
+            guard let intent = try getXattr(
+                descriptor: descriptor,
+                name: intentName,
+                allowMissing: true
+            ) else { return nil }
+            let inspectionAuthority = DirectoryAuthority(
+                descriptor: authority.descriptor,
+                status: authority.status,
+                allowsLegacyInspection: true,
+                requiresLegacyHandoffSnapshot: false
+            )
+            let snapshots = try legacyIdentitySnapshots(inspectionAuthority)
+            guard intent == legacyHandoffIntentValue(authority, snapshots: snapshots) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
+            try validateLegacyHandoffSnapshots(
+                descriptor: descriptor,
+                snapshots: snapshots
+            )
+            return snapshots
+        } ?? nil
+    }
+
+    private func validateLegacyHandoffSnapshots(
+        descriptor: Int32,
+        snapshots: [LegacyIdentitySnapshot]
+    ) throws {
+        for snapshot in snapshots {
+            guard try getXattr(
+                descriptor: descriptor,
+                name: Self.legacyHandoffSnapshotXattr(
+                    configuredPath: directory.standardizedFileURL.path,
+                    name: snapshot.name
+                ),
+                allowMissing: true
+            ) == Self.persistentFileIdentityValue(
+                name: snapshot.name,
+                status: snapshot.status
+            ) else {
+                throw StoreError.unsafeScrollbackFile(
+                    directory.appendingPathComponent(snapshot.name).path
+                )
+            }
+        }
+    }
+
+    private func legacyHandoffIntentValue(
+        _ authority: DirectoryAuthority,
+        snapshots: [LegacyIdentitySnapshot]
+    ) -> Data {
+        let manifest = snapshots.map { "\($0.kind.handoffLabel):\($0.name)" }
+            .sorted()
+            .joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(manifest.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return Data(
+            "holoscape-scrollback-handoff-v1:\(authority.status.st_dev):\(authority.status.st_ino):\(snapshots.count):\(digest)\n\(directory.standardizedFileURL.path)".utf8
+        )
     }
 
     private func legacyIdentitySnapshots(
@@ -2074,6 +2342,7 @@ struct DiskBackedScrollbackStore: Sendable {
                         directory.appendingPathComponent(snapshot.name).path
                     )
                 }
+                try transactionPhaseHook(.legacyHandoffFileIdentityDurable)
             }
             _ = try close(descriptor, after: result)
         }
@@ -2216,6 +2485,16 @@ struct DiskBackedScrollbackStore: Sendable {
         return "com.holoscape.scrollback.file-\(digest.map { String(format: "%02x", $0) }.joined())"
     }
 
+    private static func legacyHandoffIntentXattr(configuredPath: String) -> String {
+        let digest = SHA256.hash(data: Data(configuredPath.utf8))
+        return "com.holoscape.scrollback.handoff-\(digest.map { String(format: "%02x", $0) }.joined())"
+    }
+
+    private static func legacyHandoffSnapshotXattr(configuredPath: String, name: String) -> String {
+        let digest = SHA256.hash(data: Data("\(configuredPath)\n\(name)".utf8))
+        return "com.holoscape.scrollback.handoff-file-\(digest.map { String(format: "%02x", $0) }.joined())"
+    }
+
     private static func persistentFileIdentityValue(name: String, status: stat) -> Data {
         Data("holoscape-scrollback-file-v1:\(status.st_dev):\(status.st_ino):\(name)".utf8)
     }
@@ -2236,6 +2515,7 @@ struct DiskBackedScrollbackStore: Sendable {
                     status: status,
                     allowCreation: false,
                     allowUnanchoredInspection: authority.allowsLegacyInspection,
+                    requireLegacyHandoffSnapshot: authority.requiresLegacyHandoffSnapshot,
                     directoryStatus: authority.status
                 )
             },
@@ -2259,6 +2539,7 @@ struct DiskBackedScrollbackStore: Sendable {
                     status: status,
                     allowCreation: false,
                     allowUnanchoredInspection: authority.allowsLegacyInspection,
+                    requireLegacyHandoffSnapshot: authority.requiresLegacyHandoffSnapshot,
                     directoryStatus: authority.status
                 )
             },
@@ -2689,6 +2970,16 @@ struct DiskBackedScrollbackStore: Sendable {
         )
         guard descriptor >= 0 else { throw StoreError.unsafeScrollbackDirectory(directory.path) }
         let result: Result<LegacyRetirementProvenance, Error> = Result {
+            var status = stat()
+            let maximumSize = LegacyRetirementProvenance.allCases.map {
+                legacyRetirementMarkerContents(authority, provenance: $0).count
+            }.max() ?? 0
+            guard fstat(descriptor, &status) == 0,
+                  status.st_mode & S_IFMT == S_IFREG,
+                  status.st_size >= 0,
+                  status.st_size <= off_t(maximumSize) else {
+                throw StoreError.unsafeScrollbackDirectory(directory.path)
+            }
             try requirePathIdentity(
                 authority,
                 name: temporaryName,
@@ -2728,7 +3019,7 @@ struct DiskBackedScrollbackStore: Sendable {
                 && dataURL.pathExtension == "scrollback"
                 && Self.isValidSessionID(dataURL.deletingPathExtension().lastPathComponent)
         })
-        guard !tails.isEmpty,
+        guard !locks.isEmpty,
               visible == tails.union(locks),
               tails.allSatisfy({ locks.contains($0 + ".lock") }) else {
             return false
@@ -2826,6 +3117,7 @@ struct DiskBackedScrollbackStore: Sendable {
                         status: status,
                         allowCreation: false,
                         allowUnanchoredInspection: authority.allowsLegacyInspection,
+                        requireLegacyHandoffSnapshot: authority.requiresLegacyHandoffSnapshot,
                         directoryStatus: authority.status
                     )
                 guard isCurrent || isPreAnchor else {
@@ -3602,6 +3894,7 @@ struct DiskBackedScrollbackStore: Sendable {
             status: status,
             allowCreation: false,
             allowUnanchoredInspection: authority.allowsLegacyInspection,
+            requireLegacyHandoffSnapshot: authority.requiresLegacyHandoffSnapshot,
             directoryStatus: authority.status
         )
         guard isCurrent || isPreAnchor else {
