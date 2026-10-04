@@ -446,6 +446,28 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try store.storedByteCount(for: id), 8)
     }
 
+    func testReadTailRepairsHugeSparseFileWithoutReadingItsPrefix() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "huge-sparse-tail")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        let suffix = Data("KEPTTAIL".utf8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let descriptor = Darwin.open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        let sparseSize: off_t = 4 * 1_024 * 1_024 * 1_024
+        XCTAssertEqual(ftruncate(descriptor, sparseSize), 0)
+        let written = suffix.withUnsafeBytes { bytes in
+            Darwin.pwrite(descriptor, bytes.baseAddress, bytes.count, sparseSize - off_t(bytes.count))
+        }
+        XCTAssertEqual(written, suffix.count)
+        XCTAssertEqual(Darwin.close(descriptor), 0)
+
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), suffix)
+        XCTAssertEqual(try store.storedByteCount(for: id), suffix.count)
+    }
+
     func testInterruptedCompactionRecoversExactRetainedSuffix() throws {
         let checkpoints: [DiskBackedScrollbackStore.CompactionCheckpoint] = [
             .journalSynced,
@@ -512,6 +534,28 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(
             try FileManager.default.destinationOfSymbolicLink(atPath: journalURL.path),
             targetURL.path
+        )
+    }
+
+    func testMalformedJournalLengthIsDiscardedWithoutOverflow() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "malformed-journal-length")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let journalURL = url.appendingPathExtension("compaction")
+        let payload = Data("SAFETAIL".utf8)
+        try payload.write(to: url)
+        var impossibleLength = UInt64.max.littleEndian
+        var malformed = Data("HSCMP001".utf8)
+        withUnsafeBytes(of: &impossibleLength) { malformed.append(contentsOf: $0) }
+        malformed.append(Data(repeating: 0, count: 32))
+        try malformed.write(to: journalURL)
+
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 8), payload)
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: journalURL.path)[.size] as? Int,
+            0
         )
     }
 

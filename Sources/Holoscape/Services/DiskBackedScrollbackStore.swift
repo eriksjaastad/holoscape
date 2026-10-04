@@ -187,16 +187,21 @@ struct DiskBackedScrollbackStore: Sendable {
         }
         return try operationLocks.withLock(for: url) {
             try recoverCompactionIfNeeded(at: url)
-            guard let data = try readRegularFile(at: url, missingIsAbsent: true) else {
+            guard let snapshot = try readRegularFileTail(
+                at: url,
+                maxBytes: maxRetainedBytes,
+                missingIsAbsent: true
+            ) else {
                 return Data()
             }
             // A crash between append's write and its prune can leave the persisted
             // tail oversized relative to the retention cap. Repair it on read so a
             // normal store operation restores the bounded-scrollback guarantee.
-            if data.count > maxRetainedBytes {
+            if snapshot.fileSize > off_t(maxRetainedBytes) {
                 try prune(url)
             }
             let capped = min(maxBytes, maxRetainedBytes)
+            let data = snapshot.data
             guard data.count > capped else { return data }
             return Data(data.suffix(capped))
         }
@@ -471,9 +476,9 @@ struct DiskBackedScrollbackStore: Sendable {
         for (index, byte) in lengthBytes.enumerated() {
             payloadLength |= UInt64(byte) << UInt64(index * 8)
         }
-        guard payloadLength <= UInt64(Int.max) else { return nil }
         let payloadStart = compactionJournalHeaderSize
-        guard record.count == payloadStart + Int(payloadLength) else { return nil }
+        let availablePayloadBytes = record.count - payloadStart
+        guard payloadLength == UInt64(availablePayloadBytes) else { return nil }
         let expectedDigest = record[(lengthOffset + 8)..<payloadStart]
         let payload = Data(record[payloadStart...])
         guard Data(SHA256.hash(data: payload)) == Data(expectedDigest) else { return nil }
@@ -543,14 +548,50 @@ struct DiskBackedScrollbackStore: Sendable {
         }
     }
 
-    private func readRegularFile(at url: URL, missingIsAbsent: Bool) throws -> Data? {
+    private struct RegularFileTail {
+        let data: Data
+        let fileSize: off_t
+    }
+
+    private func readRegularFileTail(
+        at url: URL,
+        maxBytes: Int,
+        missingIsAbsent: Bool
+    ) throws -> RegularFileTail? {
         try withOpenRegularFile(
             at: url,
             flags: O_RDONLY | O_NONBLOCK,
             missingIsAbsent: missingIsAbsent
         ) { descriptor in
-            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-            return try handle.readToEnd() ?? Data()
+            var status = stat()
+            guard fstat(descriptor, &status) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let requested = min(off_t(maxBytes), max(0, status.st_size))
+            let offset = max(0, status.st_size - requested)
+            var data = Data(count: Int(requested))
+            var bytesRead = 0
+            try data.withUnsafeMutableBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else { return }
+                while bytesRead < bytes.count {
+                    let result = Darwin.pread(
+                        descriptor,
+                        baseAddress.advanced(by: bytesRead),
+                        bytes.count - bytesRead,
+                        offset + off_t(bytesRead)
+                    )
+                    if result < 0 {
+                        if errno == EINTR { continue }
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    guard result > 0 else { break }
+                    bytesRead += result
+                }
+            }
+            if bytesRead < data.count {
+                data.removeSubrange(bytesRead..<data.count)
+            }
+            return RegularFileTail(data: data, fileSize: status.st_size)
         }
     }
 

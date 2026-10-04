@@ -4,6 +4,28 @@ import XCTest
 
 final class ScrollbackMaintenanceFormattingTests: XCTestCase {
 
+    func testBulkClearFailureBeforeAnySuccessIsTruthful() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.bulkClearFailure(
+                clearedCount: 0,
+                totalCount: 3,
+                error: "permission denied"
+            ),
+            "Holoscape did not clear any tails: permission denied"
+        )
+    }
+
+    func testBulkClearFailureAfterPartialSuccessReportsExactCount() {
+        XCTAssertEqual(
+            ScrollbackMaintenanceFormatting.bulkClearFailure(
+                clearedCount: 2,
+                totalCount: 5,
+                error: "unsafe file"
+            ),
+            "Holoscape cleared 2 of 5 tails before failing: unsafe file"
+        )
+    }
+
     // MARK: - byteSize
 
     func testByteSizeZeroAndBytes() {

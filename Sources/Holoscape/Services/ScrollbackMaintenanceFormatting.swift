@@ -5,6 +5,13 @@ import Foundation
 /// formatting deterministically without constructing any AppKit views.
 enum ScrollbackMaintenanceFormatting {
 
+    static func bulkClearFailure(clearedCount: Int, totalCount: Int, error: String) -> String {
+        guard clearedCount > 0 else {
+            return "Holoscape did not clear any tails: \(error)"
+        }
+        return "Holoscape cleared \(clearedCount) of \(totalCount) tails before failing: \(error)"
+    }
+
     /// Formats a byte count as a short human-readable size, e.g. "512 B",
     /// "1.5 KB", "3.2 MB". Uses integer arithmetic for the one-decimal rounding
     /// so the output is locale- and formatter-independent (deterministic in

@@ -238,15 +238,21 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             confirmTitle: "Clear All"
         ) { [weak self] in
             guard let self else { return }
+            var clearedCount = 0
             do {
                 for tail in self.tails {
                     try self.store.remove(for: tail.sessionID)
+                    clearedCount += 1
                 }
             } catch {
                 self.refreshListing()
                 self.presentMessage(
                     "Could Not Clear All Scrollback",
-                    message: "Holoscape cleared some tails before failing: \(error)"
+                    message: ScrollbackMaintenanceFormatting.bulkClearFailure(
+                        clearedCount: clearedCount,
+                        totalCount: count,
+                        error: String(describing: error)
+                    )
                 )
                 return
             }
