@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 final class ScrollbackSessionOperationLocks: @unchecked Sendable {
@@ -119,6 +120,13 @@ final class ScrollbackSessionOperationLocks: @unchecked Sendable {
 /// every append so disk state obeys the same per-session cap as the in-memory
 /// runtime ring.
 struct DiskBackedScrollbackStore: Sendable {
+    enum CompactionCheckpoint: String, Sendable {
+        case journalSynced
+        case mainOverwriteStarted
+        case mainTruncated
+        case mainSynced
+    }
+
     enum StoreError: Error, Equatable {
         case invalidSessionID(String)
         case unsafeScrollbackFile(String)
@@ -135,13 +143,16 @@ struct DiskBackedScrollbackStore: Sendable {
     let directory: URL
     private let maxRetainedBytes: Int
     private let operationLocks = ScrollbackSessionOperationLocks.shared
+    private let compactionCheckpoint: (@Sendable (CompactionCheckpoint) throws -> Void)?
 
     init(
         directory: URL,
-        maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
+        compactionCheckpoint: (@Sendable (CompactionCheckpoint) throws -> Void)? = nil
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
+        self.compactionCheckpoint = compactionCheckpoint
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -159,10 +170,11 @@ struct DiskBackedScrollbackStore: Sendable {
                 mode: S_IRUSR | S_IWUSR,
                 missingIsAbsent: false
             ) { descriptor in
+                try recoverCompactionIfNeeded(mainDescriptor: descriptor, at: url)
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
-                try prune(descriptor: descriptor)
+                try prune(descriptor: descriptor, at: url)
             }
         }
     }
@@ -174,6 +186,7 @@ struct DiskBackedScrollbackStore: Sendable {
             return Data()
         }
         return try operationLocks.withLock(for: url) {
+            try recoverCompactionIfNeeded(at: url)
             guard let data = try readRegularFile(at: url, missingIsAbsent: true) else {
                 return Data()
             }
@@ -192,6 +205,7 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
+            try clearCompactionJournalIfPresent(at: url)
             // Clearing is deliberately descriptor-bound: the validated inode is
             // truncated instead of unlinking a pathname that could be rebound
             // between validation and mutation. The caller therefore needs write
@@ -203,6 +217,7 @@ struct DiskBackedScrollbackStore: Sendable {
             ) { descriptor in
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 try handle.truncate(atOffset: 0)
+                try Self.fullSync(descriptor)
             }
         }
     }
@@ -210,6 +225,7 @@ struct DiskBackedScrollbackStore: Sendable {
     func storedByteCount(for id: BrokerSessionID) throws -> Int {
         let url = try fileURL(for: id)
         return try operationLocks.withLock(for: url) {
+            try recoverCompactionIfNeeded(at: url)
             // Size inspection is metadata-only. lstat both preserves the prior
             // permission contract and refuses to follow a symlinked leaf.
             var status = stat()
@@ -300,14 +316,16 @@ struct DiskBackedScrollbackStore: Sendable {
             flags: O_RDWR | O_NONBLOCK,
             missingIsAbsent: false
         ) { descriptor in
-            try prune(descriptor: descriptor)
+            try recoverCompactionIfNeeded(mainDescriptor: descriptor, at: url)
+            try prune(descriptor: descriptor, at: url)
         }
     }
 
-    private func prune(descriptor: Int32) throws {
+    private func prune(descriptor: Int32, at url: URL) throws {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         guard maxRetainedBytes > 0 else {
             try handle.truncate(atOffset: 0)
+            try Self.fullSync(descriptor)
             return
         }
 
@@ -322,9 +340,207 @@ struct DiskBackedScrollbackStore: Sendable {
         guard retained.count == maxRetainedBytes else {
             throw CocoaError(.fileReadUnknown)
         }
-        try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: retained)
-        try handle.truncate(atOffset: UInt64(retained.count))
+
+        let journalURL = url.appendingPathExtension("compaction")
+        _ = try withOpenRegularFile(
+            at: journalURL,
+            flags: O_CREAT | O_RDWR | O_NONBLOCK,
+            mode: S_IRUSR | S_IWUSR,
+            missingIsAbsent: false
+        ) { journalDescriptor in
+            try Self.syncContainingDirectory(of: journalURL)
+            try Self.writeCompactionJournal(retained, to: journalDescriptor)
+            try compactionCheckpoint?(.journalSynced)
+
+            let split = max(1, retained.count / 2)
+            try Self.writeAll(Data(retained.prefix(split)), to: descriptor, at: 0)
+            try compactionCheckpoint?(.mainOverwriteStarted)
+            if split < retained.count {
+                try Self.writeAll(Data(retained.dropFirst(split)), to: descriptor, at: off_t(split))
+            }
+            guard ftruncate(descriptor, off_t(retained.count)) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            try compactionCheckpoint?(.mainTruncated)
+            try Self.fullSync(descriptor)
+            try compactionCheckpoint?(.mainSynced)
+            try Self.clearCompactionJournal(journalDescriptor)
+        }
+    }
+
+    private func recoverCompactionIfNeeded(at url: URL) throws {
+        let journalURL = url.appendingPathExtension("compaction")
+        guard let retained = try readCompactionJournal(at: journalURL) else { return }
+        _ = try withOpenRegularFile(
+            at: url,
+            flags: O_RDWR | O_NONBLOCK,
+            missingIsAbsent: false
+        ) { descriptor in
+            try restore(retained, to: descriptor)
+        }
+        try clearCompactionJournalIfPresent(at: url)
+    }
+
+    private func recoverCompactionIfNeeded(mainDescriptor: Int32, at url: URL) throws {
+        let journalURL = url.appendingPathExtension("compaction")
+        guard let retained = try readCompactionJournal(at: journalURL) else { return }
+        try restore(retained, to: mainDescriptor)
+        try clearCompactionJournalIfPresent(at: url)
+    }
+
+    private func restore(_ retained: Data, to descriptor: Int32) throws {
+        try Self.writeAll(retained, to: descriptor, at: 0)
+        guard ftruncate(descriptor, off_t(retained.count)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try Self.fullSync(descriptor)
+    }
+
+    private func readCompactionJournal(at journalURL: URL) throws -> Data? {
+        try withOpenRegularFile(
+            at: journalURL,
+            flags: O_RDWR | O_NONBLOCK,
+            missingIsAbsent: true
+        ) { descriptor in
+            var status = stat()
+            guard fstat(descriptor, &status) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard status.st_size > 0 else { return nil }
+            let maximumPayload = max(
+                max(0, maxRetainedBytes),
+                ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+            )
+            let maximumRecord = Self.compactionJournalHeaderSize + maximumPayload
+            guard status.st_size <= off_t(maximumRecord) else {
+                try Self.clearCompactionJournal(descriptor)
+                return nil
+            }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+            try handle.seek(toOffset: 0)
+            let record = try handle.readToEnd() ?? Data()
+            guard let retained = Self.decodeCompactionJournal(record) else {
+                // The main file is never mutated until a complete journal has
+                // been synced. An incomplete/torn record therefore belongs to a
+                // pre-mutation interruption and is safe to discard.
+                try Self.clearCompactionJournal(descriptor)
+                return nil
+            }
+            return retained
+        } ?? nil
+    }
+
+    private func clearCompactionJournalIfPresent(at url: URL) throws {
+        let journalURL = url.appendingPathExtension("compaction")
+        _ = try withOpenRegularFile(
+            at: journalURL,
+            flags: O_RDWR | O_NONBLOCK,
+            missingIsAbsent: true
+        ) { descriptor in
+            try Self.clearCompactionJournal(descriptor)
+        }
+    }
+
+    private static let compactionJournalMagic = Data("HSCMP001".utf8)
+    private static let compactionJournalHeaderSize = 8 + 8 + 32
+
+    private static func writeCompactionJournal(_ retained: Data, to descriptor: Int32) throws {
+        var length = UInt64(retained.count).littleEndian
+        var record = compactionJournalMagic
+        withUnsafeBytes(of: &length) { record.append(contentsOf: $0) }
+        record.append(contentsOf: SHA256.hash(data: retained))
+        record.append(retained)
+        guard ftruncate(descriptor, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try writeAll(record, to: descriptor, at: 0)
+        guard ftruncate(descriptor, off_t(record.count)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try fullSync(descriptor)
+    }
+
+    private static func decodeCompactionJournal(_ record: Data) -> Data? {
+        guard record.count >= compactionJournalHeaderSize,
+              record.prefix(compactionJournalMagic.count) == compactionJournalMagic else {
+            return nil
+        }
+        let lengthOffset = compactionJournalMagic.count
+        let lengthBytes = record[lengthOffset..<(lengthOffset + 8)]
+        var payloadLength: UInt64 = 0
+        for (index, byte) in lengthBytes.enumerated() {
+            payloadLength |= UInt64(byte) << UInt64(index * 8)
+        }
+        guard payloadLength <= UInt64(Int.max) else { return nil }
+        let payloadStart = compactionJournalHeaderSize
+        guard record.count == payloadStart + Int(payloadLength) else { return nil }
+        let expectedDigest = record[(lengthOffset + 8)..<payloadStart]
+        let payload = Data(record[payloadStart...])
+        guard Data(SHA256.hash(data: payload)) == Data(expectedDigest) else { return nil }
+        return payload
+    }
+
+    private static func clearCompactionJournal(_ descriptor: Int32) throws {
+        guard ftruncate(descriptor, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try fullSync(descriptor)
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32, at offset: off_t) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var written = 0
+            while written < bytes.count {
+                let result = Darwin.pwrite(
+                    descriptor,
+                    baseAddress.advanced(by: written),
+                    bytes.count - written,
+                    offset + off_t(written)
+                )
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard result > 0 else { throw CocoaError(.fileWriteUnknown) }
+                written += result
+            }
+        }
+    }
+
+    private static func fullSync(_ descriptor: Int32) throws {
+        if Darwin.fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+        let fullSyncCode = errno
+        if fullSyncCode != EINVAL && fullSyncCode != ENOTSUP {
+            throw POSIXError(POSIXErrorCode(rawValue: fullSyncCode) ?? .EIO)
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func syncContainingDirectory(of url: URL) throws {
+        let directoryPath = url.deletingLastPathComponent().path
+        let descriptor = Darwin.open(directoryPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let syncResult = Darwin.fsync(descriptor)
+        let syncCode = errno
+        let closeResult = Darwin.close(descriptor)
+        let closeCode = errno
+        if syncResult != 0, closeResult != 0 {
+            throw StoreError.fileOperationAndCloseFailed(
+                operation: String(describing: POSIXError(POSIXErrorCode(rawValue: syncCode) ?? .EIO)),
+                close: String(describing: POSIXError(POSIXErrorCode(rawValue: closeCode) ?? .EIO))
+            )
+        }
+        if syncResult != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: syncCode) ?? .EIO)
+        }
+        if closeResult != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: closeCode) ?? .EIO)
+        }
     }
 
     private func readRegularFile(at url: URL, missingIsAbsent: Bool) throws -> Data? {

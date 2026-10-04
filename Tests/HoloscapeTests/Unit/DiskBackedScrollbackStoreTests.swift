@@ -446,6 +446,75 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(try store.storedByteCount(for: id), 8)
     }
 
+    func testInterruptedCompactionRecoversExactRetainedSuffix() throws {
+        let checkpoints: [DiskBackedScrollbackStore.CompactionCheckpoint] = [
+            .journalSynced,
+            .mainOverwriteStarted,
+            .mainTruncated,
+            .mainSynced,
+        ]
+
+        for checkpoint in checkpoints {
+            let directory = try makeTempDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let id = BrokerSessionID(rawValue: "interrupted-compaction-\(checkpoint.rawValue)")
+            let suffix = Data("KEPTTAIL".utf8)
+            let oversized = Data("LEFTOVER-PREFIX-".utf8) + suffix
+            let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+            try oversized.write(to: url)
+            let interrupted = DiskBackedScrollbackStore(
+                directory: directory,
+                maxRetainedBytes: suffix.count,
+                compactionCheckpoint: { reached in
+                    if reached == checkpoint { throw CompactionInterruption.injected }
+                }
+            )
+
+            XCTAssertThrowsError(try interrupted.readTail(for: id, maxBytes: 64)) { error in
+                XCTAssertEqual(error as? CompactionInterruption, .injected)
+            }
+
+            let recovered = DiskBackedScrollbackStore(
+                directory: directory,
+                maxRetainedBytes: suffix.count
+            )
+            XCTAssertEqual(try recovered.readTail(for: id, maxBytes: 64), suffix)
+            XCTAssertEqual(try recovered.storedByteCount(for: id), suffix.count)
+
+            let journalURL = url.appendingPathExtension("compaction")
+            XCTAssertEqual(
+                try FileManager.default.attributesOfItem(atPath: journalURL.path)[.size] as? Int,
+                0
+            )
+        }
+    }
+
+    func testCompactionRejectsUnsafeJournalLeafWithoutChangingTarget() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "unsafe-compaction-journal")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 8)
+        let url = directory.appendingPathComponent(id.rawValue).appendingPathExtension("scrollback")
+        let journalURL = url.appendingPathExtension("compaction")
+        let targetURL = directory.appendingPathComponent("foreign-journal-target")
+        let targetData = Data("foreign".utf8)
+        try Data("LEFTOVER-PREFIX-KEPTTAIL".utf8).write(to: url)
+        try targetData.write(to: targetURL)
+        try FileManager.default.createSymbolicLink(at: journalURL, withDestinationURL: targetURL)
+
+        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 64)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(journalURL.path)
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: targetURL), targetData)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: journalURL.path),
+            targetURL.path
+        )
+    }
+
     func testReadTailZeroRetentionOnExistingPersistedFileReturnsEmpty() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -839,6 +908,10 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
+}
+
+private enum CompactionInterruption: Error, Equatable {
+    case injected
 }
 
 private final class ScrollbackTailListRecorder: @unchecked Sendable {
