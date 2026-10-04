@@ -368,7 +368,7 @@ final class ShellChannelControllerTests: XCTestCase {
         )
     }
 
-    func testCoordinatorBackedShellExitWithBrokerHostOutageKeepsRecordReattachable() throws {
+    func testCoordinatorBackedShellExitWithBrokerHostOutageKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }
         let terminal = MockTerminalProcess()
@@ -393,8 +393,8 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
         XCTAssertEqual(
             try fixture.singleRecord().lifecycle,
-            .running,
-            "An unrecorded exit must not fabricate an exited lifecycle"
+            .terminating,
+            "A lost response cannot prove whether exit ran, so durable state must not revive the session"
         )
     }
 

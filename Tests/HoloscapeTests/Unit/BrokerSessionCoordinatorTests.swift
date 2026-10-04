@@ -377,6 +377,11 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             attachedChannelID: nil
         )
         runtime.onTerminate = {
+            XCTAssertEqual(
+                try XCTUnwrap(coordinator.loadAll().first).lifecycle,
+                .terminating,
+                "Durable intent must precede the irreversible runtime action"
+            )
             now = Date(timeIntervalSince1970: 111)
             _ = try coordinator.updateWorkingDirectory(record.id, to: "/tmp/final-directory")
         }
@@ -388,6 +393,86 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(exited.exitCode, 7)
         XCTAssertEqual(exited.workingDirectory, "/tmp/final-directory")
         XCTAssertEqual(try coordinator.loadAll(), [exited])
+    }
+
+    func testExitPersistsObservedCodeWhenRuntimeTerminatesThenReportsMismatch() throws {
+        var now = Date(timeIntervalSince1970: 120)
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { now })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/before-mismatch"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.listedSessionIDs = [record.id]
+        runtime.observedTerminationStatus = 7
+        runtime.terminateError = NativePTYBrokerSessionRuntime.RuntimeError.exitCodeMismatch(
+            expected: 0,
+            observed: 7
+        )
+        runtime.onTerminate = {
+            now = Date(timeIntervalSince1970: 121)
+            _ = try coordinator.updateWorkingDirectory(record.id, to: "/tmp/after-mismatch")
+        }
+
+        now = Date(timeIntervalSince1970: 122)
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .exitCodeMismatch(expected: 0, observed: 7)
+            )
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+        XCTAssertEqual(durable.workingDirectory, "/tmp/after-mismatch")
+        XCTAssertEqual(try coordinator.reattachableSessions(), [durable])
+    }
+
+    func testExitKeepsAmbiguousTransportFailureNonReattachable() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 130) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/ambiguous-exit"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.listedSessionIDs = [record.id]
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            guard case BrokerSessionHostClientRuntime.ClientError.transportFailed = error else {
+                return XCTFail("Expected ambiguous transport failure, got \(error)")
+            }
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
+
+        runtime.statusError = nil
+        runtime.markErroredError = nil
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+    }
+
+    func testExitRollsBackIntentWhenRuntimeProvesChildIsStillRunning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 140) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/live-after-failure"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = RuntimeError.failed
+        runtime.observedTerminationStatus = nil
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(error as? RuntimeError, .failed)
+        }
+        XCTAssertEqual(try coordinator.loadAll(), [record])
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {

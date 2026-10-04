@@ -578,7 +578,7 @@ final class SSHChannelControllerTests: XCTestCase {
 
     /// The process-exit path is the other place SSH tabs record broker metadata,
     /// and it also runs from a delegate callback rather than a user action.
-    @MainActor func testSSHProcessTerminationWithBrokerHostOutageKeepsRecordReattachable() throws {
+    @MainActor func testSSHProcessTerminationWithBrokerHostOutageKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }
         let terminal = MockTerminalProcess()
@@ -600,8 +600,8 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
         XCTAssertEqual(
             try fixture.singleRecord().lifecycle,
-            .running,
-            "An unrecorded exit must not fabricate an exited lifecycle"
+            .terminating,
+            "A lost response cannot prove whether exit ran, so durable state must not revive the session"
         )
     }
 

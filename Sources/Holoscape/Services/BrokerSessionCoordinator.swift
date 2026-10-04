@@ -87,6 +87,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
+        case exitRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case exitFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
@@ -468,9 +470,75 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
-        _ = try record(for: id)
-        try runtime.terminateSession(id: id, exitCode: exitCode)
+        var previousRecord: BrokerSessionRecord?
+        while true {
+            let current = try record(for: id)
+            switch current.lifecycle {
+            case .exited, .errored:
+                return current
+            case .terminating:
+                // Another retirement already owns this generation. Do not
+                // issue a competing runtime action or overwrite its outcome.
+                return current
+            case .creating, .running, .detached, .reattaching, .stale:
+                let terminating = current.withLifecycle(
+                    .terminating,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(terminating, ifUnchangedFrom: current) {
+                    previousRecord = current
+                    break
+                }
+                continue
+            }
+            break
+        }
 
+        do {
+            try runtime.terminateSession(id: id, exitCode: exitCode)
+        } catch let runtimeFailure {
+            do {
+                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                    do {
+                        _ = try finalizeExit(id, exitCode: observedExitCode)
+                    } catch let registryFailure {
+                        throw CoordinatorError.exitFinalizationFailed(
+                            id,
+                            runtimeFailure: String(describing: runtimeFailure),
+                            registryFailure: String(describing: registryFailure)
+                        )
+                    }
+                } else if !isAmbiguousTerminationFailure(runtimeFailure), let previousRecord {
+                    do {
+                        try rollbackExit(id, to: previousRecord)
+                    } catch let registryFailure {
+                        throw CoordinatorError.exitRollbackFailed(
+                            id,
+                            runtimeFailure: String(describing: runtimeFailure),
+                            registryFailure: String(describing: registryFailure)
+                        )
+                    }
+                }
+            } catch let coordinatorFailure as CoordinatorError {
+                throw coordinatorFailure
+            } catch {
+                // Failure to inspect the result leaves termination ambiguous.
+                // Keep durable `.terminating` intent so relaunch reconciliation
+                // cannot revive a child that may already have exited.
+                NSLog(
+                    "Broker session exit outcome remains ambiguous for \(id.rawValue): "
+                        + "termination failure: \(runtimeFailure); status failure: \(error)"
+                )
+            }
+            throw runtimeFailure
+        }
+
+        return try finalizeExit(id, exitCode: exitCode)
+    }
+
+    private func finalizeExit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
         // The runtime action is irreversible. Rebase the final state on any
         // concurrent metadata-only mutation so a successful termination cannot
         // be left durably `.running` or `.detached` after a lost CAS.
@@ -479,10 +547,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             switch current.lifecycle {
             case .exited:
                 return current
-            case .terminating, .errored:
+            case .errored:
                 // Persistence-failure retirement owns the stronger final truth.
                 return current
-            case .creating, .running, .detached, .reattaching, .stale:
+            case .creating, .running, .detached, .reattaching, .stale, .terminating:
                 let candidate = current.withLifecycle(
                     .exited,
                     exitCode: exitCode,
@@ -493,6 +561,30 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     return candidate
                 }
             }
+        }
+    }
+
+    private func rollbackExit(_ id: BrokerSessionID, to previous: BrokerSessionRecord) throws {
+        while true {
+            let current = try record(for: id)
+            guard current.lifecycle == .terminating else { return }
+            let rolledBack = current.withLifecycle(
+                previous.lifecycle,
+                exitCode: previous.exitCode,
+                updatedAt: current.updatedAt,
+                lastAttachedChannelID: previous.lastAttachedChannelID
+            )
+            if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+        }
+    }
+
+    private func isAmbiguousTerminationFailure(_ error: Error) -> Bool {
+        guard let clientError = error as? BrokerSessionHostClientRuntime.ClientError else { return false }
+        switch clientError {
+        case .transportFailed, .unexpectedResponse:
+            return true
+        case .hostFailure:
+            return false
         }
     }
 
