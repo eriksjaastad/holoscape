@@ -935,6 +935,66 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try transport.sendFrame(secondFrame), secondFrame)
     }
 
+    func testProcessTransportAcceptsResponseAtMaximumFrameSize() throws {
+        let maximumFrameSize = 16
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+        var frame = Data(repeating: 0x78, count: maximumFrameSize - 1)
+        frame.append(0x0A)
+
+        XCTAssertEqual(try transport.sendFrame(frame), frame)
+    }
+
+    func testProcessTransportRejectsOversizedDelimitedResponse() throws {
+        let maximumFrameSize = 16
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+        var frame = Data(repeating: 0x78, count: maximumFrameSize)
+        frame.append(0x0A)
+
+        XCTAssertThrowsError(try transport.sendFrame(frame)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
+    }
+
+    func testProcessTransportRejectsOversizedResponseBeforeDelimiter() throws {
+        let maximumFrameSize = 16
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportOversizedResponseTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("oversized-response")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        IFS= read -r line
+        printf xxxxxxxxxxxxxxxxx
+        while :; do sleep 1; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            responseTimeoutSeconds: 2,
+            maximumResponseFrameSize: maximumFrameSize
+        )
+        defer { transport.close() }
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
+    }
+
     func testProcessTransportDrainsHighVolumeStderrBeforeHelperResponse() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerSessionHostProcessTransportTests-\(UUID().uuidString)")
@@ -1643,6 +1703,55 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.3)
         wait(for: [serverFinished], timeout: 1)
+    }
+
+    func testUnixSocketTransportAcceptsResponseAtMaximumFrameSize() throws {
+        let maximumFrameSize = 16
+        var response = Data(repeating: 0x78, count: maximumFrameSize - 1)
+        response.append(0x0A)
+
+        XCTAssertEqual(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get(),
+            response
+        )
+    }
+
+    func testUnixSocketTransportRejectsOversizedDelimitedResponse() throws {
+        let maximumFrameSize = 16
+        var response = Data(repeating: 0x78, count: maximumFrameSize)
+        response.append(0x0A)
+
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
+    }
+
+    func testUnixSocketTransportRejectsOversizedResponseBeforeDelimiter() throws {
+        let maximumFrameSize = 16
+        let response = Data(repeating: 0x78, count: maximumFrameSize + 1)
+
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: maximumFrameSize
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .frameTooLarge(maximumBytes: maximumFrameSize)
+            )
+        }
     }
 
     func testUnixSocketServerRefusesToReplaceSilentReachableSocket() throws {
@@ -2631,6 +2740,46 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "listSessions",
             "isRunning original-broker-still-active",
         ])
+    }
+
+    private func rawUnixSocketTransportResult(
+        response: Data,
+        maximumResponseFrameSize: Int
+    ) throws -> Result<Data, Error> {
+        let socketPath = "/tmp/hs-raw-response-\(UUID().uuidString).sock"
+        let serverFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(serverFD)
+            unlink(socketPath)
+        }
+        let serverFinished = expectation(description: "raw socket response sent")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(serverFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                response.withUnsafeBytes { bytes in
+                    guard let baseAddress = bytes.baseAddress else { return }
+                    var offset = 0
+                    while offset < bytes.count {
+                        let written = Darwin.write(clientFD, baseAddress.advanced(by: offset), bytes.count - offset)
+                        if written <= 0 { break }
+                        offset += written
+                    }
+                }
+                Darwin.close(clientFD)
+            }
+            serverFinished.fulfill()
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            readChunkSize: 3,
+            maximumResponseFrameSize: maximumResponseFrameSize
+        )
+        let result = Result { try transport.sendFrame(Data("{}\n".utf8)) }
+        wait(for: [serverFinished], timeout: 1)
+        return result
     }
 
     private func makeListeningUnixSocket(at path: String) throws -> Int32 {

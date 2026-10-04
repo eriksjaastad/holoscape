@@ -4,6 +4,11 @@ enum BrokerSessionHostProtocolLimits {
     /// Includes the newline delimiter. Large enough for multi-megabyte input
     /// pastes while bounding malformed request accumulation in broker hosts.
     static let maximumRequestFrameSize = 8 * 1024 * 1024
+
+    /// Includes the newline delimiter. Broker responses can carry binary output
+    /// as base64 JSON, so retain the request-size headroom while bounding a
+    /// malformed helper or socket peer before it can exhaust app memory.
+    static let maximumResponseFrameSize = 8 * 1024 * 1024
 }
 
 enum BrokerSessionHostProtocolError: Error, Equatable {

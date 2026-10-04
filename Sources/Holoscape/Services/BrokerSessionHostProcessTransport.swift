@@ -26,6 +26,7 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
     private let inputDescriptor: Int32
     private let outputDescriptor: Int32
     private let responseTimeoutSeconds: Int
+    private let maximumResponseFrameSize: Int
     // Narrow test observers make otherwise scheduler-dependent ownership
     // boundaries observable. Production callers leave them nil.
     private let requestLockWaitObserver: (() -> Void)?
@@ -45,10 +46,12 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         arguments: [String] = [],
         environment: [String: String]? = nil,
         responseTimeoutSeconds: Int = 5,
+        maximumResponseFrameSize: Int = BrokerSessionHostProtocolLimits.maximumResponseFrameSize,
         requestLockWaitObserver: (() -> Void)? = nil,
         requestLockAcquiredObserver: (() -> Void)? = nil,
         responseReadObserver: ((Int32) -> Void)? = nil
     ) throws {
+        precondition(maximumResponseFrameSize > 0, "Broker host process maximum response frame size must be positive")
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let process = Process()
@@ -88,6 +91,7 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         self.inputDescriptor = inputDescriptor
         self.outputDescriptor = outputDescriptor
         self.responseTimeoutSeconds = responseTimeoutSeconds
+        self.maximumResponseFrameSize = maximumResponseFrameSize
         self.requestLockWaitObserver = requestLockWaitObserver
         self.requestLockAcquiredObserver = requestLockAcquiredObserver
         self.responseReadObserver = responseReadObserver
@@ -194,9 +198,16 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
         var inactivityDeadline = monotonicDeadline(after: responseTimeoutSeconds)
         while true {
             if let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
+                let frameSize = readBuffer.distance(from: readBuffer.startIndex, to: newlineIndex) + 1
+                guard frameSize <= maximumResponseFrameSize else {
+                    throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
+                }
                 let frame = readBuffer.prefix(through: newlineIndex)
                 readBuffer.removeSubrange(...newlineIndex)
                 return Data(frame)
+            }
+            guard readBuffer.count < maximumResponseFrameSize else {
+                throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
             }
             try throwIfClosed()
             let remainingMilliseconds = monotonicRemainingMilliseconds(until: inactivityDeadline)

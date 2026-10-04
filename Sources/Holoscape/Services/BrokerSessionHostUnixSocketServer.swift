@@ -388,15 +388,19 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let socketPath: String
     private let readChunkSize: Int
     private let requestTimeoutMilliseconds: Int
+    private let maximumResponseFrameSize: Int
 
     init(
         socketPath: String,
         readChunkSize: Int = 4096,
-        requestTimeoutMilliseconds: Int = 10_000
+        requestTimeoutMilliseconds: Int = 10_000,
+        maximumResponseFrameSize: Int = BrokerSessionHostProtocolLimits.maximumResponseFrameSize
     ) {
+        precondition(maximumResponseFrameSize > 0, "Broker host socket maximum response frame size must be positive")
         self.socketPath = socketPath
         self.readChunkSize = readChunkSize
         self.requestTimeoutMilliseconds = max(1, requestTimeoutMilliseconds)
+        self.maximumResponseFrameSize = maximumResponseFrameSize
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
@@ -524,6 +528,16 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: readChunkSize)
         while true {
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                let frameSize = buffer.distance(from: buffer.startIndex, to: newlineIndex) + 1
+                guard frameSize <= maximumResponseFrameSize else {
+                    throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
+                }
+                return Data(buffer.prefix(through: newlineIndex))
+            }
+            guard buffer.count < maximumResponseFrameSize else {
+                throw BrokerSessionHostProtocolError.frameTooLarge(maximumBytes: maximumResponseFrameSize)
+            }
             try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
             if count == 0 { return buffer }
@@ -532,7 +546,6 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                 throw TransportError.readFailed(String(cString: strerror(errno)))
             }
             buffer.append(contentsOf: chunk.prefix(count))
-            if buffer.last == 0x0A { return buffer }
         }
     }
 
