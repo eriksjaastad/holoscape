@@ -249,6 +249,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         // Status ownership belongs only to an agent process launched by its tab.
         // Never let a shell inherit the token of the process that launched Holoscape.
         environment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = nil
+        // GUI-launched apps can inherit no terminal identity or a non-interactive
+        // value. Keep direct shells aligned with broker-owned shell sessions.
+        environment["TERM"] = "xterm-256color"
+        if environment["LANG"]?.range(of: "utf", options: [.caseInsensitive]) == nil {
+            environment["LANG"] = "en_US.UTF-8"
+        }
         // Apple_Terminal for OSC 7 directory notifications from zsh.
         environment["TERM_PROGRAM"] = "Apple_Terminal"
         return environment

@@ -92,16 +92,29 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.recoveryAction, .retryBrokerHost)
     }
 
-    func testShellLaunchEnvironmentStripsInheritedAgentOwnerToken() {
+    func testShellLaunchEnvironmentGuaranteesTerminalBaselineAndStripsInheritedAgentOwnerToken() {
         let environment = ShellChannelController.launchEnvironment(from: [
             "PATH": "/usr/bin",
+            "TERM": "dumb",
+            "LANG": "C",
             "TERM_PROGRAM": "Holoscape",
             "HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN": "parent-agent-token",
         ])
 
         XCTAssertNil(environment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"])
         XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
+        XCTAssertEqual(environment["LANG"], "en_US.UTF-8")
         XCTAssertEqual(environment["TERM_PROGRAM"], "Apple_Terminal")
+    }
+
+    func testShellLaunchEnvironmentPreservesExistingUTF8Locale() {
+        let environment = ShellChannelController.launchEnvironment(from: [
+            "LANG": "C.UTF-8",
+        ])
+
+        XCTAssertEqual(environment["LANG"], "C.UTF-8")
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
     }
 
     func testShellOutputHandlerRoutesThroughTerminalProcessSeam() {
