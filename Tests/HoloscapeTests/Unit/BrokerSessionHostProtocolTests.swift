@@ -867,6 +867,35 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(runtime.events, ["isRunning stdio-server-protocol-error-session"])
     }
 
+    func testStdioServerReturnsProtocolFailureForTruncatedFrameAtEOF() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+
+        let server = BrokerSessionHostStdioServer(
+            host: host,
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting,
+            readChunkSize: 5
+        )
+
+        try inputPipe.fileHandleForWriting.write(contentsOf: Data("{\"operation\":\"isRunning\"".utf8))
+        try inputPipe.fileHandleForWriting.close()
+
+        try server.runUntilEOF()
+        try outputPipe.fileHandleForWriting.close()
+
+        let response = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard case let .failure(failure) = try codec.decodeResponse(response) else {
+            return XCTFail("Expected protocol failure response")
+        }
+        XCTAssertEqual(failure.code, "protocol-error")
+        XCTAssertTrue(failure.message.contains("truncatedFrame"), failure.message)
+        XCTAssertTrue(runtime.events.isEmpty)
+    }
+
     func testStdioServerRejectsOversizedUnterminatedFrameAndProcessesNextFrame() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
