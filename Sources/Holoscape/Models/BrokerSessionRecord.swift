@@ -88,6 +88,7 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
     enum ValidationError: Error, Equatable {
         case exitedSessionMissingExitCode
         case liveSessionHasExitCode
+        case unexpectedRequestedExitCode
     }
 
     let id: BrokerSessionID
@@ -100,6 +101,9 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
     let agentStatusOwnerToken: String?
     let lifecycle: BrokerSessionLifecycle
     let exitCode: Int32?
+    /// Caller-requested code retained while an ambiguous graceful exit is
+    /// reconciled, so a later observed mismatch remains diagnosable.
+    let requestedExitCode: Int32?
     let createdAt: Date
     let updatedAt: Date
     let lastAttachedChannelID: UUID?
@@ -115,6 +119,7 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
         agentStatusOwnerToken: String? = nil,
         lifecycle: BrokerSessionLifecycle,
         exitCode: Int32?,
+        requestedExitCode: Int32? = nil,
         createdAt: Date,
         updatedAt: Date,
         lastAttachedChannelID: UUID?
@@ -129,6 +134,7 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
         self.agentStatusOwnerToken = agentStatusOwnerToken
         self.lifecycle = lifecycle
         self.exitCode = exitCode
+        self.requestedExitCode = requestedExitCode
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastAttachedChannelID = lastAttachedChannelID
@@ -140,6 +146,9 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
         }
         if lifecycle != .exited && exitCode != nil {
             throw ValidationError.liveSessionHasExitCode
+        }
+        if lifecycle != .exiting && lifecycle != .exited && requestedExitCode != nil {
+            throw ValidationError.unexpectedRequestedExitCode
         }
     }
 }

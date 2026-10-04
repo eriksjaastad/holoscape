@@ -492,10 +492,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             let current = try record(for: id)
             switch current.lifecycle {
             case .exited:
-                if let observedExitCode = current.exitCode, observedExitCode != exitCode {
+                let expectedExitCode = current.requestedExitCode ?? exitCode
+                if let observedExitCode = current.exitCode, observedExitCode != expectedExitCode {
                     throw CoordinatorError.exitCodeMismatch(
                         id,
-                        expected: exitCode,
+                        expected: expectedExitCode,
                         observed: observedExitCode
                     )
                 }
@@ -504,11 +505,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 return current
             case .exiting:
                 if let observedExitCode = try runtime.terminationStatus(id: id) {
+                    let expectedExitCode = current.requestedExitCode ?? exitCode
                     let finalized = try finalizeExit(id, exitCode: observedExitCode)
-                    if finalized.lifecycle == .exited, observedExitCode != exitCode {
+                    if finalized.lifecycle == .exited, observedExitCode != expectedExitCode {
                         throw CoordinatorError.exitCodeMismatch(
                             id,
-                            expected: exitCode,
+                            expected: expectedExitCode,
                             observed: observedExitCode
                         )
                     }
@@ -523,6 +525,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 let terminating = current.withLifecycle(
                     .exiting,
                     exitCode: nil,
+                    requestedExitCode: exitCode,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
@@ -596,6 +599,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 let candidate = current.withLifecycle(
                     .exited,
                     exitCode: exitCode,
+                    requestedExitCode: current.requestedExitCode,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
@@ -613,6 +617,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             let rolledBack = current.withLifecycle(
                 previous.lifecycle,
                 exitCode: previous.exitCode,
+                requestedExitCode: previous.requestedExitCode,
                 updatedAt: current.updatedAt,
                 lastAttachedChannelID: previous.lastAttachedChannelID
             )
@@ -844,6 +849,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 return existing
             }
             if let exitCode = try runtime.terminationStatus(id: id) {
+                if existing.lifecycle == .exiting {
+                    // Relaunch recovery has no active caller to receive the
+                    // original mismatch yet. Preserve comparison authority in
+                    // the exited record; the final-output lane surfaces it.
+                    return try finalizeExit(id, exitCode: exitCode)
+                }
                 return try exit(id, exitCode: exitCode)
             }
             // A terminated child may still have a final PTY read or scrollback
@@ -939,6 +950,7 @@ private extension BrokerSessionRecord {
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
+            requestedExitCode: requestedExitCode,
             createdAt: createdAt,
             updatedAt: updatedAt,
             lastAttachedChannelID: lastAttachedChannelID
@@ -948,6 +960,7 @@ private extension BrokerSessionRecord {
     func withLifecycle(
         _ lifecycle: BrokerSessionLifecycle,
         exitCode: Int32?,
+        requestedExitCode: Int32? = nil,
         updatedAt: Date,
         lastAttachedChannelID: UUID?
     ) -> BrokerSessionRecord {
@@ -962,6 +975,7 @@ private extension BrokerSessionRecord {
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
+            requestedExitCode: requestedExitCode,
             createdAt: createdAt,
             updatedAt: updatedAt,
             lastAttachedChannelID: lastAttachedChannelID

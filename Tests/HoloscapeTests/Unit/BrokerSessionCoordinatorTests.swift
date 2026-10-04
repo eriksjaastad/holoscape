@@ -507,7 +507,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
 
         XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0))
-        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
+        let ambiguous = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(ambiguous.lifecycle, .exiting)
+        XCTAssertEqual(ambiguous.requestedExitCode, 0)
 
         runtime.terminateError = nil
         runtime.statusError = nil
@@ -516,8 +518,9 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         let recovered = try XCTUnwrap(coordinator.reattachableSessions().first)
         XCTAssertEqual(recovered.lifecycle, .exited)
         XCTAssertEqual(recovered.exitCode, 7)
+        XCTAssertEqual(recovered.requestedExitCode, 0)
 
-        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 7)) { error in
             XCTAssertEqual(
                 error as? BrokerSessionCoordinator.CoordinatorError,
                 .exitCodeMismatch(record.id, expected: 0, observed: 7)
