@@ -40,6 +40,13 @@ struct BrokerSessionHostStdioServer {
         while true {
             let chunk = input.readData(ofLength: readChunkSize)
             if chunk.isEmpty {
+                if !buffer.isEmpty {
+                    try output.write(
+                        contentsOf: protocolFailureFrame(
+                            for: BrokerSessionHostProtocolError.truncatedFrame
+                        )
+                    )
+                }
                 return
             }
 

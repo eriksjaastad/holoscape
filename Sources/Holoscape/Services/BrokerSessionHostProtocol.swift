@@ -17,6 +17,7 @@ enum BrokerSessionHostProtocolLimits {
 
 enum BrokerSessionHostProtocolError: Error, Equatable {
     case frameTooLarge(maximumBytes: Int)
+    case truncatedFrame
 }
 
 /// JSON-lines protocol shared by the app-side broker client and the future
