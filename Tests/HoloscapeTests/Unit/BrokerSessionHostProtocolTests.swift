@@ -2131,6 +2131,70 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testSchedulerReclaimsIdleLanesAfterManyUniqueSessions() throws {
+        let scheduler = BrokerSessionOperationScheduler()
+
+        for index in 0..<500 {
+            let sessionID = BrokerSessionID(rawValue: "retired-session-\(index)")
+            try scheduler.perform(.terminate(id: sessionID, exitCode: 0)) {}
+        }
+
+        XCTAssertEqual(scheduler.activeLaneCount, 0)
+    }
+
+    func testSchedulerKeepsOneLaneUntilAllAdmittedSameSessionWorkCompletes() throws {
+        let scheduler = BrokerSessionOperationScheduler()
+        let sessionID = BrokerSessionID(rawValue: "retirement-race")
+        let firstStarted = expectation(description: "first operation started")
+        let operationsFinished = expectation(description: "both operations finished")
+        operationsFinished.expectedFulfillmentCount = 2
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let errors = LockedErrorBox()
+        let operationOrder = LockedStringResults()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try scheduler.perform(.terminate(id: sessionID, exitCode: 0)) {
+                    operationOrder.append("terminate-start")
+                    firstStarted.fulfill()
+                    releaseFirst.wait()
+                    operationOrder.append("terminate-end")
+                }
+            } catch {
+                errors.set(error)
+            }
+            operationsFinished.fulfill()
+        }
+        wait(for: [firstStarted], timeout: 1)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try scheduler.perform(.sendInput(id: sessionID, bytes: Data("after\n".utf8))) {
+                    operationOrder.append("send-input")
+                }
+            } catch {
+                errors.set(error)
+            }
+            operationsFinished.fulfill()
+        }
+
+        let admissionDeadline = Date().addingTimeInterval(1)
+        while Date() < admissionDeadline,
+              scheduler.admittedOperationCount(for: sessionID) != 2 {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        XCTAssertEqual(scheduler.admittedOperationCount(for: sessionID), 2)
+        XCTAssertEqual(scheduler.activeLaneCount, 1)
+
+        releaseFirst.signal()
+        wait(for: [operationsFinished], timeout: 2)
+
+        XCTAssertNil(errors.value)
+        XCTAssertEqual(operationOrder.values, ["terminate-start", "terminate-end", "send-input"])
+        XCTAssertEqual(scheduler.activeLaneCount, 0)
+        XCTAssertEqual(scheduler.admittedOperationCount(for: sessionID), 0)
+    }
+
     func testHostPreservesSameSessionOrderingAcrossConcurrentSocketRequests() throws {
         let runtime = DelayedBrokerSessionRuntime()
         let sessionID = BrokerSessionID(rawValue: "same-session-ordering")
@@ -2683,6 +2747,19 @@ private final class LockedErrorBox: @unchecked Sendable {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+}
+
+private final class LockedStringResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [String] = []
+
+    var values: [String] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ value: String) {
+        lock.withLock { storedValues.append(value) }
     }
 }
 
