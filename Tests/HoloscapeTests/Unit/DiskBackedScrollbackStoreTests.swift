@@ -599,10 +599,47 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(status.st_mode & S_IFMT, S_IFIFO)
     }
 
-    func testStoredByteCountReportsZeroAfterManualPrune() throws {
+    func testStoredByteCountDoesNotRequireReadPermission() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let id = BrokerSessionID(rawValue: "manual-scrollback-prune")
+        let id = BrokerSessionID(rawValue: "metadata-only-count")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
+        let payload = Data("persisted-output".utf8)
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+
+        try store.append(payload, for: id)
+        XCTAssertEqual(chmod(tailURL.path, 0), 0)
+        defer { _ = chmod(tailURL.path, S_IRUSR | S_IWUSR) }
+
+        XCTAssertEqual(try store.storedByteCount(for: id), payload.count)
+    }
+
+    func testClearRequiresWritePermissionAndPreservesUnreadableTailOnFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "clear-permission-contract")
+        let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
+        let payload = Data("persisted-output".utf8)
+        let tailURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+
+        try store.append(payload, for: id)
+        XCTAssertEqual(chmod(tailURL.path, S_IRUSR), 0)
+        defer { _ = chmod(tailURL.path, S_IRUSR | S_IWUSR) }
+
+        XCTAssertThrowsError(try store.remove(for: id)) { error in
+            XCTAssertEqual((error as? POSIXError)?.code, .EACCES)
+        }
+        XCTAssertEqual(try Data(contentsOf: tailURL), payload)
+    }
+
+    func testStoredByteCountReportsZeroAfterManualClear() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "manual-scrollback-clear")
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 64)
 
         try store.append(Data("sensitive-output\n".utf8), for: id)

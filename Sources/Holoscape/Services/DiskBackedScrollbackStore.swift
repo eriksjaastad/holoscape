@@ -192,6 +192,10 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
+            // Clearing is deliberately descriptor-bound: the validated inode is
+            // truncated instead of unlinking a pathname that could be rebound
+            // between validation and mutation. The caller therefore needs write
+            // permission on an existing tail, and the empty storage entry remains.
             _ = try withOpenRegularFile(
                 at: url,
                 flags: O_WRONLY | O_NONBLOCK,
@@ -206,17 +210,18 @@ struct DiskBackedScrollbackStore: Sendable {
     func storedByteCount(for id: BrokerSessionID) throws -> Int {
         let url = try fileURL(for: id)
         return try operationLocks.withLock(for: url) {
-            try withOpenRegularFile(
-                at: url,
-                flags: O_RDONLY | O_NONBLOCK,
-                missingIsAbsent: true
-            ) { descriptor in
-                var status = stat()
-                guard fstat(descriptor, &status) == 0 else {
-                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-                }
-                return Int(status.st_size)
-            } ?? 0
+            // Size inspection is metadata-only. lstat both preserves the prior
+            // permission contract and refuses to follow a symlinked leaf.
+            var status = stat()
+            guard lstat(url.path, &status) == 0 else {
+                let code = errno
+                if code == ENOENT { return 0 }
+                throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            }
+            guard status.st_mode & S_IFMT == S_IFREG else {
+                throw StoreError.unsafeScrollbackFile(url.path)
+            }
+            return Int(status.st_size)
         }
     }
 

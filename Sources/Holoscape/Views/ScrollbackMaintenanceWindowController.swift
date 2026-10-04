@@ -1,11 +1,11 @@
 import AppKit
 
 /// Read-only maintenance window that lists persisted per-session scrollback
-/// tails and lets the user remove them individually or in bulk.
+/// tails and lets the user clear them individually or in bulk.
 ///
-/// Backed exclusively by the public `DiskBackedScrollbackStore` API. Removing a
-/// tail only deletes the persisted `.scrollback` file; it never reaches into
-/// broker internals or touches a live running session. This surface is
+/// Backed exclusively by the public `DiskBackedScrollbackStore` API. Clearing a
+/// tail truncates its validated storage entry; it never reaches into broker
+/// internals or touches a live running session. This surface is
 /// plugin-free and performs no network access.
 @MainActor
 final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
@@ -16,8 +16,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
     private let emptyStateLabel = NSTextField(labelWithString: "No stored scrollback")
-    private let removeButton = NSButton(title: "Remove…", target: nil, action: nil)
-    private let removeAllButton = NSButton(title: "Remove All…", target: nil, action: nil)
+    private let removeButton = NSButton(title: "Clear…", target: nil, action: nil)
+    private let removeAllButton = NSButton(title: "Clear All…", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
 
     init(
@@ -50,7 +50,7 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
         guard let contentView = window?.contentView else { return }
 
         let header = NSTextField(wrappingLabelWithString:
-            "Persisted scrollback tails hold saved terminal output for reattached sessions. Removing a tail only deletes the saved file; live sessions are unaffected.")
+            "Persisted scrollback tails hold saved terminal output for reattached sessions. Clearing a tail erases its saved bytes; live sessions are unaffected.")
         header.font = NSFont.systemFont(ofSize: 12)
         header.textColor = .secondaryLabelColor
 
@@ -207,9 +207,9 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
         let size = ScrollbackMaintenanceFormatting.byteSize(tail.byteCount)
 
         confirmRemoval(
-            title: "Remove Persisted Scrollback?",
-            message: "Delete the persisted scrollback tail for session “\(tail.sessionID.rawValue)” (\(size))? This only removes the saved file and does not affect any live session.",
-            confirmTitle: "Remove"
+            title: "Clear Persisted Scrollback?",
+            message: "Clear the persisted scrollback tail for session “\(tail.sessionID.rawValue)” (\(size))? This erases its saved bytes and does not affect any live session.",
+            confirmTitle: "Clear"
         ) { [weak self] in
             guard let self else { return }
             do {
@@ -217,8 +217,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             } catch {
                 self.refreshListing()
                 self.presentMessage(
-                    "Could Not Remove Scrollback",
-                    message: "Holoscape could not remove scrollback for session \(tail.sessionID.rawValue): \(error)"
+                    "Could Not Clear Scrollback",
+                    message: "Holoscape could not clear scrollback for session \(tail.sessionID.rawValue): \(error)"
                 )
                 return
             }
@@ -233,9 +233,9 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
         let size = ScrollbackMaintenanceFormatting.byteSize(totalBytes)
 
         confirmRemoval(
-            title: "Remove All Persisted Scrollback?",
-            message: "Delete all \(count) persisted scrollback tails (\(size) total)? This only removes saved files and does not affect any live session.",
-            confirmTitle: "Remove All"
+            title: "Clear All Persisted Scrollback?",
+            message: "Clear all \(count) persisted scrollback tails (\(size) total)? This erases their saved bytes and does not affect any live session.",
+            confirmTitle: "Clear All"
         ) { [weak self] in
             guard let self else { return }
             do {
@@ -245,8 +245,8 @@ final class ScrollbackMaintenanceWindowController: NSWindowController, NSTableVi
             } catch {
                 self.refreshListing()
                 self.presentMessage(
-                    "Could Not Remove All Scrollback",
-                    message: "Holoscape removed some tails before failing: \(error)"
+                    "Could Not Clear All Scrollback",
+                    message: "Holoscape cleared some tails before failing: \(error)"
                 )
                 return
             }
