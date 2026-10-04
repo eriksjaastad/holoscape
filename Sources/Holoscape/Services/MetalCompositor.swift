@@ -191,12 +191,6 @@ final class MetalCompositor {
         // 2. Update uniform buffer
         updateUniforms(width: Float(pixelW), height: Float(pixelH))
         frameCount += 1
-        if frameCount == 1 || frameCount % 300 == 0 {
-            let msg = "\(Date()): renderFrame #\(frameCount), size: \(pixelW)x\(pixelH)\n"
-            if let h = FileHandle(forWritingAtPath: "/tmp/holoscape-shader.log") {
-                h.seekToEndOfFile(); h.write(msg.data(using: .utf8)!); h.closeFile()
-            }
-        }
 
         // 3. Get drawable (transient failures are normal during resize/pressure)
         metalLayer.drawableSize = CGSize(width: pixelW, height: pixelH)
