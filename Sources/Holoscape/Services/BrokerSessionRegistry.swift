@@ -159,7 +159,7 @@ private extension BrokerSessionLifecycle {
         switch self {
         case .exited, .errored:
             return true
-        case .creating, .running, .detached, .reattaching, .stale, .terminating:
+        case .creating, .running, .detached, .reattaching, .stale, .exiting, .terminating:
             return false
         }
     }

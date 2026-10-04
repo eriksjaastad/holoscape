@@ -46,6 +46,8 @@ enum BrokerSessionLifecycle: String, Codable, Equatable, Sendable {
     case exited
     case errored
     case stale
+    /// A graceful exit has been requested, but final output/exit status may still need replay.
+    case exiting
     case terminating
 }
 

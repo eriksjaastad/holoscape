@@ -155,12 +155,28 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         return current
                     case .exited:
                         return runtimeSessionIDs.contains(current.id) ? current : nil
-                    case .creating, .reattaching, .errored, .terminating:
+                    case .creating, .reattaching, .errored, .exiting, .terminating:
                         return nil
                     }
-                case .creating, .errored, .terminating:
+                case .creating, .errored, .exiting, .terminating:
                     return nil
                 }
+            case .exiting:
+                guard runtimeSessionIDs.contains(record.id) else {
+                    _ = try markErrored(record.id)
+                    return nil
+                }
+                var reconciled = try reconcileRuntimeStatus(record.id)
+                if reconciled.lifecycle == .exiting, try runtime.isRunning(id: record.id) {
+                    // A lost graceful-exit request may not have reached the broker.
+                    // Retry it without asserting an expected code, then retain the
+                    // runtime object until final output and observed status are ready.
+                    try runtime.terminateSession(id: record.id, exitCode: nil)
+                    reconciled = try reconcileRuntimeStatus(record.id)
+                }
+                return reconciled.lifecycle == .exited || reconciled.lifecycle == .exiting
+                    ? reconciled
+                    : nil
             case .terminating:
                 // A prior retirement may have reached the broker without its
                 // response reaching Holoscape. Relaunch must finish this
@@ -287,7 +303,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         detachTransition: while true {
             let existing = try record(for: id)
             switch existing.lifecycle {
-            case .terminating, .exited, .errored, .stale:
+            case .exiting, .terminating, .exited, .errored, .stale:
                 return existing
             case .detached:
                 break detachTransition
@@ -340,10 +356,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             _ = try markErrored(id)
             throw CoordinatorError.staleSession(id)
         }
-        if existing.lifecycle == .exited {
+        if existing.lifecycle == .exited || existing.lifecycle == .exiting {
             // Reattach to the retained broker object only long enough to replay
-            // final scrollback. Preserve durable `.exited` truth; the terminal's
-            // first output poll will publish the stored exit code after replay.
+            // final output. Preserve durable exit truth; for `.exiting`, the
+            // output lane publishes the observed status after pending final I/O.
             try runtime.attachSession(id: id, channelID: attachedChannelID)
             return existing
         }
@@ -476,13 +492,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             switch current.lifecycle {
             case .exited, .errored:
                 return current
+            case .exiting:
+                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                    return try finalizeExit(id, exitCode: observedExitCode)
+                }
+                return current
             case .terminating:
                 // Another retirement already owns this generation. Do not
                 // issue a competing runtime action or overwrite its outcome.
                 return current
             case .creating, .running, .detached, .reattaching, .stale:
                 let terminating = current.withLifecycle(
-                    .terminating,
+                    .exiting,
                     exitCode: nil,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
@@ -510,7 +531,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                             registryFailure: String(describing: registryFailure)
                         )
                     }
-                } else if !isAmbiguousTerminationFailure(runtimeFailure), let previousRecord {
+                } else if !isAmbiguousTerminationFailure(runtimeFailure),
+                          try runtime.isRunning(id: id),
+                          let previousRecord {
                     do {
                         try rollbackExit(id, to: previousRecord)
                     } catch let registryFailure {
@@ -525,8 +548,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 throw coordinatorFailure
             } catch {
                 // Failure to inspect the result leaves termination ambiguous.
-                // Keep durable `.terminating` intent so relaunch reconciliation
-                // cannot revive a child that may already have exited.
+                // Keep durable `.exiting` intent so relaunch reconciliation can
+                // drain final output without reviving a child that may have exited.
                 NSLog(
                     "Broker session exit outcome remains ambiguous for \(id.rawValue): "
                         + "termination failure: \(runtimeFailure); status failure: \(error)"
@@ -550,7 +573,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             case .errored:
                 // Persistence-failure retirement owns the stronger final truth.
                 return current
-            case .creating, .running, .detached, .reattaching, .stale, .terminating:
+            case .creating, .running, .detached, .reattaching, .stale, .exiting, .terminating:
                 let candidate = current.withLifecycle(
                     .exited,
                     exitCode: exitCode,
@@ -567,7 +590,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     private func rollbackExit(_ id: BrokerSessionID, to previous: BrokerSessionRecord) throws {
         while true {
             let current = try record(for: id)
-            guard current.lifecycle == .terminating else { return }
+            guard current.lifecycle == .exiting else { return }
             let rolledBack = current.withLifecycle(
                 previous.lifecycle,
                 exitCode: previous.exitCode,
@@ -793,7 +816,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch existing.lifecycle {
         case .exited, .errored, .stale:
             return existing
-        case .creating, .running, .detached, .reattaching, .terminating:
+        case .creating, .running, .detached, .reattaching, .exiting, .terminating:
             break
         }
 

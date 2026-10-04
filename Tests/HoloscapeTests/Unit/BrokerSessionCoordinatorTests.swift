@@ -379,7 +379,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         runtime.onTerminate = {
             XCTAssertEqual(
                 try XCTUnwrap(coordinator.loadAll().first).lifecycle,
-                .terminating,
+                .exiting,
                 "Durable intent must precede the irreversible runtime action"
             )
             now = Date(timeIntervalSince1970: 111)
@@ -449,12 +449,18 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
                 return XCTFail("Expected ambiguous transport failure, got \(error)")
             }
         }
-        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
 
         runtime.statusError = nil
-        runtime.markErroredError = nil
-        XCTAssertEqual(try coordinator.reattachableSessions(), [])
-        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        runtime.running = false
+        runtime.observedTerminationStatus = nil
+        XCTAssertEqual(try coordinator.reattachableSessions().map(\.lifecycle), [.exiting])
+        XCTAssertFalse(runtime.events.contains(.markErrored(record.id)))
+
+        runtime.observedTerminationStatus = 0
+        let recovered = try XCTUnwrap(coordinator.reattachableSessions().first)
+        XCTAssertEqual(recovered.lifecycle, .exited)
+        XCTAssertEqual(recovered.exitCode, 0)
     }
 
     func testExitRollsBackIntentWhenRuntimeProvesChildIsStillRunning() throws {
@@ -468,11 +474,32 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
         runtime.terminateError = RuntimeError.failed
         runtime.observedTerminationStatus = nil
+        runtime.running = true
 
         XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
             XCTAssertEqual(error as? RuntimeError, .failed)
         }
         XCTAssertEqual(try coordinator.loadAll(), [record])
+    }
+
+    func testExitDoesNotRollbackWhenChildStoppedBeforeFinalOutputMakesStatusVisible() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 145) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/stopped-before-final-output"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = NativePTYBrokerSessionRuntime.RuntimeError.exitCodeMismatch(
+            expected: 0,
+            observed: 7
+        )
+        runtime.observedTerminationStatus = nil
+        runtime.running = false
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {

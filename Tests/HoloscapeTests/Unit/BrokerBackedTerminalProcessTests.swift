@@ -251,13 +251,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private(set) var outputReadCount = 0
         private(set) var acknowledgedGenerations: [UInt64] = []
         private(set) var retiredSessionIDs: [BrokerSessionID] = []
+        private(set) var finalizedExitCodes: [Int32] = []
+        var restoredLifecycle: BrokerSessionLifecycle = .exited
         private let outputReadRelease = DispatchSemaphore(value: 0)
         private var shouldBlockOutputRead = false
 
         func blockOutputRead() { shouldBlockOutputRead = true }
         func finishOutputRead() { outputReadRelease.signal() }
 
-        private func exitedRecord(id: BrokerSessionID) -> BrokerSessionRecord {
+        private func restoredRecord(id: BrokerSessionID) -> BrokerSessionRecord {
             BrokerSessionRecord(
                 id: id,
                 channelType: .shell,
@@ -266,8 +268,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 arguments: [],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
-                lifecycle: .exited,
-                exitCode: 9,
+                lifecycle: restoredLifecycle,
+                exitCode: restoredLifecycle == .exited ? 9 : nil,
                 createdAt: Date(timeIntervalSince1970: 1),
                 updatedAt: Date(timeIntervalSince1970: 2),
                 lastAttachedChannelID: nil
@@ -277,14 +279,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
             throw XCTSkip("unused")
         }
-        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { exitedRecord(id: id) }
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { restoredRecord(id: id) }
         func retireUntrackedSession(_ id: BrokerSessionID) throws { throw XCTSkip("unused") }
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
-            exitedRecord(id: id)
+            restoredRecord(id: id)
         }
         func retireCompletedSession(_ id: BrokerSessionID) throws { retiredSessionIDs.append(id) }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
-        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
+            finalizedExitCodes.append(exitCode)
+            restoredLifecycle = .exited
+            return restoredRecord(id: id)
+        }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
@@ -2165,6 +2171,40 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(events.first, "output", "Preserved unread bytes must render before exit authority")
         XCTAssertEqual(events.last, "exit:9")
         XCTAssertEqual(restoredTerminal.lastScrollbackReplay?.data, Data(), "Oversized unread generation must remain owned by the final drain")
+        let finalLines = restoredTerminal.lastLines(20).joined(separator: "\n")
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-one"))
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-two"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitedSessionDrainsFinalOutputBeforePublishingObservedExit() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "ambiguous-finished-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { events.contains("exit:9") }
+        XCTAssertEqual(coordinator.finalizedExitCodes, [9])
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24, 48])
+        XCTAssertEqual(events.first, "output")
+        XCTAssertEqual(events.last, "exit:9")
         let finalLines = restoredTerminal.lastLines(20).joined(separator: "\n")
         XCTAssertTrue(finalLines.contains("detached-final-chunk-one"))
         XCTAssertTrue(finalLines.contains("detached-final-chunk-two"))

@@ -472,6 +472,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
             return
         }
+        if record.lifecycle == .exiting {
+            beginOutputDeliveryOwnership()
+            // Final output is still readable, but the durable exit intent must
+            // never reopen input writes to a process that may already be gone.
+            sessionIOReady = true
+            inputWriteLane.close()
+            if outputHandler != nil {
+                startOutputPump()
+            }
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
         beginOutputDeliveryOwnership()
         sessionIOReady = true
         if outputHandler != nil {

@@ -600,7 +600,7 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
         XCTAssertEqual(
             try fixture.singleRecord().lifecycle,
-            .terminating,
+            .exiting,
             "A lost response cannot prove whether exit ran, so durable state must not revive the session"
         )
     }
