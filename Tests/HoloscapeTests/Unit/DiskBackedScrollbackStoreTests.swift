@@ -508,6 +508,12 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
                 .unsafeScrollbackFile(tail.path)
             )
         }
+        XCTAssertThrowsError(try store.append(Data(), for: id)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tail.path)
+            )
+        }
         XCTAssertEqual(try Data(contentsOf: target), original)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tail.path), target.path)
     }
@@ -524,6 +530,12 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: tail, withDestinationURL: target)
 
         XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 64)) { error in
+            XCTAssertEqual(
+                error as? DiskBackedScrollbackStore.StoreError,
+                .unsafeScrollbackFile(tail.path)
+            )
+        }
+        XCTAssertThrowsError(try store.readTail(for: id, maxBytes: 0)) { error in
             XCTAssertEqual(
                 error as? DiskBackedScrollbackStore.StoreError,
                 .unsafeScrollbackFile(tail.path)
@@ -600,6 +612,14 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         XCTAssertEqual(try store.storedByteCount(for: id), 0)
         XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data())
+        XCTAssertEqual(try store.listStoredTails(), [])
+
+        let clearedURL = directory
+            .appendingPathComponent(id.rawValue)
+            .appendingPathExtension("scrollback")
+        var status = stat()
+        XCTAssertEqual(lstat(clearedURL.path, &status), 0)
+        XCTAssertEqual(status.st_mode & S_IFMT, S_IFREG)
     }
 
     func testListStoredTailsReportsSessionIDByteSizeAndModificationDate() throws {

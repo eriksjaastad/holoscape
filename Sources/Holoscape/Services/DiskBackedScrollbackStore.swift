@@ -145,28 +145,34 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
-        guard !data.isEmpty else { return }
         let url = try fileURL(for: id)
+        guard !data.isEmpty else {
+            try validateExistingLeaf(at: url)
+            return
+        }
         try operationLocks.withLock(for: url) {
             let fileManager = FileManager.default
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             _ = try withOpenRegularFile(
                 at: url,
-                flags: O_CREAT | O_WRONLY | O_APPEND | O_NONBLOCK,
+                flags: O_CREAT | O_RDWR | O_NONBLOCK,
                 mode: S_IRUSR | S_IWUSR,
                 missingIsAbsent: false
             ) { descriptor in
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                try handle.seekToEnd()
                 try handle.write(contentsOf: data)
+                try prune(descriptor: descriptor)
             }
-            try prune(url)
         }
     }
 
     func readTail(for id: BrokerSessionID, maxBytes: Int) throws -> Data {
-        guard maxBytes > 0 else { return Data() }
-        guard maxRetainedBytes > 0 else { return Data() }
         let url = try fileURL(for: id)
+        guard maxBytes > 0, maxRetainedBytes > 0 else {
+            try validateExistingLeaf(at: url)
+            return Data()
+        }
         return try operationLocks.withLock(for: url) {
             guard let data = try readRegularFile(at: url, missingIsAbsent: true) else {
                 return Data()
@@ -186,15 +192,14 @@ struct DiskBackedScrollbackStore: Sendable {
     func remove(for id: BrokerSessionID) throws {
         let url = try fileURL(for: id)
         try operationLocks.withLock(for: url) {
-            var status = stat()
-            guard lstat(url.path, &status) == 0 else {
-                if errno == ENOENT { return }
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            _ = try withOpenRegularFile(
+                at: url,
+                flags: O_WRONLY | O_NONBLOCK,
+                missingIsAbsent: true
+            ) { descriptor in
+                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+                try handle.truncate(atOffset: 0)
             }
-            guard status.st_mode & S_IFMT == S_IFREG else {
-                throw StoreError.unsafeScrollbackFile(url.path)
-            }
-            try FileManager.default.removeItem(at: url)
         }
     }
 
@@ -272,10 +277,12 @@ struct DiskBackedScrollbackStore: Sendable {
             }
             guard let values else { continue }
             guard values.isRegularFile == true,
-                  values.isSymbolicLink != true else { continue }
+                  values.isSymbolicLink != true,
+                  let byteCount = values.fileSize,
+                  byteCount > 0 else { continue }
             tails.append(StoredScrollbackTail(
                 sessionID: BrokerSessionID(rawValue: rawID),
-                byteCount: values.fileSize ?? 0,
+                byteCount: byteCount,
                 modifiedAt: values.contentModificationDate
             ))
         }
@@ -283,13 +290,36 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     private func prune(_ url: URL) throws {
+        _ = try withOpenRegularFile(
+            at: url,
+            flags: O_RDWR | O_NONBLOCK,
+            missingIsAbsent: false
+        ) { descriptor in
+            try prune(descriptor: descriptor)
+        }
+    }
+
+    private func prune(descriptor: Int32) throws {
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         guard maxRetainedBytes > 0 else {
-            try Data().write(to: url, options: .atomic)
+            try handle.truncate(atOffset: 0)
             return
         }
-        guard let data = try readRegularFile(at: url, missingIsAbsent: false) else { return }
-        guard data.count > maxRetainedBytes else { return }
-        try Data(data.suffix(maxRetainedBytes)).write(to: url, options: .atomic)
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard status.st_size > off_t(maxRetainedBytes) else { return }
+
+        try handle.seek(toOffset: UInt64(status.st_size - off_t(maxRetainedBytes)))
+        let retained = try handle.read(upToCount: maxRetainedBytes) ?? Data()
+        guard retained.count == maxRetainedBytes else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: retained)
+        try handle.truncate(atOffset: UInt64(retained.count))
     }
 
     private func readRegularFile(at url: URL, missingIsAbsent: Bool) throws -> Data? {
@@ -301,6 +331,14 @@ struct DiskBackedScrollbackStore: Sendable {
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             return try handle.readToEnd() ?? Data()
         }
+    }
+
+    private func validateExistingLeaf(at url: URL) throws {
+        _ = try withOpenRegularFile(
+            at: url,
+            flags: O_RDONLY | O_NONBLOCK,
+            missingIsAbsent: true
+        ) { _ in () }
     }
 
     private func withOpenRegularFile<T>(
