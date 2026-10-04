@@ -152,25 +152,59 @@ struct BrokerSessionHost {
 }
 
 final class BrokerSessionOperationScheduler: @unchecked Sendable {
+    private final class Lane {
+        let queue: DispatchQueue
+        var admittedOperationCount = 0
+
+        init(sessionID: BrokerSessionID) {
+            self.queue = DispatchQueue(label: "holoscape.broker.session.\(sessionID.rawValue)")
+        }
+    }
+
     private let lock = NSLock()
-    private var lanes: [BrokerSessionID: DispatchQueue] = [:]
+    private var lanes: [BrokerSessionID: Lane] = [:]
+
+    var activeLaneCount: Int {
+        lock.withLock { lanes.count }
+    }
+
+    func admittedOperationCount(for sessionID: BrokerSessionID) -> Int {
+        lock.withLock { lanes[sessionID]?.admittedOperationCount ?? 0 }
+    }
 
     func perform<T>(_ request: BrokerSessionHostRequest, operation: () throws -> T) throws -> T {
         guard let sessionID = request.sessionOrderingID else {
             return try operation()
         }
-        return try lane(for: sessionID).sync(execute: operation)
+        let lane = admitOperation(for: sessionID)
+        defer { releaseOperation(for: sessionID, from: lane) }
+        return try lane.queue.sync(execute: operation)
     }
 
-    private func lane(for sessionID: BrokerSessionID) -> DispatchQueue {
-        lock.lock()
-        defer { lock.unlock() }
-        if let lane = lanes[sessionID] {
+    private func admitOperation(for sessionID: BrokerSessionID) -> Lane {
+        lock.withLock {
+            let lane: Lane
+            if let existingLane = lanes[sessionID] {
+                lane = existingLane
+            } else {
+                lane = Lane(sessionID: sessionID)
+                lanes[sessionID] = lane
+            }
+            lane.admittedOperationCount += 1
             return lane
         }
-        let lane = DispatchQueue(label: "holoscape.broker.session.\(sessionID.rawValue)")
-        lanes[sessionID] = lane
-        return lane
+    }
+
+    private func releaseOperation(for sessionID: BrokerSessionID, from lane: Lane) {
+        lock.withLock {
+            precondition(lane.admittedOperationCount > 0)
+            lane.admittedOperationCount -= 1
+            guard lane.admittedOperationCount == 0,
+                  lanes[sessionID] === lane else {
+                return
+            }
+            lanes.removeValue(forKey: sessionID)
+        }
     }
 }
 
