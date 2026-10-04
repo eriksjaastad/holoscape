@@ -17,7 +17,7 @@ If Holoscape later adds a quick-terminal or summon-window feature, Ghostty's pat
 Ghostty divides the feature into four responsibilities:
 
 1. **Configuration owns intent.** A binding marked `global:` is stored with a `global` flag. Global/all bindings cannot be multi-key sequences.
-2. **Core action routing owns semantics.** Inactive capture and active-window input enter through different C APIs but converge on Ghostty's shared binding/action machinery. `ghostty_app_key` handles inactive capture and active input when no main window exists; a focused terminal surface enters through `ghostty_surface_key`. When the app is unfocused, the app path rejects non-global bindings. Both paths dispatch global actions through the app-wide action path.
+2. **Core action routing owns most semantics, with an AppKit menu fast path.** `ghostty_app_key` handles inactive capture and active input when no main window exists. A focused terminal normally enters through `ghostty_surface_key`, but `performKeyEquivalent` first dispatches eligible consumed bindings through Ghostty's indexed AppKit menu items so the matching menu flashes and its selector runs directly. When the app is unfocused, the app path rejects non-global bindings. Core-routed global actions use the app-wide action path; eligible active-window menu equivalents can bypass that core dispatcher.
 3. **AppDelegate owns lifecycle.** After config load or reload, it asks `ghostty_app_has_global_keybinds(...)` whether any global binding exists, enabling or disabling the singleton event tap accordingly.
 4. **GlobalEventTap owns only OS capture.** It converts `CGEvent` to `NSEvent`, then to Ghostty's existing key-event model. It does not maintain a second shortcut registry or execute UI commands itself.
 
@@ -53,13 +53,13 @@ The tap source is installed on the main run loop in common modes. The callback m
 
 1. Return the original event for everything except `keyDown` and tap-disabled notifications.
 2. Re-enable the existing tap if macOS disabled it because of timeout or user input.
-3. Ignore captured keys while Ghostty is active. With a main window, the responder chain routes input through the focused surface and `ghostty_surface_key`. Without a main window, AppDelegate's local `NSEvent` monitor can route bindings through `ghostty_app_key`.
+3. Ignore captured keys while Ghostty is active. With a main window, the responder chain first gives the focused surface's `performKeyEquivalent` a chance to invoke an indexed AppKit menu item; bindings that do not take that fast path continue through `ghostty_surface_key`. Without a main window, AppDelegate's local `NSEvent` monitor can route bindings through `ghostty_app_key`.
 4. Resolve AppDelegate and the Ghostty app instance.
 5. Convert the `CGEvent` to `NSEvent`, then to Ghostty's core key-event representation.
 6. Call `ghostty_app_key`.
 7. Return `nil` only when the core reports that it handled the key; otherwise return the original event unchanged.
 
-This produces two input entry points that converge on shared binding/action machinery. The capture source and C entry point differ, but global actions ultimately use the same app-wide dispatcher.
+Ghostty therefore has three meaningful entry variants: inactive event-tap input through `ghostty_app_key`, active no-main-window input through the same app API, and active focused-surface input through either an AppKit menu selector or `ghostty_surface_key`. The two core APIs share binding/action machinery, but the menu fast path is intentionally direct.
 
 Ghostty treats a matched global binding as consumed. `App.keyEvent` invokes `performAllChainedAction` and returns `true` even if an individual action later logs a dispatch error. Its surface path likewise makes `global:` and `all:` bindings consuming regardless of the `unconsumed:` or `performable:` flags. Event consumption therefore means "a global binding matched and dispatch was attempted," not "the action completed successfully."
 
@@ -84,6 +84,8 @@ Ghostty logs tap-creation failure but exposes no user-facing state in this modul
 ### 1. One command registry for local and global shortcuts
 
 A shortcut descriptor should contain a typed action and a scope such as `local` or `global`. Both AppKit menu shortcuts and a future global capture adapter should invoke the same resolver. Do not duplicate selectors, closures, or key parsing in the event-tap service.
+
+This is a deliberate simplification over Ghostty's direct AppKit menu path: Holoscape should let menus present and invoke the same typed command descriptors rather than make menu selectors a separate source of command semantics.
 
 The resolver should return an explicit dispatch result. As a deliberate improvement over Ghostty, the global adapter should suppress the system event only after the dispatcher accepts a valid, available typed action. Unknown, invalid, or synchronously unavailable actions should leave the event untouched. An accepted asynchronous action may still fail later, so the contract must distinguish dispatch acceptance from eventual action completion rather than claim that the original key can be replayed after a later failure.
 
@@ -141,7 +143,8 @@ Only create implementation cards when Holoscape has a concrete cross-application
 | Binding removed while polling | Polling stops; stale delayed work cannot create a tap |
 | Permission granted | One tap creation attempt; state becomes enabled or a visible failure |
 | Tap creation fails despite trust | No infinite retry; diagnostic remains actionable |
-| App active with a focused surface | Responder chain routes through the surface resolver; global callback passes the event through |
+| App active with a focused surface, eligible menu equivalent | Indexed menu item invokes its AppKit selector directly; global callback passes the event through |
+| App active with a focused surface, no menu fast path | Surface routes through `ghostty_surface_key`; global callback passes the event through |
 | App active without a main window | Local monitor routes app bindings; global callback passes the event through |
 | App inactive, matching global binding | Typed action runs once; event is consumed only when handled |
 | App inactive, local-only or unknown binding | Event passes through unchanged |
@@ -171,7 +174,8 @@ A real app-hosted smoke test should verify an actual configured shortcut while a
 
 - `macos/Sources/Features/Global Keybinds/GlobalEventTap.swift` — permission prompt/polling, event-tap creation, run-loop attachment, callback filtering, tap recovery, and event consumption.
 - `macos/Sources/App/AppDelegate.swift` — local event monitor plus config-driven global tap enable/disable and launch-delay behavior.
-- `macos/Sources/Ghostty/Ghostty.App.swift` — app wrapper that publishes active/inactive focus state to the embedded core.
+- `macos/Sources/Ghostty/Ghostty.App.swift` — app wrapper that publishes focus state and receives core action callbacks.
+- `macos/Sources/Ghostty/Ghostty.MenuShortcutManager.swift` — indexed active-window menu-equivalent dispatch that can invoke AppKit selectors before surface key routing.
 - `macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift` — focused-surface key entry point used while a terminal window owns input.
 - `src/config/Config.zig` — user-facing `global:`, `all:`, `unconsumed:`, and `performable:` semantics.
 - `src/input/Binding.zig` — global binding flag, parser restrictions, and action definitions.
