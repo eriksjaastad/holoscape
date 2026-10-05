@@ -29,6 +29,124 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data("holoscape-native-pty".utf8)))
     }
 
+    func testNativePTYInputPreservesWriteOrderAndBytes() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "native-pty-input-order-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "stty raw -echo; printf READY; exec cat"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        _ = try waitForOutput(from: runtime, id: id, containing: "READY")
+
+        let chunks: [[UInt8]] = [
+            [0x00, 0x01, 0x02, 0x03],
+            Array("holoscape".utf8),
+            [0x7f, 0x80, 0xfe, 0xff],
+        ]
+        for chunk in chunks {
+            try runtime.sendInput(id: id, bytes: chunk)
+        }
+
+        let expected = Data(chunks.flatMap { $0 })
+        var observed = Data()
+        let deadline = Date().addingTimeInterval(3)
+        while observed.count < expected.count, Date() < deadline {
+            observed.append(try runtime.readAvailableOutput(id: id))
+            if observed.count < expected.count { usleep(10_000) }
+        }
+        XCTAssertEqual(observed, expected)
+    }
+
+    func testInputBackpressureFailsBoundedlyWithoutReportingSuccess() throws {
+        let runtime = NativePTYBrokerSessionRuntime(inputWriteTimeoutMilliseconds: 100)
+        let id = BrokerSessionID(rawValue: "native-pty-input-backpressure-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "sleep 30"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let startedAt = DispatchTime.now()
+        XCTAssertThrowsError(try runtime.sendInput(id: id, bytes: [UInt8](repeating: 0x61, count: 64 * 1_024 * 1_024))) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .inputWriteTimedOut(id))
+        }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds
+        XCTAssertLessThan(elapsed, 1_000_000_000)
+        XCTAssertTrue(try runtime.isRunning(id: id))
+    }
+
+    func testTeardownInterruptsAnInputWriteBeforeItsDeadline() throws {
+        let runtime = NativePTYBrokerSessionRuntime(inputWriteTimeoutMilliseconds: 5_000)
+        let id = BrokerSessionID(rawValue: "native-pty-input-teardown-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "sleep 30"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        let writeFinished = DispatchSemaphore(value: 0)
+        let capturedError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try runtime.sendInput(
+                    id: id,
+                    bytes: [UInt8](repeating: 0x62, count: 64 * 1_024 * 1_024)
+                )
+            } catch {
+                capturedError.store(error)
+            }
+            writeFinished.signal()
+        }
+
+        usleep(20_000)
+        let teardownStartedAt = DispatchTime.now()
+        try runtime.markSessionErrored(id: id)
+        let teardownElapsed = DispatchTime.now().uptimeNanoseconds - teardownStartedAt.uptimeNanoseconds
+
+        XCTAssertEqual(writeFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(capturedError.value as? NativePTYBrokerSessionRuntime.RuntimeError, .inputClosed(id))
+        XCTAssertLessThan(teardownElapsed, 1_000_000_000)
+        XCTAssertThrowsError(try runtime.sendInput(id: id, bytes: [0x63])) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
+    func testTeardownReleasesNativePTYInputDescriptors() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        let warmupID = BrokerSessionID(rawValue: "native-pty-input-descriptor-warmup")
+        try runtime.createSession(id: warmupID, request: request)
+        try runtime.markSessionErrored(id: warmupID)
+        let descriptorCountBefore = openFileDescriptorCount()
+
+        for index in 0..<8 {
+            let id = BrokerSessionID(rawValue: "native-pty-input-descriptor-lifecycle-\(index)")
+            try runtime.createSession(id: id, request: request)
+            try runtime.markSessionErrored(id: id)
+        }
+
+        XCTAssertEqual(openFileDescriptorCount(), descriptorCountBefore)
+    }
+
     func testShellProfileStripsInheritedAgentOwnerToken() throws {
         let runtime = NativePTYBrokerSessionRuntime(processEnvironment: [
             "PATH": "/usr/bin:/bin",
