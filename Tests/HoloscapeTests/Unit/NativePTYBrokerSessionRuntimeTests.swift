@@ -178,7 +178,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         guard case let .failure(failure) = try codec.decodeResponse(sendResponse) else {
             return XCTFail("Expected interrupted input to return a failure response")
         }
-        XCTAssertEqual(failure.code, "runtime-error")
+        XCTAssertEqual(failure.code, "input-closed")
         XCTAssertTrue(failure.message.contains("inputClosed"), failure.message)
         XCTAssertLessThan(teardownElapsed, 1_000_000_000)
         XCTAssertEqual(scheduler.activeLaneCount, 0)
@@ -216,6 +216,37 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             )
         }
         XCTAssertEqual(closer.attemptCount, 1)
+    }
+
+    func testRetainedInputDescriptorOwnershipSurvivesForCleanupRetry() throws {
+        let closer = RetainingThenClosingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let id = BrokerSessionID(rawValue: "native-pty-retained-input-close-test")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            guard case let .retirementFailed(failedID, closeErrno, _) =
+                    error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retained descriptor ownership, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(closeErrno, EIO)
+        }
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        XCTAssertGreaterThanOrEqual(closer.attemptCount, 1)
+
+        closer.allowClosure()
+        try runtime.markSessionErrored(id: id)
+        XCTAssertEqual(try runtime.listSessions(), [])
+        XCTAssertGreaterThanOrEqual(closer.attemptCount, 2)
     }
 
     func testLaunchFailureRetainsInputDescriptorCloseFailure() throws {
@@ -1565,10 +1596,10 @@ private final class FailingInputDescriptorCloser: @unchecked Sendable {
         lock.withLock { storedAttemptCount }
     }
 
-    func close(_ descriptor: Int32) -> Int32? {
+    func close(_ descriptor: Int32) -> NativePTYBrokerSessionRuntime.InputDescriptorCloseResult {
         lock.withLock { storedAttemptCount += 1 }
         _ = Darwin.close(descriptor)
-        return EIO
+        return .closedWithWarning(EIO)
     }
 }
 
@@ -1585,7 +1616,7 @@ private final class TrackingInputDescriptorCloser: @unchecked Sendable {
         lock.withLock { storedCloseFailures }
     }
 
-    func close(_ descriptor: Int32) -> Int32? {
+    func close(_ descriptor: Int32) -> NativePTYBrokerSessionRuntime.InputDescriptorCloseResult {
         let result = Darwin.close(descriptor)
         let closeError = result == 0 ? nil : errno
         lock.withLock {
@@ -1594,7 +1625,28 @@ private final class TrackingInputDescriptorCloser: @unchecked Sendable {
                 storedCloseFailures.append(closeError)
             }
         }
-        return closeError
+        return closeError.map { .ownershipRetained($0) } ?? .closed
+    }
+}
+
+private final class RetainingThenClosingInputDescriptorCloser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedAttemptCount = 0
+    private var closureAllowed = false
+
+    var attemptCount: Int { lock.withLock { storedAttemptCount } }
+
+    func allowClosure() {
+        lock.withLock { closureAllowed = true }
+    }
+
+    func close(_ descriptor: Int32) -> NativePTYBrokerSessionRuntime.InputDescriptorCloseResult {
+        lock.lock()
+        storedAttemptCount += 1
+        let shouldClose = closureAllowed
+        lock.unlock()
+        guard shouldClose else { return .ownershipRetained(EIO) }
+        return Darwin.close(descriptor) == 0 ? .closed : .ownershipRetained(errno)
     }
 }
 

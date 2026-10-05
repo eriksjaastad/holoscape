@@ -8,6 +8,12 @@ import Foundation
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
 final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+    enum InputDescriptorCloseResult: Equatable, Sendable {
+        case closed
+        case closedWithWarning(Int32)
+        case ownershipRetained(Int32)
+    }
+
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
@@ -38,7 +44,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private enum InputState {
             case open
             case closing
-            case closed(error: Int32?)
+            case closed(warning: Int32?)
+            case closeFailedOwnershipRetained(errno: Int32)
         }
 
         let id: BrokerSessionID
@@ -46,7 +53,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let masterHandle: FileHandle
         private let inputDescriptor: Int32
         private let inputWriteTimeoutMilliseconds: Int32
-        private let inputDescriptorCloser: @Sendable (Int32) -> Int32?
+        private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
         private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
@@ -74,7 +81,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             masterHandle: FileHandle,
             inputDescriptor: Int32,
             inputWriteTimeoutMilliseconds: Int32,
-            inputDescriptorCloser: @escaping @Sendable (Int32) -> Int32?,
+            inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult,
             inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         ) {
@@ -303,13 +310,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 inputStateCondition.wait()
             }
             switch inputState {
-            case .open:
+            case .open, .closeFailedOwnershipRetained:
                 inputState = .closing
                 inputStateCondition.unlock()
-            case let .closed(error):
+            case let .closed(warning):
                 inputStateCondition.unlock()
-                if let error {
-                    throw RuntimeError.inputCloseFailed(id, errno: error)
+                if let warning {
+                    throw RuntimeError.inputCloseFailed(id, errno: warning)
                 }
                 return
             case .closing:
@@ -320,15 +327,25 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             // bounded interval. Holding the write lock while closing prevents
             // descriptor reuse from racing a final write.
             inputWriteLock.lock()
-            let closeError = inputDescriptorCloser(inputDescriptor)
+            let closeResult = inputDescriptorCloser(inputDescriptor)
             inputWriteLock.unlock()
 
             inputStateCondition.lock()
-            inputState = .closed(error: closeError)
+            switch closeResult {
+            case .closed:
+                inputState = .closed(warning: nil)
+            case let .closedWithWarning(errno):
+                inputState = .closed(warning: errno)
+            case let .ownershipRetained(errno):
+                inputState = .closeFailedOwnershipRetained(errno: errno)
+            }
             inputStateCondition.broadcast()
             inputStateCondition.unlock()
-            if let closeError {
-                throw RuntimeError.inputCloseFailed(id, errno: closeError)
+            switch closeResult {
+            case .closed:
+                return
+            case let .closedWithWarning(errno), let .ownershipRetained(errno):
+                throw RuntimeError.inputCloseFailed(id, errno: errno)
             }
         }
 
@@ -338,7 +355,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             switch inputState {
             case .open:
                 closed = false
-            case .closing, .closed:
+            case .closing, .closed, .closeFailedOwnershipRetained:
                 closed = true
             }
             inputStateCondition.unlock()
@@ -476,15 +493,25 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 inputStateCondition.wait()
             }
             let closeError: Int32?
-            if case let .closed(error) = inputState {
-                closeError = error
-            } else {
+            switch inputState {
+            case let .closed(warning):
+                closeError = warning
+            case let .closeFailedOwnershipRetained(errno):
+                closeError = errno
+            case .open, .closing:
                 closeError = nil
             }
             inputStateCondition.unlock()
             if let closeError {
                 throw RuntimeError.inputCloseFailed(id, errno: closeError)
             }
+        }
+
+        func inputDescriptorOwnershipIsRetained() -> Bool {
+            inputStateCondition.lock()
+            defer { inputStateCondition.unlock() }
+            if case .closeFailedOwnershipRetained = inputState { return true }
+            return false
         }
 
         func retireProcessGroup(_ id: pid_t, failureReason: String? = nil) {
@@ -510,7 +537,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let processEnvironment: [String: String]
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
     private let inputWriteTimeoutMilliseconds: Int32
-    private let inputDescriptorCloser: @Sendable (Int32) -> Int32?
+    private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
     private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
     private static let terminationGracePeriodMilliseconds = 500
 
@@ -519,8 +546,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         inputWriteTimeoutMilliseconds: Int32 = 1_000,
-        inputDescriptorCloser: @escaping @Sendable (Int32) -> Int32? = { descriptor in
-            Darwin.close(descriptor) == 0 ? nil : errno
+        inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult = { descriptor in
+            Darwin.close(descriptor) == 0 ? .closed : .ownershipRetained(errno)
         },
         inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
@@ -725,6 +752,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let observedExitCode = session.process.terminationStatus
         session.markTerminated(observedExitCode)
         if case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
+            if session.inputDescriptorOwnershipIsRetained() {
+                throw RuntimeError.retirementFailed(
+                    id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process exit completed; input descriptor cleanup remains pending"
+                )
+            }
             throw RuntimeError.exitCompletedWithInputCloseFailure(
                 id,
                 observedExitCode: observedExitCode,
@@ -743,9 +777,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             try close(session)
             _ = try removeSession(id)
         } catch let RuntimeError.inputCloseFailed(_, closeErrno) {
-            // Process and master-handle cleanup completed. Remove the retired
-            // session before surfacing the descriptor warning so callers never
-            // revive dead runtime metadata or retry an ambiguous close.
+            guard !session.inputDescriptorOwnershipIsRetained() else {
+                throw RuntimeError.retirementFailed(
+                    id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process cleanup completed; input descriptor cleanup remains pending"
+                )
+            }
+            // The closer proved the descriptor was retired despite its warning.
             _ = try removeSession(id)
             throw RuntimeError.retirementCompletedWithInputCloseFailure(id, errno: closeErrno)
         } catch let error as RuntimeError {
@@ -872,10 +911,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
         let observedStatus = try session.observedTerminationStatus(processFallback: processFallback)
-        // A completed termination is stronger lifecycle truth than a retained
-        // descriptor-close warning. The mutating call still reports that typed
-        // warning, while status recovery can finalize durable exit metadata.
-        if let observedStatus { return observedStatus }
+        if let observedStatus {
+            do {
+                try session.throwInputCloseErrorIfPresent(waitForClosing: true)
+            } catch let RuntimeError.inputCloseFailed(_, closeErrno) {
+                if session.inputDescriptorOwnershipIsRetained() {
+                    throw RuntimeError.inputCloseFailed(id, errno: closeErrno)
+                }
+                throw RuntimeError.exitCompletedWithInputCloseFailure(
+                    id,
+                    observedExitCode: observedStatus,
+                    inputCloseErrno: closeErrno,
+                    expectedExitCode: nil
+                )
+            }
+            return observedStatus
+        }
         try session.throwInputCloseErrorIfPresent(waitForClosing: !session.process.isRunning)
         return nil
     }

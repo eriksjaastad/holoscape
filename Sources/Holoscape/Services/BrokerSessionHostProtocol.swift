@@ -62,12 +62,27 @@ enum BrokerSessionHostResponse: Codable, Equatable, Sendable {
 struct BrokerSessionHostFailure: Codable, Equatable, Sendable {
     let code: String
     let message: String
+    let sessionID: BrokerSessionID?
+    let observedExitCode: Int32?
+    let inputCloseErrno: Int32?
+    let expectedExitCode: Int32?
 
-    init(code: String, message: String) {
+    init(
+        code: String,
+        message: String,
+        sessionID: BrokerSessionID? = nil,
+        observedExitCode: Int32? = nil,
+        inputCloseErrno: Int32? = nil,
+        expectedExitCode: Int32? = nil
+    ) {
         precondition(!code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Broker host failure code cannot be empty")
         precondition(!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Broker host failure message cannot be empty")
         self.code = code
         self.message = message
+        self.sessionID = sessionID
+        self.observedExitCode = observedExitCode
+        self.inputCloseErrno = inputCloseErrno
+        self.expectedExitCode = expectedExitCode
     }
 }
 

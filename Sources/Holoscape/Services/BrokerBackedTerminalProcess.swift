@@ -1062,6 +1062,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
             return code == "exit-completed-with-input-close-failure"
         }
+        if case BrokerSessionHostClientRuntime.ClientError.exitCompletedWithInputCloseFailure = error {
+            return true
+        }
         return false
     }
 
@@ -1341,9 +1344,14 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
             guard case .exitCompletedWithInputCloseFailure = error else { throw error }
             return error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
-            guard case let .hostFailure(code, _) = error,
-                  code == "exit-completed-with-input-close-failure" else { throw error }
-            return error
+            switch error {
+            case .exitCompletedWithInputCloseFailure:
+                return error
+            case let .hostFailure(code, _) where code == "exit-completed-with-input-close-failure":
+                return error
+            default:
+                throw error
+            }
         }
     }
 }

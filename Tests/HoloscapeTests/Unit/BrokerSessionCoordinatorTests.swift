@@ -535,6 +535,34 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(durable.requestedExitCode, 0)
     }
 
+    func testLostExitResponseRecoversStructuredDescriptorWarning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 128.5) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/lost-exit-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let warning = BrokerSessionHostClientRuntime.ClientError.exitCompletedWithInputCloseFailure(
+            record.id,
+            observedExitCode: 7,
+            inputCloseErrno: EIO,
+            expectedExitCode: 0
+        )
+        runtime.statusError = warning
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(error as? BrokerSessionHostClientRuntime.ClientError, warning)
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+        XCTAssertEqual(durable.requestedExitCode, 0)
+    }
+
     func testExitMismatchRetainsCompletedInputCloseWarning() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 129) })

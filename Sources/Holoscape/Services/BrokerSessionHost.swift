@@ -36,36 +36,47 @@ struct BrokerSessionHost {
             guard executionIsAllowed() else {
                 throw RequestError.expiredBeforeDispatch
             }
-            let interruptionError: Error?
             if let sessionID = request.inputInterruptionID,
                let interruptingRuntime = runtime as? BrokerSessionInputInterruptingRuntime {
-                do {
-                    try interruptingRuntime.interruptInput(id: sessionID)
-                    interruptionError = nil
-                } catch {
-                    interruptionError = error
-                }
+                var interruptionError: Error?
+                response = try scheduler.perform(
+                    request,
+                    beforeWaiting: {
+                        // Admission and interruption are one irreversible lifecycle
+                        // boundary. Once input is interrupted, the queued teardown
+                        // must dispatch even if the caller's deadline expires.
+                        guard executionIsAllowed() else {
+                            throw RequestError.expiredBeforeDispatch
+                        }
+                        do {
+                            try interruptingRuntime.interruptInput(id: sessionID)
+                        } catch {
+                            interruptionError = error
+                        }
+                    },
+                    operation: {
+                        let dispatched = try dispatch(request)
+                        if let interruptionError {
+                            // The ordered lifecycle operation retried cleanup and
+                            // completed authoritatively. Keep the recovered first
+                            // attempt observable without overriding that result.
+                            NSLog(
+                                "Broker input interruption recovered during lifecycle dispatch for \(sessionID.rawValue): \(interruptionError)"
+                            )
+                        }
+                        return dispatched
+                    }
+                )
             } else {
-                interruptionError = nil
-            }
-            response = try scheduler.perform(request) {
-                guard executionIsAllowed() else {
-                    throw RequestError.expiredBeforeDispatch
+                response = try scheduler.perform(request) {
+                    guard executionIsAllowed() else {
+                        throw RequestError.expiredBeforeDispatch
+                    }
+                    return try dispatch(request)
                 }
-                let dispatched = try dispatch(request)
-                // Lifecycle cleanup must still run when interruption reports a
-                // retained descriptor-close failure. Report that failure only
-                // after the queued operation has attempted process cleanup.
-                if let interruptionError { throw interruptionError }
-                return dispatched
             }
         } catch {
-            response = .failure(
-                BrokerSessionHostFailure(
-                    code: failureCode(for: error),
-                    message: String(describing: error)
-                )
-            )
+            response = .failure(failure(for: error))
         }
         return try codec.encodeResponse(response)
     }
@@ -181,7 +192,44 @@ struct BrokerSessionHost {
         if case NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure = error {
             return "exit-completed-with-input-close-failure"
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputWriteTimedOut = error {
+            return "input-write-timeout"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputWriteFailed = error {
+            return "input-write-failed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputClosed = error {
+            return "input-closed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputCloseFailed = error {
+            return "input-close-failed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.launchFailedWithInputCloseFailure = error {
+            return "launch-failed-with-input-close-failure"
+        }
         return "runtime-error"
+    }
+
+    private func failure(for error: Error) -> BrokerSessionHostFailure {
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
+            id,
+            observedExitCode,
+            inputCloseErrno,
+            expectedExitCode
+        ) = error {
+            return BrokerSessionHostFailure(
+                code: failureCode(for: error),
+                message: String(describing: error),
+                sessionID: id,
+                observedExitCode: observedExitCode,
+                inputCloseErrno: inputCloseErrno,
+                expectedExitCode: expectedExitCode
+            )
+        }
+        return BrokerSessionHostFailure(
+            code: failureCode(for: error),
+            message: String(describing: error)
+        )
     }
 }
 
@@ -206,12 +254,18 @@ final class BrokerSessionOperationScheduler: @unchecked Sendable {
         lock.withLock { lanes[sessionID]?.admittedOperationCount ?? 0 }
     }
 
-    func perform<T>(_ request: BrokerSessionHostRequest, operation: () throws -> T) throws -> T {
+    func perform<T>(
+        _ request: BrokerSessionHostRequest,
+        beforeWaiting: () throws -> Void = {},
+        operation: () throws -> T
+    ) throws -> T {
         guard let sessionID = request.sessionOrderingID else {
+            try beforeWaiting()
             return try operation()
         }
         let lane = admitOperation(for: sessionID)
         defer { releaseOperation(for: sessionID, from: lane) }
+        try beforeWaiting()
         return try lane.queue.sync(execute: operation)
     }
 
