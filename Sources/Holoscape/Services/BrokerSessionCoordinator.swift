@@ -680,6 +680,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    private func isCompletedRetirementFailure(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-completed-with-input-close-failure"
+        }
+        return false
+    }
+
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
         let retiring: BrokerSessionRecord
@@ -699,11 +709,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 return try markErrored(id)
             }
         }
+        var completedRetirementFailure: Error?
         do {
             try runtime.markSessionErrored(id: id)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
             // Retirement is idempotent. A prior request may have removed the
             // runtime session before its response or metadata write was lost.
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Runtime cleanup completed despite a typed descriptor warning.
+            // Finalize durable truth, then surface the warning to the caller.
+            completedRetirementFailure = error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
             if case .transportFailed = error {
                 // The host may have retired the child before its response was
@@ -760,6 +775,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 updated = candidate
                 break
             }
+        }
+        if let completedRetirementFailure {
+            throw completedRetirementFailure
         }
         return updated
     }

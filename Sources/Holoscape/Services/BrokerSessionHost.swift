@@ -172,6 +172,9 @@ struct BrokerSessionHost {
         if case NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed = error {
             return "scrollback-persistence-failed"
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
+            return "retirement-completed-with-input-close-failure"
+        }
         return "runtime-error"
     }
 }

@@ -19,6 +19,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         case inputWriteFailed(BrokerSessionID, errno: Int32)
         case inputClosed(BrokerSessionID)
         case inputCloseFailed(BrokerSessionID, errno: Int32)
+        case retirementCompletedWithInputCloseFailure(BrokerSessionID, errno: Int32)
+        case retirementFailed(BrokerSessionID, inputCloseErrno: Int32, processFailure: String)
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case terminationFailed(BrokerSessionID, reason: String)
         case scrollbackPersistenceFailed(BrokerSessionID, reason: String)
@@ -700,7 +702,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
         let session = try session(for: id)
         let inputCloseError = inputCloseFailure(for: session)
-        try terminateBoundedly(session)
+        do {
+            try terminateBoundedly(session)
+        } catch {
+            throw combinedRetirementFailure(
+                sessionID: id,
+                inputCloseError: inputCloseError,
+                processFailure: error
+            )
+        }
         let observedExitCode = session.process.terminationStatus
         session.markTerminated(observedExitCode)
         if let exitCode, observedExitCode != exitCode {
@@ -711,8 +721,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
     func markSessionErrored(id: BrokerSessionID) throws {
         let session = try session(for: id)
-        try close(session)
-        _ = try removeSession(id)
+        do {
+            try close(session)
+            _ = try removeSession(id)
+        } catch let RuntimeError.inputCloseFailed(_, closeErrno) {
+            // Process and master-handle cleanup completed. Remove the retired
+            // session before surfacing the descriptor warning so callers never
+            // revive dead runtime metadata or retry an ambiguous close.
+            _ = try removeSession(id)
+            throw RuntimeError.retirementCompletedWithInputCloseFailure(id, errno: closeErrno)
+        }
     }
 
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
@@ -820,17 +838,45 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
-        try session.throwInputCloseErrorIfPresent(waitForClosing: !session.process.isRunning)
         let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
-        return try session.observedTerminationStatus(processFallback: processFallback)
+        let observedStatus = try session.observedTerminationStatus(processFallback: processFallback)
+        // A completed termination is stronger lifecycle truth than a retained
+        // descriptor-close warning. The mutating call still reports that typed
+        // warning, while status recovery can finalize durable exit metadata.
+        if let observedStatus { return observedStatus }
+        try session.throwInputCloseErrorIfPresent(waitForClosing: !session.process.isRunning)
+        return nil
     }
 
     private func close(_ session: Session) throws {
         let inputCloseError = inputCloseFailure(for: session)
-        try terminateBoundedly(session)
+        do {
+            try terminateBoundedly(session)
+        } catch {
+            throw combinedRetirementFailure(
+                sessionID: session.id,
+                inputCloseError: inputCloseError,
+                processFailure: error
+            )
+        }
         session.masterHandle.readabilityHandler = nil
         session.masterHandle.closeFile()
         if let inputCloseError { throw inputCloseError }
+    }
+
+    private func combinedRetirementFailure(
+        sessionID: BrokerSessionID,
+        inputCloseError: Error?,
+        processFailure: Error
+    ) -> Error {
+        guard case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError else {
+            return processFailure
+        }
+        return RuntimeError.retirementFailed(
+            sessionID,
+            inputCloseErrno: closeErrno,
+            processFailure: String(describing: processFailure)
+        )
     }
 
     private func inputCloseFailure(for session: Session) -> Error? {

@@ -184,7 +184,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(scheduler.activeLaneCount, 0)
     }
 
-    func testInputDescriptorCloseFailureIsRetainedAndReportedWithoutRetry() throws {
+    func testInputDescriptorCloseFailureRetiresSessionAndReportsWithoutRetry() throws {
         let closer = FailingInputDescriptorCloser()
         let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
         let id = BrokerSessionID(rawValue: "native-pty-input-close-failure-test")
@@ -199,23 +199,69 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
             XCTAssertEqual(
                 error as? NativePTYBrokerSessionRuntime.RuntimeError,
-                .inputCloseFailed(id, errno: EIO)
+                .retirementCompletedWithInputCloseFailure(id, errno: EIO)
             )
         }
         XCTAssertEqual(closer.attemptCount, 1)
         XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
             XCTAssertEqual(
                 error as? NativePTYBrokerSessionRuntime.RuntimeError,
-                .inputCloseFailed(id, errno: EIO)
+                .missingSession(id)
             )
         }
         XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
             XCTAssertEqual(
                 error as? NativePTYBrokerSessionRuntime.RuntimeError,
-                .inputCloseFailed(id, errno: EIO)
+                .missingSession(id)
             )
         }
         XCTAssertEqual(closer.attemptCount, 1)
+    }
+
+    func testHostCoordinatorFinalizesErroredMetadataAfterAmbiguousInputClose() throws {
+        let closer = FailingInputDescriptorCloser()
+        let nativeRuntime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let host = BrokerSessionHost(runtime: nativeRuntime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NativePTYCloseFailureCoordinatorTests")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let coordinator = BrokerSessionCoordinator(
+            registry: BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json")),
+            runtime: client
+        )
+        let record = try coordinator.start(
+            BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            ),
+            channelType: .shell,
+            label: "close-failure",
+            attachedChannelID: UUID()
+        )
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
+                return XCTFail("Expected typed broker-host cleanup warning, got \(error)")
+            }
+            XCTAssertEqual(code, "retirement-completed-with-input-close-failure")
+            XCTAssertTrue(message.contains("retirementCompletedWithInputCloseFailure"), message)
+        }
+        XCTAssertEqual(try coordinator.loadAll().first?.lifecycle, .errored)
+        XCTAssertEqual(closer.attemptCount, 1)
+        XCTAssertThrowsError(try client.isRunning(id: record.id)) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
+                return XCTFail("Expected missing-session host failure, got \(error)")
+            }
+            XCTAssertEqual(code, "missing-session")
+            XCTAssertTrue(message.contains("missingSession"), message)
+        }
     }
 
     func testTeardownReleasesNativePTYInputDescriptors() throws {
@@ -663,6 +709,39 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTAssertEqual(failedID, id)
             XCTAssertEqual(reason, firstFailureReason)
         }
+        XCTAssertEqual(try runtime.listSessions(), [id])
+    }
+
+    func testTerminationPreservesInputCloseAndProcessCleanupFailuresTogether() throws {
+        let closer = FailingInputDescriptorCloser()
+        let signaler = FailFirstProcessGroupSignaler()
+        let runtime = NativePTYBrokerSessionRuntime(
+            inputDescriptorCloser: closer.close,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "combined-retirement-failure-native-pty-runtime-test")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { signaler.forceCleanup() }
+
+        XCTAssertThrowsError(try runtime.terminateSession(id: id, exitCode: nil)) { error in
+            guard case let .retirementFailed(failedID, closeErrno, processFailure) =
+                error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected combined retirement failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertEqual(closeErrno, EIO)
+            XCTAssertTrue(processFailure.contains("terminationFailed"), processFailure)
+            XCTAssertTrue(processFailure.contains("Operation not permitted"), processFailure)
+        }
+        XCTAssertEqual(closer.attemptCount, 1)
         XCTAssertEqual(try runtime.listSessions(), [id])
     }
 
