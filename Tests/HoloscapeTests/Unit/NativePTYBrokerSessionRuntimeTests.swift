@@ -809,6 +809,72 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.listSessions().isEmpty)
     }
 
+    func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/usr/bin/yes",
+                arguments: ["0123456789abcdef"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        var backlogReachedLimit = false
+        for _ in 0..<200 {
+            if try runtime.outputPersistenceBacklogByteCount(id: id)
+                == ScrollbackPersistencePolicy.maxRetainedBytesPerSession {
+                backlogReachedLimit = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(backlogReachedLimit, "Continuous output must pause at the persistence backlog limit")
+        XCTAssertLessThanOrEqual(
+            try runtime.outputPersistenceBacklogByteCount(id: id),
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        )
+        XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+        appender.release()
+
+        guard let observedError = retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected bounded retirement failure, got \(String(describing: retirementError.value))")
+        }
+        switch observedError {
+        case let .retirementCompletedWithOutputFailure(warningID, reason):
+            XCTAssertEqual(warningID, id)
+            XCTAssertTrue(reason.contains("bounded retention limit"), reason)
+        case let .retirementFailed(warningID, _, processFailure):
+            XCTAssertEqual(warningID, id)
+            XCTAssertTrue(processFailure.contains("bounded retention limit"), processFailure)
+            XCTAssertEqual(try runtime.listSessions(), [id])
+        default:
+            XCTFail("Expected bounded persistence warning, got \(observedError)")
+        }
+        if case .retirementCompletedWithOutputFailure = observedError {
+            XCTAssertTrue(try runtime.listSessions().isEmpty)
+        }
+    }
+
     func testTerminatePreservesExitCodeMismatchFailure() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "exit-code-mismatch-native-pty-runtime-test")
