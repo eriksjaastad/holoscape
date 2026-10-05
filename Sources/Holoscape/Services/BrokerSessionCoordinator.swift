@@ -558,11 +558,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                                 // equivalent below because no runtime mismatch was delivered.
                                 throw runtimeMismatch
                             }
+                            if isCompletedExitWarning(runtimeFailure) {
+                                // The composite warning retains both observed/expected
+                                // exit truth and the descriptor cleanup failure.
+                                throw runtimeFailure
+                            }
                             throw CoordinatorError.exitCodeMismatch(
                                 id,
                                 expected: exitCode,
                                 observed: observedExitCode
                             )
+                        }
+                        if isCompletedExitWarning(runtimeFailure) {
+                            throw runtimeFailure
                         }
                         return finalized
                     } catch let registryFailure {
@@ -573,6 +581,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         if let mismatch = registryFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
                            case .exitCodeMismatch = mismatch {
                             throw mismatch
+                        }
+                        if isCompletedExitWarning(registryFailure) {
+                            throw registryFailure
                         }
                         throw CoordinatorError.exitFinalizationFailed(
                             id,
@@ -690,6 +701,26 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         return false
     }
 
+    private func isIncompleteRetirementFailure(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-incomplete-input-closed"
+        }
+        return false
+    }
+
+    private func isCompletedExitWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "exit-completed-with-input-close-failure"
+        }
+        return false
+    }
+
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
         let retiring: BrokerSessionRecord
@@ -719,6 +750,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Runtime cleanup completed despite a typed descriptor warning.
             // Finalize durable truth, then surface the warning to the caller.
             completedRetirementFailure = error
+        } catch let error where isIncompleteRetirementFailure(error) {
+            // Input interruption is irreversible even though process cleanup is
+            // incomplete. Preserve `.terminating` so this generation can never
+            // be advertised as running/reattachable again.
+            throw error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
             if case .transportFailed = error {
                 // The host may have retired the child before its response was
@@ -762,7 +798,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         while true {
             let current = try record(for: id)
             guard current.lifecycle == .terminating else {
-                if current.lifecycle == .errored { return current }
+                if current.lifecycle == .errored {
+                    if let completedRetirementFailure { throw completedRetirementFailure }
+                    return current
+                }
                 throw CoordinatorError.concurrentSessionTransition(id)
             }
             let candidate = current.withLifecycle(

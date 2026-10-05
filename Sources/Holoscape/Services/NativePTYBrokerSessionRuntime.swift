@@ -13,6 +13,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         case missingSession(BrokerSessionID)
         case openPTYFailed(errno: Int32)
         case launchFailed(String)
+        case launchFailedWithInputCloseFailure(reason: String, errno: Int32)
         case invalidGridSize(TerminalGridSize)
         case resizeFailed(errno: Int32)
         case inputWriteTimedOut(BrokerSessionID)
@@ -20,7 +21,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         case inputClosed(BrokerSessionID)
         case inputCloseFailed(BrokerSessionID, errno: Int32)
         case retirementCompletedWithInputCloseFailure(BrokerSessionID, errno: Int32)
-        case retirementFailed(BrokerSessionID, inputCloseErrno: Int32, processFailure: String)
+        case retirementFailed(BrokerSessionID, inputCloseErrno: Int32?, processFailure: String)
+        case exitCompletedWithInputCloseFailure(
+            BrokerSessionID,
+            observedExitCode: Int32,
+            inputCloseErrno: Int32,
+            expectedExitCode: Int32?
+        )
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case terminationFailed(BrokerSessionID, reason: String)
         case scrollbackPersistenceFailed(BrokerSessionID, reason: String)
@@ -641,8 +648,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             slaveRead.closeFile()
             slaveWrite.closeFile()
             slaveError.closeFile()
-            if let inputCloseError { throw inputCloseError }
-            throw RuntimeError.launchFailed(error.localizedDescription)
+            throw combinedLaunchFailure(
+                reason: error.localizedDescription,
+                inputCloseError: inputCloseError
+            )
         }
 
         let expectedProcessGroupID = process.processIdentifier
@@ -655,8 +664,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             slaveRead.closeFile()
             slaveWrite.closeFile()
             slaveError.closeFile()
-            if let inputCloseError { throw inputCloseError }
-            throw RuntimeError.launchFailed("PTY child did not start in an isolated process group")
+            throw combinedLaunchFailure(
+                reason: "PTY child did not start in an isolated process group",
+                inputCloseError: inputCloseError
+            )
         }
         // Foundation launches each Process as its own process-group leader on
         // Darwin. The process group is this runtime's ownership boundary; a
@@ -713,10 +724,17 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
         let observedExitCode = session.process.terminationStatus
         session.markTerminated(observedExitCode)
+        if case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
+            throw RuntimeError.exitCompletedWithInputCloseFailure(
+                id,
+                observedExitCode: observedExitCode,
+                inputCloseErrno: closeErrno,
+                expectedExitCode: exitCode
+            )
+        }
         if let exitCode, observedExitCode != exitCode {
             throw RuntimeError.exitCodeMismatch(expected: exitCode, observed: observedExitCode)
         }
-        if let inputCloseError { throw inputCloseError }
     }
 
     func markSessionErrored(id: BrokerSessionID) throws {
@@ -730,6 +748,19 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             // revive dead runtime metadata or retry an ambiguous close.
             _ = try removeSession(id)
             throw RuntimeError.retirementCompletedWithInputCloseFailure(id, errno: closeErrno)
+        } catch let error as RuntimeError {
+            if case .retirementFailed = error { throw error }
+            throw RuntimeError.retirementFailed(
+                id,
+                inputCloseErrno: nil,
+                processFailure: String(describing: error)
+            )
+        } catch {
+            throw RuntimeError.retirementFailed(
+                id,
+                inputCloseErrno: nil,
+                processFailure: String(describing: error)
+            )
         }
     }
 
@@ -830,9 +861,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     func isRunning(id: BrokerSessionID) throws -> Bool {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
-        try session.throwInputCloseErrorIfPresent(waitForClosing: !session.process.isRunning)
+        if !session.process.isRunning { return false }
+        try session.throwInputCloseErrorIfPresent(waitForClosing: false)
         try session.throwScrollbackPersistenceErrorIfPresent()
-        return session.process.isRunning
+        return true
     }
 
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
@@ -862,6 +894,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         session.masterHandle.readabilityHandler = nil
         session.masterHandle.closeFile()
         if let inputCloseError { throw inputCloseError }
+    }
+
+    private func combinedLaunchFailure(reason: String, inputCloseError: Error?) -> Error {
+        guard case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError else {
+            return RuntimeError.launchFailed(reason)
+        }
+        return RuntimeError.launchFailedWithInputCloseFailure(reason: reason, errno: closeErrno)
     }
 
     private func combinedRetirementFailure(

@@ -2219,6 +2219,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 
+    func testNaturalExitPublishesTerminationThenDescriptorCloseWarning() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.finalizationError = NativePTYBrokerSessionRuntime.RuntimeError
+            .exitCompletedWithInputCloseFailure(
+                coordinator.sessionID,
+                observedExitCode: 9,
+                inputCloseErrno: EIO,
+                expectedExitCode: 9
+            )
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "completed-close-warning",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        var failures: [TerminalSessionFailure] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { events.contains("exit:9") && failures.count == 1 }
+        XCTAssertEqual(events.first, "output")
+        XCTAssertTrue(failures[0].description.contains("exitCompletedWithInputCloseFailure"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
     func testRecoveredExitedMismatchPublishesFailureAndRetiresRuntimeAfterFinalOutput() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.requestedExitCode = 0

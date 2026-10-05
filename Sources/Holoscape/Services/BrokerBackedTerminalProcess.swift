@@ -1022,6 +1022,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         { [weak self] id, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if self.isCompletedExitWarning(error) {
+                    // Exit truth was durably finalized before this cleanup warning
+                    // was returned. Keep termination delivery alive while still
+                    // exposing the descriptor failure to the owning controller.
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .failed, description: String(describing: error))
+                    )
+                    return
+                }
                 if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError,
                    case let .exitCodeMismatch(_, _, observedExitCode) = coordinatorError {
                     self.retireMismatchedExitedSession(
@@ -1035,6 +1044,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
             }
         }
+    }
+
+    private func isCompletedExitWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "exit-completed-with-input-close-failure"
+        }
+        return false
     }
 
     private func retireMismatchedExitedSession(
@@ -1292,12 +1311,21 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     /// reads. The lane calls this only after SwiftTerm has consumed the preceding
     /// sample, so final bytes remain visible before exit becomes authoritative.
     func terminationStatusIfStopped(_ id: BrokerSessionID) throws -> Int32? {
-        guard try !coordinator.isRunning(id) else { return nil }
-        return try coordinator.terminationStatus(id)
+        try coordinator.terminationStatus(id)
     }
 
-    func finishTermination(_ id: BrokerSessionID, exitCode: Int32) throws {
-        _ = try coordinator.exit(id, exitCode: exitCode)
+    func finishTermination(_ id: BrokerSessionID, exitCode: Int32) throws -> Error? {
+        do {
+            _ = try coordinator.exit(id, exitCode: exitCode)
+            return nil
+        } catch let error as NativePTYBrokerSessionRuntime.RuntimeError {
+            guard case .exitCompletedWithInputCloseFailure = error else { throw error }
+            return error
+        } catch let error as BrokerSessionHostClientRuntime.ClientError {
+            guard case let .hostFailure(code, _) = error,
+                  code == "exit-completed-with-input-close-failure" else { throw error }
+            return error
+        }
     }
 }
 
@@ -1516,7 +1544,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
         acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -1567,9 +1595,12 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         ) else { return }
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
-                        try finishTermination(sessionID, exitCode)
+                        let completionWarning = try finishTermination(sessionID, exitCode)
                         if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
                             onTermination(sessionID, exitCode)
+                            if let completionWarning {
+                                onFailure(sessionID, completionWarning)
+                            }
                         }
                         return
                     }
@@ -1588,7 +1619,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
         acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Void,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -1625,9 +1656,12 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         acknowledge: acknowledge,
                         onSample: onSample
                     ) else { return }
-                    try finishTermination(sessionID, exitCode)
+                    let completionWarning = try finishTermination(sessionID, exitCode)
                     if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
                         onTermination(sessionID, exitCode)
+                        if let completionWarning {
+                            onFailure(sessionID, completionWarning)
+                        }
                     }
                     return
                 }

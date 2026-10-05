@@ -218,6 +218,31 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(closer.attemptCount, 1)
     }
 
+    func testLaunchFailureRetainsInputDescriptorCloseFailure() throws {
+        let closer = FailingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let id = BrokerSessionID(rawValue: "native-pty-launch-close-failure-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/definitely/missing/holoscape-command",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        XCTAssertThrowsError(try runtime.createSession(id: id, request: request)) { error in
+            guard case let .launchFailedWithInputCloseFailure(reason, closeErrno) =
+                    error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected combined launch and close failure, got \(error)")
+            }
+            XCTAssertFalse(reason.isEmpty)
+            XCTAssertEqual(closeErrno, EIO)
+        }
+        XCTAssertEqual(closer.attemptCount, 1)
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, .missingSession(id))
+        }
+    }
+
     func testHostCoordinatorFinalizesErroredMetadataAfterAmbiguousInputClose() throws {
         let closer = FailingInputDescriptorCloser()
         let nativeRuntime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
@@ -662,11 +687,13 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(reason.contains("Operation not permitted"), reason)
 
         XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
-            guard case let .terminationFailed(retryID, retryReason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            guard case let .retirementFailed(retryID, inputCloseErrno, retryReason) =
+                    error as? NativePTYBrokerSessionRuntime.RuntimeError else {
                 return XCTFail("Expected retained cleanup failure, got \(error)")
             }
             XCTAssertEqual(retryID, id)
-            XCTAssertEqual(retryReason, reason)
+            XCTAssertNil(inputCloseErrno)
+            XCTAssertTrue(retryReason.contains(reason), retryReason)
         }
         XCTAssertEqual(try runtime.listSessions(), [id])
     }
@@ -703,11 +730,13 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTAssertEqual(reason, firstFailureReason)
         }
         XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
-            guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            guard case let .retirementFailed(failedID, inputCloseErrno, reason) =
+                    error as? NativePTYBrokerSessionRuntime.RuntimeError else {
                 return XCTFail("Expected non-retryable termination failure, got \(error)")
             }
             XCTAssertEqual(failedID, id)
-            XCTAssertEqual(reason, firstFailureReason)
+            XCTAssertNil(inputCloseErrno)
+            XCTAssertTrue(reason.contains(firstFailureReason ?? ""), reason)
         }
         XCTAssertEqual(try runtime.listSessions(), [id])
     }
