@@ -178,7 +178,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // response reaching Holoscape. Relaunch must finish this
                 // idempotent transition before restore can classify the saved
                 // identity as stale and permit a replacement process.
-                _ = try markErrored(record.id)
+                do {
+                    _ = try markErrored(record.id)
+                } catch let error where isCompletedRetirementFailure(error) {
+                    // Cleanup and durable finalization both completed. Preserve
+                    // the warning for interactive callers, but discovery has no
+                    // live identity to recover and can safely continue.
+                }
                 return nil
             case .exited:
                 // Native broker sessions retain their completed scrollback until
@@ -1038,8 +1044,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 )
             }
         } catch let error where isUnrecoverableRuntimeSessionError(error, id: id) {
-            // A persistence-broken runtime is still owned, unlike a missing
-            // session. Retire it before publishing a final lifecycle record.
+            // A durability- or monitoring-broken runtime is still owned, unlike
+            // a missing session. Retire it before publishing final lifecycle truth.
             return try markErrored(id)
         }
     }
@@ -1089,12 +1095,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     private func isUnrecoverableRuntimeSessionError(_ error: Error, id: BrokerSessionID) -> Bool {
-        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
-           case let .scrollbackPersistenceFailed(failedID, _) = runtimeError {
-            return failedID == id
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
+            switch runtimeError {
+            case let .scrollbackPersistenceFailed(failedID, _),
+                 let .outputMonitoringFailed(failedID, _):
+                return failedID == id
+            default:
+                break
+            }
         }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error {
-            return code == "scrollback-persistence-failed" && message.contains(id.rawValue)
+            return (code == "scrollback-persistence-failed" || code == "output-monitoring-failed")
+                && message.contains(id.rawValue)
         }
         return false
     }

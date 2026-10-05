@@ -984,6 +984,77 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testRelaunchDiscoveryConsumesCompletedOutputWarningAfterPendingRetirement() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 203.8) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-completed-output-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
+            record.id,
+            inputCloseErrno: nil,
+            processFailure: "persistence pending"
+        )
+        XCTAssertThrowsError(try coordinator.markErrored(record.id))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
+
+        runtime.markErroredError = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            record.id,
+            reason: "persistence timed out"
+        )
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+    }
+
+    func testRelaunchDiscoveryRetiresNativeSessionAfterOutputMonitoringFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 203.9) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-native-output-monitoring-failure"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.listedSessionIDs = [record.id]
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+            record.id,
+            reason: "PTY readability drain failed: Bad address"
+        )
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertTrue(runtime.events.contains(.markErrored(record.id)))
+    }
+
+    func testRelaunchDiscoveryRetiresHostedSessionAfterOutputMonitoringFailure() throws {
+        let hostedRuntime = RecordingBrokerSessionRuntime()
+        hostedRuntime.running = true
+        let host = BrokerSessionHost(runtime: hostedRuntime)
+        let clientRuntime = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let coordinator = makeCoordinator(runtime: clientRuntime, now: { Date(timeIntervalSince1970: 204) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-hosted-output-monitoring-failure"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        hostedRuntime.listedSessionIDs = [record.id]
+        hostedRuntime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+            record.id,
+            reason: "PTY readability drain failed: Bad address"
+        )
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertTrue(hostedRuntime.events.contains(.markErrored(record.id)))
+    }
+
     func testUpdatingMissingSessionFailsLoudly() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 1) })
