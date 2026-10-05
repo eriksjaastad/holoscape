@@ -893,6 +893,14 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTAssertEqual(appender.attemptCount, 1)
         XCTAssertEqual(try runtime.listSessions(), [id])
+        appender.release()
+        let persistenceDeadline = Date().addingTimeInterval(2)
+        while try runtime.outputPersistenceBacklogByteCount(id: id) > 0,
+              Date() < persistenceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
+        XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
     }
 
     func testTerminatePreservesExitCodeMismatchFailure() throws {

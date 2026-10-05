@@ -80,6 +80,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private var outputPersistenceBytesOutstanding = 0
         private var outputPersistenceWriteInFlight = false
         private var outputReadPausedForPersistence = false
+        private var outputMonitoringShutdown = false
         private var outputMonitoringComplete = false
         private var finalOutputDrainFailureReason: String?
         private var finalOutputDrainComplete = false
@@ -197,6 +198,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                scrollbackPersistenceFailureReason == nil,
                outputPersistenceBytesOutstanding < maxScrollbackBytes,
                !finalOutputDrainComplete,
+               !outputMonitoringShutdown,
                !outputMonitoringComplete {
                 outputReadPausedForPersistence = false
                 shouldResumeOutputRead = true
@@ -227,6 +229,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         func startOutputMonitoring() {
             guard installsOutputReadabilityHandler else { return }
+            lock.lock()
+            let shouldInstall = !outputMonitoringShutdown && !finalOutputDrainComplete
+            lock.unlock()
+            guard shouldInstall else { return }
             masterHandle.readabilityHandler = { [weak self] handle in
                 guard self?.consumeReadabilityEvent(from: handle) == true else {
                     handle.readabilityHandler = nil
@@ -238,7 +244,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func consumeReadabilityEvent(from handle: FileHandle) -> Bool {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
-            guard !finalOutputDrainComplete, finalOutputDrainFailureReason == nil else {
+            let drainState = finalOutputDrainState()
+            lock.lock()
+            let monitoringShutdown = outputMonitoringShutdown
+            lock.unlock()
+            guard !monitoringShutdown, !drainState.complete, drainState.failureReason == nil else {
                 return false
             }
             lock.lock()
@@ -288,10 +298,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func drainBufferedOutputBeforeTermination() throws {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
-            if let reason = finalOutputDrainFailureReason {
+            let drainState = finalOutputDrainState()
+            if let reason = drainState.failureReason {
                 throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
             }
-            guard !finalOutputDrainComplete else {
+            guard !drainState.complete else {
                 try throwScrollbackPersistenceErrorAsRetirementWarning()
                 return
             }
@@ -336,10 +347,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func drainFinalOutput() throws {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
-            if let reason = finalOutputDrainFailureReason {
+            let drainState = finalOutputDrainState()
+            if let reason = drainState.failureReason {
                 throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
             }
-            guard !finalOutputDrainComplete else {
+            guard !drainState.complete else {
                 try throwScrollbackPersistenceErrorAsRetirementWarning()
                 return
             }
@@ -385,7 +397,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 }
                 try retainFinalOutputDrainFailure(errno: errno)
             }
+            lock.lock()
             finalOutputDrainComplete = true
+            lock.unlock()
             markOutputMonitoringComplete()
             guard outputPersistenceGroup.wait(timeout: deadline) == .success else {
                 try retainFinalOutputDrainFailure(reason: "final PTY output persistence timed out")
@@ -400,8 +414,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         private func retainFinalOutputDrainFailure(reason: String) throws -> Never {
+            lock.lock()
             finalOutputDrainFailureReason = reason
+            lock.unlock()
             throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+        }
+
+        private func finalOutputDrainState() -> (complete: Bool, failureReason: String?) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (finalOutputDrainComplete, finalOutputDrainFailureReason)
         }
 
         private func throwScrollbackPersistenceErrorAsRetirementWarning() throws {
@@ -409,7 +431,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 try throwScrollbackPersistenceErrorIfPresent()
             } catch {
                 let reason = String(describing: error)
+                lock.lock()
                 finalOutputDrainFailureReason = reason
+                lock.unlock()
                 throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
             }
         }
@@ -720,6 +744,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let handler = outputAvailabilityHandler
             lock.unlock()
             handler?(id)
+        }
+
+        func shutDownOutputMonitoring() {
+            lock.lock()
+            outputMonitoringShutdown = true
+            outputReadPausedForPersistence = false
+            lock.unlock()
         }
 
         func setOutputAvailabilityHandler(_ handler: (@Sendable (BrokerSessionID) -> Void)?) {
@@ -1258,6 +1289,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 processFailure: error
             )
         }
+        session.shutDownOutputMonitoring()
         session.masterHandle.readabilityHandler = nil
         do {
             try session.drainFinalOutput()
