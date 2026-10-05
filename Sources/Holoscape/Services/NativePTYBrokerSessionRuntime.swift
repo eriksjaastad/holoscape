@@ -229,15 +229,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         func startOutputMonitoring() {
             guard installsOutputReadabilityHandler else { return }
+            outputReadLock.lock()
+            defer { outputReadLock.unlock() }
             lock.lock()
             let shouldInstall = !outputMonitoringShutdown && !finalOutputDrainComplete
             lock.unlock()
             guard shouldInstall else { return }
             masterHandle.readabilityHandler = { [weak self] handle in
-                guard self?.consumeReadabilityEvent(from: handle) == true else {
+                guard let self else {
                     handle.readabilityHandler = nil
                     return
                 }
+                _ = self.consumeReadabilityEvent(from: handle)
             }
         }
 
@@ -249,6 +252,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let monitoringShutdown = outputMonitoringShutdown
             lock.unlock()
             guard !monitoringShutdown, !drainState.complete, drainState.failureReason == nil else {
+                handle.readabilityHandler = nil
                 return false
             }
             lock.lock()
@@ -275,6 +279,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             }
             if count == 0 || errno == EIO {
                 markOutputMonitoringComplete()
+                handle.readabilityHandler = nil
                 return false
             }
             if errno == EINTR { return true }
@@ -283,6 +288,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             lock.unlock()
             markOutputMonitoringComplete()
             signalOutputAvailability()
+            handle.readabilityHandler = nil
             return false
         }
 
@@ -747,10 +753,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         func shutDownOutputMonitoring() {
+            outputReadLock.lock()
+            defer { outputReadLock.unlock() }
             lock.lock()
             outputMonitoringShutdown = true
             outputReadPausedForPersistence = false
             lock.unlock()
+            masterHandle.readabilityHandler = nil
         }
 
         func setOutputAvailabilityHandler(_ handler: (@Sendable (BrokerSessionID) -> Void)?) {
@@ -989,7 +998,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         do {
             try process.run()
         } catch {
-            masterHandle.readabilityHandler = nil
+            session.shutDownOutputMonitoring()
             let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
             slaveRead.closeFile()
@@ -1005,7 +1014,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let observedProcessGroupID = getpgid(process.processIdentifier)
         if process.isRunning, observedProcessGroupID != expectedProcessGroupID {
             _ = Darwin.kill(process.processIdentifier, SIGKILL)
-            masterHandle.readabilityHandler = nil
+            session.shutDownOutputMonitoring()
             let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
             slaveRead.closeFile()
@@ -1290,7 +1299,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
         }
         session.shutDownOutputMonitoring()
-        session.masterHandle.readabilityHandler = nil
         do {
             try session.drainFinalOutput()
         } catch {
