@@ -1191,7 +1191,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.brokerSessionID == sessionID else { return }
                 self.recoveringBrokerSessionID = nil
 
-                if let recoveryError {
+                if let recoveryError,
+                   !self.isCompletedRetirementWarning(recoveryError) {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
@@ -1199,14 +1200,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 + "; failed to retire persistence-broken broker session: \(recoveryError)"
                         )
                     )
-                } else {
-                    self.brokerSessionID = nil
-                    self.sessionIOReady = false
-                    self.staleBrokerSessionID = sessionID
-                    self.publishSessionFailure(
-                        TerminalSessionFailure(kind: .brokerSessionStale, description: originalDescription)
-                    )
+                    return
                 }
+
+                let completedWarningDescription = recoveryError.map {
+                    "; broker retirement completed with warning: \($0)"
+                } ?? ""
+                self.brokerSessionID = nil
+                self.sessionIOReady = false
+                self.staleBrokerSessionID = sessionID
+                self.publishSessionFailure(
+                    TerminalSessionFailure(
+                        kind: .brokerSessionStale,
+                        description: originalDescription + completedWarningDescription
+                    )
+                )
             }
         }
     }

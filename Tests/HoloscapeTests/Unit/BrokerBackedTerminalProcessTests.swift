@@ -737,7 +737,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             if blocksRetirement {
                 _ = retirementRelease.wait(timeout: .now() + 2)
             }
-            if let retirementError { throw retirementError }
+            if let retirementError {
+                if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = retirementError {
+                    retiredIDs.append(id)
+                }
+                throw retirementError
+            }
             retiredIDs.append(id)
         }
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
@@ -1438,6 +1443,40 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertEqual(runtime.createdIDs, [failedSessionID])
         XCTAssertEqual(fixture.terminal.brokerSessionID, failedSessionID)
+    }
+
+    func testScrollbackPersistenceCompletedRetirementWarningClearsHandleBeforeReplacement() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008024")
+        defer { fixture.cleanup() }
+        let failedSessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            failedSessionID,
+            reason: "disk full"
+        )
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
+        XCTAssertTrue(failures[0].description.contains("retirementCompletedWithOutputFailure"))
+        XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(fixture.terminal.staleBrokerSessionID, failedSessionID)
+
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertEqual(runtime.createdIDs.count, 2)
+        XCTAssertNotEqual(runtime.createdIDs.last, failedSessionID)
     }
 
     func testScrollbackPersistenceRecoveryDoesNotBlockMainActor() throws {
