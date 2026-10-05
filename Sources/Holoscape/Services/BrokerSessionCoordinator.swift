@@ -508,9 +508,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             case .errored:
                 return current
             case .exiting:
-                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                let observation = try terminationObservation(id)
+                if let observedExitCode = observation.status {
                     let expectedExitCode = current.requestedExitCode ?? exitCode
                     let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                    if let warning = observation.warning { throw warning }
                     if finalized.lifecycle == .exited, observedExitCode != expectedExitCode {
                         throw CoordinatorError.exitCodeMismatch(
                             id,
@@ -546,9 +548,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             try runtime.terminateSession(id: id, exitCode: exitCode)
         } catch let runtimeFailure {
             do {
-                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                let observation = try terminationObservation(id)
+                if let observedExitCode = observation.status {
                     do {
                         let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                        if let warning = observation.warning { throw warning }
                         if finalized.lifecycle == .exited, observedExitCode != exitCode {
                             if let runtimeMismatch = runtimeFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
                                case .exitCodeMismatch = runtimeMismatch {
@@ -558,11 +562,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                                 // equivalent below because no runtime mismatch was delivered.
                                 throw runtimeMismatch
                             }
+                            if isCompletedExitWarning(runtimeFailure) {
+                                // The composite warning retains both observed/expected
+                                // exit truth and the descriptor cleanup failure.
+                                throw runtimeFailure
+                            }
                             throw CoordinatorError.exitCodeMismatch(
                                 id,
                                 expected: exitCode,
                                 observed: observedExitCode
                             )
+                        }
+                        if isCompletedExitWarning(runtimeFailure) {
+                            throw runtimeFailure
                         }
                         return finalized
                     } catch let registryFailure {
@@ -573,6 +585,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         if let mismatch = registryFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
                            case .exitCodeMismatch = mismatch {
                             throw mismatch
+                        }
+                        if isCompletedExitWarning(registryFailure) {
+                            throw registryFailure
                         }
                         throw CoordinatorError.exitFinalizationFailed(
                             id,
@@ -599,7 +614,21 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 if case .exitCodeMismatch = runtimeMismatch {
                     throw runtimeMismatch
                 }
+                if isCompletedExitWarning(runtimeMismatch) {
+                    throw runtimeMismatch
+                }
                 throw runtimeFailure
+            } catch let statusWarning as BrokerSessionHostClientRuntime.ClientError {
+                if isCompletedExitWarning(statusWarning) {
+                    throw statusWarning
+                }
+                // Failure to inspect the result leaves termination ambiguous.
+                // Keep durable `.exiting` intent so relaunch reconciliation can
+                // drain final output without reviving a child that may have exited.
+                NSLog(
+                    "Broker session exit outcome remains ambiguous for \(id.rawValue): "
+                        + "termination failure: \(runtimeFailure); status failure: \(statusWarning)"
+                )
             } catch {
                 // Failure to inspect the result leaves termination ambiguous.
                 // Keep durable `.exiting` intent so relaunch reconciliation can
@@ -675,9 +704,66 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch clientError {
         case .transportFailed, .unexpectedResponse:
             return true
-        case .hostFailure:
+        case .hostFailure, .exitCompletedWithInputCloseFailure:
             return false
         }
+    }
+
+    private func terminationObservation(_ id: BrokerSessionID) throws -> (status: Int32?, warning: Error?) {
+        do {
+            return (try runtime.terminationStatus(id: id), nil)
+        } catch let error {
+            if case let NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
+                warningID,
+                observedExitCode,
+                _,
+                _
+            ) = error, warningID == id {
+                return (observedExitCode, error)
+            }
+            if case let BrokerSessionHostClientRuntime.ClientError.exitCompletedWithInputCloseFailure(
+                warningID,
+                observedExitCode,
+                _,
+                _
+            ) = error, warningID == id {
+                return (observedExitCode, error)
+            }
+            throw error
+        }
+    }
+
+    private func isCompletedRetirementFailure(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-completed-with-input-close-failure"
+        }
+        return false
+    }
+
+    private func isIncompleteRetirementFailure(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-incomplete-input-closed"
+        }
+        return false
+    }
+
+    private func isCompletedExitWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "exit-completed-with-input-close-failure"
+        }
+        if case BrokerSessionHostClientRuntime.ClientError.exitCompletedWithInputCloseFailure = error {
+            return true
+        }
+        return false
     }
 
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
@@ -699,11 +785,21 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 return try markErrored(id)
             }
         }
+        var completedRetirementFailure: Error?
         do {
             try runtime.markSessionErrored(id: id)
         } catch let error where isMissingRuntimeSessionError(error, id: id) {
             // Retirement is idempotent. A prior request may have removed the
             // runtime session before its response or metadata write was lost.
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Runtime cleanup completed despite a typed descriptor warning.
+            // Finalize durable truth, then surface the warning to the caller.
+            completedRetirementFailure = error
+        } catch let error where isIncompleteRetirementFailure(error) {
+            // Input interruption is irreversible even though process cleanup is
+            // incomplete. Preserve `.terminating` so this generation can never
+            // be advertised as running/reattachable again.
+            throw error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
             if case .transportFailed = error {
                 // The host may have retired the child before its response was
@@ -747,7 +843,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         while true {
             let current = try record(for: id)
             guard current.lifecycle == .terminating else {
-                if current.lifecycle == .errored { return current }
+                if current.lifecycle == .errored {
+                    if let completedRetirementFailure { throw completedRetirementFailure }
+                    return current
+                }
                 throw CoordinatorError.concurrentSessionTransition(id)
             }
             let candidate = current.withLifecycle(
@@ -760,6 +859,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 updated = candidate
                 break
             }
+        }
+        if let completedRetirementFailure {
+            throw completedRetirementFailure
         }
         return updated
     }

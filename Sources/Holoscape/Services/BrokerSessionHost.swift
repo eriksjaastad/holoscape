@@ -33,19 +33,50 @@ struct BrokerSessionHost {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
         do {
-            response = try scheduler.perform(request) {
-                guard executionIsAllowed() else {
-                    throw RequestError.expiredBeforeDispatch
+            guard executionIsAllowed() else {
+                throw RequestError.expiredBeforeDispatch
+            }
+            if let sessionID = request.inputInterruptionID,
+               let interruptingRuntime = runtime as? BrokerSessionInputInterruptingRuntime {
+                var interruptionError: Error?
+                response = try scheduler.perform(
+                    request,
+                    beforeWaiting: {
+                        // Admission and interruption are one irreversible lifecycle
+                        // boundary. Once input is interrupted, the queued teardown
+                        // must dispatch even if the caller's deadline expires.
+                        guard executionIsAllowed() else {
+                            throw RequestError.expiredBeforeDispatch
+                        }
+                        do {
+                            try interruptingRuntime.interruptInput(id: sessionID)
+                        } catch {
+                            interruptionError = error
+                        }
+                    },
+                    operation: {
+                        let dispatched = try dispatch(request)
+                        if let interruptionError {
+                            // The ordered lifecycle operation retried cleanup and
+                            // completed authoritatively. Keep the recovered first
+                            // attempt observable without overriding that result.
+                            NSLog(
+                                "Broker input interruption recovered during lifecycle dispatch for \(sessionID.rawValue): \(interruptionError)"
+                            )
+                        }
+                        return dispatched
+                    }
+                )
+            } else {
+                response = try scheduler.perform(request) {
+                    guard executionIsAllowed() else {
+                        throw RequestError.expiredBeforeDispatch
+                    }
+                    return try dispatch(request)
                 }
-                return try dispatch(request)
             }
         } catch {
-            response = .failure(
-                BrokerSessionHostFailure(
-                    code: failureCode(for: error),
-                    message: String(describing: error)
-                )
-            )
+            response = .failure(failure(for: error))
         }
         return try codec.encodeResponse(response)
     }
@@ -152,7 +183,53 @@ struct BrokerSessionHost {
         if case NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed = error {
             return "scrollback-persistence-failed"
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
+            return "retirement-completed-with-input-close-failure"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed = error {
+            return "retirement-incomplete-input-closed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure = error {
+            return "exit-completed-with-input-close-failure"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputWriteTimedOut = error {
+            return "input-write-timeout"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputWriteFailed = error {
+            return "input-write-failed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputClosed = error {
+            return "input-closed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.inputCloseFailed = error {
+            return "input-close-failed"
+        }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.launchFailedWithInputCloseFailure = error {
+            return "launch-failed-with-input-close-failure"
+        }
         return "runtime-error"
+    }
+
+    private func failure(for error: Error) -> BrokerSessionHostFailure {
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
+            id,
+            observedExitCode,
+            inputCloseErrno,
+            expectedExitCode
+        ) = error {
+            return BrokerSessionHostFailure(
+                code: failureCode(for: error),
+                message: String(describing: error),
+                sessionID: id,
+                observedExitCode: observedExitCode,
+                inputCloseErrno: inputCloseErrno,
+                expectedExitCode: expectedExitCode
+            )
+        }
+        return BrokerSessionHostFailure(
+            code: failureCode(for: error),
+            message: String(describing: error)
+        )
     }
 }
 
@@ -177,12 +254,18 @@ final class BrokerSessionOperationScheduler: @unchecked Sendable {
         lock.withLock { lanes[sessionID]?.admittedOperationCount ?? 0 }
     }
 
-    func perform<T>(_ request: BrokerSessionHostRequest, operation: () throws -> T) throws -> T {
+    func perform<T>(
+        _ request: BrokerSessionHostRequest,
+        beforeWaiting: () throws -> Void = {},
+        operation: () throws -> T
+    ) throws -> T {
         guard let sessionID = request.sessionOrderingID else {
+            try beforeWaiting()
             return try operation()
         }
         let lane = admitOperation(for: sessionID)
         defer { releaseOperation(for: sessionID, from: lane) }
+        try beforeWaiting()
         return try lane.queue.sync(execute: operation)
     }
 
@@ -214,6 +297,15 @@ final class BrokerSessionOperationScheduler: @unchecked Sendable {
 }
 
 private extension BrokerSessionHostRequest {
+    var inputInterruptionID: BrokerSessionID? {
+        switch self {
+        case let .terminate(id, _), let .markErrored(id):
+            return id
+        default:
+            return nil
+        }
+    }
+
     var sessionOrderingID: BrokerSessionID? {
         switch self {
         case .listSessions:

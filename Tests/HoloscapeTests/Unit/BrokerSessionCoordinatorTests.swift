@@ -507,6 +507,90 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [finalized])
     }
 
+    func testExitFinalizesTruthAndSurfacesCompletedInputCloseWarning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 128) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/completed-close-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let warning = NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
+            record.id,
+            observedExitCode: 0,
+            inputCloseErrno: EIO,
+            expectedExitCode: 0
+        )
+        runtime.terminateError = warning
+        runtime.observedTerminationStatus = 0
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, warning)
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 0)
+        XCTAssertEqual(durable.requestedExitCode, 0)
+    }
+
+    func testLostExitResponseRecoversStructuredDescriptorWarning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 128.5) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/lost-exit-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let warning = BrokerSessionHostClientRuntime.ClientError.exitCompletedWithInputCloseFailure(
+            record.id,
+            observedExitCode: 7,
+            inputCloseErrno: EIO,
+            expectedExitCode: 0
+        )
+        runtime.statusError = warning
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(error as? BrokerSessionHostClientRuntime.ClientError, warning)
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+        XCTAssertEqual(durable.requestedExitCode, 0)
+    }
+
+    func testExitMismatchRetainsCompletedInputCloseWarning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 129) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/completed-close-mismatch"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let warning = NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
+            record.id,
+            observedExitCode: 7,
+            inputCloseErrno: EIO,
+            expectedExitCode: 0
+        )
+        runtime.terminateError = warning
+        runtime.observedTerminationStatus = 7
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, warning)
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+        XCTAssertEqual(durable.requestedExitCode, 0)
+    }
+
     func testExitKeepsAmbiguousTransportFailureNonReattachable() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 130) })
@@ -702,6 +786,28 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0))
         XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
+    }
+
+    func testMarkErroredPreservesTerminatingIntentAfterIrreversibleInputShutdown() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 199) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/incomplete-retirement"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let failure = NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
+            record.id,
+            inputCloseErrno: nil,
+            processFailure: "EPERM"
+        )
+        runtime.markErroredError = failure
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, failure)
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
     }
 
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {

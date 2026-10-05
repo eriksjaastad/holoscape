@@ -7,14 +7,33 @@ import Foundation
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+    enum InputDescriptorCloseResult: Equatable, Sendable {
+        case closed
+        case closedWithWarning(Int32)
+        case ownershipRetained(Int32)
+    }
+
     enum RuntimeError: Error, Equatable {
         case duplicateSession(BrokerSessionID)
         case missingSession(BrokerSessionID)
         case openPTYFailed(errno: Int32)
         case launchFailed(String)
+        case launchFailedWithInputCloseFailure(reason: String, errno: Int32)
         case invalidGridSize(TerminalGridSize)
         case resizeFailed(errno: Int32)
+        case inputWriteTimedOut(BrokerSessionID)
+        case inputWriteFailed(BrokerSessionID, errno: Int32)
+        case inputClosed(BrokerSessionID)
+        case inputCloseFailed(BrokerSessionID, errno: Int32)
+        case retirementCompletedWithInputCloseFailure(BrokerSessionID, errno: Int32)
+        case retirementFailed(BrokerSessionID, inputCloseErrno: Int32?, processFailure: String)
+        case exitCompletedWithInputCloseFailure(
+            BrokerSessionID,
+            observedExitCode: Int32,
+            inputCloseErrno: Int32,
+            expectedExitCode: Int32?
+        )
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case terminationFailed(BrokerSessionID, reason: String)
         case scrollbackPersistenceFailed(BrokerSessionID, reason: String)
@@ -22,14 +41,28 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     }
 
     private final class Session: @unchecked Sendable {
+        private enum InputState {
+            case open
+            case closing
+            case closed(warning: Int32?)
+            case closeFailedOwnershipRetained(errno: Int32)
+        }
+
         let id: BrokerSessionID
         let process: Process
         let masterHandle: FileHandle
+        private let inputDescriptor: Int32
+        private let inputWriteTimeoutMilliseconds: Int32
+        private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
+        private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
         private var processGroupCleanupFailureReason: String?
         let lock = NSLock()
+        private let inputStateCondition = NSCondition()
+        private let inputWriteLock = NSLock()
         private let terminationLock = NSLock()
+        private var inputState = InputState.open
         var output = Data()
         private var outputStartOffset: UInt64 = 0
         private var outputEndOffset: UInt64 = 0
@@ -46,12 +79,28 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             id: BrokerSessionID,
             process: Process,
             masterHandle: FileHandle,
+            inputDescriptor: Int32,
+            inputWriteTimeoutMilliseconds: Int32,
+            inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult,
+            inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         ) {
             self.id = id
             self.process = process
             self.masterHandle = masterHandle
+            self.inputDescriptor = inputDescriptor
+            self.inputWriteTimeoutMilliseconds = inputWriteTimeoutMilliseconds
+            self.inputDescriptorCloser = inputDescriptorCloser
+            self.inputWriteDidStart = inputWriteDidStart
             self.scrollbackAppender = scrollbackAppender
+        }
+
+        deinit {
+            do {
+                try closeInput()
+            } catch {
+                NSLog("Native PTY input descriptor cleanup failed for \(id.rawValue): \(error)")
+            }
         }
 
         func appendOutput(_ data: Data) {
@@ -210,9 +259,117 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         }
 
         func writeInput(_ data: Data) throws {
-            lock.lock()
-            defer { lock.unlock() }
-            try masterHandle.write(contentsOf: data)
+            guard !data.isEmpty else { return }
+            inputWriteLock.lock()
+            defer { inputWriteLock.unlock() }
+            try throwIfInputClosed()
+            inputWriteDidStart(id)
+
+            let deadline = DispatchTime.now() + .milliseconds(Int(inputWriteTimeoutMilliseconds))
+            try data.withUnsafeBytes { rawBuffer in
+                guard let baseAddress = rawBuffer.baseAddress else { return }
+                var offset = 0
+                while offset < rawBuffer.count {
+                    try throwIfInputClosed()
+                    let remainingMilliseconds = millisecondsRemaining(until: deadline)
+                    guard remainingMilliseconds > 0 else {
+                        throw RuntimeError.inputWriteTimedOut(id)
+                    }
+
+                    var pollFD = pollfd(fd: inputDescriptor, events: Int16(POLLOUT), revents: 0)
+                    let readyCount = poll(&pollFD, 1, min(remainingMilliseconds, 10))
+                    if readyCount < 0 {
+                        if errno == EINTR { continue }
+                        try throwIfInputClosed()
+                        throw RuntimeError.inputWriteFailed(id, errno: errno)
+                    }
+                    if readyCount == 0 { continue }
+
+                    let writeCount = min(rawBuffer.count - offset, 4_096)
+                    let wrote = Darwin.write(
+                        inputDescriptor,
+                        baseAddress.advanced(by: offset),
+                        writeCount
+                    )
+                    if wrote > 0 {
+                        offset += wrote
+                        continue
+                    }
+                    if wrote < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
+                        continue
+                    }
+                    try throwIfInputClosed()
+                    throw RuntimeError.inputWriteFailed(id, errno: wrote == 0 ? EIO : errno)
+                }
+            }
+        }
+
+        func closeInput() throws {
+            inputStateCondition.lock()
+            while case .closing = inputState {
+                inputStateCondition.wait()
+            }
+            switch inputState {
+            case .open, .closeFailedOwnershipRetained:
+                inputState = .closing
+                inputStateCondition.unlock()
+            case let .closed(warning):
+                inputStateCondition.unlock()
+                if let warning {
+                    throw RuntimeError.inputCloseFailed(id, errno: warning)
+                }
+                return
+            case .closing:
+                preconditionFailure("closing state must be resolved by the wait loop")
+            }
+
+            // Mark closing before waiting so an in-flight poll exits at its next
+            // bounded interval. Holding the write lock while closing prevents
+            // descriptor reuse from racing a final write.
+            inputWriteLock.lock()
+            let closeResult = inputDescriptorCloser(inputDescriptor)
+            inputWriteLock.unlock()
+
+            inputStateCondition.lock()
+            switch closeResult {
+            case .closed:
+                inputState = .closed(warning: nil)
+            case let .closedWithWarning(errno):
+                inputState = .closed(warning: errno)
+            case let .ownershipRetained(errno):
+                inputState = .closeFailedOwnershipRetained(errno: errno)
+            }
+            inputStateCondition.broadcast()
+            inputStateCondition.unlock()
+            switch closeResult {
+            case .closed:
+                return
+            case let .closedWithWarning(errno), let .ownershipRetained(errno):
+                throw RuntimeError.inputCloseFailed(id, errno: errno)
+            }
+        }
+
+        private func throwIfInputClosed() throws {
+            inputStateCondition.lock()
+            let closed: Bool
+            switch inputState {
+            case .open:
+                closed = false
+            case .closing, .closed, .closeFailedOwnershipRetained:
+                closed = true
+            }
+            inputStateCondition.unlock()
+            if closed {
+                throw RuntimeError.inputClosed(id)
+            }
+        }
+
+        private func millisecondsRemaining(until deadline: DispatchTime) -> Int32 {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let deadlineNanoseconds = deadline.uptimeNanoseconds
+            guard deadlineNanoseconds > now else { return 0 }
+            let remaining = (deadlineNanoseconds - now + 999_999) / 1_000_000
+            return Int32(min(remaining, UInt64(Int32.max)))
         }
 
         func markTerminated(_ status: Int32) {
@@ -225,6 +382,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             _ status: Int32,
             signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
         ) {
+            do {
+                try closeInput()
+            } catch {
+                NSLog("Native PTY input descriptor cleanup failed for \(id.rawValue): \(error)")
+            }
             terminationLock.lock()
             defer { terminationLock.unlock() }
 
@@ -325,6 +487,33 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             return reason
         }
 
+        func throwInputCloseErrorIfPresent(waitForClosing: Bool = false) throws {
+            inputStateCondition.lock()
+            while waitForClosing, case .closing = inputState {
+                inputStateCondition.wait()
+            }
+            let closeError: Int32?
+            switch inputState {
+            case let .closed(warning):
+                closeError = warning
+            case let .closeFailedOwnershipRetained(errno):
+                closeError = errno
+            case .open, .closing:
+                closeError = nil
+            }
+            inputStateCondition.unlock()
+            if let closeError {
+                throw RuntimeError.inputCloseFailed(id, errno: closeError)
+            }
+        }
+
+        func inputDescriptorOwnershipIsRetained() -> Bool {
+            inputStateCondition.lock()
+            defer { inputStateCondition.unlock() }
+            if case .closeFailedOwnershipRetained = inputState { return true }
+            return false
+        }
+
         func retireProcessGroup(_ id: pid_t, failureReason: String? = nil) {
             lock.lock()
             if processGroupID == id {
@@ -347,12 +536,20 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     private let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
     private let processEnvironment: [String: String]
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
+    private let inputWriteTimeoutMilliseconds: Int32
+    private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
+    private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
         scrollbackDirectory: URL? = nil,
         scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        inputWriteTimeoutMilliseconds: Int32 = 1_000,
+        inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult = { descriptor in
+            Darwin.close(descriptor) == 0 ? .closed : .ownershipRetained(errno)
+        },
+        inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
@@ -368,6 +565,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             self.scrollbackAppender = scrollbackAppender
         }
         self.processEnvironment = processEnvironment
+        self.inputWriteTimeoutMilliseconds = max(1, inputWriteTimeoutMilliseconds)
+        self.inputDescriptorCloser = inputDescriptorCloser
+        self.inputWriteDidStart = inputWriteDidStart
         self.processGroupSignal = processGroupSignal
     }
 
@@ -407,6 +607,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             throw RuntimeError.openPTYFailed(errno: errno)
         }
 
+        let inputDescriptor = dup(masterFD)
+        guard inputDescriptor >= 0 else {
+            let duplicationError = errno
+            _ = Darwin.close(masterFD)
+            _ = Darwin.close(slaveFD)
+            throw RuntimeError.openPTYFailed(errno: duplicationError)
+        }
+        let descriptorFlags = fcntl(inputDescriptor, F_GETFL)
+        guard descriptorFlags >= 0, fcntl(inputDescriptor, F_SETFL, descriptorFlags | O_NONBLOCK) == 0 else {
+            let configurationError = errno
+            _ = Darwin.close(inputDescriptor)
+            _ = Darwin.close(masterFD)
+            _ = Darwin.close(slaveFD)
+            throw RuntimeError.openPTYFailed(errno: configurationError)
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.command)
         process.arguments = request.arguments
@@ -427,6 +643,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             id: id,
             process: process,
             masterHandle: masterHandle,
+            inputDescriptor: inputDescriptor,
+            inputWriteTimeoutMilliseconds: inputWriteTimeoutMilliseconds,
+            inputDescriptorCloser: inputDescriptorCloser,
+            inputWriteDidStart: inputWriteDidStart,
             scrollbackAppender: scrollbackAppender
         )
         let processGroupSignal = self.processGroupSignal
@@ -450,11 +670,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
             try process.run()
         } catch {
             masterHandle.readabilityHandler = nil
+            let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
             slaveRead.closeFile()
             slaveWrite.closeFile()
             slaveError.closeFile()
-            throw RuntimeError.launchFailed(error.localizedDescription)
+            throw combinedLaunchFailure(
+                reason: error.localizedDescription,
+                inputCloseError: inputCloseError
+            )
         }
 
         let expectedProcessGroupID = process.processIdentifier
@@ -462,11 +686,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
         if process.isRunning, observedProcessGroupID != expectedProcessGroupID {
             _ = Darwin.kill(process.processIdentifier, SIGKILL)
             masterHandle.readabilityHandler = nil
+            let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
             slaveRead.closeFile()
             slaveWrite.closeFile()
             slaveError.closeFile()
-            throw RuntimeError.launchFailed("PTY child did not start in an isolated process group")
+            throw combinedLaunchFailure(
+                reason: "PTY child did not start in an isolated process group",
+                inputCloseError: inputCloseError
+            )
         }
         // Foundation launches each Process as its own process-group leader on
         // Darwin. The process group is this runtime's ownership boundary; a
@@ -511,9 +739,33 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
     func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
         let session = try session(for: id)
-        try terminateBoundedly(session)
+        let inputCloseError = inputCloseFailure(for: session)
+        do {
+            try terminateBoundedly(session)
+        } catch {
+            throw combinedRetirementFailure(
+                sessionID: id,
+                inputCloseError: inputCloseError,
+                processFailure: error
+            )
+        }
         let observedExitCode = session.process.terminationStatus
         session.markTerminated(observedExitCode)
+        if case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
+            if session.inputDescriptorOwnershipIsRetained() {
+                throw RuntimeError.retirementFailed(
+                    id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process exit completed; input descriptor cleanup remains pending"
+                )
+            }
+            throw RuntimeError.exitCompletedWithInputCloseFailure(
+                id,
+                observedExitCode: observedExitCode,
+                inputCloseErrno: closeErrno,
+                expectedExitCode: exitCode
+            )
+        }
         if let exitCode, observedExitCode != exitCode {
             throw RuntimeError.exitCodeMismatch(expected: exitCode, observed: observedExitCode)
         }
@@ -521,12 +773,46 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
 
     func markSessionErrored(id: BrokerSessionID) throws {
         let session = try session(for: id)
-        try close(session)
-        _ = try removeSession(id)
+        do {
+            try close(session)
+            _ = try removeSession(id)
+        } catch let RuntimeError.inputCloseFailed(_, closeErrno) {
+            guard !session.inputDescriptorOwnershipIsRetained() else {
+                throw RuntimeError.retirementFailed(
+                    id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process cleanup completed; input descriptor cleanup remains pending"
+                )
+            }
+            // The closer proved the descriptor was retired despite its warning.
+            _ = try removeSession(id)
+            throw RuntimeError.retirementCompletedWithInputCloseFailure(id, errno: closeErrno)
+        } catch let error as RuntimeError {
+            if case .retirementFailed = error { throw error }
+            throw RuntimeError.retirementFailed(
+                id,
+                inputCloseErrno: nil,
+                processFailure: String(describing: error)
+            )
+        } catch {
+            throw RuntimeError.retirementFailed(
+                id,
+                inputCloseErrno: nil,
+                processFailure: String(describing: error)
+            )
+        }
     }
 
     func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {
         try session(for: id).writeInput(Data(bytes))
+    }
+
+    func interruptInput(id: BrokerSessionID) throws {
+        // This is a pre-lane cancellation hint. The ordered lifecycle dispatch
+        // remains authoritative for a missing session, including one created by
+        // an already-admitted request that has not run yet.
+        guard let session = existingSession(for: id) else { return }
+        try session.closeInput()
     }
 
     func readAvailableOutput(id: BrokerSessionID) throws -> Data {
@@ -614,21 +900,82 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAg
     func isRunning(id: BrokerSessionID) throws -> Bool {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
+        if !session.process.isRunning { return false }
+        try session.throwInputCloseErrorIfPresent(waitForClosing: false)
         try session.throwScrollbackPersistenceErrorIfPresent()
-        return session.process.isRunning
+        return true
     }
 
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
-        return try session.observedTerminationStatus(processFallback: processFallback)
+        let observedStatus = try session.observedTerminationStatus(processFallback: processFallback)
+        if let observedStatus {
+            do {
+                try session.throwInputCloseErrorIfPresent(waitForClosing: true)
+            } catch let RuntimeError.inputCloseFailed(_, closeErrno) {
+                if session.inputDescriptorOwnershipIsRetained() {
+                    throw RuntimeError.inputCloseFailed(id, errno: closeErrno)
+                }
+                throw RuntimeError.exitCompletedWithInputCloseFailure(
+                    id,
+                    observedExitCode: observedStatus,
+                    inputCloseErrno: closeErrno,
+                    expectedExitCode: nil
+                )
+            }
+            return observedStatus
+        }
+        try session.throwInputCloseErrorIfPresent(waitForClosing: !session.process.isRunning)
+        return nil
     }
 
     private func close(_ session: Session) throws {
-        try terminateBoundedly(session)
+        let inputCloseError = inputCloseFailure(for: session)
+        do {
+            try terminateBoundedly(session)
+        } catch {
+            throw combinedRetirementFailure(
+                sessionID: session.id,
+                inputCloseError: inputCloseError,
+                processFailure: error
+            )
+        }
         session.masterHandle.readabilityHandler = nil
         session.masterHandle.closeFile()
+        if let inputCloseError { throw inputCloseError }
+    }
+
+    private func combinedLaunchFailure(reason: String, inputCloseError: Error?) -> Error {
+        guard case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError else {
+            return RuntimeError.launchFailed(reason)
+        }
+        return RuntimeError.launchFailedWithInputCloseFailure(reason: reason, errno: closeErrno)
+    }
+
+    private func combinedRetirementFailure(
+        sessionID: BrokerSessionID,
+        inputCloseError: Error?,
+        processFailure: Error
+    ) -> Error {
+        guard case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError else {
+            return processFailure
+        }
+        return RuntimeError.retirementFailed(
+            sessionID,
+            inputCloseErrno: closeErrno,
+            processFailure: String(describing: processFailure)
+        )
+    }
+
+    private func inputCloseFailure(for session: Session) -> Error? {
+        do {
+            try session.closeInput()
+            return nil
+        } catch {
+            return error
+        }
     }
 
     private func terminateBoundedly(_ session: Session) throws {

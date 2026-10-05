@@ -10,6 +10,12 @@ import Foundation
 final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
+        case exitCompletedWithInputCloseFailure(
+            BrokerSessionID,
+            observedExitCode: Int32,
+            inputCloseErrno: Int32,
+            expectedExitCode: Int32?
+        )
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
         case transportFailed(String)
     }
@@ -317,6 +323,17 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             throw ClientError.transportFailed("responseDecodeFailed(\(error))")
         }
         if case let .failure(failure) = response {
+            if failure.code == "exit-completed-with-input-close-failure",
+               let sessionID = failure.sessionID,
+               let observedExitCode = failure.observedExitCode,
+               let inputCloseErrno = failure.inputCloseErrno {
+                throw ClientError.exitCompletedWithInputCloseFailure(
+                    sessionID,
+                    observedExitCode: observedExitCode,
+                    inputCloseErrno: inputCloseErrno,
+                    expectedExitCode: failure.expectedExitCode
+                )
+            }
             throw ClientError.hostFailure(code: failure.code, message: failure.message)
         }
         return response
@@ -330,7 +347,7 @@ extension BrokerSessionHostClientRuntime.ClientError {
             return reason
         case .unexpectedResponse(let expected, let actual):
             return "unexpected response; expected \(expected), got \(actual)"
-        case .hostFailure:
+        case .hostFailure, .exitCompletedWithInputCloseFailure:
             return nil
         }
     }
