@@ -611,7 +611,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 guard let self,
                       self.brokerSessionID == record.id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
-                if let error {
+                let completionWarning = error.flatMap { self.isCompletedRetirementWarning($0) ? $0 : nil }
+                if let error, completionWarning == nil {
                     if let mismatchDescription {
                         let combined = BrokerSessionCompositeFailure(
                             description: "\(mismatchDescription); failed to retire completed broker session: \(error)"
@@ -634,6 +635,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         TerminalSessionFailure(
                             kind: .failed,
                             description: mismatchDescription
+                        )
+                    )
+                }
+                if let completionWarning {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(
+                            kind: .failed,
+                            description: String(describing: completionWarning)
                         )
                     )
                 }
@@ -984,7 +993,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                               self.brokerSessionID == id,
                               self.activeOutputDeliveryGeneration == deliveryGeneration,
                               !self.didNotifyTermination else { return }
-                        if let error {
+                        if let error, !self.isCompletedRetirementWarning(error) {
                             self.reportSessionFailure(
                                 error,
                                 for: id,
@@ -1052,6 +1061,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
             return code == "exit-completed-with-input-close-failure"
+        }
+        return false
+    }
+
+    private func isCompletedRetirementWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-completed-with-input-close-failure"
         }
         return false
     }

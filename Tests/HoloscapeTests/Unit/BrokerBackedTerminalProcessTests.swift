@@ -2229,6 +2229,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 inputCloseErrno: EIO,
                 expectedExitCode: 9
             )
+        coordinator.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
+            .retirementCompletedWithInputCloseFailure(coordinator.sessionID, errno: EIO)
         let restoredTerminal = BrokerBackedTerminalProcess(
             channelID: UUID(),
             channelType: .shell,
@@ -2254,6 +2256,39 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { events.contains("exit:9") && failures.count == 1 }
         XCTAssertEqual(events.first, "output")
         XCTAssertTrue(failures[0].description.contains("exitCompletedWithInputCloseFailure"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testRestoredExitPublishesTerminationAfterCompletedRetirementWarning() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.retirementError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "retirement-completed-with-input-close-failure",
+            message: "descriptor close reported EIO after completed retirement"
+        )
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "restored-completed-close-warning",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var exits: [Int32?] = []
+        var failures: [TerminalSessionFailure] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { exits == [9] && failures.count == 1 }
+        XCTAssertTrue(failures[0].description.contains("retirement-completed-with-input-close-failure"))
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 
