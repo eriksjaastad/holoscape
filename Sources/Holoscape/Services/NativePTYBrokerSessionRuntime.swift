@@ -27,6 +27,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         case inputClosed(BrokerSessionID)
         case inputCloseFailed(BrokerSessionID, errno: Int32)
         case retirementCompletedWithInputCloseFailure(BrokerSessionID, errno: Int32)
+        case retirementCompletedWithOutputFailure(BrokerSessionID, reason: String)
         case retirementFailed(BrokerSessionID, inputCloseErrno: Int32?, processFailure: String)
         case exitCompletedWithInputCloseFailure(
             BrokerSessionID,
@@ -55,12 +56,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private let inputWriteTimeoutMilliseconds: Int32
         private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
         private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
+        private let outputReadDidStart: @Sendable (BrokerSessionID) -> Void
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupID: pid_t?
         private var processGroupCleanupFailureReason: String?
         let lock = NSLock()
         private let inputStateCondition = NSCondition()
         private let inputWriteLock = NSLock()
+        private let outputReadLock = NSLock()
         private let terminationLock = NSLock()
         private var inputState = InputState.open
         var output = Data()
@@ -71,6 +74,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private var scrollbackPersistenceFailureReason: String?
         private var pendingScrollbackPersistenceWrites = 0
         private var outputMonitoringComplete = false
+        private var finalOutputDrainFailureReason: String?
+        private var finalOutputDrainComplete = false
         var terminationStatus: Int32?
         var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
@@ -83,6 +88,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             inputWriteTimeoutMilliseconds: Int32,
             inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult,
             inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
+            outputReadDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         ) {
             self.id = id
@@ -92,6 +98,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             self.inputWriteTimeoutMilliseconds = inputWriteTimeoutMilliseconds
             self.inputDescriptorCloser = inputDescriptorCloser
             self.inputWriteDidStart = inputWriteDidStart
+            self.outputReadDidStart = outputReadDidStart
             self.scrollbackAppender = scrollbackAppender
         }
 
@@ -141,6 +148,118 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let handler = outputAvailabilityHandler
             lock.unlock()
             handler?(id)
+        }
+
+        func consumeReadabilityEvent(from handle: FileHandle) -> Bool {
+            outputReadLock.lock()
+            defer { outputReadLock.unlock() }
+            guard !finalOutputDrainComplete, finalOutputDrainFailureReason == nil else {
+                return false
+            }
+            outputReadDidStart(id)
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                markOutputMonitoringComplete()
+                return false
+            }
+            appendOutput(data)
+            return true
+        }
+
+        func drainBufferedOutputBeforeTermination() throws {
+            outputReadLock.lock()
+            defer { outputReadLock.unlock() }
+            if let reason = finalOutputDrainFailureReason {
+                throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+            }
+            guard !finalOutputDrainComplete else {
+                try throwScrollbackPersistenceErrorAsRetirementWarning()
+                return
+            }
+            var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+            while true {
+                var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let ready = poll(&descriptor, 1, 0)
+                if ready == 0 {
+                    return
+                }
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    try retainFinalOutputDrainFailure(errno: errno)
+                }
+                let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                    Darwin.read(masterHandle.fileDescriptor, rawBuffer.baseAddress, rawBuffer.count)
+                }
+                if count > 0 {
+                    appendOutput(Data(buffer.prefix(count)))
+                    continue
+                }
+                if count == 0 || errno == EIO {
+                    return
+                }
+                if errno == EINTR {
+                    continue
+                }
+                try retainFinalOutputDrainFailure(errno: errno)
+            }
+        }
+
+        func drainFinalOutput() throws {
+            outputReadLock.lock()
+            defer { outputReadLock.unlock() }
+            if let reason = finalOutputDrainFailureReason {
+                throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+            }
+            guard !finalOutputDrainComplete else {
+                try throwScrollbackPersistenceErrorAsRetirementWarning()
+                return
+            }
+
+            var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+            while true {
+                var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let ready = poll(&descriptor, 1, 0)
+                if ready == 0 {
+                    break
+                }
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    try retainFinalOutputDrainFailure(errno: errno)
+                }
+                let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                    Darwin.read(masterHandle.fileDescriptor, rawBuffer.baseAddress, rawBuffer.count)
+                }
+                if count > 0 {
+                    appendOutput(Data(buffer.prefix(count)))
+                    continue
+                }
+                if count == 0 || errno == EIO {
+                    break
+                }
+                if errno == EINTR {
+                    continue
+                }
+                try retainFinalOutputDrainFailure(errno: errno)
+            }
+            finalOutputDrainComplete = true
+            markOutputMonitoringComplete()
+            try throwScrollbackPersistenceErrorAsRetirementWarning()
+        }
+
+        private func retainFinalOutputDrainFailure(errno: Int32) throws -> Never {
+            let reason = "final PTY output drain failed: \(String(cString: strerror(errno)))"
+            finalOutputDrainFailureReason = reason
+            throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+        }
+
+        private func throwScrollbackPersistenceErrorAsRetirementWarning() throws {
+            do {
+                try throwScrollbackPersistenceErrorIfPresent()
+            } catch {
+                let reason = String(describing: error)
+                finalOutputDrainFailureReason = reason
+                throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+            }
         }
 
         func snapshotOutput(maxBytes: Int) throws -> BrokerOutputSnapshot {
@@ -539,6 +658,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let inputWriteTimeoutMilliseconds: Int32
     private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
     private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
+    private let outputReadDidStart: @Sendable (BrokerSessionID) -> Void
+    private let installsOutputReadabilityHandler: Bool
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
@@ -550,6 +671,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             Darwin.close(descriptor) == 0 ? .closed : .ownershipRetained(errno)
         },
         inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
+        outputReadDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
+        installsOutputReadabilityHandler: Bool = true,
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
@@ -568,6 +691,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.inputWriteTimeoutMilliseconds = max(1, inputWriteTimeoutMilliseconds)
         self.inputDescriptorCloser = inputDescriptorCloser
         self.inputWriteDidStart = inputWriteDidStart
+        self.outputReadDidStart = outputReadDidStart
+        self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.processGroupSignal = processGroupSignal
     }
 
@@ -647,6 +772,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             inputWriteTimeoutMilliseconds: inputWriteTimeoutMilliseconds,
             inputDescriptorCloser: inputDescriptorCloser,
             inputWriteDidStart: inputWriteDidStart,
+            outputReadDidStart: outputReadDidStart,
             scrollbackAppender: scrollbackAppender
         )
         let processGroupSignal = self.processGroupSignal
@@ -656,14 +782,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 signalProcessGroup: processGroupSignal
             )
         }
-        masterHandle.readabilityHandler = { [weak session] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                session?.markOutputMonitoringComplete()
-                return
+        if installsOutputReadabilityHandler {
+            masterHandle.readabilityHandler = { [weak session] handle in
+                guard session?.consumeReadabilityEvent(from: handle) == true else {
+                    handle.readabilityHandler = nil
+                    return
+                }
             }
-            session?.appendOutput(data)
         }
 
         do {
@@ -788,6 +913,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             _ = try removeSession(id)
             throw RuntimeError.retirementCompletedWithInputCloseFailure(id, errno: closeErrno)
         } catch let error as RuntimeError {
+            if case .retirementCompletedWithOutputFailure = error {
+                _ = try removeSession(id)
+                throw error
+            }
             if case .retirementFailed = error { throw error }
             throw RuntimeError.retirementFailed(
                 id,
@@ -933,9 +1062,28 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
     private func close(_ session: Session) throws {
         let inputCloseError = inputCloseFailure(for: session)
+        var outputDrainError: Error?
+        do {
+            try session.drainBufferedOutputBeforeTermination()
+        } catch {
+            outputDrainError = error
+        }
         do {
             try terminateBoundedly(session)
         } catch {
+            if let outputDrainError {
+                let closeErrno: Int32?
+                if case let RuntimeError.inputCloseFailed(_, errno)? = inputCloseError {
+                    closeErrno = errno
+                } else {
+                    closeErrno = nil
+                }
+                throw RuntimeError.retirementFailed(
+                    session.id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "\(error); final output cleanup also failed: \(outputDrainError)"
+                )
+            }
             throw combinedRetirementFailure(
                 sessionID: session.id,
                 inputCloseError: inputCloseError,
@@ -943,7 +1091,31 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
         }
         session.masterHandle.readabilityHandler = nil
+        do {
+            try session.drainFinalOutput()
+        } catch {
+            if outputDrainError == nil {
+                outputDrainError = error
+            }
+        }
         session.masterHandle.closeFile()
+        if let outputDrainError {
+            let inputWarning = inputCloseError.map {
+                "; input cleanup also reported: \(String(describing: $0))"
+            } ?? ""
+            if session.inputDescriptorOwnershipIsRetained(),
+               case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
+                throw RuntimeError.retirementFailed(
+                    session.id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process cleanup completed; final output cleanup failed: \(outputDrainError)"
+                )
+            }
+            throw RuntimeError.retirementCompletedWithOutputFailure(
+                session.id,
+                reason: "\(String(describing: outputDrainError))\(inputWarning)"
+            )
+        }
         if let inputCloseError { throw inputCloseError }
     }
 

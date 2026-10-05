@@ -810,6 +810,28 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .terminating)
     }
 
+    func testMarkErroredFinalizesTruthAndSurfacesCompletedOutputFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 199.5) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/completed-output-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let warning = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            record.id,
+            reason: "scrollback unavailable"
+        )
+        runtime.markErroredError = warning
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            XCTAssertEqual(error as? NativePTYBrokerSessionRuntime.RuntimeError, warning)
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+    }
+
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {
         var now = Date(timeIntervalSince1970: 200)
         let coordinator = makeCoordinator(now: { now })

@@ -737,8 +737,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
             return true
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = error {
+            return true
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
             return code == "retirement-completed-with-input-close-failure"
+                || code == "retirement-completed-with-output-failure"
         }
         return false
     }
