@@ -766,6 +766,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var running = true
         private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
+        var terminationError: Error?
         var retirementError: Error?
 
         init(transactionalChunkSize: Int = .max) {
@@ -794,7 +795,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func detachSession(id: BrokerSessionID) throws {}
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
-        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
+            if let terminationError { throw terminationError }
+        }
         func markSessionErrored(id: BrokerSessionID) throws {
             let retirementError = lock.withLock { () -> Error? in
                 retiredIDs.append(id)
@@ -1213,6 +1216,42 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(events, ["failure", "termination"])
         XCTAssertEqual(failures.map(\.kind), [.failed])
         XCTAssertTrue(failures.first?.description.contains("retirementCompletedWithOutputFailure") == true)
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(try runtime.listSessions(), [])
+    }
+
+    func testLiveExitPublishesDistinctOutputWarningAfterInputCloseWarning() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008023")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.terminationError = NativePTYBrokerSessionRuntime.RuntimeError
+            .exitCompletedWithInputCloseFailure(
+                sessionID,
+                observedExitCode: 0,
+                inputCloseErrno: EIO,
+                expectedExitCode: 0
+            )
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
+            .retirementCompletedWithOutputFailure(
+                sessionID,
+                reason: "PTY read failed; input cleanup also reported EIO"
+            )
+        var events: [String] = []
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setOutputHandler {}
+        fixture.terminal.setSessionFailureHandler {
+            failures.append($0)
+            events.append("failure")
+        }
+        fixture.terminal.setTerminationHandler { _ in events.append("termination") }
+
+        runtime.triggerFinalOutput("combined-warning-final-output\n", for: sessionID)
+
+        try waitUntil { events.contains("termination") }
+        XCTAssertEqual(events, ["failure", "failure", "termination"])
+        XCTAssertTrue(failures.first?.description.contains("exitCompletedWithInputCloseFailure") == true)
+        XCTAssertTrue(failures.last?.description.contains("retirementCompletedWithOutputFailure") == true)
         XCTAssertNil(fixture.terminal.brokerSessionID)
         XCTAssertEqual(try runtime.listSessions(), [])
     }
@@ -2442,6 +2481,47 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { exits == [9] && failures.count == 1 }
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
         XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitMismatchClearsDeadIdentityAfterCompletedOutputWarning() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.requestedExitCode = 0
+        coordinator.finalizationError = BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+            coordinator.sessionID,
+            expected: 0,
+            observed: 9
+        )
+        coordinator.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
+            .retirementCompletedWithOutputFailure(coordinator.sessionID, reason: "PTY read failed")
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-completed-output-warning",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var failures: [TerminalSessionFailure] = []
+        var exits: [Int32?] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { exits == [9] }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertTrue(failures.first?.description.contains("exitCodeMismatch") == true)
+        XCTAssertTrue(failures.first?.description.contains("retirementCompletedWithOutputFailure") == true)
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 

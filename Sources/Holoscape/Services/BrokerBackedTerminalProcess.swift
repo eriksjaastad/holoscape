@@ -1008,7 +1008,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.revokeOutputDeliveryOwnership()
                         self.brokerSessionID = nil
                         self.agentStatusOwnerToken = nil
-                        if let completionWarning, self.sessionFailure == nil {
+                        if let completionWarning,
+                           self.sessionFailure == nil || self.isCompletedOutputRetirementWarning(completionWarning) {
                             self.publishSessionFailure(
                                 TerminalSessionFailure(
                                     kind: .failed,
@@ -1093,6 +1094,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         return false
     }
 
+    private func isCompletedOutputRetirementWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-completed-with-output-failure"
+        }
+        return false
+    }
+
     private func retireMismatchedExitedSession(
         _ id: BrokerSessionID,
         observedExitCode: Int32,
@@ -1105,7 +1116,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.brokerSessionID == id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       !self.didNotifyTermination else { return }
-                if let retirementError {
+                let completionWarning = retirementError.flatMap {
+                    self.isCompletedRetirementWarning($0) ? $0 : nil
+                }
+                if let retirementError, completionWarning == nil {
                     let combined = BrokerSessionCompositeFailure(
                         description: "\(mismatchError); failed to retire completed broker session: \(retirementError)"
                     )
@@ -1120,8 +1134,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
+                let failureDescription: String
+                if let completionWarning {
+                    failureDescription = "\(mismatchError); broker retirement completed with warning: \(completionWarning)"
+                } else {
+                    failureDescription = String(describing: mismatchError)
+                }
                 self.publishSessionFailure(
-                    TerminalSessionFailure(kind: .failed, description: String(describing: mismatchError))
+                    TerminalSessionFailure(kind: .failed, description: failureDescription)
                 )
                 self.terminationHandler?(observedExitCode)
             }
