@@ -84,6 +84,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case staleSession(BrokerSessionID)
         case brokerHostUnavailable(BrokerSessionID, String)
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case retirementFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
@@ -840,6 +841,25 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             throw error
         }
         let updated: BrokerSessionRecord
+        do {
+            updated = try finalizeErroredRecord(id)
+        } catch {
+            if let completedRetirementFailure {
+                throw CoordinatorError.retirementFinalizationFailed(
+                    id,
+                    runtimeFailure: String(describing: completedRetirementFailure),
+                    registryFailure: String(describing: error)
+                )
+            }
+            throw error
+        }
+        if let completedRetirementFailure {
+            throw completedRetirementFailure
+        }
+        return updated
+    }
+
+    private func finalizeErroredRecord(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         // Runtime retirement may overlap metadata-only mutations (for example a
         // working-directory update). Rebase the final lifecycle transition on
         // the current record instead of losing the truthful `.errored` state
@@ -847,10 +867,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         while true {
             let current = try record(for: id)
             guard current.lifecycle == .terminating else {
-                if current.lifecycle == .errored {
-                    if let completedRetirementFailure { throw completedRetirementFailure }
-                    return current
-                }
+                if current.lifecycle == .errored { return current }
                 throw CoordinatorError.concurrentSessionTransition(id)
             }
             let candidate = current.withLifecycle(
@@ -860,14 +877,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 lastAttachedChannelID: nil
             )
             if try registry.replace(candidate, ifUnchangedFrom: current) {
-                updated = candidate
-                break
+                return candidate
             }
         }
-        if let completedRetirementFailure {
-            throw completedRetirementFailure
-        }
-        return updated
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {

@@ -717,6 +717,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private(set) var createdIDs: [BrokerSessionID] = []
         private(set) var retiredIDs: [BrokerSessionID] = []
         var retirementError: Error?
+        var outputReadError: Error?
         var blocksRetirement = false
 
         func waitForRetirement(timeout: TimeInterval = 1) -> Bool {
@@ -747,6 +748,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            if let outputReadError { throw outputReadError }
             throw NativePTYBrokerSessionRuntime.RuntimeError.scrollbackPersistenceFailed(id, reason: "disk full")
         }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
@@ -907,6 +909,58 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             coordinator: coordinator,
             terminal: terminal
         )
+    }
+
+    func testCompletedRetirementWarningClearsDeadIdentityBeforeReplacementRetry() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008009"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
+            sessionID,
+            inputCloseErrno: nil,
+            processFailure: "scrollback persistence remains pending"
+        )
+        XCTAssertThrowsError(try fixture.coordinator.markErrored(sessionID))
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .terminating)
+
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
+            .retirementCompletedWithOutputFailure(sessionID, reason: "persistence timed out")
+        let restored = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008009")!,
+            channelType: .shell,
+            label: "broker-mid-session",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: fixture.coordinator
+        )
+
+        restored.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertEqual(restored.startFailureKind, .brokerSessionStale)
+        XCTAssertNil(restored.brokerSessionID)
+        XCTAssertEqual(restored.staleBrokerSessionID, sessionID)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
+
+        runtime.retirementError = nil
+        restored.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertNotNil(restored.brokerSessionID)
+        XCTAssertNotEqual(restored.brokerSessionID, sessionID)
+        XCTAssertNil(restored.startFailureKind)
     }
 
     func testOutputPollAfterBrokerHostLossReportsHostFailureAndKeepsSessionForRetry() throws {
@@ -1484,6 +1538,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(runtime.createdIDs.count, 2)
         XCTAssertNotEqual(runtime.createdIDs[1], failedSessionID)
         XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
+    }
+
+    func testUnexpectedOutputMonitoringFailureRetiresSessionBeforeRetryCreatesReplacement() throws {
+        let runtime = ScrollbackPersistenceFailureRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008025"
+        )
+        defer { fixture.cleanup() }
+        let failedSessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.outputReadError = NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+            failedSessionID,
+            reason: "PTY readability drain failed: Bad address"
+        )
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setSessionFailureHandler { failures.append($0) }
+
+        fixture.terminal.pollOutputOnce()
+        try waitUntil { failures.count == 1 }
+
+        XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
+        XCTAssertTrue(failures[0].description.contains("outputMonitoringFailed"))
+        XCTAssertEqual(runtime.retiredIDs, [failedSessionID])
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(fixture.terminal.staleBrokerSessionID, failedSessionID)
+
+        runtime.outputReadError = nil
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertEqual(runtime.createdIDs.count, 2)
+        XCTAssertNotEqual(runtime.createdIDs[1], failedSessionID)
     }
 
     func testScrollbackPersistenceCleanupFailureKeepsHandleAndPreventsDuplicateRetry() throws {

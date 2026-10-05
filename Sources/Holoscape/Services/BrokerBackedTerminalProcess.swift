@@ -1198,8 +1198,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         stopOutputPump()
         revokeOutputDeliveryOwnership()
 
-        if kind == .brokerSessionStale, isScrollbackPersistenceFailure(error) {
-            beginScrollbackFailureRecovery(error, for: sessionID)
+        if kind == .brokerSessionStale,
+           isScrollbackPersistenceFailure(error) || isOutputMonitoringFailure(error) {
+            beginOutputFailureRecovery(error, for: sessionID)
             return
         }
 
@@ -1219,7 +1220,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         publishSessionFailure(TerminalSessionFailure(kind: kind, description: description))
     }
 
-    private func beginScrollbackFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
+    private func beginOutputFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
         guard recoveringBrokerSessionID == nil else { return }
         recoveringBrokerSessionID = sessionID
         let originalDescription = String(describing: error)
@@ -1290,14 +1291,29 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         return false
     }
 
+    private func isOutputMonitoringFailure(_ error: Error) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .outputMonitoringFailed = runtimeError {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "output-monitoring-failed"
+        }
+        return false
+    }
+
     private func classifyStartFailure(_ error: Error) -> TerminalStartFailureKind {
+        if isCompletedRetirementWarning(error) {
+            return .brokerSessionStale
+        }
         if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError {
             switch coordinatorError {
             case .missingSession, .staleSession:
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
-            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed,
+            case .retirementRollbackFailed, .retirementFinalizationFailed,
+                 .detachRollbackFailed, .reattachRollbackFailed,
                  .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,
                  .exitCodeMismatch, .exitStillPending:
                 return .failed
@@ -1316,8 +1332,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
            case .scrollbackPersistenceFailed = runtimeError {
             return .brokerSessionStale
         }
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .outputMonitoringFailed = runtimeError {
+            return .brokerSessionStale
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
            code == "scrollback-persistence-failed"
+               || code == "output-monitoring-failed"
                || (code == "missing-session" && message.contains("missingSession")) {
             return .brokerSessionStale
         }

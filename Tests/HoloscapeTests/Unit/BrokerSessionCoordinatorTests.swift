@@ -832,6 +832,47 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
     }
 
+    func testMarkErroredPreservesCompletedOutputWarningWhenRegistryFinalizationFails() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionCoordinatorCompoundRetirementFailureTests")
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let coordinator = BrokerSessionCoordinator(
+            registry: BrokerSessionRegistry(fileURL: registryURL),
+            runtime: runtime,
+            now: { Date(timeIntervalSince1970: 199.75) }
+        )
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/completed-output-warning-registry-failure"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let warning = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            record.id,
+            reason: "scrollback durability unknown"
+        )
+        runtime.markErroredError = warning
+        runtime.onMarkErrored = {
+            try Data("not-json".utf8).write(to: registryURL, options: [.atomic])
+        }
+
+        XCTAssertThrowsError(try coordinator.markErrored(record.id)) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.retirementFinalizationFailed(
+                failedID,
+                runtimeFailure,
+                registryFailure
+            ) = error else {
+                return XCTFail("Expected compound retirement finalization failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, record.id)
+            XCTAssertTrue(runtimeFailure.contains("scrollback durability unknown"), runtimeFailure)
+            XCTAssertFalse(registryFailure.isEmpty)
+        }
+    }
+
     func testMarkErroredRemovesSessionFromReattachableListWithoutInventingExitCode() throws {
         var now = Date(timeIntervalSince1970: 200)
         let coordinator = makeCoordinator(now: { now })

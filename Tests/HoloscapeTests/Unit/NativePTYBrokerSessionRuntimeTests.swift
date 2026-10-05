@@ -725,6 +725,42 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.listSessions().isEmpty)
     }
 
+    func testUnexpectedReadFailureIsObservableWhileChildRemainsAlive() throws {
+        let runtime = NativePTYBrokerSessionRuntime(
+            installsOutputReadabilityHandler: false,
+            outputReader: { _, _, _ in (-1, EFAULT) }
+        )
+        let id = BrokerSessionID(rawValue: "unexpected-live-pty-read-failure")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exec sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        XCTAssertFalse(try runtime.consumeOutputReadabilityEvent(id: id))
+        XCTAssertThrowsError(try runtime.snapshotAvailableOutput(id: id, maxBytes: 1_024)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+                failedID,
+                reason
+            ) = error else {
+                return XCTFail("Expected observable PTY read failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertTrue(reason.contains("Bad address"), reason)
+        }
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            guard case NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed = error else {
+                return XCTFail("Expected liveness query to surface PTY read failure, got \(error)")
+            }
+        }
+    }
+
     func testForcedRetirementBoundsContinuousPTYOutputBeforeTerminatingProcess() throws {
         let runtime = NativePTYBrokerSessionRuntime(
             outputCleanupTimeoutMilliseconds: 50,

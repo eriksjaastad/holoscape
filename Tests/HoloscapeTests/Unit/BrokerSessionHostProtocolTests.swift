@@ -281,6 +281,27 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(failure.message.contains("disk full"), failure.message)
     }
 
+    func testHostTurnsOutputMonitoringErrorsIntoTypedFailureFrames() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let sessionID = BrokerSessionID(rawValue: "failed-output-monitoring-host-session")
+        runtime.error = NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+            sessionID,
+            reason: "PTY readability drain failed: Bad address"
+        )
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let response = try codec.decodeResponse(
+            try host.handle(codec.encodeRequest(.snapshotAvailableOutput(id: sessionID, maxBytes: 4096)))
+        )
+
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected failure response, got \(response)")
+        }
+        XCTAssertEqual(failure.code, "output-monitoring-failed")
+        XCTAssertTrue(failure.message.contains(sessionID.rawValue), failure.message)
+        XCTAssertTrue(failure.message.contains("Bad address"), failure.message)
+    }
+
     func testClientRuntimeSendsRequestsThroughHostTransportAndDecodesResponses() throws {
         let hostedRuntime = RecordingBrokerSessionRuntime()
         hostedRuntime.output = Data("client-output".utf8)

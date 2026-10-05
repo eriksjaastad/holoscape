@@ -37,6 +37,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         )
         case exitCodeMismatch(expected: Int32, observed: Int32)
         case terminationFailed(BrokerSessionID, reason: String)
+        case outputMonitoringFailed(BrokerSessionID, reason: String)
         case scrollbackPersistenceFailed(BrokerSessionID, reason: String)
         case unsupportedEnvironmentProfile(BrokerEnvironmentProfile, reason: String)
     }
@@ -57,6 +58,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
         private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
         private let outputReadDidStart: @Sendable (BrokerSessionID) -> Void
+        private let outputReader: @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32)
         private let installsOutputReadabilityHandler: Bool
         private let outputPersistenceQueue: DispatchQueue
         private let outputPersistenceGroup = DispatchGroup()
@@ -82,6 +84,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private var outputReadPausedForPersistence = false
         private var outputMonitoringShutdown = false
         private var outputMonitoringComplete = false
+        private var outputMonitoringFailureReason: String?
         private var finalOutputDrainFailureReason: String?
         private var finalOutputDrainComplete = false
         var terminationStatus: Int32?
@@ -97,6 +100,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult,
             inputWriteDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
             outputReadDidStart: @escaping @Sendable (BrokerSessionID) -> Void,
+            outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32),
             installsOutputReadabilityHandler: Bool,
             outputCleanupTimeoutMilliseconds: Int,
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
@@ -109,6 +113,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             self.inputDescriptorCloser = inputDescriptorCloser
             self.inputWriteDidStart = inputWriteDidStart
             self.outputReadDidStart = outputReadDidStart
+            self.outputReader = outputReader
             self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
             self.outputPersistenceQueue = DispatchQueue(
                 label: "com.holoscape.broker-session-output-persistence.\(id.rawValue)"
@@ -270,21 +275,24 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             }
             outputReadDidStart(id)
             var buffer = [UInt8](repeating: 0, count: readCapacity)
-            let count = buffer.withUnsafeMutableBytes { rawBuffer in
-                Darwin.read(handle.fileDescriptor, rawBuffer.baseAddress, rawBuffer.count)
+            let readResult = buffer.withUnsafeMutableBytes { rawBuffer in
+                outputReader(handle.fileDescriptor, rawBuffer.baseAddress, rawBuffer.count)
             }
+            let count = readResult.count
             if count > 0 {
                 appendOutput(Data(buffer.prefix(count)))
                 return true
             }
-            if count == 0 || errno == EIO {
+            if count == 0 || readResult.errno == EIO {
                 markOutputMonitoringComplete()
                 handle.readabilityHandler = nil
                 return false
             }
-            if errno == EINTR { return true }
+            if readResult.errno == EINTR { return true }
+            let failureReason = "PTY readability drain failed: \(String(cString: strerror(readResult.errno)))"
             lock.lock()
-            finalOutputDrainFailureReason = "PTY readability drain failed: \(String(cString: strerror(errno)))"
+            outputMonitoringFailureReason = failureReason
+            finalOutputDrainFailureReason = failureReason
             lock.unlock()
             markOutputMonitoringComplete()
             signalOutputAvailability()
@@ -332,21 +340,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                     if errno == EINTR { continue }
                     try retainFinalOutputDrainFailure(errno: errno)
                 }
-                let count = buffer.withUnsafeMutableBytes { rawBuffer in
-                    Darwin.read(masterHandle.fileDescriptor, rawBuffer.baseAddress, readCapacity)
+                let readResult = buffer.withUnsafeMutableBytes { rawBuffer in
+                    outputReader(masterHandle.fileDescriptor, rawBuffer.baseAddress, readCapacity)
                 }
+                let count = readResult.count
                 if count > 0 {
                     drainedByteCount += count
                     appendOutput(Data(buffer.prefix(count)))
                     continue
                 }
-                if count == 0 || errno == EIO {
+                if count == 0 || readResult.errno == EIO {
                     return
                 }
-                if errno == EINTR {
+                if readResult.errno == EINTR {
                     continue
                 }
-                try retainFinalOutputDrainFailure(errno: errno)
+                try retainFinalOutputDrainFailure(errno: readResult.errno)
             }
         }
 
@@ -387,21 +396,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                     if errno == EINTR { continue }
                     try retainFinalOutputDrainFailure(errno: errno)
                 }
-                let count = buffer.withUnsafeMutableBytes { rawBuffer in
-                    Darwin.read(masterHandle.fileDescriptor, rawBuffer.baseAddress, readCapacity)
+                let readResult = buffer.withUnsafeMutableBytes { rawBuffer in
+                    outputReader(masterHandle.fileDescriptor, rawBuffer.baseAddress, readCapacity)
                 }
+                let count = readResult.count
                 if count > 0 {
                     drainedByteCount += count
                     appendOutput(Data(buffer.prefix(count)))
                     continue
                 }
-                if count == 0 || errno == EIO {
+                if count == 0 || readResult.errno == EIO {
                     break
                 }
-                if errno == EINTR {
+                if readResult.errno == EINTR {
                     continue
                 }
-                try retainFinalOutputDrainFailure(errno: errno)
+                try retainFinalOutputDrainFailure(errno: readResult.errno)
             }
             lock.lock()
             finalOutputDrainComplete = true
@@ -432,6 +442,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             return (finalOutputDrainComplete, finalOutputDrainFailureReason)
         }
 
+        func throwOutputMonitoringErrorIfPresent() throws {
+            lock.lock()
+            let failureReason = outputMonitoringFailureReason
+            lock.unlock()
+            if let failureReason {
+                throw RuntimeError.outputMonitoringFailed(id, reason: failureReason)
+            }
+        }
+
         private func throwScrollbackPersistenceErrorAsRetirementWarning() throws {
             do {
                 try throwScrollbackPersistenceErrorIfPresent()
@@ -446,6 +465,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         func snapshotOutput(maxBytes: Int) throws -> BrokerOutputSnapshot {
             lock.lock()
+            if let reason = outputMonitoringFailureReason {
+                lock.unlock()
+                throw RuntimeError.outputMonitoringFailed(id, reason: reason)
+            }
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
@@ -482,6 +505,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func readOutput() throws -> Data {
             lock.lock()
             defer { lock.unlock() }
+            if let reason = outputMonitoringFailureReason {
+                throw RuntimeError.outputMonitoringFailed(id, reason: reason)
+            }
             if let reason = scrollbackPersistenceFailureReason {
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
             }
@@ -863,6 +889,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
     private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
     private let outputReadDidStart: @Sendable (BrokerSessionID) -> Void
+    private let outputReader: @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32)
     private let outputCleanupTimeoutMilliseconds: Int
     private let installsOutputReadabilityHandler: Bool
     private static let terminationGracePeriodMilliseconds = 500
@@ -879,6 +906,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         outputReadDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         outputCleanupTimeoutMilliseconds: Int = 500,
         installsOutputReadabilityHandler: Bool = true,
+        outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32) = { descriptor, buffer, count in
+            let readCount = Darwin.read(descriptor, buffer, count)
+            return (readCount, readCount < 0 ? errno : 0)
+        },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
@@ -898,6 +929,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.inputDescriptorCloser = inputDescriptorCloser
         self.inputWriteDidStart = inputWriteDidStart
         self.outputReadDidStart = outputReadDidStart
+        self.outputReader = outputReader
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.processGroupSignal = processGroupSignal
@@ -980,6 +1012,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             inputDescriptorCloser: inputDescriptorCloser,
             inputWriteDidStart: inputWriteDidStart,
             outputReadDidStart: outputReadDidStart,
+            outputReader: outputReader,
             installsOutputReadabilityHandler: installsOutputReadabilityHandler,
             outputCleanupTimeoutMilliseconds: outputCleanupTimeoutMilliseconds,
             scrollbackAppender: scrollbackAppender
@@ -1171,6 +1204,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         try session(for: id).masterHandle.readabilityHandler != nil
     }
 
+    @discardableResult
+    func consumeOutputReadabilityEvent(id: BrokerSessionID) throws -> Bool {
+        let session = try session(for: id)
+        return session.consumeReadabilityEvent(from: session.masterHandle)
+    }
+
     func outputPersistenceBacklogByteCount(id: BrokerSessionID) throws -> Int {
         try session(for: id).persistenceBacklogByteCount()
     }
@@ -1237,6 +1276,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     func isRunning(id: BrokerSessionID) throws -> Bool {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
+        try session.throwOutputMonitoringErrorIfPresent()
         if !session.process.isRunning { return false }
         try session.throwInputCloseErrorIfPresent(waitForClosing: false)
         try session.throwScrollbackPersistenceErrorIfPresent()
@@ -1246,6 +1286,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     func terminationStatus(id: BrokerSessionID) throws -> Int32? {
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
+        try session.throwOutputMonitoringErrorIfPresent()
         let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
         let observedStatus = try session.observedTerminationStatus(processFallback: processFallback)
         if let observedStatus {
