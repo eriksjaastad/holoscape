@@ -33,11 +33,31 @@ struct BrokerSessionHost {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
         do {
+            guard executionIsAllowed() else {
+                throw RequestError.expiredBeforeDispatch
+            }
+            let interruptionError: Error?
+            if let sessionID = request.inputInterruptionID,
+               let interruptingRuntime = runtime as? BrokerSessionInputInterruptingRuntime {
+                do {
+                    try interruptingRuntime.interruptInput(id: sessionID)
+                    interruptionError = nil
+                } catch {
+                    interruptionError = error
+                }
+            } else {
+                interruptionError = nil
+            }
             response = try scheduler.perform(request) {
                 guard executionIsAllowed() else {
                     throw RequestError.expiredBeforeDispatch
                 }
-                return try dispatch(request)
+                let dispatched = try dispatch(request)
+                // Lifecycle cleanup must still run when interruption reports a
+                // retained descriptor-close failure. Report that failure only
+                // after the queued operation has attempted process cleanup.
+                if let interruptionError { throw interruptionError }
+                return dispatched
             }
         } catch {
             response = .failure(
@@ -214,6 +234,15 @@ final class BrokerSessionOperationScheduler: @unchecked Sendable {
 }
 
 private extension BrokerSessionHostRequest {
+    var inputInterruptionID: BrokerSessionID? {
+        switch self {
+        case let .terminate(id, _), let .markErrored(id):
+            return id
+        default:
+            return nil
+        }
+    }
+
     var sessionOrderingID: BrokerSessionID? {
         switch self {
         case .listSessions:

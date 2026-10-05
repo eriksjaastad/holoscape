@@ -87,7 +87,11 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     }
 
     func testTeardownInterruptsAnInputWriteBeforeItsDeadline() throws {
-        let runtime = NativePTYBrokerSessionRuntime(inputWriteTimeoutMilliseconds: 5_000)
+        let writeStarted = DispatchSemaphore(value: 0)
+        let runtime = NativePTYBrokerSessionRuntime(
+            inputWriteTimeoutMilliseconds: 5_000,
+            inputWriteDidStart: { _ in writeStarted.signal() }
+        )
         let id = BrokerSessionID(rawValue: "native-pty-input-teardown-test")
         let request = BrokerSessionLaunchRequest(
             command: "/bin/sh",
@@ -112,7 +116,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             writeFinished.signal()
         }
 
-        usleep(20_000)
+        XCTAssertEqual(writeStarted.wait(timeout: .now() + 1), .success)
         let teardownStartedAt = DispatchTime.now()
         try runtime.markSessionErrored(id: id)
         let teardownElapsed = DispatchTime.now().uptimeNanoseconds - teardownStartedAt.uptimeNanoseconds
@@ -125,18 +129,104 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
     }
 
-    func testTeardownReleasesNativePTYInputDescriptors() throws {
-        let runtime = NativePTYBrokerSessionRuntime()
+    func testBrokerHostTeardownInterruptsInputAlreadyRunningOnTheSessionLane() throws {
+        let writeStarted = DispatchSemaphore(value: 0)
+        let runtime = NativePTYBrokerSessionRuntime(
+            inputWriteTimeoutMilliseconds: 5_000,
+            inputWriteDidStart: { _ in writeStarted.signal() }
+        )
+        let scheduler = BrokerSessionOperationScheduler()
+        let host = BrokerSessionHost(runtime: runtime, scheduler: scheduler)
+        let sendableHost = NativeSendableHostBox(host)
+        let codec = BrokerSessionHostCodec()
+        let id = BrokerSessionID(rawValue: "native-pty-host-input-teardown-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "sleep 30"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+        try runtime.createSession(id: id, request: request)
+
+        let sendFrame = try codec.encodeRequest(
+            .sendInput(id: id, bytes: Data(repeating: 0x64, count: 16 * 1_024 * 1_024))
+        )
+        let sendResponses = NativeLockedDataResults()
+        let sendErrors = LockedRuntimeErrorBox()
+        let sendFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                sendResponses.append(try sendableHost.value.handle(sendFrame))
+            } catch {
+                sendErrors.store(error)
+            }
+            sendFinished.signal()
+        }
+
+        XCTAssertEqual(writeStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(scheduler.admittedOperationCount(for: id), 1)
+
+        let teardownStartedAt = DispatchTime.now()
+        let teardownFrame = try codec.encodeRequest(.markErrored(id: id))
+        XCTAssertEqual(try codec.decodeResponse(host.handle(teardownFrame)), .ok)
+        let teardownElapsed = DispatchTime.now().uptimeNanoseconds - teardownStartedAt.uptimeNanoseconds
+
+        XCTAssertEqual(sendFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertNil(sendErrors.value)
+        let sendResponse = try XCTUnwrap(sendResponses.values.first)
+        guard case let .failure(failure) = try codec.decodeResponse(sendResponse) else {
+            return XCTFail("Expected interrupted input to return a failure response")
+        }
+        XCTAssertEqual(failure.code, "runtime-error")
+        XCTAssertTrue(failure.message.contains("inputClosed"), failure.message)
+        XCTAssertLessThan(teardownElapsed, 1_000_000_000)
+        XCTAssertEqual(scheduler.activeLaneCount, 0)
+    }
+
+    func testInputDescriptorCloseFailureIsRetainedAndReportedWithoutRetry() throws {
+        let closer = FailingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let id = BrokerSessionID(rawValue: "native-pty-input-close-failure-test")
         let request = BrokerSessionLaunchRequest(
             command: "/bin/cat",
             workingDirectory: "/tmp",
             environmentProfile: .shell,
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
-        let warmupID = BrokerSessionID(rawValue: "native-pty-input-descriptor-warmup")
-        try runtime.createSession(id: warmupID, request: request)
-        try runtime.markSessionErrored(id: warmupID)
-        let descriptorCountBefore = openFileDescriptorCount()
+        try runtime.createSession(id: id, request: request)
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .inputCloseFailed(id, errno: EIO)
+            )
+        }
+        XCTAssertEqual(closer.attemptCount, 1)
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .inputCloseFailed(id, errno: EIO)
+            )
+        }
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            XCTAssertEqual(
+                error as? NativePTYBrokerSessionRuntime.RuntimeError,
+                .inputCloseFailed(id, errno: EIO)
+            )
+        }
+        XCTAssertEqual(closer.attemptCount, 1)
+    }
+
+    func testTeardownReleasesNativePTYInputDescriptors() throws {
+        let closer = TrackingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/cat",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
 
         for index in 0..<8 {
             let id = BrokerSessionID(rawValue: "native-pty-input-descriptor-lifecycle-\(index)")
@@ -144,7 +234,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             try runtime.markSessionErrored(id: id)
         }
 
-        XCTAssertEqual(openFileDescriptorCount(), descriptorCountBefore)
+        XCTAssertEqual(closer.attemptCount, 8)
+        XCTAssertEqual(closer.closeFailures, [])
     }
 
     func testShellProfileStripsInheritedAgentOwnerToken() throws {
@@ -1347,6 +1438,55 @@ private final class NativeLockedDataResults: @unchecked Sendable {
 
     func append(_ value: Data) {
         lock.withLock { storedValues.append(value) }
+    }
+}
+
+private final class NativeSendableHostBox: @unchecked Sendable {
+    let value: BrokerSessionHost
+
+    init(_ value: BrokerSessionHost) {
+        self.value = value
+    }
+}
+
+private final class FailingInputDescriptorCloser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedAttemptCount = 0
+
+    var attemptCount: Int {
+        lock.withLock { storedAttemptCount }
+    }
+
+    func close(_ descriptor: Int32) -> Int32? {
+        lock.withLock { storedAttemptCount += 1 }
+        _ = Darwin.close(descriptor)
+        return EIO
+    }
+}
+
+private final class TrackingInputDescriptorCloser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedAttemptCount = 0
+    private var storedCloseFailures: [Int32] = []
+
+    var attemptCount: Int {
+        lock.withLock { storedAttemptCount }
+    }
+
+    var closeFailures: [Int32] {
+        lock.withLock { storedCloseFailures }
+    }
+
+    func close(_ descriptor: Int32) -> Int32? {
+        let result = Darwin.close(descriptor)
+        let closeError = result == 0 ? nil : errno
+        lock.withLock {
+            storedAttemptCount += 1
+            if let closeError {
+                storedCloseFailures.append(closeError)
+            }
+        }
+        return closeError
     }
 }
 

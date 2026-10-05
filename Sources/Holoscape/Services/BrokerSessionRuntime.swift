@@ -23,6 +23,13 @@ protocol BrokerSessionRuntime {
     func terminationStatus(id: BrokerSessionID) throws -> Int32?
 }
 
+/// Optional cancellation seam for runtimes whose input delivery can be waiting
+/// inside the per-session host lane. Lifecycle requests invoke this before they
+/// queue behind that lane so teardown can wake an active write.
+protocol BrokerSessionInputInterruptingRuntime {
+    func interruptInput(id: BrokerSessionID) throws
+}
+
 /// Optional launch capability used to prove that the runtime actually injected
 /// the status-owner token into the child process. Older durable broker hosts can
 /// decode the additive request field but return only the legacy `.ok` response;
