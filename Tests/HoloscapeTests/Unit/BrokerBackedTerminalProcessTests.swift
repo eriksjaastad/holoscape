@@ -2414,6 +2414,42 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 
+    func testRestoredExitMismatchCombinesCompletedRetirementWarning() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.requestedExitCode = 0
+        coordinator.retirementError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "retirement-completed-with-output-failure",
+            message: "final PTY output could not be persisted"
+        )
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "restored-mismatch-with-warning",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var exits: [Int32?] = []
+        var failures: [TerminalSessionFailure] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { exits == [9] }
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertTrue(failures[0].description.contains("exitCodeMismatch"))
+        XCTAssertTrue(failures[0].description.contains("retirement-completed-with-output-failure"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
     func testRecoveredExitedMismatchPublishesFailureAndRetiresRuntimeAfterFinalOutput() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.requestedExitCode = 0

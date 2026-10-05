@@ -630,15 +630,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
-                if let mismatchDescription {
+                if let mismatchDescription, let completionWarning {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
-                            description: mismatchDescription
+                            description: "\(mismatchDescription); broker retirement completed with warning: \(completionWarning)"
                         )
                     )
-                }
-                if let completionWarning {
+                } else if let mismatchDescription {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .failed, description: mismatchDescription)
+                    )
+                } else if let completionWarning {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
@@ -976,8 +979,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32) -> Void {
-        { [weak self] id, exitCode in
+    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32, Error?) -> Void {
+        { [weak self] id, exitCode, exitWarning in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.brokerSessionID == id,
@@ -986,6 +989,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.outputReadLane.stop()
                 self.sessionIOReady = false
                 self.inputWriteLane.close()
+                if let exitWarning {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .failed, description: String(describing: exitWarning))
+                    )
+                }
 
                 let completion: @Sendable (Error?) -> Void = { [weak self] error in
                     DispatchQueue.main.async {
@@ -1634,7 +1642,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         stop()
@@ -1685,10 +1693,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // actor before durable exit authority is published.
                         let completionWarning = try finishTermination(sessionID, exitCode)
                         if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
-                            onTermination(sessionID, exitCode)
-                            if let completionWarning {
-                                onFailure(sessionID, completionWarning)
-                            }
+                            onTermination(sessionID, exitCode, completionWarning)
                         }
                         return
                     }
@@ -1709,7 +1714,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         if isOpen(for: sessionID) {
@@ -1746,10 +1751,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     ) else { return }
                     let completionWarning = try finishTermination(sessionID, exitCode)
                     if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
-                        onTermination(sessionID, exitCode)
-                        if let completionWarning {
-                            onFailure(sessionID, completionWarning)
-                        }
+                        onTermination(sessionID, exitCode, completionWarning)
                     }
                     return
                 }
