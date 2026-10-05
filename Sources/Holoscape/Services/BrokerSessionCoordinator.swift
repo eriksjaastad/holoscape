@@ -87,6 +87,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
+        case exitRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case exitFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case exitCodeMismatch(BrokerSessionID, expected: Int32, observed: Int32)
+        case exitStillPending(BrokerSessionID)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
@@ -153,12 +157,21 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         return current
                     case .exited:
                         return runtimeSessionIDs.contains(current.id) ? current : nil
-                    case .creating, .reattaching, .errored, .terminating:
+                    case .creating, .reattaching, .errored, .exiting, .terminating:
                         return nil
                     }
-                case .creating, .errored, .terminating:
+                case .creating, .errored, .exiting, .terminating:
                     return nil
                 }
+            case .exiting:
+                guard runtimeSessionIDs.contains(record.id) else {
+                    _ = try markErrored(record.id)
+                    return nil
+                }
+                let reconciled = try reconcileExitingSession(record.id)
+                return reconciled.lifecycle == .exited || reconciled.lifecycle == .exiting
+                    ? reconciled
+                    : nil
             case .terminating:
                 // A prior retirement may have reached the broker without its
                 // response reaching Holoscape. Relaunch must finish this
@@ -285,7 +298,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         detachTransition: while true {
             let existing = try record(for: id)
             switch existing.lifecycle {
-            case .terminating, .exited, .errored, .stale:
+            case .exiting, .terminating, .exited, .errored, .stale:
                 return existing
             case .detached:
                 break detachTransition
@@ -338,10 +351,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             _ = try markErrored(id)
             throw CoordinatorError.staleSession(id)
         }
+        if existing.lifecycle == .exiting {
+            let reconciled = try reconcileExitingSession(id)
+            guard reconciled.lifecycle == .exited else {
+                // A restored controller must never publish active for an exit
+                // generation whose child may still be running: input remains
+                // intentionally revoked while the graceful-exit intent is pending.
+                throw CoordinatorError.exitStillPending(id)
+            }
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
+            return reconciled
+        }
         if existing.lifecycle == .exited {
             // Reattach to the retained broker object only long enough to replay
-            // final scrollback. Preserve durable `.exited` truth; the terminal's
-            // first output poll will publish the stored exit code after replay.
+            // final output. Preserve durable exit truth.
             try runtime.attachSession(id: id, channelID: attachedChannelID)
             return existing
         }
@@ -468,9 +491,143 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
-        _ = try record(for: id)
-        try runtime.terminateSession(id: id, exitCode: exitCode)
+        var previousRecord: BrokerSessionRecord?
+        while true {
+            let current = try record(for: id)
+            switch current.lifecycle {
+            case .exited:
+                let expectedExitCode = current.requestedExitCode ?? exitCode
+                if let observedExitCode = current.exitCode, observedExitCode != expectedExitCode {
+                    throw CoordinatorError.exitCodeMismatch(
+                        id,
+                        expected: expectedExitCode,
+                        observed: observedExitCode
+                    )
+                }
+                return current
+            case .errored:
+                return current
+            case .exiting:
+                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                    let expectedExitCode = current.requestedExitCode ?? exitCode
+                    let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                    if finalized.lifecycle == .exited, observedExitCode != expectedExitCode {
+                        throw CoordinatorError.exitCodeMismatch(
+                            id,
+                            expected: expectedExitCode,
+                            observed: observedExitCode
+                        )
+                    }
+                    return finalized
+                }
+                return current
+            case .terminating:
+                // Another retirement already owns this generation. Do not
+                // issue a competing runtime action or overwrite its outcome.
+                return current
+            case .creating, .running, .detached, .reattaching, .stale:
+                let terminating = current.withLifecycle(
+                    .exiting,
+                    exitCode: nil,
+                    requestedExitCode: exitCode,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+                if try registry.replace(terminating, ifUnchangedFrom: current) {
+                    previousRecord = current
+                    break
+                }
+                continue
+            }
+            break
+        }
 
+        do {
+            try runtime.terminateSession(id: id, exitCode: exitCode)
+        } catch let runtimeFailure {
+            do {
+                if let observedExitCode = try runtime.terminationStatus(id: id) {
+                    do {
+                        let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                        if finalized.lifecycle == .exited, observedExitCode != exitCode {
+                            if let runtimeMismatch = runtimeFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
+                               case .exitCodeMismatch = runtimeMismatch {
+                                // Preserve the runtime's original semantic failure when
+                                // terminate itself reported the mismatch. Recovery from a
+                                // lost/ambiguous response synthesizes the coordinator-level
+                                // equivalent below because no runtime mismatch was delivered.
+                                throw runtimeMismatch
+                            }
+                            throw CoordinatorError.exitCodeMismatch(
+                                id,
+                                expected: exitCode,
+                                observed: observedExitCode
+                            )
+                        }
+                        return finalized
+                    } catch let registryFailure {
+                        if let mismatch = registryFailure as? CoordinatorError,
+                           case .exitCodeMismatch = mismatch {
+                            throw mismatch
+                        }
+                        if let mismatch = registryFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
+                           case .exitCodeMismatch = mismatch {
+                            throw mismatch
+                        }
+                        throw CoordinatorError.exitFinalizationFailed(
+                            id,
+                            runtimeFailure: String(describing: runtimeFailure),
+                            registryFailure: String(describing: registryFailure)
+                        )
+                    }
+                } else if !isAmbiguousTerminationFailure(runtimeFailure),
+                          try runtime.isRunning(id: id),
+                          let previousRecord {
+                    do {
+                        try rollbackExit(id, to: previousRecord)
+                    } catch let registryFailure {
+                        throw CoordinatorError.exitRollbackFailed(
+                            id,
+                            runtimeFailure: String(describing: runtimeFailure),
+                            registryFailure: String(describing: registryFailure)
+                        )
+                    }
+                }
+            } catch let coordinatorFailure as CoordinatorError {
+                throw coordinatorFailure
+            } catch let runtimeMismatch as NativePTYBrokerSessionRuntime.RuntimeError {
+                if case .exitCodeMismatch = runtimeMismatch {
+                    throw runtimeMismatch
+                }
+                throw runtimeFailure
+            } catch {
+                // Failure to inspect the result leaves termination ambiguous.
+                // Keep durable `.exiting` intent so relaunch reconciliation can
+                // drain final output without reviving a child that may have exited.
+                NSLog(
+                    "Broker session exit outcome remains ambiguous for \(id.rawValue): "
+                        + "termination failure: \(runtimeFailure); status failure: \(error)"
+                )
+            }
+            throw runtimeFailure
+        }
+
+        return try finalizeExit(id, exitCode: exitCode)
+    }
+
+    private func reconcileExitingSession(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+        var reconciled = try reconcileRuntimeStatus(id)
+        if reconciled.lifecycle == .exiting, try runtime.isRunning(id: id) {
+            // A lost graceful-exit request may not have reached the broker.
+            // Retry it without asserting an expected code, then retain the
+            // runtime object until final output and observed status are ready.
+            try runtime.terminateSession(id: id, exitCode: nil)
+            reconciled = try reconcileRuntimeStatus(id)
+        }
+        return reconciled
+    }
+
+    private func finalizeExit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
         // The runtime action is irreversible. Rebase the final state on any
         // concurrent metadata-only mutation so a successful termination cannot
         // be left durably `.running` or `.detached` after a lost CAS.
@@ -479,13 +636,15 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             switch current.lifecycle {
             case .exited:
                 return current
-            case .terminating, .errored:
-                // Persistence-failure retirement owns the stronger final truth.
+            case .errored, .terminating:
+                // Retirement owns the stronger final truth and may already be
+                // removing the retained runtime object needed for final replay.
                 return current
-            case .creating, .running, .detached, .reattaching, .stale:
+            case .creating, .running, .detached, .reattaching, .stale, .exiting:
                 let candidate = current.withLifecycle(
                     .exited,
                     exitCode: exitCode,
+                    requestedExitCode: current.requestedExitCode,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
@@ -493,6 +652,31 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     return candidate
                 }
             }
+        }
+    }
+
+    private func rollbackExit(_ id: BrokerSessionID, to previous: BrokerSessionRecord) throws {
+        while true {
+            let current = try record(for: id)
+            guard current.lifecycle == .exiting else { return }
+            let rolledBack = current.withLifecycle(
+                previous.lifecycle,
+                exitCode: previous.exitCode,
+                requestedExitCode: previous.requestedExitCode,
+                updatedAt: current.updatedAt,
+                lastAttachedChannelID: previous.lastAttachedChannelID
+            )
+            if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+        }
+    }
+
+    private func isAmbiguousTerminationFailure(_ error: Error) -> Bool {
+        guard let clientError = error as? BrokerSessionHostClientRuntime.ClientError else { return false }
+        switch clientError {
+        case .transportFailed, .unexpectedResponse:
+            return true
+        case .hostFailure:
+            return false
         }
     }
 
@@ -701,7 +885,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch existing.lifecycle {
         case .exited, .errored, .stale:
             return existing
-        case .creating, .running, .detached, .reattaching, .terminating:
+        case .creating, .running, .detached, .reattaching, .exiting, .terminating:
             break
         }
 
@@ -710,6 +894,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 return existing
             }
             if let exitCode = try runtime.terminationStatus(id: id) {
+                if existing.lifecycle == .exiting {
+                    // Relaunch recovery has no active caller to receive the
+                    // original mismatch yet. Preserve comparison authority in
+                    // the exited record; the final-output lane surfaces it.
+                    return try finalizeExit(id, exitCode: exitCode)
+                }
                 return try exit(id, exitCode: exitCode)
             }
             // A terminated child may still have a final PTY read or scrollback
@@ -805,6 +995,7 @@ private extension BrokerSessionRecord {
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
+            requestedExitCode: requestedExitCode,
             createdAt: createdAt,
             updatedAt: updatedAt,
             lastAttachedChannelID: lastAttachedChannelID
@@ -814,6 +1005,7 @@ private extension BrokerSessionRecord {
     func withLifecycle(
         _ lifecycle: BrokerSessionLifecycle,
         exitCode: Int32?,
+        requestedExitCode: Int32? = nil,
         updatedAt: Date,
         lastAttachedChannelID: UUID?
     ) -> BrokerSessionRecord {
@@ -828,6 +1020,7 @@ private extension BrokerSessionRecord {
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
+            requestedExitCode: requestedExitCode,
             createdAt: createdAt,
             updatedAt: updatedAt,
             lastAttachedChannelID: lastAttachedChannelID

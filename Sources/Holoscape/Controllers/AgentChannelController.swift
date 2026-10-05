@@ -40,8 +40,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private var requiresAdapterOwnerToken = true
     private var lastStartFailureKind: TerminalStartFailureKind?
     private var pendingRestoredAttention: (state: PersistentChannelState, brokerSessionID: BrokerSessionID)?
+    private var lastSessionFailureState: PersistentChannelState?
+    private(set) var brokerSessionPersistenceIsAuthoritative = false
 
     var persistentState: PersistentChannelState {
+        if let lastSessionFailureState { return lastSessionFailureState }
         let runtimeState = PersistentChannelState.fromRuntimeState(
             state,
             source: staleBrokerSessionID == nil ? .processLifecycle : .brokerRegistry,
@@ -238,6 +241,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
+            if self.brokerSessionCoordinator == nil {
+                self.brokerSessionID = self.terminal.brokerOwnedSessionID
+                self.brokerSessionPersistenceIsAuthoritative = true
+            }
             self.transitionToDisconnected(invalidateAdapterOwner: true)
         }
         // Output notifications handled by Claude Code hooks (idle_prompt, permission_prompt)
@@ -314,6 +321,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let startFailure = terminal.startFailureDescription {
             pendingRestoredAttention = nil
             NSLog("Agent terminal start failed: \(startFailure)")
+            if brokerSessionCoordinator == nil, terminal.brokerOwnedSessionID == nil {
+                brokerSessionID = nil
+                brokerSessionPersistenceIsAuthoritative = true
+            }
             let failedState = applyBrokerFailure(kind: terminal.startFailureKind)
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
@@ -332,6 +343,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
                 requiresAdapterOwnerToken = false
             }
         }
+        brokerSessionPersistenceIsAuthoritative = true
+        lastSessionFailureState = nil
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
         state = .active
@@ -537,6 +550,13 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// it. Reported by the terminal process so the failure is explicit instead of
     /// being swallowed or trapping in the middle of an output poll.
     private func handleSessionFailure(_ failure: TerminalSessionFailure) {
+        lastSessionFailureState = failure.kind == .failed
+            ? brokerFailureState(reason: failure.description)
+            : nil
+        if terminal.brokerOwnedSessionID == nil {
+            brokerSessionID = nil
+            brokerSessionPersistenceIsAuthoritative = true
+        }
         let downgradedState = applyBrokerFailure(kind: failure.kind)
         guard state != downgradedState else {
             // Repeated reports (further keystrokes, a layout pass) must not churn
@@ -654,6 +674,16 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             // Same boundary as detach: an unavailable broker must not trap the app
             // on process exit. The unrecorded transition stays reconcilable.
             NSLog("Agent broker session exit failed: \(error)")
+            lastSessionFailureState = brokerFailureState(reason: String(describing: error))
         }
+    }
+
+    private func brokerFailureState(reason: String) -> PersistentChannelState {
+        PersistentChannelState(
+            kind: .error,
+            source: .brokerRegistry,
+            reason: reason,
+            recoveryAction: recoveryAction
+        )
     }
 }

@@ -251,13 +251,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private(set) var outputReadCount = 0
         private(set) var acknowledgedGenerations: [UInt64] = []
         private(set) var retiredSessionIDs: [BrokerSessionID] = []
+        private(set) var finalizedExitCodes: [Int32] = []
+        var restoredLifecycle: BrokerSessionLifecycle = .exited
+        var requestedExitCode: Int32?
+        var finalizationError: Error?
+        var retirementError: Error?
         private let outputReadRelease = DispatchSemaphore(value: 0)
         private var shouldBlockOutputRead = false
 
         func blockOutputRead() { shouldBlockOutputRead = true }
         func finishOutputRead() { outputReadRelease.signal() }
 
-        private func exitedRecord(id: BrokerSessionID) -> BrokerSessionRecord {
+        private func restoredRecord(id: BrokerSessionID) -> BrokerSessionRecord {
             BrokerSessionRecord(
                 id: id,
                 channelType: .shell,
@@ -266,8 +271,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 arguments: [],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
-                lifecycle: .exited,
-                exitCode: 9,
+                lifecycle: restoredLifecycle,
+                exitCode: restoredLifecycle == .exited ? 9 : nil,
+                requestedExitCode: requestedExitCode,
                 createdAt: Date(timeIntervalSince1970: 1),
                 updatedAt: Date(timeIntervalSince1970: 2),
                 lastAttachedChannelID: nil
@@ -277,14 +283,22 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func start(_ request: BrokerSessionLaunchRequest, channelType: ChannelType, label: String?, attachedChannelID: UUID?) throws -> BrokerSessionRecord {
             throw XCTSkip("unused")
         }
-        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { exitedRecord(id: id) }
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { restoredRecord(id: id) }
         func retireUntrackedSession(_ id: BrokerSessionID) throws { throw XCTSkip("unused") }
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
-            exitedRecord(id: id)
+            restoredRecord(id: id)
         }
-        func retireCompletedSession(_ id: BrokerSessionID) throws { retiredSessionIDs.append(id) }
+        func retireCompletedSession(_ id: BrokerSessionID) throws {
+            retiredSessionIDs.append(id)
+            if let retirementError { throw retirementError }
+        }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
-        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
+            finalizedExitCodes.append(exitCode)
+            if let finalizationError { throw finalizationError }
+            restoredLifecycle = .exited
+            return restoredRecord(id: id)
+        }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
@@ -2169,6 +2183,149 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(finalLines.contains("detached-final-chunk-one"))
         XCTAssertTrue(finalLines.contains("detached-final-chunk-two"))
         XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitedSessionDrainsFinalOutputBeforePublishingObservedExit() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "ambiguous-finished-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { events.contains("exit:9") }
+        XCTAssertEqual(coordinator.finalizedExitCodes, [9])
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24, 48])
+        XCTAssertEqual(events.first, "output")
+        XCTAssertEqual(events.last, "exit:9")
+        let finalLines = restoredTerminal.lastLines(20).joined(separator: "\n")
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-one"))
+        XCTAssertTrue(finalLines.contains("detached-final-chunk-two"))
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testRecoveredExitedMismatchPublishesFailureAndRetiresRuntimeAfterFinalOutput() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.requestedExitCode = 0
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-finished-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var events: [String] = []
+        var failures: [TerminalSessionFailure] = []
+        restoredTerminal.setOutputHandler { events.append("output") }
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exitCode in events.append("exit:\(exitCode ?? -1)") }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { events.contains("exit:9") && failures.count == 1 }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertTrue(failures.first?.description.contains("exitCodeMismatch") == true)
+        XCTAssertEqual(events.first, "output")
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitMismatchRetiresRuntimeBeforePublishingFailure() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.requestedExitCode = 0
+        coordinator.finalizationError = BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+            coordinator.sessionID,
+            expected: 0,
+            observed: 9
+        )
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-ambiguous-shell",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var exits: [Int32?] = []
+        var failures: [TerminalSessionFailure] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { exits == [9] && failures.count == 1 }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitMismatchRemainsObservableWhenRuntimeRetirementFails() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.requestedExitCode = 0
+        coordinator.finalizationError = BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+            coordinator.sessionID,
+            expected: 0,
+            observed: 9
+        )
+        coordinator.retirementError = RuntimeError.createFailed
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-retirement-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var failures: [TerminalSessionFailure] = []
+        var exits: [Int32?] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { failures.count == 1 }
+        XCTAssertTrue(failures[0].description.contains("exitCodeMismatch"))
+        XCTAssertTrue(failures[0].description.contains("createFailed"))
+        XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertTrue(exits.isEmpty)
     }
 
     func testExitedFinalDrainDoesNotRetireAfterTeardownRevokesDelivery() throws {

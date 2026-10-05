@@ -472,6 +472,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishExitedReattach(record, notifyStartCompletion: notifyStartCompletion)
             return
         }
+        if record.lifecycle == .exiting {
+            beginOutputDeliveryOwnership()
+            // Final output is still readable, but the durable exit intent must
+            // never reopen input writes to a process that may already be gone.
+            sessionIOReady = true
+            inputWriteLane.close()
+            if outputHandler != nil {
+                startOutputPump()
+            }
+            completeReattachStartIfNeeded(notifyStartCompletion)
+            return
+        }
         beginOutputDeliveryOwnership()
         sessionIOReady = true
         if outputHandler != nil {
@@ -583,19 +595,48 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         deliveryGeneration: UInt,
         notifyStartCompletion: Bool
     ) {
+        let mismatchDescription: String? = {
+            guard let requestedExitCode = record.requestedExitCode,
+                  requestedExitCode != exitCode else { return nil }
+            return String(
+                describing: BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+                    record.id,
+                    expected: requestedExitCode,
+                    observed: exitCode
+                )
+            )
+        }()
         let completion: @Sendable (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self,
                       self.brokerSessionID == record.id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                 if let error {
-                    self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                    if let mismatchDescription {
+                        let combined = BrokerSessionCompositeFailure(
+                            description: "\(mismatchDescription); failed to retire completed broker session: \(error)"
+                        )
+                        self.publishSessionFailure(
+                            TerminalSessionFailure(kind: .failed, description: combined.description)
+                        )
+                        self.failExitedOutputDelivery(combined, notifyStartCompletion: notifyStartCompletion)
+                    } else {
+                        self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                    }
                     return
                 }
                 self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
+                if let mismatchDescription {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(
+                            kind: .failed,
+                            description: mismatchDescription
+                        )
+                    )
+                }
                 let publishTermination: @MainActor @Sendable () -> Void = { [weak self] in
                     guard let self, !self.didNotifyTermination else { return }
                     self.didNotifyTermination = true
@@ -980,7 +1021,64 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func outputFailureHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Error) -> Void {
         { [weak self] id, error in
             Task { @MainActor [weak self] in
-                self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
+                guard let self else { return }
+                if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError,
+                   case let .exitCodeMismatch(_, _, observedExitCode) = coordinatorError {
+                    self.retireMismatchedExitedSession(
+                        id,
+                        observedExitCode: observedExitCode,
+                        mismatchError: error,
+                        deliveryGeneration: deliveryGeneration
+                    )
+                    return
+                }
+                self.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
+            }
+        }
+    }
+
+    private func retireMismatchedExitedSession(
+        _ id: BrokerSessionID,
+        observedExitCode: Int32,
+        mismatchError: Error,
+        deliveryGeneration: UInt
+    ) {
+        let completion: @Sendable (Error?) -> Void = { [weak self] retirementError in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.brokerSessionID == id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration,
+                      !self.didNotifyTermination else { return }
+                if let retirementError {
+                    let combined = BrokerSessionCompositeFailure(
+                        description: "\(mismatchError); failed to retire completed broker session: \(retirementError)"
+                    )
+                    self.reportSessionFailure(
+                        combined,
+                        for: id,
+                        deliveryGeneration: deliveryGeneration
+                    )
+                    return
+                }
+                self.didNotifyTermination = true
+                self.revokeOutputDeliveryOwnership()
+                self.brokerSessionID = nil
+                self.agentStatusOwnerToken = nil
+                self.publishSessionFailure(
+                    TerminalSessionFailure(kind: .failed, description: String(describing: mismatchError))
+                )
+                self.terminationHandler?(observedExitCode)
+            }
+        }
+
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.retireCompletedSession(id, completion: completion)
+        } else {
+            do {
+                try coordinator.retireCompletedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
             }
         }
     }
@@ -1107,7 +1205,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
-            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed, .reattachCleanupFailed:
+            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed,
+                 .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,
+                 .exitCodeMismatch, .exitStillPending:
                 return .failed
             case .concurrentSessionTransition, .untrackedSession:
                 return .failed
@@ -1384,6 +1484,10 @@ private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
     var wasAccepted: Bool {
         lock.withLock { accepted }
     }
+}
+
+private struct BrokerSessionCompositeFailure: Error, CustomStringConvertible, Sendable {
+    let description: String
 }
 
 private final class BrokerOutputReadLane: @unchecked Sendable {

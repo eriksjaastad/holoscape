@@ -982,6 +982,59 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels[1].command, "codex")
     }
 
+    func testSaveStateDoesNotResurrectRetiredRestoredBrokerIdentity() throws {
+        let sessionID = BrokerSessionID(rawValue: "completed-restored-shell")
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: sessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/recovered-completed-shell",
+                environmentProfile: .shell,
+                lifecycle: .exited,
+                exitCode: 9,
+                requestedExitCode: 0,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = sessionID
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        XCTAssertEqual(manager.restoreUnmatchedBrokerBackedSessions { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                workingDirectory: metadata.workingDirectory,
+                terminal: terminal
+            )
+        }, 1)
+        let controller = try XCTUnwrap(manager.allChannels().first as? ShellChannelController)
+        controller.activate()
+
+        terminal.brokerOwnedSessionID = nil
+        terminal.reportSessionFailure(
+            kind: .failed,
+            description: "exitCodeMismatch(expected: 0, observed: 9)"
+        )
+        terminal.reportTermination(exitCode: 9)
+        manager.saveState()
+
+        let saved = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertNil(saved.brokerSessionID)
+        XCTAssertEqual(saved.persistentState?.kind, .error)
+        XCTAssertTrue(saved.persistentState?.reason?.contains("exitCodeMismatch") == true)
+    }
+
     func testRestoreUnmatchedBrokerSessionsAssignsAndPersistsStableInstanceNumbers() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerUnmatchedBrokerNumberingTests-")

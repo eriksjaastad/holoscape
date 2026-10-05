@@ -18,6 +18,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     private(set) var customDisplayLabel: String?
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
+    private var lastSessionFailureState: PersistentChannelState?
+
+    var persistentState: PersistentChannelState {
+        if let lastSessionFailureState { return lastSessionFailureState }
+        return .fromRuntimeState(state, recoveryAction: recoveryAction)
+    }
 
     var displayLabel: String {
         if let customDisplayLabel {
@@ -103,6 +109,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             currentDirectory: nil
         )
         state = .active
+        lastSessionFailureState = nil
         let now = Date()
         activatedAt = now
         recordUserInteraction(at: now)
@@ -248,6 +255,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
             // Same boundary as detach: an unavailable broker must not trap the app
             // on process exit. The unrecorded transition stays reconcilable.
             NSLog("SSH broker session exit failed: \(error)")
+            lastSessionFailureState = PersistentChannelState(
+                kind: .error,
+                source: .brokerRegistry,
+                reason: String(describing: error),
+                recoveryAction: recoveryAction
+            )
         }
     }
 }

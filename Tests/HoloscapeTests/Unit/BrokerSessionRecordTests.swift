@@ -79,6 +79,34 @@ final class BrokerSessionRecordTests: XCTestCase {
         )
 
         XCTAssertNil(decoded.agentStatusOwnerToken)
+        XCTAssertNil(decoded.requestedExitCode)
+    }
+
+    func testExitingSessionRoundTripsRequestedExitCode() throws {
+        let record = BrokerSessionRecord(
+            id: BrokerSessionID(rawValue: "exiting-session"),
+            channelType: .shell,
+            label: "Shell",
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: "/tmp/project",
+            environmentProfile: .shell,
+            lifecycle: .exiting,
+            exitCode: nil,
+            requestedExitCode: 0,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: nil
+        )
+
+        let decoded = try JSONDecoder().decode(
+            BrokerSessionRecord.self,
+            from: JSONEncoder().encode(record)
+        )
+
+        XCTAssertEqual(decoded, record)
+        XCTAssertEqual(decoded.requestedExitCode, 0)
+        XCTAssertNoThrow(try decoded.validate())
     }
 
     func testExitedSessionRequiresExitCode() {
@@ -99,6 +127,28 @@ final class BrokerSessionRecordTests: XCTestCase {
 
         XCTAssertThrowsError(try record.validate()) { error in
             XCTAssertEqual(error as? BrokerSessionRecord.ValidationError, .exitedSessionMissingExitCode)
+        }
+    }
+
+    func testRunningSessionRejectsRequestedExitCode() {
+        let record = BrokerSessionRecord(
+            id: BrokerSessionID(rawValue: "invalid-requested-exit"),
+            channelType: .shell,
+            label: "Shell",
+            command: "/bin/zsh",
+            arguments: ["--login"],
+            workingDirectory: nil,
+            environmentProfile: .shell,
+            lifecycle: .running,
+            exitCode: nil,
+            requestedExitCode: 0,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: nil
+        )
+
+        XCTAssertThrowsError(try record.validate()) { error in
+            XCTAssertEqual(error as? BrokerSessionRecord.ValidationError, .unexpectedRequestedExitCode)
         }
     }
 }
