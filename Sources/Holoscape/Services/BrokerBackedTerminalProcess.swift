@@ -1207,7 +1207,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerHostUnavailable
             case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed,
                  .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,
-                 .exitCodeMismatch:
+                 .exitCodeMismatch, .exitStillPending:
                 return .failed
             case .concurrentSessionTransition, .untrackedSession:
                 return .failed

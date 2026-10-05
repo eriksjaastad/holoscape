@@ -90,6 +90,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case exitRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case exitFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case exitCodeMismatch(BrokerSessionID, expected: Int32, observed: Int32)
+        case exitStillPending(BrokerSessionID)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
     }
@@ -167,14 +168,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     _ = try markErrored(record.id)
                     return nil
                 }
-                var reconciled = try reconcileRuntimeStatus(record.id)
-                if reconciled.lifecycle == .exiting, try runtime.isRunning(id: record.id) {
-                    // A lost graceful-exit request may not have reached the broker.
-                    // Retry it without asserting an expected code, then retain the
-                    // runtime object until final output and observed status are ready.
-                    try runtime.terminateSession(id: record.id, exitCode: nil)
-                    reconciled = try reconcileRuntimeStatus(record.id)
-                }
+                let reconciled = try reconcileExitingSession(record.id)
                 return reconciled.lifecycle == .exited || reconciled.lifecycle == .exiting
                     ? reconciled
                     : nil
@@ -357,10 +351,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             _ = try markErrored(id)
             throw CoordinatorError.staleSession(id)
         }
-        if existing.lifecycle == .exited || existing.lifecycle == .exiting {
+        if existing.lifecycle == .exiting {
+            let reconciled = try reconcileExitingSession(id)
+            guard reconciled.lifecycle == .exited else {
+                // A restored controller must never publish active for an exit
+                // generation whose child may still be running: input remains
+                // intentionally revoked while the graceful-exit intent is pending.
+                throw CoordinatorError.exitStillPending(id)
+            }
+            try runtime.attachSession(id: id, channelID: attachedChannelID)
+            return reconciled
+        }
+        if existing.lifecycle == .exited {
             // Reattach to the retained broker object only long enough to replay
-            // final output. Preserve durable exit truth; for `.exiting`, the
-            // output lane publishes the observed status after pending final I/O.
+            // final output. Preserve durable exit truth.
             try runtime.attachSession(id: id, channelID: attachedChannelID)
             return existing
         }
@@ -560,6 +564,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                                 observed: observedExitCode
                             )
                         }
+                        return finalized
                     } catch let registryFailure {
                         if let mismatch = registryFailure as? CoordinatorError,
                            case .exitCodeMismatch = mismatch {
@@ -608,6 +613,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
 
         return try finalizeExit(id, exitCode: exitCode)
+    }
+
+    private func reconcileExitingSession(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
+        var reconciled = try reconcileRuntimeStatus(id)
+        if reconciled.lifecycle == .exiting, try runtime.isRunning(id: id) {
+            // A lost graceful-exit request may not have reached the broker.
+            // Retry it without asserting an expected code, then retain the
+            // runtime object until final output and observed status are ready.
+            try runtime.terminateSession(id: id, exitCode: nil)
+            reconciled = try reconcileRuntimeStatus(id)
+        }
+        return reconciled
     }
 
     private func finalizeExit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {

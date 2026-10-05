@@ -487,6 +487,26 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(durable.requestedExitCode, 0)
     }
 
+    func testLostTerminateResponseWithMatchingObservedExitReturnsFinalTruth() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.observedTerminationStatus = 0
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 127) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/lost-response-matching-exit"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+
+        let finalized = try coordinator.exit(record.id, exitCode: 0)
+
+        XCTAssertEqual(finalized.lifecycle, .exited)
+        XCTAssertEqual(finalized.exitCode, 0)
+        XCTAssertEqual(finalized.requestedExitCode, 0)
+        XCTAssertEqual(try coordinator.loadAll(), [finalized])
+    }
+
     func testExitKeepsAmbiguousTransportFailureNonReattachable() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 130) })
@@ -517,6 +537,38 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         let recovered = try XCTUnwrap(coordinator.reattachableSessions().first)
         XCTAssertEqual(recovered.lifecycle, .exited)
         XCTAssertEqual(recovered.exitCode, 0)
+    }
+
+    func testReattachRetriesAmbiguousExitButRefusesStillRunningGeneration() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 132) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/ambiguous-exit-reattach"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0))
+
+        runtime.terminateError = nil
+        runtime.statusError = nil
+        runtime.running = true
+        runtime.observedTerminationStatus = nil
+
+        XCTAssertThrowsError(try coordinator.reattach(record.id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .exitStillPending(record.id)
+            )
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
+        XCTAssertEqual(runtime.events.filter { $0 == .terminate(record.id, nil) }.count, 1)
+        XCTAssertFalse(runtime.events.contains { event in
+            if case .attach(record.id, _) = event { return true }
+            return false
+        })
     }
 
     func testExitRetrySurfacesMismatchAfterAmbiguousResponse() throws {
