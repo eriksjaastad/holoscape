@@ -993,7 +993,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                               self.brokerSessionID == id,
                               self.activeOutputDeliveryGeneration == deliveryGeneration,
                               !self.didNotifyTermination else { return }
-                        if let error, !self.isCompletedRetirementWarning(error) {
+                        let completionWarning = error.flatMap {
+                            self.isCompletedRetirementWarning($0) ? $0 : nil
+                        }
+                        if let error, completionWarning == nil {
                             self.reportSessionFailure(
                                 error,
                                 for: id,
@@ -1005,6 +1008,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.revokeOutputDeliveryOwnership()
                         self.brokerSessionID = nil
                         self.agentStatusOwnerToken = nil
+                        if let completionWarning, self.sessionFailure == nil {
+                            self.publishSessionFailure(
+                                TerminalSessionFailure(
+                                    kind: .failed,
+                                    description: String(describing: completionWarning)
+                                )
+                            )
+                        }
                         self.terminationHandler?(exitCode)
                     }
                 }

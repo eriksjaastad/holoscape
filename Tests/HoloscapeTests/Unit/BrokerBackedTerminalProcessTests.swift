@@ -766,6 +766,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var running = true
         private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
+        var retirementError: Error?
 
         init(transactionalChunkSize: Int = .max) {
             self.transactionalChunkSize = transactionalChunkSize
@@ -795,7 +796,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
         func markSessionErrored(id: BrokerSessionID) throws {
-            lock.withLock { retiredIDs.append(id) }
+            let retirementError = lock.withLock { () -> Error? in
+                retiredIDs.append(id)
+                return self.retirementError
+            }
+            if let retirementError {
+                throw retirementError
+            }
         }
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
         func readAvailableOutput(id: BrokerSessionID) throws -> Data {
@@ -1182,6 +1189,32 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             try fixture.coordinator.reattachableSessions().isEmpty,
             "A naturally exited session must retire its runtime owner so closing the disconnected tab cannot resurrect it"
         )
+    }
+
+    func testLiveExitPublishesCompletedOutputRetirementWarningBeforeTermination() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008022")
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
+            .retirementCompletedWithOutputFailure(sessionID, reason: "PTY read failed with errno 5")
+        var events: [String] = []
+        var failures: [TerminalSessionFailure] = []
+        fixture.terminal.setOutputHandler {}
+        fixture.terminal.setSessionFailureHandler {
+            failures.append($0)
+            events.append("failure")
+        }
+        fixture.terminal.setTerminationHandler { _ in events.append("termination") }
+
+        runtime.triggerFinalOutput("live-final-output\n", for: sessionID)
+
+        try waitUntil { events.contains("termination") }
+        XCTAssertEqual(events, ["failure", "termination"])
+        XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertTrue(failures.first?.description.contains("retirementCompletedWithOutputFailure") == true)
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(try runtime.listSessions(), [])
     }
 
     func testOutputPumpDrainsEveryTransactionalChunkBeforeReportingTermination() throws {
