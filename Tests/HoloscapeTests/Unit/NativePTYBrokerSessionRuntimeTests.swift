@@ -798,14 +798,31 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
         appender.release()
 
-        guard case let NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+        guard case let NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
             warningID,
+            _,
             reason
         )? = retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
-            return XCTFail("Expected bounded persistence warning, got \(String(describing: retirementError.value))")
+            return XCTFail("Expected pending-persistence retirement failure, got \(String(describing: retirementError.value))")
         }
         XCTAssertEqual(warningID, id)
         XCTAssertTrue(reason.contains("persistence timed out"), reason)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+
+        let persistenceDeadline = Date().addingTimeInterval(2)
+        while try runtime.outputPersistenceBacklogByteCount(id: id) > 0,
+              Date() < persistenceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
+            guard case let .retirementCompletedWithOutputFailure(retryID, retryReason) =
+                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected completed warning after persistence settled, got \(retryError)")
+            }
+            XCTAssertEqual(retryID, id)
+            XCTAssertTrue(retryReason.contains("persistence timed out"), retryReason)
+        }
         XCTAssertTrue(try runtime.listSessions().isEmpty)
     }
 
@@ -827,6 +844,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             )
         )
         XCTAssertEqual(appender.waitUntilEntered(), .success)
+        defer { appender.release() }
         var backlogReachedLimit = false
         for _ in 0..<200 {
             if try runtime.outputPersistenceBacklogByteCount(id: id)
@@ -854,25 +872,27 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             retirementFinished.signal()
         }
         XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
-        appender.release()
 
         guard let observedError = retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
             return XCTFail("Expected bounded retirement failure, got \(String(describing: retirementError.value))")
         }
-        switch observedError {
-        case let .retirementCompletedWithOutputFailure(warningID, reason):
-            XCTAssertEqual(warningID, id)
-            XCTAssertTrue(reason.contains("bounded retention limit"), reason)
-        case let .retirementFailed(warningID, _, processFailure):
-            XCTAssertEqual(warningID, id)
-            XCTAssertTrue(processFailure.contains("bounded retention limit"), processFailure)
-            XCTAssertEqual(try runtime.listSessions(), [id])
-        default:
-            XCTFail("Expected bounded persistence warning, got \(observedError)")
+        guard case let .retirementFailed(warningID, _, processFailure) = observedError else {
+            return XCTFail("Expected pending-persistence retirement failure, got \(observedError)")
         }
-        if case .retirementCompletedWithOutputFailure = observedError {
-            XCTAssertTrue(try runtime.listSessions().isEmpty)
+        XCTAssertEqual(warningID, id)
+        XCTAssertTrue(processFailure.contains("bounded retention limit"), processFailure)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
+            guard case let .retirementFailed(retryID, _, retryReason) =
+                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retry to retain pending persistence authority, got \(retryError)")
+            }
+            XCTAssertEqual(retryID, id)
+            XCTAssertTrue(retryReason.contains("bounded retention limit"), retryReason)
         }
+        XCTAssertEqual(appender.attemptCount, 1)
+        XCTAssertEqual(try runtime.listSessions(), [id])
     }
 
     func testTerminatePreservesExitCodeMismatchFailure() throws {
@@ -2004,12 +2024,16 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
     private let entered = DispatchSemaphore(value: 0)
     private let releaseCondition = NSCondition()
     private var isReleased = false
+    private var storedAttemptCount = 0
 
     init(shouldFail: Bool) {
         self.shouldFail = shouldFail
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
+        releaseCondition.lock()
+        storedAttemptCount += 1
+        releaseCondition.unlock()
         entered.signal()
         releaseCondition.lock()
         let deadline = Date().addingTimeInterval(3)
@@ -2027,6 +2051,12 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
 
     func waitUntilEntered() -> DispatchTimeoutResult {
         entered.wait(timeout: .now() + 3)
+    }
+
+    var attemptCount: Int {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedAttemptCount
     }
 
     func release() {

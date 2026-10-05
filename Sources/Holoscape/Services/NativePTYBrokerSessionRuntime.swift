@@ -742,6 +742,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             return outputPersistenceBytesOutstanding
         }
 
+        func hasPendingScrollbackPersistence() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return outputPersistenceBytesOutstanding > 0 || outputPersistenceWriteInFlight
+        }
+
         func setProcessGroupID(_ id: pid_t) -> Int32? {
             lock.lock()
             processGroupID = id
@@ -1266,6 +1272,19 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let inputWarning = inputCloseError.map {
                 "; input cleanup also reported: \(String(describing: $0))"
             } ?? ""
+            if session.hasPendingScrollbackPersistence() {
+                let closeErrno: Int32?
+                if case let RuntimeError.inputCloseFailed(_, errno)? = inputCloseError {
+                    closeErrno = errno
+                } else {
+                    closeErrno = nil
+                }
+                throw RuntimeError.retirementFailed(
+                    session.id,
+                    inputCloseErrno: closeErrno,
+                    processFailure: "process cleanup completed; scrollback persistence remains pending: \(outputDrainError)"
+                )
+            }
             if session.inputDescriptorOwnershipIsRetained(),
                case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
                 throw RuntimeError.retirementFailed(
