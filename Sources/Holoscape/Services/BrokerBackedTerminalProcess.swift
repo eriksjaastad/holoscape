@@ -1333,7 +1333,25 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     /// reads. The lane calls this only after SwiftTerm has consumed the preceding
     /// sample, so final bytes remain visible before exit becomes authoritative.
     func terminationStatusIfStopped(_ id: BrokerSessionID) throws -> Int32? {
-        try coordinator.terminationStatus(id)
+        do {
+            return try coordinator.terminationStatus(id)
+        } catch let error as NativePTYBrokerSessionRuntime.RuntimeError {
+            guard case let .exitCompletedWithInputCloseFailure(
+                warningID,
+                observedExitCode,
+                _,
+                _
+            ) = error, warningID == id else { throw error }
+            return observedExitCode
+        } catch let error as BrokerSessionHostClientRuntime.ClientError {
+            guard case let .exitCompletedWithInputCloseFailure(
+                warningID,
+                observedExitCode,
+                _,
+                _
+            ) = error, warningID == id else { throw error }
+            return observedExitCode
+        }
     }
 
     func finishTermination(_ id: BrokerSessionID, exitCode: Int32) throws -> Error? {

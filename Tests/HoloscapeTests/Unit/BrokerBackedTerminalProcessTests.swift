@@ -254,6 +254,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private(set) var finalizedExitCodes: [Int32] = []
         var restoredLifecycle: BrokerSessionLifecycle = .exited
         var requestedExitCode: Int32?
+        var terminationStatusError: Error?
         var finalizationError: Error?
         var retirementError: Error?
         private let outputReadRelease = DispatchSemaphore(value: 0)
@@ -332,7 +333,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(_ id: BrokerSessionID) throws -> Bool { false }
-        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { 9 }
+        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? {
+            if let terminationStatusError { throw terminationStatusError }
+            return 9
+        }
         func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
     }
 
@@ -2228,6 +2232,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 observedExitCode: 9,
                 inputCloseErrno: EIO,
                 expectedExitCode: 9
+            )
+        coordinator.terminationStatusError = NativePTYBrokerSessionRuntime.RuntimeError
+            .exitCompletedWithInputCloseFailure(
+                coordinator.sessionID,
+                observedExitCode: 9,
+                inputCloseErrno: EIO,
+                expectedExitCode: nil
             )
         coordinator.retirementError = NativePTYBrokerSessionRuntime.RuntimeError
             .retirementCompletedWithInputCloseFailure(coordinator.sessionID, errno: EIO)
