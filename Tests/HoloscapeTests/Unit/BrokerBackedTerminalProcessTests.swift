@@ -255,6 +255,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var restoredLifecycle: BrokerSessionLifecycle = .exited
         var requestedExitCode: Int32?
         var finalizationError: Error?
+        var retirementError: Error?
         private let outputReadRelease = DispatchSemaphore(value: 0)
         private var shouldBlockOutputRead = false
 
@@ -287,7 +288,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             restoredRecord(id: id)
         }
-        func retireCompletedSession(_ id: BrokerSessionID) throws { retiredSessionIDs.append(id) }
+        func retireCompletedSession(_ id: BrokerSessionID) throws {
+            retiredSessionIDs.append(id)
+            if let retirementError { throw retirementError }
+        }
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
             finalizedExitCodes.append(exitCode)
@@ -2283,6 +2287,45 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
         XCTAssertEqual(failures.map(\.kind), [.failed])
         XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testAmbiguousExitMismatchRemainsObservableWhenRuntimeRetirementFails() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.requestedExitCode = 0
+        coordinator.finalizationError = BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+            coordinator.sessionID,
+            expected: 0,
+            observed: 9
+        )
+        coordinator.retirementError = RuntimeError.createFailed
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-retirement-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var failures: [TerminalSessionFailure] = []
+        var exits: [Int32?] = []
+        restoredTerminal.setOutputHandler {}
+        restoredTerminal.setSessionFailureHandler { failures.append($0) }
+        restoredTerminal.setTerminationHandler { exits.append($0) }
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { failures.count == 1 }
+        XCTAssertTrue(failures[0].description.contains("exitCodeMismatch"))
+        XCTAssertTrue(failures[0].description.contains("createFailed"))
+        XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertTrue(exits.isEmpty)
     }
 
     func testExitedFinalDrainDoesNotRetireAfterTeardownRevokesDelivery() throws {

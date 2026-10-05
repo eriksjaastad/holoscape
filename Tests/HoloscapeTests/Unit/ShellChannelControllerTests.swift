@@ -3,6 +3,30 @@ import XCTest
 
 @MainActor
 final class ShellChannelControllerTests: XCTestCase {
+    func testRecoveredExitMismatchPersistsDetailedControllerErrorAndRetiresIdentity() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "recovered-mismatch-shell")
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+        controller.activate()
+
+        terminal.brokerOwnedSessionID = nil
+        terminal.reportSessionFailure(
+            kind: .failed,
+            description: "exitCodeMismatch(expected: 0, observed: 9)"
+        )
+        terminal.reportTermination(exitCode: 9)
+
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.reason, "exitCodeMismatch(expected: 0, observed: 9)")
+        XCTAssertNil(controller.brokerSessionID)
+        XCTAssertTrue(controller.brokerSessionPersistenceIsAuthoritative)
+    }
+
     func testShellDisplayLabelIncludesGitBranchForWorkingDirectory() throws {
         let repo = try makeGitRepository(branch: "feature/tab-branch")
         defer { try? FileManager.default.removeItem(at: repo) }
@@ -390,6 +414,9 @@ final class ShellChannelControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.state, .disconnected)
         XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed exit must keep the handle for reattach")
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.source, .brokerRegistry)
+        XCTAssertTrue(controller.persistentState.reason?.contains("socketTimedOut") == true)
         XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
         XCTAssertEqual(
             try fixture.singleRecord().lifecycle,

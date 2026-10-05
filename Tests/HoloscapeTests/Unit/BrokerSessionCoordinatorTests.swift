@@ -462,6 +462,31 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [durable])
     }
 
+    func testLostTerminateResponseWithObservedMismatchSurfacesMismatch() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.observedTerminationStatus = 7
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 125) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/lost-response-mismatch"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+
+        XCTAssertThrowsError(try coordinator.exit(record.id, exitCode: 0)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .exitCodeMismatch(record.id, expected: 0, observed: 7)
+            )
+        }
+
+        let durable = try XCTUnwrap(coordinator.loadAll().first)
+        XCTAssertEqual(durable.lifecycle, .exited)
+        XCTAssertEqual(durable.exitCode, 7)
+        XCTAssertEqual(durable.requestedExitCode, 0)
+    }
+
     func testExitKeepsAmbiguousTransportFailureNonReattachable() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 130) })

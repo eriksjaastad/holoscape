@@ -595,31 +595,45 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         deliveryGeneration: UInt,
         notifyStartCompletion: Bool
     ) {
+        let mismatchDescription: String? = {
+            guard let requestedExitCode = record.requestedExitCode,
+                  requestedExitCode != exitCode else { return nil }
+            return String(
+                describing: BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+                    record.id,
+                    expected: requestedExitCode,
+                    observed: exitCode
+                )
+            )
+        }()
         let completion: @Sendable (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
                 guard let self,
                       self.brokerSessionID == record.id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                 if let error {
-                    self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                    if let mismatchDescription {
+                        let combined = BrokerSessionCompositeFailure(
+                            description: "\(mismatchDescription); failed to retire completed broker session: \(error)"
+                        )
+                        self.publishSessionFailure(
+                            TerminalSessionFailure(kind: .failed, description: combined.description)
+                        )
+                        self.failExitedOutputDelivery(combined, notifyStartCompletion: notifyStartCompletion)
+                    } else {
+                        self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                    }
                     return
                 }
                 self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
-                if let requestedExitCode = record.requestedExitCode,
-                   requestedExitCode != exitCode {
+                if let mismatchDescription {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
-                            description: String(
-                                describing: BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
-                                    record.id,
-                                    expected: requestedExitCode,
-                                    observed: exitCode
-                                )
-                            )
+                            description: mismatchDescription
                         )
                     )
                 }
@@ -1036,8 +1050,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       !self.didNotifyTermination else { return }
                 if let retirementError {
+                    let combined = BrokerSessionCompositeFailure(
+                        description: "\(mismatchError); failed to retire completed broker session: \(retirementError)"
+                    )
                     self.reportSessionFailure(
-                        retirementError,
+                        combined,
                         for: id,
                         deliveryGeneration: deliveryGeneration
                     )
@@ -1467,6 +1484,10 @@ private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
     var wasAccepted: Bool {
         lock.withLock { accepted }
     }
+}
+
+private struct BrokerSessionCompositeFailure: Error, CustomStringConvertible, Sendable {
+    let description: String
 }
 
 private final class BrokerOutputReadLane: @unchecked Sendable {

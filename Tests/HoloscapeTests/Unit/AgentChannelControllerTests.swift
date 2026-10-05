@@ -71,6 +71,33 @@ final class AgentChannelControllerTests: XCTestCase {
         func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
     }
 
+    func testRecoveredExitMismatchPersistsDetailedControllerErrorAndRetiresIdentity() {
+        let terminal = MockTerminalProcess()
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "recovered-mismatch-agent")
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+
+        terminal.brokerOwnedSessionID = nil
+        terminal.reportSessionFailure(
+            kind: .failed,
+            description: "exitCodeMismatch(expected: 0, observed: 9)"
+        )
+        terminal.reportTermination(exitCode: 9)
+
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.reason, "exitCodeMismatch(expected: 0, observed: 9)")
+        XCTAssertNil(controller.brokerSessionID)
+        XCTAssertTrue(controller.brokerSessionPersistenceIsAuthoritative)
+    }
+
     func testActivateUsesInjectedTerminalProcess() {
         let terminal = MockTerminalProcess()
         let controller = AgentChannelController(
@@ -937,6 +964,9 @@ final class AgentChannelControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.state, .disconnected)
         XCTAssertEqual(controller.brokerSessionID, sessionID)
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.source, .brokerRegistry)
+        XCTAssertTrue(controller.persistentState.reason?.contains("socketTimedOut") == true)
         XCTAssertEqual(
             fixture.runtime.erroredIDs,
             [sessionID],

@@ -544,8 +544,31 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             do {
                 if let observedExitCode = try runtime.terminationStatus(id: id) {
                     do {
-                        _ = try finalizeExit(id, exitCode: observedExitCode)
+                        let finalized = try finalizeExit(id, exitCode: observedExitCode)
+                        if finalized.lifecycle == .exited, observedExitCode != exitCode {
+                            if let runtimeMismatch = runtimeFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
+                               case .exitCodeMismatch = runtimeMismatch {
+                                // Preserve the runtime's original semantic failure when
+                                // terminate itself reported the mismatch. Recovery from a
+                                // lost/ambiguous response synthesizes the coordinator-level
+                                // equivalent below because no runtime mismatch was delivered.
+                                throw runtimeMismatch
+                            }
+                            throw CoordinatorError.exitCodeMismatch(
+                                id,
+                                expected: exitCode,
+                                observed: observedExitCode
+                            )
+                        }
                     } catch let registryFailure {
+                        if let mismatch = registryFailure as? CoordinatorError,
+                           case .exitCodeMismatch = mismatch {
+                            throw mismatch
+                        }
+                        if let mismatch = registryFailure as? NativePTYBrokerSessionRuntime.RuntimeError,
+                           case .exitCodeMismatch = mismatch {
+                            throw mismatch
+                        }
                         throw CoordinatorError.exitFinalizationFailed(
                             id,
                             runtimeFailure: String(describing: runtimeFailure),
@@ -567,6 +590,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 }
             } catch let coordinatorFailure as CoordinatorError {
                 throw coordinatorFailure
+            } catch let runtimeMismatch as NativePTYBrokerSessionRuntime.RuntimeError {
+                if case .exitCodeMismatch = runtimeMismatch {
+                    throw runtimeMismatch
+                }
+                throw runtimeFailure
             } catch {
                 // Failure to inspect the result leaves termination ambiguous.
                 // Keep durable `.exiting` intent so relaunch reconciliation can

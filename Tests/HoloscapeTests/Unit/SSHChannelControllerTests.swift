@@ -597,6 +597,9 @@ final class SSHChannelControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.state, .disconnected)
         XCTAssertEqual(controller.brokerSessionID, sessionID, "A failed exit must keep the handle for reattach")
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.source, .brokerRegistry)
+        XCTAssertTrue(controller.persistentState.reason?.contains("socketTimedOut") == true)
         XCTAssertEqual(fixture.runtime.exitedIDs, [sessionID])
         XCTAssertEqual(
             try fixture.singleRecord().lifecycle,

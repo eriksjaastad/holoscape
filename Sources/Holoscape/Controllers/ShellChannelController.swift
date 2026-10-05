@@ -29,6 +29,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private(set) var activatedAt: Date?
     private(set) var lastInteractionAt: Date = Date()
     private var lastStartFailureKind: TerminalStartFailureKind?
+    private var lastSessionFailureState: PersistentChannelState?
+    private(set) var brokerSessionPersistenceIsAuthoritative = false
+
+    var persistentState: PersistentChannelState {
+        if let lastSessionFailureState { return lastSessionFailureState }
+        return .fromRuntimeState(state, recoveryAction: recoveryAction)
+    }
 
     var notificationDirectoryPath: String? {
         workingDirectory
@@ -154,6 +161,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
             self.recordBrokerExit(exitCode: exitCode)
+            if self.brokerSessionCoordinator == nil {
+                self.brokerSessionID = self.terminal.brokerOwnedSessionID
+                self.brokerSessionPersistenceIsAuthoritative = true
+            }
             self.state = .disconnected
             self.delegate?.channelStateDidChange(self, to: .disconnected)
         }
@@ -227,6 +238,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func finishActivation() {
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
+            if brokerSessionCoordinator == nil, terminal.brokerOwnedSessionID == nil {
+                brokerSessionID = nil
+                brokerSessionPersistenceIsAuthoritative = true
+            }
             let failedState = applyBrokerFailure(kind: terminal.startFailureKind)
             state = failedState
             delegate?.channelStateDidChange(self, to: failedState)
@@ -235,6 +250,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
             brokerSessionID = terminalBrokerSessionID
         }
+        brokerSessionPersistenceIsAuthoritative = true
+        lastSessionFailureState = nil
         lastStartFailureKind = nil
         staleBrokerSessionID = nil
         state = .active
@@ -381,6 +398,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// it. Reported by the terminal process so the failure is explicit instead of
     /// being swallowed or trapping in the middle of an output poll.
     private func handleSessionFailure(_ failure: TerminalSessionFailure) {
+        lastSessionFailureState = failure.kind == .failed
+            ? brokerFailureState(reason: failure.description)
+            : nil
+        if terminal.brokerOwnedSessionID == nil {
+            brokerSessionID = nil
+            brokerSessionPersistenceIsAuthoritative = true
+        }
         let downgradedState = applyBrokerFailure(kind: failure.kind)
         guard state != downgradedState else {
             // Repeated reports (further keystrokes, a layout pass) must not churn
@@ -477,6 +501,16 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             // Same boundary as detach: an unavailable broker must not trap the app
             // on process exit. The unrecorded transition stays reconcilable.
             NSLog("Shell broker session exit failed: \(error)")
+            lastSessionFailureState = brokerFailureState(reason: String(describing: error))
         }
+    }
+
+    private func brokerFailureState(reason: String) -> PersistentChannelState {
+        PersistentChannelState(
+            kind: .error,
+            source: .brokerRegistry,
+            reason: reason,
+            recoveryAction: recoveryAction
+        )
     }
 }

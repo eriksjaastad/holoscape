@@ -257,6 +257,12 @@ class ChannelManager {
             let brokerSessionID: BrokerSessionID?
             if staleBrokerSessionID != nil {
                 brokerSessionID = nil
+            } else if let shellChannel = channel as? ShellChannelController,
+                      shellChannel.brokerSessionPersistenceIsAuthoritative {
+                brokerSessionID = shellChannel.brokerSessionID
+            } else if let agentChannel = channel as? AgentChannelController,
+                      agentChannel.brokerSessionPersistenceIsAuthoritative {
+                brokerSessionID = agentChannel.brokerSessionID
             } else {
                 brokerSessionID = (channel as? ShellChannelController)?.brokerSessionID
                     ?? (channel as? AgentChannelController)?.brokerSessionID
