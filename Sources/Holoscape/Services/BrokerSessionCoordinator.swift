@@ -125,12 +125,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         // inventory is the durable fallback authority: retire any generation
         // that has no registry record before offering sessions for restore.
         for orphanID in runtimeSessionIDs where !recordedIDs.contains(orphanID) {
-            try retireUntrackedSession(orphanID)
+            do {
+                try retireUntrackedSession(orphanID)
+            } catch let error where isCompletedRetirementFailure(error) {
+                // The runtime owner is gone. Discovery has no interactive caller
+                // to receive this warning, so continue restoring unrelated tabs.
+            }
         }
         return try records.compactMap { record in
             switch record.lifecycle {
             case .running, .detached, .reattaching, .stale:
-                let reconciled = try reconcileRuntimeStatus(record.id)
+                guard let reconciled = try reconcileRuntimeStatusForDiscovery(record.id) else {
+                    return nil
+                }
                 switch reconciled.lifecycle {
                 case .running, .detached, .stale:
                     return reconciled
@@ -151,7 +158,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         if try registry.replace(detached, ifUnchangedFrom: current) {
                             return detached
                         }
-                        current = try reconcileRuntimeStatus(record.id)
+                        guard let next = try reconcileRuntimeStatusForDiscovery(record.id) else {
+                            return nil
+                        }
+                        current = next
                     }
                     switch current.lifecycle {
                     case .running, .detached, .stale:
@@ -1109,6 +1119,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 && message.contains(id.rawValue)
         }
         return false
+    }
+
+    private func reconcileRuntimeStatusForDiscovery(_ id: BrokerSessionID) throws -> BrokerSessionRecord? {
+        do {
+            return try reconcileRuntimeStatus(id)
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Reconciliation retired the broken runtime and finalized durable
+            // truth before returning the warning. Discovery has no interactive
+            // caller to receive it, so omit only this dead identity and continue.
+            return nil
+        }
     }
 }
 

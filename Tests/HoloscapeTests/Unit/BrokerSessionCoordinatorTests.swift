@@ -1055,6 +1055,31 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(hostedRuntime.events.contains(.markErrored(record.id)))
     }
 
+    func testRelaunchDiscoveryConsumesCompletedRetirementWarningAfterOutputMonitoringFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 204.1) })
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-completed-output-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.listedSessionIDs = [record.id]
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+            record.id,
+            reason: "PTY readability drain failed: Bad address"
+        )
+        runtime.markErroredError = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            record.id,
+            reason: "final PTY output could not be persisted"
+        )
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
+        XCTAssertTrue(runtime.events.contains(.markErrored(record.id)))
+    }
+
     func testUpdatingMissingSessionFailsLoudly() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 1) })
@@ -1352,6 +1377,20 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         let runtime = RecordingBrokerSessionRuntime()
         let orphan = BrokerSessionID(rawValue: "failed-start-orphan")
         runtime.listedSessionIDs = [orphan]
+        let coordinator = makeCoordinator(runtime: runtime, now: Date.init)
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(runtime.events, [.markErrored(orphan)])
+    }
+
+    func testRelaunchDiscoveryContinuesAfterCompletedOrphanRetirementWarning() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let orphan = BrokerSessionID(rawValue: "failed-start-orphan-with-output-warning")
+        runtime.listedSessionIDs = [orphan]
+        runtime.markErroredError = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            orphan,
+            reason: "final PTY output could not be persisted"
+        )
         let coordinator = makeCoordinator(runtime: runtime, now: Date.init)
 
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
