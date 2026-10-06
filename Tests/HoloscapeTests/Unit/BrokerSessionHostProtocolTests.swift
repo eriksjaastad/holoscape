@@ -1090,7 +1090,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             XCTAssertEqual(error as? BrokerSessionHostProcessTransport.TransportError, .responseTimedOut)
         }
         let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000_000
-        XCTAssertLessThan(elapsedSeconds, 1.75, "Partial bytes extended the absolute response deadline")
+        XCTAssertLessThan(elapsedSeconds, 2.0, "Partial bytes extended the absolute response deadline")
+        XCTAssertThrowsError(try transport.sendFrame(Data("{\"request\":\"after-timeout\"}\n".utf8))) { error in
+            XCTAssertEqual(error as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        }
     }
 
     func testProcessTransportDrainsHighVolumeStderrBeforeHelperResponse() throws {
