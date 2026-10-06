@@ -80,7 +80,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         workingDirectory: String?,
         size: TerminalGridSize,
         waiter: @escaping Waiter
-    ) throws -> (process: NativePTYChildProcess, masterDescriptor: Int32) {
+    ) throws -> (process: NativePTYChildProcess, processGroupID: pid_t, masterDescriptor: Int32) {
         let argumentPointers = ([executable] + arguments).map { strdup($0) } + [nil]
         let environmentPointers = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         let workingDirectoryPointer: UnsafeMutablePointer<CChar>? = workingDirectory.flatMap { strdup($0) }
@@ -91,6 +91,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         }
 
         var childPID: pid_t = 0
+        var processGroupID: pid_t = 0
         var masterDescriptor: Int32 = -1
         let launchError = argumentPointers.withUnsafeBufferPointer { argv in
             environmentPointers.withUnsafeBufferPointer { envp in
@@ -102,6 +103,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
                     UInt16(size.rows),
                     UInt16(size.columns),
                     &childPID,
+                    &processGroupID,
                     &masterDescriptor
                 )
             }
@@ -109,7 +111,11 @@ final class NativePTYChildProcess: @unchecked Sendable {
         guard launchError == 0 else {
             throw LaunchFailure(errno: launchError, masterDescriptor: masterDescriptor)
         }
-        return (NativePTYChildProcess(processIdentifier: childPID, waiter: waiter), masterDescriptor)
+        return (
+            NativePTYChildProcess(processIdentifier: childPID, waiter: waiter),
+            processGroupID,
+            masterDescriptor
+        )
     }
 }
 
@@ -1051,9 +1057,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 waitError: waitError == 0 ? nil : waitError
             )
         },
-        processGroupLookup: @escaping @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?) = { processIdentifier in
-            let processGroupID = getpgid(processIdentifier)
-            return (processGroupID, processGroupID < 0 ? errno : nil)
+        processGroupLookup: @escaping @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?) = {
+            ($0, nil)
         },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
@@ -1111,7 +1116,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
         }
 
-        let launch: (process: NativePTYChildProcess, masterDescriptor: Int32)
+        let launch: (process: NativePTYChildProcess, processGroupID: pid_t, masterDescriptor: Int32)
         do {
             launch = try NativePTYChildProcess.launch(
                 executable: request.command,
@@ -1207,7 +1212,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             session.startOutputMonitoring()
         }
 
-        let expectedProcessGroupID = process.processIdentifier
+        let expectedProcessGroupID = launch.processGroupID
         let processGroupObservation = processGroupLookup(process.processIdentifier)
         if processGroupObservation.processGroupID != expectedProcessGroupID {
             session.shutDownOutputMonitoring()

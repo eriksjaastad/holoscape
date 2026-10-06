@@ -52,6 +52,56 @@ static int prepare_child_error_descriptor(int *error_fd, long descriptor_limit) 
     return 0;
 }
 
+static int wait_for_child(pid_t pid) {
+    int status;
+    pid_t result;
+    do {
+        result = waitpid(pid, &status, 0);
+    } while (result < 0 && errno == EINTR);
+    return result < 0 ? errno : 0;
+}
+
+static int write_exact(int descriptor, const void *buffer, size_t count) {
+    const unsigned char *cursor = buffer;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t written = write(descriptor, cursor, remaining);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written <= 0) {
+            return written < 0 ? errno : EPIPE;
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    return 0;
+}
+
+static int read_exact(int descriptor, void *buffer, size_t count) {
+    unsigned char *cursor = buffer;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t received = read(descriptor, cursor, remaining);
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        if (received <= 0) {
+            return received < 0 ? errno : EPIPE;
+        }
+        cursor += received;
+        remaining -= (size_t)received;
+    }
+    return 0;
+}
+
+static int kill_and_wait(pid_t pid, pid_t process_group_id) {
+    if (kill(-process_group_id, SIGKILL) != 0 && errno != ESRCH) {
+        return errno;
+    }
+    return wait_for_child(pid);
+}
+
 int holoscape_spawn_pty(
     const char *executable,
     char *const argv[],
@@ -60,27 +110,47 @@ int holoscape_spawn_pty(
     uint16_t rows,
     uint16_t columns,
     pid_t *child_pid,
+    pid_t *process_group_id,
     int *master_fd
 ) {
     int error_pipe[2];
     if (pipe(error_pipe) != 0) {
         return errno;
     }
+    int launch_pipe[2];
+    if (pipe(launch_pipe) != 0) {
+        int error_code = errno;
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        return error_code;
+    }
+
     int descriptor_error = move_descriptor_above_stdio(&error_pipe[0]);
     if (descriptor_error == 0) {
         descriptor_error = move_descriptor_above_stdio(&error_pipe[1]);
     }
+    if (descriptor_error == 0) {
+        descriptor_error = move_descriptor_above_stdio(&launch_pipe[0]);
+    }
+    if (descriptor_error == 0) {
+        descriptor_error = move_descriptor_above_stdio(&launch_pipe[1]);
+    }
     if (descriptor_error != 0) {
         close(error_pipe[0]);
         close(error_pipe[1]);
+        close(launch_pipe[0]);
+        close(launch_pipe[1]);
         return descriptor_error;
     }
+
     errno = 0;
     long descriptor_limit = sysconf(_SC_OPEN_MAX);
     if (descriptor_limit < 0 || descriptor_limit > INT_MAX) {
         int error_code = errno != 0 ? errno : EOVERFLOW;
         close(error_pipe[0]);
         close(error_pipe[1]);
+        close(launch_pipe[0]);
+        close(launch_pipe[1]);
         return error_code;
     }
 
@@ -96,11 +166,27 @@ int holoscape_spawn_pty(
         int error_code = errno;
         close(error_pipe[0]);
         close(error_pipe[1]);
+        close(launch_pipe[0]);
+        close(launch_pipe[1]);
         return error_code;
     }
 
     if (pid == 0) {
         close(error_pipe[0]);
+        close(launch_pipe[1]);
+
+        int child_ready = 0;
+        int handshake_error = write_exact(error_pipe[1], &child_ready, sizeof(child_ready));
+        if (handshake_error != 0) {
+            _exit(127);
+        }
+        unsigned char launch_permission = 0;
+        handshake_error = read_exact(launch_pipe[0], &launch_permission, sizeof(launch_permission));
+        close(launch_pipe[0]);
+        if (handshake_error != 0) {
+            report_child_error_and_exit(error_pipe[1], handshake_error);
+        }
+
         int child_descriptor_error = prepare_child_error_descriptor(&error_pipe[1], descriptor_limit);
         if (child_descriptor_error != 0) {
             report_child_error_and_exit(error_pipe[1], child_descriptor_error);
@@ -112,32 +198,59 @@ int holoscape_spawn_pty(
         report_child_error_and_exit(error_pipe[1], errno);
     }
 
-    if (fcntl(spawned_master, F_SETFD, FD_CLOEXEC) != 0) {
-        int descriptor_error = errno;
+    close(error_pipe[1]);
+    close(launch_pipe[0]);
+
+    int child_ready = -1;
+    int handshake_error = read_exact(error_pipe[0], &child_ready, sizeof(child_ready));
+    if (handshake_error != 0 || child_ready != 0) {
         close(error_pipe[0]);
-        close(error_pipe[1]);
-        int signal_error = 0;
-        if (kill(-pid, SIGKILL) != 0 && errno != ESRCH) {
-            signal_error = errno;
-        }
-        int wait_error = 0;
-        if (signal_error == 0) {
-            int status;
-            pid_t wait_result;
-            do {
-                wait_result = waitpid(pid, &status, 0);
-            } while (wait_result < 0 && errno == EINTR);
-            if (wait_result < 0 && errno != ECHILD) {
-                wait_error = errno;
-            }
-        }
+        close(launch_pipe[1]);
+        int signal_error = kill(pid, SIGKILL) == 0 || errno == ESRCH ? 0 : errno;
+        int wait_error = signal_error == 0 ? wait_for_child(pid) : 0;
         close(spawned_master);
-        return signal_error != 0 ? signal_error : (wait_error != 0 ? wait_error : descriptor_error);
+        if (signal_error != 0) {
+            return signal_error;
+        }
+        if (wait_error != 0) {
+            return wait_error;
+        }
+        return handshake_error != 0 ? handshake_error : EPROTO;
+    }
+
+    pid_t observed_process_group_id = getpgid(pid);
+    if (observed_process_group_id != pid) {
+        int identity_error = observed_process_group_id < 0 ? errno : EPROTO;
+        close(error_pipe[0]);
+        close(launch_pipe[1]);
+        int signal_error = kill(pid, SIGKILL) == 0 || errno == ESRCH ? 0 : errno;
+        int wait_error = signal_error == 0 ? wait_for_child(pid) : 0;
+        close(spawned_master);
+        return signal_error != 0 ? signal_error : (wait_error != 0 ? wait_error : identity_error);
+    }
+
+    if (fcntl(spawned_master, F_SETFD, FD_CLOEXEC) != 0) {
+        int descriptor_setup_error = errno;
+        close(error_pipe[0]);
+        close(launch_pipe[1]);
+        int cleanup_error = kill_and_wait(pid, observed_process_group_id);
+        close(spawned_master);
+        return cleanup_error != 0 ? cleanup_error : descriptor_setup_error;
     }
 
     *child_pid = pid;
+    *process_group_id = observed_process_group_id;
     *master_fd = spawned_master;
-    close(error_pipe[1]);
+
+    unsigned char launch_permission = 1;
+    int release_error = write_exact(launch_pipe[1], &launch_permission, sizeof(launch_permission));
+    close(launch_pipe[1]);
+    if (release_error != 0) {
+        close(error_pipe[0]);
+        int cleanup_error = kill_and_wait(pid, observed_process_group_id);
+        return cleanup_error != 0 ? cleanup_error : release_error;
+    }
+
     int child_error = 0;
     ssize_t bytes_read;
     do {
@@ -147,10 +260,14 @@ int holoscape_spawn_pty(
     close(error_pipe[0]);
 
     if (bytes_read > 0 || read_error != 0) {
-        int status;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        int wait_error = wait_for_child(pid);
+        if (wait_error != 0) {
+            return wait_error;
         }
-        return bytes_read > 0 ? child_error : read_error;
+        if (bytes_read != sizeof(child_error)) {
+            return read_error != 0 ? read_error : EPROTO;
+        }
+        return child_error;
     }
 
     return 0;

@@ -187,6 +187,25 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(signaler.callCount, 0)
     }
 
+    func testImmediateExitPreservesProcessGroupIdentityAndTerminationStatus() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+
+        for index in 0..<20 {
+            let id = BrokerSessionID(rawValue: "native-pty-immediate-exit-\(index)")
+            try runtime.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/usr/bin/true",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+            XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+            try runtime.markSessionErrored(id: id)
+        }
+    }
+
     func testProcessWaitDoesNotRaceProcessGroupIdentityValidation() throws {
         let ordering = ProcessWaitOrderingProbe()
         let runtime = NativePTYBrokerSessionRuntime(

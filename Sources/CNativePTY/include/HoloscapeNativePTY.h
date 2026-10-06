@@ -12,6 +12,7 @@ int holoscape_spawn_pty(
     uint16_t rows,
     uint16_t columns,
     pid_t *child_pid,
+    pid_t *process_group_id,
     int *master_fd
 );
 
