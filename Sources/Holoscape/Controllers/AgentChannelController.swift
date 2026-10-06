@@ -318,6 +318,11 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private func finishActivation() {
+        if let sessionFailure = terminal.sessionFailure {
+            pendingRestoredAttention = nil
+            handleSessionFailure(sessionFailure)
+            return
+        }
         if let startFailure = terminal.startFailureDescription {
             pendingRestoredAttention = nil
             NSLog("Agent terminal start failed: \(startFailure)")

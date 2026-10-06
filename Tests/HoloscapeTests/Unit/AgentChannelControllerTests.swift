@@ -204,6 +204,35 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.recoveryAction, .recreateBrokerSession)
     }
 
+    func testSessionFailureDuringStartCompletionRemainsVisibleUntilSuccessfulRetry() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "capability-failed-agent")
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.reportSessionFailure(kind: .failed, description: "capability query failed")
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.reason, "capability query failed")
+        controller.sendInput("must-not-send")
+        XCTAssertTrue(terminal.sentBytes.isEmpty)
+
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+    }
+
     func testAgentTabIdentityIndicatorFollowsLaunchCommand() {
         let codex = AgentChannelController(
             id: UUID(),

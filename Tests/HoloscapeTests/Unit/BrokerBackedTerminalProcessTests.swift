@@ -40,7 +40,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var storedScrollbackSnapshotCount = 0
         private var storedSuccessfulInputWrites = 0
         var untrackedStartID: BrokerSessionID?
+        var outputAvailabilityMonitoringError: Error?
         private(set) var reattachCallCount = 0
+        private(set) var outputAvailabilityMonitoringQueryCount = 0
 
         func waitForReattach(timeout: TimeInterval = 1) -> Bool {
             entered.wait(timeout: .now() + timeout) == .success
@@ -210,6 +212,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             if shouldBlock {
                 _ = acknowledgmentRelease.wait(timeout: .now() + 2)
             }
+        }
+        func supportsOutputAvailabilityMonitoring(_ id: BrokerSessionID) throws -> Bool {
+            outputAvailabilityMonitoringQueryCount += 1
+            if let outputAvailabilityMonitoringError {
+                throw outputAvailabilityMonitoringError
+            }
+            return false
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
@@ -1068,6 +1077,39 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         try waitUntil { outputNotifications == 1 }
         XCTAssertGreaterThan(runtime.readCount, readsAfterInitialWake)
+    }
+
+    func testOutputMonitoringCapabilityQueryFailureIsReportedWithoutStartingPolling() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.outputAvailabilityMonitoringError = RuntimeError.createFailed
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "capability-query-failure",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        defer { terminal.detachBrokerSession() }
+        var failures: [TerminalSessionFailure] = []
+        terminal.setSessionFailureHandler { failures.append($0) }
+        terminal.setOutputHandler {
+            XCTFail("A failed capability query must not silently start periodic polling")
+        }
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { coordinator.outputAvailabilityMonitoringQueryCount == 1 }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+
+        XCTAssertEqual(failures.map(\.kind), [.failed])
+        XCTAssertEqual(coordinator.outputReadCount, 0)
+        XCTAssertEqual(terminal.sessionFailure?.kind, .failed)
     }
 
     func testCancelledOutputSnapshotIsNotAcknowledgedBeforeTerminalDelivery() throws {

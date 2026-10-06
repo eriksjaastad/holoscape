@@ -116,6 +116,37 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.persistentState.recoveryAction, .retryBrokerHost)
     }
 
+    func testSessionFailureDuringStartCompletionRemainsVisibleUntilSuccessfulRetry() {
+        let terminal = MockTerminalProcess()
+        terminal.completesStartAsynchronously = true
+        terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "capability-failed-shell")
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+
+        controller.activate()
+        terminal.reportSessionFailure(kind: .failed, description: "capability query failed")
+        terminal.completeStart()
+
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(controller.persistentState.kind, .error)
+        XCTAssertEqual(controller.persistentState.reason, "capability query failed")
+        XCTAssertEqual(
+            controller.brokerSessionID,
+            BrokerSessionID(rawValue: "capability-failed-shell"),
+            "A capability-query failure must retain the broker identity for persistence and retry"
+        )
+        controller.sendInput("must-not-send")
+        XCTAssertTrue(terminal.sentBytes.isEmpty)
+
+        controller.retry()
+
+        XCTAssertEqual(controller.state, .active)
+    }
+
     func testShellLaunchEnvironmentGuaranteesTerminalBaselineAndStripsInheritedAgentOwnerToken() {
         let environment = ShellChannelController.launchEnvironment(from: [
             "PATH": "/usr/bin",
