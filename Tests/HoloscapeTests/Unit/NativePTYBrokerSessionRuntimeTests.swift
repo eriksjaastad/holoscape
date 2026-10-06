@@ -60,6 +60,33 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(waitForProcessToExit(processID), "Ctrl-C left foreground PID \(processID) running")
     }
 
+    func testNativePTYWorksWhenBrokerInheritsClosedStandardInput() throws {
+        let savedStandardInput = dup(STDIN_FILENO)
+        XCTAssertGreaterThanOrEqual(savedStandardInput, 0)
+        XCTAssertEqual(Darwin.close(STDIN_FILENO), 0)
+        defer {
+            XCTAssertEqual(dup2(savedStandardInput, STDIN_FILENO), STDIN_FILENO)
+            XCTAssertEqual(Darwin.close(savedStandardInput), 0)
+        }
+
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "native-pty-closed-stdin-test")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+
+        try runtime.sendInput(id: id, bytes: Array("closed-stdin-safe\n".utf8))
+        let output = try waitForOutput(from: runtime, id: id, containing: "closed-stdin-safe")
+        XCTAssertTrue(output.contains("closed-stdin-safe"), output)
+        try runtime.markSessionErrored(id: id)
+    }
+
     func testNativePTYInputPreservesWriteOrderAndBytes() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "native-pty-input-order-test")
@@ -278,6 +305,69 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         try runtime.markSessionErrored(id: id)
         XCTAssertEqual(try runtime.listSessions(), [])
         XCTAssertGreaterThanOrEqual(closer.attemptCount, 2)
+    }
+
+    func testWaitFailureIsReportedInsteadOfFabricatingTerminationStatus() throws {
+        let waitFinished = DispatchSemaphore(value: 0)
+        let runtime = NativePTYBrokerSessionRuntime(
+            installsOutputReadabilityHandler: false,
+            childProcessWaiter: { processIdentifier in
+                var status: Int32 = 0
+                var result: pid_t
+                repeat {
+                    result = waitpid(processIdentifier, &status, 0)
+                } while result < 0 && errno == EINTR
+                waitFinished.signal()
+                return NativePTYChildProcess.TerminationObservation(status: nil, waitError: ECHILD)
+            }
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-wait-failure-test")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/usr/bin/true",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+
+        XCTAssertEqual(waitFinished.wait(timeout: .now() + 2), .success)
+        let deadline = Date().addingTimeInterval(2)
+        var observedError: NativePTYBrokerSessionRuntime.RuntimeError?
+        while Date() < deadline, observedError == nil {
+            do {
+                _ = try runtime.terminationStatus(id: id)
+            } catch let error as NativePTYBrokerSessionRuntime.RuntimeError {
+                observedError = error
+            }
+            if observedError == nil { usleep(10_000) }
+        }
+        guard case let .terminationFailed(failedID, reason)? = observedError else {
+            return XCTFail("Expected truthful wait failure, got \(String(describing: observedError))")
+        }
+        XCTAssertEqual(failedID, id)
+        XCTAssertTrue(reason.contains("waitpid failed"), reason)
+    }
+
+    func testLaunchFailureRetainsInputDescriptorForLaterCleanupRetry() throws {
+        let closer = RetainingThenClosingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(inputDescriptorCloser: closer.close)
+        let firstID = BrokerSessionID(rawValue: "native-pty-launch-retained-close-first")
+        let request = BrokerSessionLaunchRequest(
+            command: "/definitely/missing/holoscape-command",
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        XCTAssertThrowsError(try runtime.createSession(id: firstID, request: request))
+        XCTAssertEqual(closer.attemptCount, 1)
+
+        closer.allowClosure()
+        let secondID = BrokerSessionID(rawValue: "native-pty-launch-retained-close-second")
+        XCTAssertThrowsError(try runtime.createSession(id: secondID, request: request))
+        XCTAssertEqual(closer.attemptCount, 3)
     }
 
     func testLaunchFailureRetainsInputDescriptorCloseFailure() throws {

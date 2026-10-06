@@ -15,6 +15,23 @@ static void report_child_error_and_exit(int error_fd, int error_code) {
     _exit(127);
 }
 
+static int move_descriptor_above_stdio(int *descriptor) {
+    if (*descriptor >= STDERR_FILENO + 1) {
+        if (fcntl(*descriptor, F_SETFD, FD_CLOEXEC) == 0) {
+            return 0;
+        }
+        return errno;
+    }
+
+    int duplicated = fcntl(*descriptor, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    if (duplicated < 0) {
+        return errno;
+    }
+    close(*descriptor);
+    *descriptor = duplicated;
+    return 0;
+}
+
 int holoscape_spawn_pty(
     const char *executable,
     char *const argv[],
@@ -29,11 +46,14 @@ int holoscape_spawn_pty(
     if (pipe(error_pipe) != 0) {
         return errno;
     }
-    if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) != 0) {
-        int error_code = errno;
+    int descriptor_error = move_descriptor_above_stdio(&error_pipe[0]);
+    if (descriptor_error == 0) {
+        descriptor_error = move_descriptor_above_stdio(&error_pipe[1]);
+    }
+    if (descriptor_error != 0) {
         close(error_pipe[0]);
         close(error_pipe[1]);
-        return error_code;
+        return descriptor_error;
     }
 
     struct winsize size = {

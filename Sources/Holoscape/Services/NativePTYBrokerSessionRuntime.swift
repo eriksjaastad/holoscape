@@ -2,25 +2,36 @@ import Darwin
 import Foundation
 import CNativePTY
 
-private final class NativePTYChildProcess: @unchecked Sendable {
+final class NativePTYChildProcess: @unchecked Sendable {
     struct LaunchFailure: Error {
         let errno: Int32
         let masterDescriptor: Int32
     }
+    struct TerminationObservation: Sendable {
+        let status: Int32?
+        let waitError: Int32?
+    }
+    typealias Waiter = @Sendable (pid_t) -> TerminationObservation
     typealias TerminationHandler = @Sendable (NativePTYChildProcess) -> Void
 
     let processIdentifier: pid_t
     private let lock = NSLock()
     private var running = true
     private var status: Int32 = 0
+    private var waitError: Int32?
     private var storedTerminationHandler: TerminationHandler?
 
     var isRunning: Bool {
         lock.withLock { running }
     }
 
-    var terminationStatus: Int32 {
-        lock.withLock { status }
+    var terminationObservation: TerminationObservation {
+        lock.withLock {
+            TerminationObservation(
+                status: running || waitError != nil ? nil : status,
+                waitError: waitError
+            )
+        }
     }
 
     var terminationHandler: TerminationHandler? {
@@ -34,13 +45,15 @@ private final class NativePTYChildProcess: @unchecked Sendable {
         }
     }
 
-    private init(processIdentifier: pid_t) {
+    private init(processIdentifier: pid_t, waiter: @escaping Waiter) {
         self.processIdentifier = processIdentifier
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            var observedStatus: Int32 = 0
-            let waitError = holoscape_wait_pid(processIdentifier, &observedStatus)
+            let observation = waiter(processIdentifier)
             let handler = lock.withLock { () -> TerminationHandler? in
-                status = waitError == 0 ? observedStatus : Int32.max
+                if let observedStatus = observation.status {
+                    status = observedStatus
+                }
+                waitError = observation.waitError
                 running = false
                 return storedTerminationHandler
             }
@@ -53,7 +66,8 @@ private final class NativePTYChildProcess: @unchecked Sendable {
         arguments: [String],
         environment: [String: String],
         workingDirectory: String?,
-        size: TerminalGridSize
+        size: TerminalGridSize,
+        waiter: @escaping Waiter
     ) throws -> (process: NativePTYChildProcess, masterDescriptor: Int32) {
         let argumentPointers = ([executable] + arguments).map { strdup($0) } + [nil]
         let environmentPointers = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -83,7 +97,7 @@ private final class NativePTYChildProcess: @unchecked Sendable {
         guard launchError == 0 else {
             throw LaunchFailure(errno: launchError, masterDescriptor: masterDescriptor)
         }
-        return (NativePTYChildProcess(processIdentifier: childPID), masterDescriptor)
+        return (NativePTYChildProcess(processIdentifier: childPID, waiter: waiter), masterDescriptor)
     }
 }
 
@@ -174,6 +188,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private var finalOutputDrainFailureReason: String?
         private var finalOutputDrainComplete = false
         var terminationStatus: Int32?
+        private var processWaitFailureReason: String?
         var outputAvailabilityHandler: (@Sendable (BrokerSessionID) -> Void)?
         private let maxScrollbackBytes = ScrollbackPersistencePolicy.maxRetainedBytesPerSession
 
@@ -374,7 +389,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 handle.readabilityHandler = nil
                 return false
             }
-            if readResult.errno == EINTR { return true }
+            if readResult.errno == EINTR || readResult.errno == EAGAIN || readResult.errno == EWOULDBLOCK {
+                return true
+            }
             let failureReason = "PTY readability drain failed: \(String(cString: strerror(readResult.errno)))"
             lock.lock()
             outputMonitoringFailureReason = failureReason
@@ -792,7 +809,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         func handleProcessTermination(
-            _ status: Int32,
+            _ observation: NativePTYChildProcess.TerminationObservation,
             signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
         ) {
             do {
@@ -805,7 +822,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
             lock.lock()
             guard let processGroupID else {
-                terminationStatus = status
+                terminationStatus = observation.status
+                processWaitFailureReason = observation.waitError.map {
+                    "waitpid failed: \(String(cString: strerror($0)))"
+                }
                 lock.unlock()
                 return
             }
@@ -813,7 +833,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
             let signalError = signalProcessGroup(processGroupID, SIGKILL)
             lock.lock()
-            terminationStatus = status
+            terminationStatus = observation.status
+            processWaitFailureReason = observation.waitError.map {
+                "waitpid failed: \(String(cString: strerror($0)))"
+            }
             if signalError == 0 || signalError == ESRCH {
                 if self.processGroupID == processGroupID {
                     self.processGroupID = nil
@@ -837,6 +860,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             if let reason = scrollbackPersistenceFailureReason {
                 lock.unlock()
                 throw RuntimeError.scrollbackPersistenceFailed(id, reason: reason)
+            }
+            if let reason = processWaitFailureReason {
+                lock.unlock()
+                throw RuntimeError.terminationFailed(id, reason: reason)
             }
             guard outputMonitoringComplete, outputPersistenceBytesOutstanding == 0 else {
                 lock.unlock()
@@ -967,9 +994,11 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
     private let lock = NSLock()
     private var sessions: [BrokerSessionID: Session] = [:]
+    private var retainedLaunchFailureInputDescriptors: [Int32] = []
     private let scrollbackStore: DiskBackedScrollbackStore?
     private let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
     private let processEnvironment: [String: String]
+    private let childProcessWaiter: NativePTYChildProcess.Waiter
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
     private let inputWriteTimeoutMilliseconds: Int32
     private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
@@ -996,6 +1025,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let readCount = Darwin.read(descriptor, buffer, count)
             return (readCount, readCount < 0 ? errno : 0)
         },
+        childProcessWaiter: @escaping NativePTYChildProcess.Waiter = { processIdentifier in
+            var observedStatus: Int32 = 0
+            let waitError = holoscape_wait_pid(processIdentifier, &observedStatus)
+            return NativePTYChildProcess.TerminationObservation(
+                status: waitError == 0 ? observedStatus : nil,
+                waitError: waitError == 0 ? nil : waitError
+            )
+        },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
@@ -1016,9 +1053,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.inputWriteDidStart = inputWriteDidStart
         self.outputReadDidStart = outputReadDidStart
         self.outputReader = outputReader
+        self.childProcessWaiter = childProcessWaiter
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.processGroupSignal = processGroupSignal
+    }
+
+    deinit {
+        retainedLaunchFailureInputDescriptors.forEach { _ = Darwin.close($0) }
     }
 
     func listSessions() throws -> [BrokerSessionID] {
@@ -1035,6 +1077,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if sessions[id] != nil {
             throw RuntimeError.duplicateSession(id)
         }
+        retryRetainedLaunchFailureInputDescriptorClosures()
 
         try validatePTYGridSize(request.initialSize)
         var resolvedEnvironment = try environment(for: request.environmentProfile)
@@ -1051,7 +1094,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 arguments: request.arguments,
                 environment: resolvedEnvironment,
                 workingDirectory: request.workingDirectory,
-                size: request.initialSize
+                size: request.initialSize,
+                waiter: childProcessWaiter
             )
         } catch let failure as NativePTYChildProcess.LaunchFailure {
             let inputDescriptor = dup(failure.masterDescriptor)
@@ -1062,7 +1106,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             _ = Darwin.close(failure.masterDescriptor)
             let reason = String(cString: strerror(failure.errno))
             switch closeResult {
-            case let .closedWithWarning(closeErrno), let .ownershipRetained(closeErrno):
+            case let .ownershipRetained(closeErrno):
+                retainedLaunchFailureInputDescriptors.append(inputDescriptor)
+                throw RuntimeError.launchFailedWithInputCloseFailure(reason: reason, errno: closeErrno)
+            case let .closedWithWarning(closeErrno):
                 throw RuntimeError.launchFailedWithInputCloseFailure(reason: reason, errno: closeErrno)
             case .closed:
                 throw RuntimeError.launchFailed(reason)
@@ -1110,7 +1157,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let processGroupSignal = self.processGroupSignal
         process.terminationHandler = { [weak session] process in
             session?.handleProcessTermination(
-                process.terminationStatus,
+                process.terminationObservation,
                 signalProcessGroup: processGroupSignal
             )
         }
@@ -1136,12 +1183,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let alreadyTerminatedStatus = session.setProcessGroupID(expectedProcessGroupID)
         if let alreadyTerminatedStatus {
             session.handleProcessTermination(
-                alreadyTerminatedStatus,
+                NativePTYChildProcess.TerminationObservation(
+                    status: alreadyTerminatedStatus,
+                    waitError: nil
+                ),
                 signalProcessGroup: processGroupSignal
             )
         } else if !process.isRunning {
             session.handleProcessTermination(
-                process.terminationStatus,
+                process.terminationObservation,
                 signalProcessGroup: processGroupSignal
             )
         }
@@ -1179,7 +1229,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 processFailure: error
             )
         }
-        let observedExitCode = session.process.terminationStatus
+        let observation = session.process.terminationObservation
+        if let waitError = observation.waitError {
+            throw RuntimeError.terminationFailed(
+                id,
+                reason: "waitpid failed: \(String(cString: strerror(waitError)))"
+            )
+        }
+        guard let observedExitCode = observation.status else {
+            throw RuntimeError.terminationFailed(id, reason: "process stopped without a termination status")
+        }
         session.markTerminated(observedExitCode)
         if case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
             if session.inputDescriptorOwnershipIsRetained() {
@@ -1345,7 +1404,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         try session.throwOutputMonitoringErrorIfPresent()
-        if !session.process.isRunning { return false }
+        if !session.process.isRunning {
+            if let waitError = session.process.terminationObservation.waitError {
+                throw RuntimeError.terminationFailed(
+                    id,
+                    reason: "waitpid failed: \(String(cString: strerror(waitError)))"
+                )
+            }
+            return false
+        }
         try session.throwInputCloseErrorIfPresent(waitForClosing: false)
         try session.throwScrollbackPersistenceErrorIfPresent()
         return true
@@ -1355,7 +1422,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         try session.throwOutputMonitoringErrorIfPresent()
-        let processFallback = session.process.isRunning ? nil : session.process.terminationStatus
+        let processFallback = session.process.isRunning
+            ? nil
+            : session.process.terminationObservation.status
         let observedStatus = try session.observedTerminationStatus(processFallback: processFallback)
         if let observedStatus {
             do {
@@ -1470,6 +1539,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             inputCloseErrno: closeErrno,
             processFailure: String(describing: processFailure)
         )
+    }
+
+    private func retryRetainedLaunchFailureInputDescriptorClosures() {
+        retainedLaunchFailureInputDescriptors = retainedLaunchFailureInputDescriptors.filter { descriptor in
+            if case .ownershipRetained = inputDescriptorCloser(descriptor) {
+                return true
+            }
+            return false
+        }
     }
 
     private func inputCloseFailure(for session: Session) -> Error? {
