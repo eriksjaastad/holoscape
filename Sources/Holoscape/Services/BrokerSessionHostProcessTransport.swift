@@ -202,11 +202,15 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
             try rejectOversizedResponse()
         }
 
-        var inactivityDeadline = monotonicDeadline(after: responseTimeoutSeconds)
+        let responseDeadline = monotonicDeadline(after: responseTimeoutSeconds)
         while true {
             try throwIfClosed()
-            let remainingMilliseconds = monotonicRemainingMilliseconds(until: inactivityDeadline)
+            let remainingMilliseconds = monotonicRemainingMilliseconds(until: responseDeadline)
             if remainingMilliseconds == 0 {
+                // A timed-out response makes this uncorrelated request/response
+                // stream impossible to resynchronize safely. Poison the
+                // transport so late bytes can never satisfy a later request.
+                close()
                 throw TransportError.responseTimedOut
             }
             var pollFD = pollfd(fd: outputDescriptor, events: Int16(POLLIN), revents: 0)
@@ -240,7 +244,6 @@ final class BrokerSessionHostProcessTransport: @unchecked Sendable {
                     try rejectOversizedResponse()
                 }
                 readBuffer.append(contentsOf: incoming)
-                inactivityDeadline = monotonicDeadline(after: responseTimeoutSeconds)
                 continue
             }
             if byteCount < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {

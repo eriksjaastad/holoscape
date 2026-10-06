@@ -1061,6 +1061,41 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testProcessTransportTimesOutContinuousIncompleteResponseAtAbsoluteDeadline() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerSessionHostProcessTransportAbsoluteTimeoutTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("trickle-incomplete-response")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        IFS= read -r line
+        count=0
+        while [ "$count" -lt 60 ]; do
+            printf x
+            sleep 0.05
+            count=$((count + 1))
+        done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+        let transport = try BrokerSessionHostProcessTransport(
+            executableURL: helperURL,
+            responseTimeoutSeconds: 1
+        )
+        defer { transport.close() }
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            XCTAssertEqual(error as? BrokerSessionHostProcessTransport.TransportError, .responseTimedOut)
+        }
+        let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000_000
+        XCTAssertLessThan(elapsedSeconds, 2.0, "Partial bytes extended the absolute response deadline")
+        XCTAssertThrowsError(try transport.sendFrame(Data("{\"request\":\"after-timeout\"}\n".utf8))) { error in
+            XCTAssertEqual(error as? BrokerSessionHostProcessTransport.TransportError, .transportClosed)
+        }
+    }
+
     func testProcessTransportDrainsHighVolumeStderrBeforeHelperResponse() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrokerSessionHostProcessTransportTests-\(UUID().uuidString)")
