@@ -5,11 +5,19 @@ import Darwin
 class ProjectDiscoveryService {
     private var cachedProjects: [SessionProfile] = []
     private var cachedSource: CacheSource?
+    private var latestRequestID: UInt64 = 0
     private var lastRefresh: Date?
     private let configService: ConfigService
+    private let remoteDirectoryLister: RemoteDirectoryLister
 
-    init(configService: ConfigService) {
+    typealias RemoteDirectoryLister = @Sendable (_ host: String, _ user: String, _ root: String) async throws -> [String]
+
+    init(
+        configService: ConfigService,
+        remoteDirectoryLister: @escaping RemoteDirectoryLister = ProjectDiscoveryService.listRemoteDirectories
+    ) {
         self.configService = configService
+        self.remoteDirectoryLister = remoteDirectoryLister
     }
 
     /// Discover project directories from the configured source.
@@ -25,6 +33,8 @@ class ProjectDiscoveryService {
         let defaults = config.sshDefaults ?? .default
         let source = CacheSource(discovery: discovery, defaults: defaults)
         reconcileCache(with: source)
+        latestRequestID &+= 1
+        let requestID = latestRequestID
         if source.kind == .local {
             do {
                 cachedProjects = try profilesFromLocalProjectRoot(discovery)
@@ -36,15 +46,17 @@ class ProjectDiscoveryService {
         }
 
         do {
-            let dirs = try await listRemoteDirectories(
-                host: defaults.host,
-                user: defaults.user,
-                root: discovery.root
-            )
+            let dirs = try await remoteDirectoryLister(defaults.host, defaults.user, discovery.root)
+            guard requestID == latestRequestID, cachedSource == source else {
+                return cached()
+            }
             cachedProjects = profilesFromDirectoryNames(dirs, discovery: discovery, defaults: defaults)
             lastRefresh = Date()
             return cachedProjects
         } catch {
+            guard requestID == latestRequestID, cachedSource == source else {
+                return cached()
+            }
             NSLog("ProjectDiscovery: SSH failed (\(error)). Using cache.")
             return cachedProjects
         }
@@ -76,12 +88,14 @@ class ProjectDiscoveryService {
         cachedProjects = []
         cachedSource = source
         lastRefresh = nil
+        latestRequestID &+= 1
     }
 
     private func clearCache() {
         cachedProjects = []
         cachedSource = nil
         lastRefresh = nil
+        latestRequestID &+= 1
     }
 
     // MARK: - Internal (exposed for testing)
@@ -125,7 +139,7 @@ class ProjectDiscoveryService {
         }.sorted()
     }
 
-    private func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {
+    private nonisolated static func listRemoteDirectories(host: String, user: String, root: String) async throws -> [String] {
         try await Self.listDirectories(
             executableURL: URL(fileURLWithPath: "/usr/bin/ssh"),
             arguments: [

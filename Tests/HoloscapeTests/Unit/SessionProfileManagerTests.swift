@@ -398,6 +398,51 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertTrue(manager.allSessions().discovered.isEmpty)
     }
 
+    @MainActor
+    func testObsoleteSSHRefreshCannotOverwriteNewerSourceCache() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ssh-refresh-order-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.sshDefaults = SSHDefaults(host: "source-a.local", user: "erik")
+        config.projectDiscovery = ProjectDiscoveryConfig(
+            enabled: true,
+            root: "/remote/a",
+            connection: "ssh",
+            command: "claude"
+        )
+        configService.save(config)
+
+        let lister = DeferredRemoteDirectoryLister()
+        let discoveryService = ProjectDiscoveryService(
+            configService: configService,
+            remoteDirectoryLister: { _, _, root in
+                try await lister.list(root: root)
+            }
+        )
+
+        let obsoleteRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/a")
+
+        config.sshDefaults = SSHDefaults(host: "source-b.local", user: "erik")
+        config.projectDiscovery?.root = "/remote/b"
+        configService.save(config)
+
+        let currentRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/b")
+        await lister.succeed(root: "/remote/b", directories: ["current-project"])
+        let currentProjects = await currentRefresh.value
+
+        await lister.succeed(root: "/remote/a", directories: ["obsolete-project"])
+        let obsoleteResult = await obsoleteRefresh.value
+
+        XCTAssertEqual(currentProjects.map(\.label), ["current-project"])
+        XCTAssertEqual(obsoleteResult.map(\.label), ["current-project"])
+        XCTAssertEqual(discoveryService.cached().map(\.label), ["current-project"])
+        XCTAssertEqual(discoveryService.cached().map(\.host), ["source-b.local"])
+    }
+
     // MARK: - Resolve
 
     @MainActor
@@ -610,5 +655,25 @@ final class SessionProfileManagerTests: XCTestCase {
 
     private enum SyntheticReadError: Error {
         case failed
+    }
+}
+
+private actor DeferredRemoteDirectoryLister {
+    private var continuations: [String: CheckedContinuation<[String], Error>] = [:]
+
+    func list(root: String) async throws -> [String] {
+        try await withCheckedThrowingContinuation { continuation in
+            continuations[root] = continuation
+        }
+    }
+
+    func waitForRequest(root: String) async {
+        while continuations[root] == nil {
+            await Task.yield()
+        }
+    }
+
+    func succeed(root: String, directories: [String]) {
+        continuations.removeValue(forKey: root)?.resume(returning: directories)
     }
 }
