@@ -47,7 +47,7 @@ final class SessionProfileManagerTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
         let discovery = ProjectDiscoveryService(configService: ConfigService())
-        let profiles = discovery.profilesFromLocalProjectRoot(
+        let profiles = try discovery.profilesFromLocalProjectRoot(
             ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
         )
 
@@ -277,6 +277,207 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
     }
 
+    @MainActor
+    func testRefreshDiscoveredSessionsPreservesCacheWhenLocalRootBecomesUnreadable() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-failure-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        try FileManager.default.removeItem(at: root)
+        try Data("not a directory".utf8).write(to: root)
+
+        let projectsAfterFailure = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(projectsAfterFailure.map(\.label), ["holoscape"])
+        XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsTreatsReadableEmptyLocalRootAsAuthoritative() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-empty-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("holoscape", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-empty-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        try FileManager.default.removeItem(at: project)
+
+        let projectsAfterEmptyRefresh = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterEmptyRefresh.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsClearsCacheWhenDiscoveryIsDisabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-disabled-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-disabled-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        config.projectDiscovery?.enabled = false
+        configService.save(config)
+
+        let projectsAfterDisable = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterDisable.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsDoesNotReuseCacheAfterConfigurationChanges() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-source-a-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-source-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        config.projectDiscovery?.root = root.appendingPathComponent("missing-root", isDirectory: true).path
+        configService.save(config)
+
+        let projectsAfterSourceChange = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterSourceChange.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+    }
+
+    @MainActor
+    func testObsoleteSSHRefreshCannotOverwriteNewerSourceCache() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ssh-refresh-order-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.sshDefaults = SSHDefaults(host: "source-a.local", user: "erik")
+        config.projectDiscovery = ProjectDiscoveryConfig(
+            enabled: true,
+            root: "/remote/a",
+            connection: "ssh",
+            command: "claude"
+        )
+        configService.save(config)
+
+        let lister = DeferredRemoteDirectoryLister()
+        let discoveryService = ProjectDiscoveryService(
+            configService: configService,
+            remoteDirectoryLister: { _, _, root in
+                try await lister.list(root: root)
+            }
+        )
+
+        let obsoleteRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/a")
+
+        config.sshDefaults = SSHDefaults(host: "source-b.local", user: "erik")
+        config.projectDiscovery?.root = "/remote/b"
+        configService.save(config)
+
+        let currentRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/b")
+        await lister.succeed(root: "/remote/b", directories: ["current-project"])
+        let currentProjects = await currentRefresh.value
+
+        await lister.succeed(root: "/remote/a", directories: ["obsolete-project"])
+        let obsoleteResult = await obsoleteRefresh.value
+
+        XCTAssertEqual(currentProjects.map(\.label), ["current-project"])
+        XCTAssertEqual(obsoleteResult.map(\.label), ["current-project"])
+        XCTAssertEqual(discoveryService.cached().map(\.label), ["current-project"])
+        XCTAssertEqual(discoveryService.cached().map(\.host), ["source-b.local"])
+    }
+
+    @MainActor
+    func testSSHCompletionRechecksConfigurationWithoutAnotherCacheCall() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ssh-completion-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.sshDefaults = SSHDefaults(host: "source-a.local", user: "erik")
+        config.projectDiscovery = ProjectDiscoveryConfig(
+            enabled: true,
+            root: "/remote/a",
+            connection: "ssh",
+            command: "claude"
+        )
+        configService.save(config)
+
+        let lister = DeferredRemoteDirectoryLister()
+        let discoveryService = ProjectDiscoveryService(
+            configService: configService,
+            remoteDirectoryLister: { _, _, root in
+                try await lister.list(root: root)
+            }
+        )
+        let obsoleteRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/a")
+
+        config.projectDiscovery?.enabled = false
+        configService.save(config)
+        await lister.succeed(root: "/remote/a", directories: ["obsolete-project"])
+
+        let obsoleteProjects = await obsoleteRefresh.value
+        XCTAssertTrue(obsoleteProjects.isEmpty)
+        XCTAssertTrue(discoveryService.cached().isEmpty)
+    }
+
     // MARK: - Resolve
 
     @MainActor
@@ -489,5 +690,25 @@ final class SessionProfileManagerTests: XCTestCase {
 
     private enum SyntheticReadError: Error {
         case failed
+    }
+}
+
+private actor DeferredRemoteDirectoryLister {
+    private var continuations: [String: CheckedContinuation<[String], Error>] = [:]
+
+    func list(root: String) async throws -> [String] {
+        try await withCheckedThrowingContinuation { continuation in
+            continuations[root] = continuation
+        }
+    }
+
+    func waitForRequest(root: String) async {
+        while continuations[root] == nil {
+            await Task.yield()
+        }
+    }
+
+    func succeed(root: String, directories: [String]) {
+        continuations.removeValue(forKey: root)?.resume(returning: directories)
     }
 }
