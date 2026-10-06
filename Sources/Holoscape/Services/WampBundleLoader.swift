@@ -26,6 +26,10 @@ final class WampBundleLoader {
     /// surface different banner text and distinct log lines per
     /// Requirement 13.5.
     enum LoadError: Error, Equatable {
+        /// Foundation could not resolve the user's caches directory.
+        /// Directory-layout skins remain usable, but `.wamp` bundles
+        /// cannot be extracted without an explicit cache authority.
+        case cacheDirectoryUnavailable
         /// Bundle bytes couldn't be read or hashed, or a partial
         /// extraction couldn't be cleaned up.
         case ioFailure(String)
@@ -53,10 +57,9 @@ final class WampBundleLoader {
     static let assetSizeCap = defaultAssetSizeCap
     static let bundleSizeCap = defaultBundleSizeCap
 
-    /// Root directory for the hash-keyed cache. Usually
-    /// `FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-    /// / Holoscape / Skins`. Injectable for tests.
-    let cacheRoot: URL
+    /// Root directory for the hash-keyed cache. Nil only when Foundation
+    /// cannot resolve the user's caches directory. Injectable for tests.
+    let cacheRoot: URL?
 
     /// Instance cap on a single asset's uncompressed size. Defaults
     /// to `Self.defaultAssetSizeCap`. Property tests override with a
@@ -73,7 +76,7 @@ final class WampBundleLoader {
     weak var sandbox: SkinEngine?
 
     init(
-        cacheRoot: URL,
+        cacheRoot: URL?,
         assetSizeCap: Int = WampBundleLoader.defaultAssetSizeCap,
         bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap
     ) {
@@ -90,6 +93,9 @@ final class WampBundleLoader {
     /// partial extraction is cleaned up so the cache never contains a
     /// half-unzipped subdirectory.
     func unzipIfNeeded(bundleURL: URL) throws -> URL {
+        guard let cacheRoot else {
+            throw LoadError.cacheDirectoryUnavailable
+        }
         let hash = try contentHash(bundleURL)
         let subdir = cacheRoot.appendingPathComponent(hash)
 
@@ -108,17 +114,21 @@ final class WampBundleLoader {
         }
 
         // Cache miss. Extract with validation + size caps.
-        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
-
         do {
+            try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
             try extractArchive(at: bundleURL, into: subdir)
         } catch {
-            // Cleanup on any failure so the cache doesn't accumulate
-            // half-extracted subdirectories. Best-effort; a cleanup
-            // failure doesn't change the thrown error (callers care
-            // about the original cause).
-            try? FileManager.default.removeItem(at: subdir)
-            throw error
+            let primaryError = Self.typedIOError(error)
+            if FileManager.default.fileExists(atPath: subdir.path) {
+                do {
+                    try FileManager.default.removeItem(at: subdir)
+                } catch {
+                    throw LoadError.ioFailure(
+                        "bundle extraction failed (\(primaryError)); partial-cache cleanup failed: \(error.localizedDescription)"
+                    )
+                }
+            }
+            throw primaryError
         }
 
         // Post-condition: the extracted tree must have a skin.json at
@@ -126,7 +136,13 @@ final class WampBundleLoader {
         // more generic "unknown skin" error; catching it here pins the
         // issue to the bundle structure.
         guard FileManager.default.fileExists(atPath: manifestPath) else {
-            try? FileManager.default.removeItem(at: subdir)
+            do {
+                try FileManager.default.removeItem(at: subdir)
+            } catch {
+                throw LoadError.ioFailure(
+                    "bundle is missing skin.json and cache cleanup failed: \(error.localizedDescription)"
+                )
+            }
             throw LoadError.missingManifest
         }
 
@@ -146,6 +162,13 @@ final class WampBundleLoader {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func typedIOError(_ error: Error) -> LoadError {
+        if let loadError = error as? LoadError {
+            return loadError
+        }
+        return .ioFailure(error.localizedDescription)
+    }
+
     /// Walk `cacheRoot` and remove oldest subdirectories (by directory
     /// mtime) until the total on-disk size is ≤ `cap` (default
     /// `Self.bundleSizeCap`). `preserving` is the hash of the currently-
@@ -159,6 +182,9 @@ final class WampBundleLoader {
     /// with tiny (KB-scale) entries rather than real 50 MB data, keeping
     /// the test suite fast. Production always uses the default.
     func purgeLRU(preserving: String?, cap: Int? = nil) throws {
+        guard let cacheRoot else {
+            throw LoadError.cacheDirectoryUnavailable
+        }
         let effectiveCap = cap ?? self.bundleSizeCap
         guard FileManager.default.fileExists(atPath: cacheRoot.path) else { return }
 

@@ -92,6 +92,8 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
             switch skinError {
             case .notFound, .parseFailure:
                 break  // either variant is acceptable for malformed JSON
+            case .cacheDirectoryUnavailable:
+                XCTFail("Directory-layout skins do not require the WAMP cache")
             }
         }
     }

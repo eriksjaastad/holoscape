@@ -32,7 +32,7 @@ final class ChromeBakePipeline {
     /// Root directory for cached baked chrome PNGs. Real builds use
     /// `~/Library/Caches/holoscape-skins/`; tests override via the init
     /// arg so they stage disposable caches under their temp directories.
-    let cacheRoot: URL
+    let cacheRoot: URL?
 
     /// Hard cap on on-disk cache size. Shared with the `.wamp` unzip
     /// cache (Requirement 5.6) — the two caches coordinate by each
@@ -84,7 +84,13 @@ final class ChromeBakePipeline {
 
     // MARK: - Init
 
-    init(cacheRoot: URL? = nil, fileManager: FileManager = .default) {
+    init(
+        cacheRoot: URL? = nil,
+        fileManager: FileManager = .default,
+        cacheDirectoryProvider: () -> URL? = {
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        }
+    ) {
         if let cacheRoot {
             self.cacheRoot = cacheRoot
         } else if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"],
@@ -95,12 +101,12 @@ final class ChromeBakePipeline {
             self.cacheRoot = URL(fileURLWithPath: override)
                 .appendingPathComponent("caches/holoscape-skins")
         } else {
-            self.cacheRoot = fileManager
-                .urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("holoscape-skins")
+            self.cacheRoot = cacheDirectoryProvider()?.appendingPathComponent("holoscape-skins")
         }
         self.fileManager = fileManager
-        try? fileManager.createDirectory(at: self.cacheRoot, withIntermediateDirectories: true)
+        if let cacheRoot = self.cacheRoot {
+            try? fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        }
     }
 
     // MARK: - Public interface (Component 3)
@@ -201,7 +207,7 @@ final class ChromeBakePipeline {
     /// Callers that want to inspect the raw file (e.g., cache
     /// diagnostics) must go through `FileManager` directly.
     func cachedImage(for sha: String) -> CGImage? {
-        let url = cacheURL(for: sha)
+        guard let url = cacheURL(for: sha) else { return nil }
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -590,19 +596,19 @@ final class ChromeBakePipeline {
 
     // MARK: - Cache I/O
 
-    private func cacheURL(for sha: String) -> URL {
-        cacheRoot.appendingPathComponent("\(sha).png")
+    private func cacheURL(for sha: String) -> URL? {
+        cacheRoot?.appendingPathComponent("\(sha).png")
     }
 
-    private func opaqueCacheURL(for sha: String) -> URL {
-        cacheRoot.appendingPathComponent("\(sha).opaque.png")
+    private func opaqueCacheURL(for sha: String) -> URL? {
+        cacheRoot?.appendingPathComponent("\(sha).opaque.png")
     }
 
     /// Read a cached OPAQUE baked PNG if it exists. Separate from
     /// `cachedImage(for:)` so Reduce Transparency toggles don't
     /// collide with the translucent cache entry.
     func cachedOpaqueImage(for sha: String) -> CGImage? {
-        let url = opaqueCacheURL(for: sha)
+        guard let url = opaqueCacheURL(for: sha) else { return nil }
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -613,7 +619,7 @@ final class ChromeBakePipeline {
     }
 
     private func writeOpaqueCacheEntryBestEffort(image: CGImage, sha: String) {
-        let url = opaqueCacheURL(for: sha)
+        guard let url = opaqueCacheURL(for: sha) else { return }
         let pngUTI = UTType.png.identifier as CFString
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, pngUTI, 1, nil) else {
             NSLog("ChromeBakePipeline: opaque cache write to \(url.path) failed — CGImageDestination create")
@@ -626,7 +632,7 @@ final class ChromeBakePipeline {
     }
 
     private func touchOpaqueCacheEntry(sha: String) {
-        let url = opaqueCacheURL(for: sha)
+        guard let url = opaqueCacheURL(for: sha) else { return }
         try? fileManager.setAttributes(
             [.modificationDate: Date()],
             ofItemAtPath: url.path
@@ -637,7 +643,7 @@ final class ChromeBakePipeline {
     /// cache write failure logs and returns; the caller still has the
     /// in-memory CGImage and is not blocked.
     private func writeCacheEntryBestEffort(image: CGImage, sha: String) {
-        let url = cacheURL(for: sha)
+        guard let url = cacheURL(for: sha) else { return }
         let pngUTI = UTType.png.identifier as CFString
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, pngUTI, 1, nil) else {
             NSLog("ChromeBakePipeline: cache write to \(url.path) failed — CGImageDestination create")
@@ -652,7 +658,7 @@ final class ChromeBakePipeline {
     /// Mark a cache entry as recently used so LRU eviction deprioritises
     /// it. Called on cache hit; noop on miss.
     private func touchCacheEntry(sha: String) {
-        let url = cacheURL(for: sha)
+        guard let url = cacheURL(for: sha) else { return }
         try? fileManager.setAttributes(
             [.modificationDate: Date()],
             ofItemAtPath: url.path
@@ -669,6 +675,7 @@ final class ChromeBakePipeline {
     }
 
     private func listCacheEntries() throws -> [CacheEntry] {
+        guard let cacheRoot else { return [] }
         guard fileManager.fileExists(atPath: cacheRoot.path) else { return [] }
         let urls = try fileManager.contentsOfDirectory(
             at: cacheRoot,
