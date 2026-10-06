@@ -34,6 +34,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
     private var waitingStarted = false
     private let waiter: Waiter
     private let reaper: Reaper
+    private static let exitObservationRetryDelayMicroseconds: useconds_t = 10_000
 
     var isRunning: Bool {
         lock.withLock { running }
@@ -91,13 +92,35 @@ final class NativePTYChildProcess: @unchecked Sendable {
         }
         guard shouldStart else { return }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let observation = waiter(processIdentifier, processIdentifier, masterDescriptor)
+            let observation: TerminationObservation
+            while true {
+                let attempt = waiter(processIdentifier, processIdentifier, masterDescriptor)
+                let shouldRetry = attempt.waitError == EAGAIN || attempt.waitError == EINTR
+                lock.withLock {
+                    waitError = attempt.waitError
+                    if let foreground = attempt.foregroundProcessGroupID {
+                        retainedForegroundProcessGroupID = foreground
+                    }
+                }
+                guard shouldRetry else {
+                    observation = attempt
+                    break
+                }
+
+                // A foreground/session snapshot can race process-group turnover
+                // before waitid confirms leader exit. Keep the one waiter as the
+                // observation authority, expose the transient error to status
+                // callers, and retry with a delay rather than declaring the
+                // process stopped or spinning on a reused PID.
+                usleep(Self.exitObservationRetryDelayMicroseconds)
+            }
             lock.withLock {
                 running = false
                 if let foreground = observation.foregroundProcessGroupID {
                     retainedForegroundProcessGroupID = foreground
                 }
                 exitObserved = observation.waitError == nil
+                waitError = observation.waitError
             }
             let finalObservation: TerminationObservation
             if observation.waitError == nil {
@@ -1325,7 +1348,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
     func listSessions() throws -> [BrokerSessionID] {
         lock.lock()
-        let ids = sessions.keys.sorted { $0.rawValue < $1.rawValue }
+        // Failed-launch entries are cleanup authority, not attachable sessions,
+        // but the broker inventory is also the relaunch recovery surface. Expose
+        // their generated IDs so the coordinator can retire them as untracked
+        // generations instead of launching a duplicate after an app restart.
+        let ids = Set(sessions.keys)
+            .union(retainedLaunchCleanups.keys)
+            .sorted { $0.rawValue < $1.rawValue }
         lock.unlock()
         return ids
     }
@@ -1553,6 +1582,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     }
 
     func markSessionErrored(id: BrokerSessionID) throws {
+        lock.lock()
+        let isRetainedLaunchCleanup = retainedLaunchCleanups[id] != nil
+        if isRetainedLaunchCleanup {
+            defer { lock.unlock() }
+            try retryRetainedLaunchCleanup(id: id)
+            return
+        }
+        lock.unlock()
+
         let session = try session(for: id)
         do {
             try close(session)
@@ -1696,13 +1734,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         try session.throwOutputMonitoringErrorIfPresent()
+        if let waitError = session.process.terminationObservation.waitError {
+            throw RuntimeError.terminationFailed(
+                id,
+                reason: "exit observation failed: \(String(cString: strerror(waitError)))"
+            )
+        }
         if !session.process.isRunning {
-            if let waitError = session.process.terminationObservation.waitError {
-                throw RuntimeError.terminationFailed(
-                    id,
-                    reason: "waitpid failed: \(String(cString: strerror(waitError)))"
-                )
-            }
             return false
         }
         try session.throwInputCloseErrorIfPresent(waitForClosing: false)
@@ -1714,6 +1752,12 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let session = try session(for: id)
         try throwProcessGroupCleanupErrorIfPresent(for: session)
         try session.throwOutputMonitoringErrorIfPresent()
+        if let waitError = session.process.terminationObservation.waitError {
+            throw RuntimeError.terminationFailed(
+                id,
+                reason: "exit observation failed: \(String(cString: strerror(waitError)))"
+            )
+        }
         let processFallback = session.process.isRunning
             ? nil
             : session.process.terminationObservation.status
