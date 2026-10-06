@@ -20,6 +20,8 @@ final class NativePTYChildProcess: @unchecked Sendable {
     private var status: Int32 = 0
     private var waitError: Int32?
     private var storedTerminationHandler: TerminationHandler?
+    private var waitingStarted = false
+    private let waiter: Waiter
 
     var isRunning: Bool {
         lock.withLock { running }
@@ -47,6 +49,16 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     private init(processIdentifier: pid_t, waiter: @escaping Waiter) {
         self.processIdentifier = processIdentifier
+        self.waiter = waiter
+    }
+
+    func startWaiting() {
+        let shouldStart = lock.withLock {
+            guard !waitingStarted else { return false }
+            waitingStarted = true
+            return true
+        }
+        guard shouldStart else { return }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let observation = waiter(processIdentifier)
             let handler = lock.withLock { () -> TerminationHandler? in
@@ -1142,6 +1154,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let duplicationError = duplication.errno ?? EIO
             let cleanupError = processGroupSignal(process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
+            process.startWaiting()
             if cleanupError != 0 && cleanupError != ESRCH {
                 throw RuntimeError.terminationFailed(
                     id,
@@ -1157,6 +1170,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             _ = Darwin.close(inputDescriptor)
             let cleanupError = processGroupSignal(process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
+            process.startWaiting()
             if cleanupError != 0 && cleanupError != ESRCH {
                 throw RuntimeError.terminationFailed(
                     id,
@@ -1199,6 +1213,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             session.shutDownOutputMonitoring()
             let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
+            process.startWaiting()
             let observationReason = processGroupObservation.errno.map {
                 String(cString: strerror($0))
             } ?? "observed process group \(processGroupObservation.processGroupID)"
@@ -1211,6 +1226,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         // terminal. Its process group is both the foreground signal target and
         // this runtime's cleanup ownership boundary.
         let alreadyTerminatedStatus = session.setProcessGroupID(expectedProcessGroupID)
+        process.startWaiting()
         if let alreadyTerminatedStatus {
             session.handleProcessTermination(
                 NativePTYChildProcess.TerminationObservation(

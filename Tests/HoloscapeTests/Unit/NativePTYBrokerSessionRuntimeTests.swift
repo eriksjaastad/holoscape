@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
+import CNativePTY
 @testable import Holoscape
 
 final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
@@ -184,6 +185,31 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTAssertTrue(reason.contains("identity could not be established safely"), reason)
         }
         XCTAssertEqual(signaler.callCount, 0)
+    }
+
+    func testProcessWaitDoesNotRaceProcessGroupIdentityValidation() throws {
+        let ordering = ProcessWaitOrderingProbe()
+        let runtime = NativePTYBrokerSessionRuntime(
+            childProcessWaiter: ordering.wait,
+            processGroupLookup: ordering.lookup
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-wait-ordering")
+
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        XCTAssertFalse(
+            ordering.waitStartedBeforeIdentityValidation,
+            "waitpid may reap a short-lived child before its process-group identity is recorded"
+        )
     }
 
     func testNativePTYInputPreservesWriteOrderAndBytes() throws {
@@ -2342,6 +2368,35 @@ private final class RecordingProcessGroupSignaler: @unchecked Sendable {
     func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
         lock.withLock { storedCallCount += 1 }
         return Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
+    }
+}
+
+private final class ProcessWaitOrderingProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waitStarted = false
+    private var storedWaitStartedBeforeIdentityValidation = false
+
+    var waitStartedBeforeIdentityValidation: Bool {
+        lock.withLock { storedWaitStartedBeforeIdentityValidation }
+    }
+
+    func wait(_ processIdentifier: pid_t) -> NativePTYChildProcess.TerminationObservation {
+        lock.withLock { waitStarted = true }
+        var status: Int32 = 0
+        let waitError = holoscape_wait_pid(processIdentifier, &status)
+        return NativePTYChildProcess.TerminationObservation(
+            status: waitError == 0 ? status : nil,
+            waitError: waitError == 0 ? nil : waitError
+        )
+    }
+
+    func lookup(_ processIdentifier: pid_t) -> (processGroupID: pid_t, errno: Int32?) {
+        usleep(100_000)
+        lock.withLock {
+            storedWaitStartedBeforeIdentityValidation = waitStarted
+        }
+        let processGroupID = getpgid(processIdentifier)
+        return (processGroupID, processGroupID < 0 ? Darwin.errno : nil)
     }
 }
 
