@@ -63,6 +63,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// preserves that ID for later reattach.
     private var nextOutputDeliveryGeneration: UInt = 0
     private var activeOutputDeliveryGeneration: UInt?
+    private var activeOutputHandoffGeneration: UInt?
     private let outputDeliveryGate = BrokerOutputDeliveryGate()
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
@@ -891,6 +892,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
         guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        let handoffGeneration = activeOutputHandoffGeneration ?? beginOutputHandoff()
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
             read: { [outputCoordinator] id in
@@ -905,7 +907,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onSample: outputSampleHandler(
+                deliveryGeneration: deliveryGeneration,
+                handoffGeneration: handoffGeneration
+            ),
             onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
             onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
@@ -953,6 +958,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
             return
         }
+        let handoffGeneration = beginOutputHandoff()
         outputReadLane.start(
             sessionID: brokerSessionID,
             mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
@@ -968,7 +974,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onSample: outputSampleHandler(
+                deliveryGeneration: deliveryGeneration,
+                handoffGeneration: handoffGeneration
+            ),
             onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
             onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
@@ -989,7 +998,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputSampleHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Data) -> Bool {
+    private func outputSampleHandler(
+        deliveryGeneration: UInt,
+        handoffGeneration: UInt
+    ) -> @Sendable (BrokerSessionID, Data) -> Bool {
         let outputDeliveryTimeout = self.outputDeliveryTimeout
         let outputDeliveryGate = self.outputDeliveryGate
         return { [weak self] id, data in
@@ -997,7 +1009,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // actor has consumed this sample, preserving final-byte ordering
             // without making the main actor call the broker.
             let acceptance = BrokerOutputDeliveryAcceptance()
-            outputDeliveryGate.install(acceptance)
+            guard outputDeliveryGate.install(acceptance, generation: handoffGeneration) else {
+                return false
+            }
             defer { outputDeliveryGate.remove(acceptance) }
             DispatchQueue.main.async { [weak self] in
                 defer { acceptance.signalCompletion() }
@@ -1219,7 +1233,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func stopOutputPump() {
-        outputDeliveryGate.cancelCurrent()
+        activeOutputHandoffGeneration = nil
+        outputDeliveryGate.close()
         if let brokerSessionID {
             try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
         }
@@ -1330,7 +1345,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func revokeOutputDeliveryOwnership() {
         activeOutputDeliveryGeneration = nil
-        outputDeliveryGate.cancelCurrent()
+        activeOutputHandoffGeneration = nil
+        outputDeliveryGate.close()
+    }
+
+    private func beginOutputHandoff() -> UInt {
+        let generation = outputDeliveryGate.open()
+        activeOutputHandoffGeneration = generation
+        return generation
     }
 
     private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
@@ -1671,7 +1693,7 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     }
 }
 
-private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
+final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
     private enum State {
         case pending
         case delivering
@@ -1736,17 +1758,37 @@ private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
     }
 }
 
-private final class BrokerOutputDeliveryGate: @unchecked Sendable {
+final class BrokerOutputDeliveryGate: @unchecked Sendable {
     private let lock = NSLock()
+    private var nextGeneration: UInt = 0
+    private var activeGeneration: UInt?
     private var current: BrokerOutputDeliveryAcceptance?
 
-    func install(_ acceptance: BrokerOutputDeliveryAcceptance) {
-        let previous = lock.withLock { () -> BrokerOutputDeliveryAcceptance? in
+    func open() -> UInt {
+        let result = lock.withLock { () -> (generation: UInt, previous: BrokerOutputDeliveryAcceptance?) in
+            nextGeneration &+= 1
+            let previous = current
+            activeGeneration = nextGeneration
+            current = nil
+            return (nextGeneration, previous)
+        }
+        _ = result.previous?.cancelIfPending()
+        return result.generation
+    }
+
+    func install(_ acceptance: BrokerOutputDeliveryAcceptance, generation: UInt) -> Bool {
+        let result = lock.withLock { () -> (installed: Bool, previous: BrokerOutputDeliveryAcceptance?) in
+            guard activeGeneration == generation else { return (false, nil) }
             let previous = current
             current = acceptance
-            return previous
+            return (true, previous)
         }
-        _ = previous?.cancelIfPending()
+        guard result.installed else {
+            _ = acceptance.cancelIfPending()
+            return false
+        }
+        _ = result.previous?.cancelIfPending()
+        return true
     }
 
     func remove(_ acceptance: BrokerOutputDeliveryAcceptance) {
@@ -1757,8 +1799,14 @@ private final class BrokerOutputDeliveryGate: @unchecked Sendable {
         }
     }
 
-    func cancelCurrent() {
-        _ = lock.withLock { current }?.cancelIfPending()
+    func close() {
+        let acceptance = lock.withLock { () -> BrokerOutputDeliveryAcceptance? in
+            activeGeneration = nil
+            let acceptance = current
+            current = nil
+            return acceptance
+        }
+        _ = acceptance?.cancelIfPending()
     }
 }
 

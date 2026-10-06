@@ -1143,6 +1143,26 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
     }
 
+    func testOutputDeliveryGateRejectsInstallationAfterClosedGeneration() {
+        let gate = BrokerOutputDeliveryGate()
+        let staleGeneration = gate.open()
+        gate.close()
+
+        let staleAcceptance = BrokerOutputDeliveryAcceptance()
+        XCTAssertFalse(gate.install(staleAcceptance, generation: staleGeneration))
+        XCTAssertEqual(staleAcceptance.wait(timeout: 0), .success)
+        XCTAssertFalse(staleAcceptance.beginDelivery())
+
+        let replacementGeneration = gate.open()
+        let replacementAcceptance = BrokerOutputDeliveryAcceptance()
+        XCTAssertTrue(gate.install(replacementAcceptance, generation: replacementGeneration))
+        XCTAssertTrue(replacementAcceptance.beginDelivery())
+        replacementAcceptance.finishDelivery()
+        replacementAcceptance.signalCompletion()
+        XCTAssertEqual(replacementAcceptance.wait(timeout: 0), .success)
+        XCTAssertTrue(replacementAcceptance.wasAccepted)
+    }
+
     func testOutputDeliveryTimeoutDoesNotAcknowledgeOrDiscardPendingOutput() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockOutputSnapshot()
