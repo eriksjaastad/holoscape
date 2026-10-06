@@ -4,6 +4,54 @@ import XCTest
 @testable import Holoscape
 
 final class DiskBackedScrollbackStoreTests: XCTestCase {
+    func testAppendSynchronizesUnderRetentionCapBeforeReturning() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "under-cap-append-sync")
+        let synchronizer = ScrollbackAppendSynchronizerRecorder()
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 64,
+            appendSynchronizer: synchronizer.synchronize
+        )
+
+        try store.append(Data("durable-output".utf8), for: id)
+
+        XCTAssertEqual(synchronizer.observedFileSizes, [14])
+    }
+
+    func testAppendPropagatesUnderRetentionCapSynchronizationFailure() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "under-cap-append-sync-failure")
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 64,
+            appendSynchronizer: { _ in throw ScrollbackAppendSyncFailure.injected }
+        )
+
+        XCTAssertThrowsError(try store.append(Data("not-acknowledged".utf8), for: id)) { error in
+            XCTAssertEqual(error as? ScrollbackAppendSyncFailure, .injected)
+        }
+    }
+
+    func testCompactingAppendDoesNotSynchronizeMainFileTwice() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = BrokerSessionID(rawValue: "compacting-append-sync")
+        let synchronizer = ScrollbackAppendSynchronizerRecorder()
+        let store = DiskBackedScrollbackStore(
+            directory: directory,
+            maxRetainedBytes: 4,
+            appendSynchronizer: synchronizer.synchronize
+        )
+
+        try store.append(Data("oversized".utf8), for: id)
+
+        XCTAssertTrue(synchronizer.observedFileSizes.isEmpty)
+        XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data("ized".utf8))
+    }
+
     func testReadTailSurvivesNewStoreInstanceForSameSession() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1091,6 +1139,29 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
 private enum CompactionInterruption: Error, Equatable {
     case injected
+}
+
+private enum ScrollbackAppendSyncFailure: Error, Equatable {
+    case injected
+}
+
+private final class ScrollbackAppendSynchronizerRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fileSizes: [off_t] = []
+
+    var observedFileSizes: [off_t] {
+        lock.withLock { fileSizes }
+    }
+
+    func synchronize(_ descriptor: Int32) throws {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        lock.withLock {
+            fileSizes.append(status.st_size)
+        }
+    }
 }
 
 private final class ScrollbackTailListRecorder: @unchecked Sendable {
