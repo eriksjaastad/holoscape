@@ -443,6 +443,41 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(discoveryService.cached().map(\.host), ["source-b.local"])
     }
 
+    @MainActor
+    func testSSHCompletionRechecksConfigurationWithoutAnotherCacheCall() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ssh-completion-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.sshDefaults = SSHDefaults(host: "source-a.local", user: "erik")
+        config.projectDiscovery = ProjectDiscoveryConfig(
+            enabled: true,
+            root: "/remote/a",
+            connection: "ssh",
+            command: "claude"
+        )
+        configService.save(config)
+
+        let lister = DeferredRemoteDirectoryLister()
+        let discoveryService = ProjectDiscoveryService(
+            configService: configService,
+            remoteDirectoryLister: { _, _, root in
+                try await lister.list(root: root)
+            }
+        )
+        let obsoleteRefresh = Task { await discoveryService.refresh() }
+        await lister.waitForRequest(root: "/remote/a")
+
+        config.projectDiscovery?.enabled = false
+        configService.save(config)
+        await lister.succeed(root: "/remote/a", directories: ["obsolete-project"])
+
+        let obsoleteProjects = await obsoleteRefresh.value
+        XCTAssertTrue(obsoleteProjects.isEmpty)
+        XCTAssertTrue(discoveryService.cached().isEmpty)
+    }
+
     // MARK: - Resolve
 
     @MainActor

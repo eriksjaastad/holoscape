@@ -47,15 +47,17 @@ class ProjectDiscoveryService {
 
         do {
             let dirs = try await remoteDirectoryLister(defaults.host, defaults.user, discovery.root)
+            let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return cached()
+                return activeProjects
             }
             cachedProjects = profilesFromDirectoryNames(dirs, discovery: discovery, defaults: defaults)
             lastRefresh = Date()
             return cachedProjects
         } catch {
+            let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return cached()
+                return activeProjects
             }
             NSLog("ProjectDiscovery: SSH failed (\(error)). Using cache.")
             return cachedProjects
