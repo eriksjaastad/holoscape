@@ -1143,6 +1143,41 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
     }
 
+    func testOutputDeliveryTimeoutDoesNotAcknowledgeOrDiscardPendingOutput() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "delivery-timeout",
+            environmentProfile: .shell,
+            coordinator: coordinator,
+            outputDeliveryTimeout: 0.02
+        )
+        defer { terminal.detachBrokerSession() }
+        var failures: [TerminalSessionFailure] = []
+        terminal.setSessionFailureHandler { failures.append($0) }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { terminal.brokerSessionID != nil }
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        coordinator.finishOutputSnapshot()
+        Thread.sleep(forTimeInterval: 0.1)
+        try waitUntil { failures.count == 1 }
+
+        XCTAssertEqual(failures.first?.kind, .failed)
+        XCTAssertTrue(failures.first?.description.contains("output delivery") == true)
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
+        XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
+    }
+
     func testQueuedOutputDeliveryIsRevokedWhenTeardownWinsMainActor() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockOutputSnapshot()
