@@ -479,15 +479,32 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 presentedBrokerSessionID = record.id
             }
             if let generation = replay?.generation {
-                failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [weak self] error in
+                if record.lifecycle == .exited {
+                    exitedOutputResolutionInFlight = true
+                }
+                failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { [self] error in
                     DispatchQueue.main.async {
-                        guard let self,
-                              self.reattachGeneration == authorityGeneration,
-                              self.brokerSessionID == record.id,
-                              self.startCompletionPending else { return }
+                        guard self.brokerSessionID == record.id else { return }
+                        if record.lifecycle != .exited {
+                            guard self.reattachGeneration == authorityGeneration,
+                                  self.startCompletionPending else { return }
+                        }
                         if let error {
-                            self.failReattach(error, sessionID: sessionID)
-                            self.completeReattachStartIfNeeded(notifyStartCompletion)
+                            if record.lifecycle == .exited {
+                                self.retireExitedSessionAfterOutputFailure(
+                                    record.id,
+                                    error: error,
+                                    notifyStartCompletion: notifyStartCompletion
+                                )
+                            } else {
+                                self.failReattach(error, sessionID: sessionID)
+                                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                            }
+                            return
+                        }
+                        guard self.reattachGeneration == authorityGeneration,
+                              self.startCompletionPending else {
+                            self.finishExitedOutputResolution()
                             return
                         }
                         self.completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
@@ -583,8 +600,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         deliveryGeneration: UInt,
         notifyStartCompletion: Bool
     ) {
-        let consume: @MainActor @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
-            guard let self, self.brokerSessionID == record.id else { return }
+        let consume: @MainActor @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void = { [self] result in
+            guard self.brokerSessionID == record.id else { return }
             do {
                 let snapshot = try result.get()
                 // Successful output belongs to the presentation lease and must
@@ -673,9 +690,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 )
             )
         }()
-        let completion: @Sendable (Error?) -> Void = { [weak self] error in
+        let completion: @Sendable (Error?) -> Void = { [self] error in
             DispatchQueue.main.async {
-                guard let self, self.brokerSessionID == record.id else { return }
+                guard self.brokerSessionID == record.id else { return }
                 let presentationLeaseIsActive = self.activeOutputDeliveryGeneration == deliveryGeneration
                 let completionWarning = error.flatMap { self.isCompletedRetirementWarning($0) ? $0 : nil }
                 if let error, completionWarning == nil {
@@ -801,6 +818,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func retryExitedOutputRetirement(_ pending: BrokerExitedOutputRetirement) {
         startCompletionPending = true
         exitedOutputRetirementInFlight = true
+        exitedOutputResolutionInFlight = true
         failureRecoveryCoordinator.retireCompletedSession(pending.sessionID) { [self] retirementError in
             DispatchQueue.main.async {
                 self.finishExitedOutputRetirement(
