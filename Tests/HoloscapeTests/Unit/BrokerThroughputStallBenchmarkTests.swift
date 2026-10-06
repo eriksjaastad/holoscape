@@ -4,6 +4,8 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerThroughputStallBenchmarkTests: XCTestCase {
+    private static let socketBenchmarkChildEnvironmentKey = "HOLOSCAPE_SOCKET_BENCHMARK_CHILD"
+
     func testBrokerThroughputHarnessCapturesOutputAndInputLatencyBaseline() throws {
         let harness = BrokerThroughputStallHarness(
             outputSessionCount: 3,
@@ -85,6 +87,108 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             )
         }
     }
+
+    func testBrokerThroughputHarnessExercisesProductionUnixSocketPath() throws {
+        let socketPath = "/tmp/hs-throughput-\(UUID().uuidString).sock"
+        let child = try launchSocketBenchmarkHost(at: socketPath)
+        defer { stopSocketBenchmarkHost(child, socketPath: socketPath) }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 2_000
+        )
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try transport.sendFrame(frame)
+        }
+        try waitForSocketBenchmarkHost(client)
+
+        let harness = BrokerThroughputStallHarness(
+            outputSessionCount: 4,
+            outputLinesPerSession: 120,
+            inputProbeCount: 12,
+            durationBudget: 7.0,
+            outputPayloadBytes: 512,
+            runtimeFactory: { client }
+        )
+
+        let report = try harness.run()
+
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, report.expectedMinimumOutputBytes, report.description)
+        XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
+        XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
+        XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
+        XCTAssertLessThan(report.duration, 7.0, report.description)
+        for sessionIndex in 0..<harness.outputSessionCount {
+            XCTAssertTrue(
+                report.outputCompletionTokens.contains(String(format: "session-%d-complete", sessionIndex)),
+                report.description
+            )
+        }
+        for probeIndex in 0..<harness.inputProbeCount {
+            XCTAssertTrue(
+                report.echoedInputTokens.contains(String(format: "probe-%03d", probeIndex)),
+                report.description
+            )
+        }
+    }
+
+    func testSocketBenchmarkChildHost() throws {
+        guard let socketPath = ProcessInfo.processInfo.environment[Self.socketBenchmarkChildEnvironmentKey] else {
+            throw XCTSkip("Executed only by the spawned Unix-socket throughput benchmark host")
+        }
+
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
+        )
+        try server.run()
+    }
+
+    private func launchSocketBenchmarkHost(at socketPath: String) throws -> Process {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerThroughputStallBenchmarkTests/testSocketBenchmarkChildHost",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            Self.socketBenchmarkChildEnvironmentKey: socketPath,
+        ]) { _, childValue in childValue }
+        try child.run()
+        return child
+    }
+
+    private func waitForSocketBenchmarkHost(_ client: BrokerSessionHostClientRuntime) throws {
+        let deadline = Date().addingTimeInterval(3)
+        var lastError: Error?
+        while Date() < deadline {
+            do {
+                _ = try client.listSessions()
+                return
+            } catch {
+                lastError = error
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+        }
+        throw lastError ?? BrokerSessionHostUnixSocketTransport.TransportError.timedOut("socket benchmark host did not start")
+    }
+
+    private func stopSocketBenchmarkHost(_ child: Process, socketPath: String) {
+        if child.isRunning {
+            child.terminate()
+            let deadline = Date().addingTimeInterval(1)
+            while child.isRunning, Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+        }
+        if child.isRunning {
+            _ = Darwin.kill(child.processIdentifier, SIGKILL)
+            child.waitUntilExit()
+        }
+        unlink(socketPath)
+        unlink(socketPath + ".lock")
+    }
 }
 
 private struct BrokerThroughputStallHarness {
@@ -97,9 +201,12 @@ private struct BrokerThroughputStallHarness {
     /// per-session deadline.
     let durationBudget: TimeInterval
     var outputPayloadBytes = 0
+    var runtimeFactory: () throws -> any BrokerSessionRuntime = {
+        NativePTYBrokerSessionRuntime()
+    }
 
     func run() throws -> BrokerThroughputStallReport {
-        let runtime = NativePTYBrokerSessionRuntime()
+        let runtime = try runtimeFactory()
         let inputID = BrokerSessionID(rawValue: "throughput-input-\(UUID().uuidString)")
         var sessionIDs: [BrokerSessionID] = []
         var barrierPaths: [String] = []
