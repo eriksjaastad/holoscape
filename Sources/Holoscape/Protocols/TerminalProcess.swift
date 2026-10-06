@@ -63,12 +63,21 @@ protocol TerminalProcess: AnyObject {
     var staleBrokerSessionID: BrokerSessionID? { get }
     var startFailureDescription: String? { get }
     var startFailureKind: TerminalStartFailureKind? { get }
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? { get }
 }
 
-enum TerminalStartFailureKind: Equatable, Sendable {
+enum TerminalStartFailureKind: String, Codable, Equatable, Sendable {
     case failed
     case brokerHostUnavailable
     case brokerSessionStale
+}
+
+/// Durable authority to retire an exited broker session without replaying its
+/// already-presented final bytes again after failed acknowledgement/cleanup.
+struct BrokerExitedOutputRetirement: Codable, Equatable, Sendable {
+    let sessionID: BrokerSessionID
+    let outputFailureDescription: String
+    let outputFailureKind: TerminalStartFailureKind
 }
 
 /// A failure observed on an already-started terminal session.
@@ -96,4 +105,5 @@ extension TerminalProcess {
     var staleBrokerSessionID: BrokerSessionID? { nil }
     var startFailureDescription: String? { nil }
     var startFailureKind: TerminalStartFailureKind? { nil }
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? { nil }
 }

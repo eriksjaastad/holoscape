@@ -13,6 +13,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private let terminal: TerminalProcess
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
+        terminal.pendingExitedOutputRetirement
+    }
     /// Broker session this tab could not reattach because the broker no longer
     /// owns it. Retained (and persisted) while the tab is stale so the recreate
     /// guidance and the tab/session association survive relaunch/restore.
@@ -102,6 +105,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label: String? = nil,
         workingDirectory: String? = nil,
         existingBrokerSessionID: BrokerSessionID? = nil,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)? = nil
     ) -> ShellChannelController {
@@ -111,6 +115,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: label,
             environmentProfile: .shell,
             existingBrokerSessionID: existingBrokerSessionID,
+            pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
         )
         return ShellChannelController(

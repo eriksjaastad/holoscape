@@ -496,6 +496,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 label: restoredShell.label,
                 workingDirectory: brokerSession?.workingDirectory ?? restoredShell.workingDirectory,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
@@ -511,6 +512,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 from: metadata,
                 authType: .oauth,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
@@ -533,6 +535,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 from: metadata,
                 authType: authType,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
@@ -581,6 +584,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         from metadata: ChannelMetadata,
         authType: AgentAuthType,
         existingBrokerSessionID: BrokerSessionID?,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID?,
         coordinator: (any BrokerSessionCoordinating)?
     ) -> AgentChannelController {
@@ -593,6 +597,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             useRawLabel: metadata.useRawLabel ?? true,
             command: metadata.command ?? "claude",
             existingBrokerSessionID: existingBrokerSessionID,
+            pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
             coordinator: coordinator
         )
@@ -606,6 +611,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         metadata: ChannelMetadata,
         resolvedSession: BrokerSessionRecord?
     ) -> (existing: BrokerSessionID?, stale: BrokerSessionID?) {
+        if let pending = metadata.pendingExitedOutputRetirement {
+            return (pending.sessionID, nil)
+        }
         if let resolvedSession {
             // A reattachable live record, including a replacement found by the
             // saved channel ID, supersedes stale identity from an older process

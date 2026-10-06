@@ -230,15 +230,18 @@ class ChannelManager {
 
             var workingDir: String?
             var staleBrokerSessionID: BrokerSessionID?
+            var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
 
             if let shellChannel = channel as? ShellChannelController {
                 workingDir = shellChannel.persistedWorkingDirectory
                 staleBrokerSessionID = shellChannel.staleBrokerSessionID
+                pendingExitedOutputRetirement = shellChannel.pendingExitedOutputRetirement
             } else if let agentChannel = channel as? AgentChannelController {
                 workingDir = agentChannel.persistedWorkingDirectory
                 command = agentChannel.persistedCommand
                 useRawLabel = agentChannel.persistedUseRawLabel
                 staleBrokerSessionID = agentChannel.staleBrokerSessionID
+                pendingExitedOutputRetirement = agentChannel.pendingExitedOutputRetirement
             } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
@@ -287,7 +290,8 @@ class ChannelManager {
                 pinnedAt: pinnedTimestamps[id],
                 persistentState: channel.persistentState,
                 brokerSessionID: brokerSessionID,
-                staleBrokerSessionID: staleBrokerSessionID
+                staleBrokerSessionID: staleBrokerSessionID,
+                pendingExitedOutputRetirement: pendingExitedOutputRetirement
             )
         }
         config.channelInstanceHighWaterMarks = highWaterMarks

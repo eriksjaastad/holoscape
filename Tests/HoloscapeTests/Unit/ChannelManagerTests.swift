@@ -88,10 +88,15 @@ final class ChannelManagerTests: XCTestCase {
         let terminalContentView = NSView()
         let currentGridSize = TerminalGridSize(columns: 80, rows: 24)
         let brokerOwnedSessionID: BrokerSessionID?
+        let pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
-        init(brokerOwnedSessionID: BrokerSessionID?) {
+        init(
+            brokerOwnedSessionID: BrokerSessionID?,
+            pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil
+        ) {
             self.brokerOwnedSessionID = brokerOwnedSessionID
+            self.pendingExitedOutputRetirement = pendingExitedOutputRetirement
         }
 
         func startProcess(
@@ -169,6 +174,42 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(all[0].channelId, first.channelId)
         XCTAssertEqual(all[1].channelId, second.channelId)
         XCTAssertEqual(all[2].channelId, third.channelId)
+    }
+
+    func testSaveStatePersistsExitedOutputRetirementAuthority() throws {
+        let sessionID = BrokerSessionID(rawValue: "pending-exited-output-retirement")
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: "outputAcknowledgementFailed",
+            outputFailureKind: .failed
+        )
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Shell",
+            workingDirectory: nil
+        ) { id, _, label, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: label,
+                terminal: StubTerminalProcess(
+                    brokerOwnedSessionID: sessionID,
+                    pendingExitedOutputRetirement: pending
+                )
+            )
+        }
+        channel.activate()
+
+        manager.saveState()
+
+        let saved = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(saved.brokerSessionID, sessionID)
+        XCTAssertEqual(saved.pendingExitedOutputRetirement, pending)
+        let roundTripped = try JSONDecoder().decode(
+            ChannelMetadata.self,
+            from: JSONEncoder().encode(saved)
+        )
+        XCTAssertEqual(roundTripped.pendingExitedOutputRetirement, pending)
     }
 
     func testRenameChannelTrimsAndPersistsCustomLabel() throws {

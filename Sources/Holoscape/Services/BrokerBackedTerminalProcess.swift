@@ -27,12 +27,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         case sessionNotStarted
     }
 
-    private struct PendingExitedOutputRetirement {
-        let sessionID: BrokerSessionID
-        let outputFailureDescription: String
-        let outputFailureKind: TerminalStartFailureKind
-    }
-
     private let channelID: UUID
     private let channelType: ChannelType
     private let label: String?
@@ -94,7 +88,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var presentedBrokerSessionID: BrokerSessionID?
     /// Cleanup authority survives presentation-lease revocation. A retry resumes
     /// retirement instead of rendering unacknowledged final bytes again.
-    private var pendingExitedOutputRetirement: PendingExitedOutputRetirement?
+    private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
+    private var exitedOutputRetirementInFlight = false
+    /// Covers the final read, acknowledgement, and any resulting retirement.
+    /// Teardown waits for this authority to resolve instead of revoking the
+    /// presentation lease and allowing the outcome to disappear with the tab.
+    private var exitedOutputResolutionInFlight = false
+    private var exitedOutputTeardownCompletions: [@MainActor () -> Void] = []
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
@@ -108,6 +108,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         label: String?,
         environmentProfile: BrokerEnvironmentProfile,
         existingBrokerSessionID: BrokerSessionID? = nil,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         coordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(
             runtime: NativePTYBrokerSessionRuntime(scrollbackDirectory: ScrollbackPersistencePolicy.defaultDiskDirectory)
         ),
@@ -127,6 +128,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.outputDeliveryTimeout = outputDeliveryTimeout
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
+        self.pendingExitedOutputRetirement = pendingExitedOutputRetirement
 
         terminalView.setUserInputHandler { [weak self] data in
             guard let self else { return }
@@ -159,7 +161,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             return
         }
-        guard recoveringBrokerSessionID == nil, !startCompletionPending else {
+        guard recoveringBrokerSessionID == nil, !startCompletionPending,
+              !exitedOutputRetirementInFlight else {
             NSLog("Broker-backed terminal retry ignored while session recovery is still running")
             return
         }
@@ -564,6 +567,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             completeReattachStartIfNeeded(notifyStartCompletion)
             return
         }
+        exitedOutputResolutionInFlight = true
 
         drainExitedOutput(
             record,
@@ -580,30 +584,45 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         notifyStartCompletion: Bool
     ) {
         let consume: @MainActor @Sendable (Result<BrokerOutputSnapshot, Error>) -> Void = { [weak self] result in
-            guard let self,
-                  self.brokerSessionID == record.id,
-                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+            guard let self, self.brokerSessionID == record.id else { return }
             do {
                 let snapshot = try result.get()
+                // Successful output belongs to the presentation lease and must
+                // not be rendered after teardown. A failed read, however, owns
+                // completed-session retirement independently of that lease.
+                guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
+                    self.completeReattachStartIfNeeded(notifyStartCompletion)
+                    self.finishExitedOutputResolution()
+                    return
+                }
                 self.handleOutputPumpSample(snapshot.data, for: record.id)
                 if let generation = snapshot.generation {
+                    // A nominally synchronous coordinator still acknowledges on
+                    // the recovery worker. Delay controller activation until the
+                    // acknowledgement and any required retirement are complete.
+                    let acknowledgementNotifiesStart = notifyStartCompletion || !self.startCompletionPending
+                    self.startCompletionPending = true
                     self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
                         DispatchQueue.main.async {
-                            guard self.brokerSessionID == record.id,
-                                  self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+                            guard self.brokerSessionID == record.id else { return }
                             if let error {
                                 self.retireExitedSessionAfterOutputFailure(
                                     record.id,
                                     error: error,
-                                    notifyStartCompletion: notifyStartCompletion
+                                    notifyStartCompletion: acknowledgementNotifiesStart
                                 )
+                                return
+                            }
+                            guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
+                                self.completeReattachStartIfNeeded(acknowledgementNotifiesStart)
+                                self.finishExitedOutputResolution()
                                 return
                             }
                             self.drainExitedOutput(
                                 record,
                                 exitCode: exitCode,
                                 deliveryGeneration: deliveryGeneration,
-                                notifyStartCompletion: notifyStartCompletion
+                                notifyStartCompletion: acknowledgementNotifiesStart
                             )
                         }
                     }
@@ -656,9 +675,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }()
         let completion: @Sendable (Error?) -> Void = { [weak self] error in
             DispatchQueue.main.async {
-                guard let self,
-                      self.brokerSessionID == record.id,
-                      self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+                guard let self, self.brokerSessionID == record.id else { return }
+                let presentationLeaseIsActive = self.activeOutputDeliveryGeneration == deliveryGeneration
                 let completionWarning = error.flatMap { self.isCompletedRetirementWarning($0) ? $0 : nil }
                 if let error, completionWarning == nil {
                     if let mismatchDescription {
@@ -672,6 +690,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     } else {
                         self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
                     }
+                    self.finishExitedOutputResolution()
                     return
                 }
                 self.revokeOutputDeliveryOwnership()
@@ -702,13 +721,19 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     self.didNotifyTermination = true
                     self.terminationHandler?(exitCode)
                 }
-                if notifyStartCompletion {
+                if !presentationLeaseIsActive {
+                    self.finishExitedOutputResolution()
+                } else if notifyStartCompletion {
                     publishTermination()
+                    self.finishExitedOutputResolution()
                 } else {
                     // Synchronous controller activation calls finishActivation
                     // after startProcess returns. Publish exit on the next main
                     // turn so that final state cannot be overwritten as active.
-                    DispatchQueue.main.async(execute: publishTermination)
+                    DispatchQueue.main.async {
+                        publishTermination()
+                        self.finishExitedOutputResolution()
+                    }
                 }
             }
         }
@@ -737,17 +762,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         error outputError: Error,
         notifyStartCompletion: Bool
     ) {
-        let pending = PendingExitedOutputRetirement(
+        let pending = BrokerExitedOutputRetirement(
             sessionID: id,
             outputFailureDescription: String(describing: outputError),
             outputFailureKind: classifyStartFailure(outputError)
         )
         pendingExitedOutputRetirement = pending
+        exitedOutputRetirementInFlight = true
 
         if coordinator.requiresOffMainBrokerWork {
-            failureRecoveryCoordinator.retireCompletedSession(id) { [weak self] retirementError in
+            failureRecoveryCoordinator.retireCompletedSession(id) { [self] retirementError in
                 DispatchQueue.main.async {
-                    self?.finishExitedOutputRetirement(
+                    self.finishExitedOutputRetirement(
                         pending,
                         retirementError: retirementError,
                         notifyStartCompletion: notifyStartCompletion
@@ -772,11 +798,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func retryExitedOutputRetirement(_ pending: PendingExitedOutputRetirement) {
+    private func retryExitedOutputRetirement(_ pending: BrokerExitedOutputRetirement) {
         startCompletionPending = true
-        failureRecoveryCoordinator.retireCompletedSession(pending.sessionID) { [weak self] retirementError in
+        exitedOutputRetirementInFlight = true
+        failureRecoveryCoordinator.retireCompletedSession(pending.sessionID) { [self] retirementError in
             DispatchQueue.main.async {
-                self?.finishExitedOutputRetirement(
+                self.finishExitedOutputRetirement(
                     pending,
                     retirementError: retirementError,
                     notifyStartCompletion: true
@@ -786,12 +813,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func finishExitedOutputRetirement(
-        _ pending: PendingExitedOutputRetirement,
+        _ pending: BrokerExitedOutputRetirement,
         retirementError: Error?,
         notifyStartCompletion: Bool
     ) {
         guard brokerSessionID == pending.sessionID,
               pendingExitedOutputRetirement?.sessionID == pending.sessionID else { return }
+        exitedOutputRetirementInFlight = false
 
         let completionWarning = retirementError.flatMap {
             isCompletedRetirementWarning($0) ? $0 : nil
@@ -814,6 +842,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
         completeReattachStartIfNeeded(notifyStartCompletion)
+        finishExitedOutputResolution()
+    }
+
+    private func finishExitedOutputResolution() {
+        exitedOutputResolutionInFlight = false
+        let completions = exitedOutputTeardownCompletions
+        exitedOutputTeardownCompletions.removeAll()
+        completions.forEach { $0() }
     }
 
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
@@ -963,6 +999,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // Never launch a replacement after termination authority completes.
             restartAfterCancelledFreshStart = nil
             freshStartTeardownCompletions.append(completion)
+            return
+        }
+        if exitedOutputResolutionInFlight {
+            // Suppress a delayed activation callback while retaining the final
+            // output/cleanup owner until its broker outcome has been published.
+            startCompletionPending = false
+            exitedOutputTeardownCompletions.append(completion)
             return
         }
         startCompletionPending = false

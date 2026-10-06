@@ -299,11 +299,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockOutputRead = false
         private let retirementRelease = DispatchSemaphore(value: 0)
         private var shouldBlockRetirement = false
+        private let acknowledgementRelease = DispatchSemaphore(value: 0)
+        private var shouldBlockAcknowledgement = false
 
         func blockOutputRead() { shouldBlockOutputRead = true }
         func finishOutputRead() { outputReadRelease.signal() }
         func blockRetirement() { shouldBlockRetirement = true }
         func finishRetirement() { retirementRelease.signal() }
+        func blockAcknowledgement() { shouldBlockAcknowledgement = true }
+        func finishAcknowledgement() { acknowledgementRelease.signal() }
 
         private func restoredRecord(id: BrokerSessionID) -> BrokerSessionRecord {
             BrokerSessionRecord(
@@ -357,10 +361,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
             outputReadCount += 1
-            if let outputSnapshotError { throw outputSnapshotError }
             if shouldBlockOutputRead {
                 _ = outputReadRelease.wait(timeout: .now() + 1)
             }
+            if let outputSnapshotError { throw outputSnapshotError }
             switch outputReadCount {
             case 1:
                 return BrokerOutputSnapshot(data: Data("detached-final-chunk-one\n".utf8), generation: 24)
@@ -372,6 +376,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
             acknowledgedGenerations.append(generation)
+            if shouldBlockAcknowledgement {
+                _ = acknowledgementRelease.wait(timeout: .now() + 1)
+            }
             if let acknowledgementError { throw acknowledgementError }
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
@@ -3096,6 +3103,37 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testSynchronousRecoveredExitedAcknowledgementFailureDefersStartCompletion() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.requiresOffMainBrokerWork = false
+        coordinator.acknowledgementError = RuntimeError.outputAcknowledgementFailed
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "synchronous-failed-final-output-acknowledgement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var completionCount = 0
+        terminal.setStartCompletionHandler { completionCount += 1 }
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+        XCTAssertEqual(completionCount, 0)
+        try waitUntil { terminal.brokerSessionID == nil }
+        XCTAssertEqual(completionCount, 1)
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+        XCTAssertTrue(terminal.startFailureDescription?.contains("outputAcknowledgementFailed") == true)
+    }
+
     func testRecoveredExitedOutputRetirementRetryDoesNotRenderFinalBytesAgain() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.acknowledgementError = RuntimeError.outputAcknowledgementFailed
@@ -3176,6 +3214,102 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             restoredTerminal.startFailureDescription?.contains("outputReadFailed") == true,
             restoredTerminal.startFailureDescription ?? "nil"
         )
+    }
+
+    func testTeardownWaitsForDelayedExitedOutputReadFailureRetirement() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.outputSnapshotError = RuntimeError.outputReadFailed
+        coordinator.blockOutputRead()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "teardown-during-final-output-read",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+
+        var teardownCompleted = false
+        terminal.detachBrokerSession { teardownCompleted = true }
+        XCTAssertFalse(teardownCompleted)
+        coordinator.finishOutputRead()
+
+        try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertTrue(terminal.startFailureDescription?.contains("outputReadFailed") == true)
+    }
+
+    func testTeardownWaitsForDelayedExitedOutputAcknowledgementFailureRetirement() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.acknowledgementError = RuntimeError.outputAcknowledgementFailed
+        coordinator.blockAcknowledgement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "teardown-during-final-output-acknowledgement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.acknowledgedGenerations == [24] }
+
+        var teardownCompleted = false
+        terminal.detachBrokerSession { teardownCompleted = true }
+        XCTAssertFalse(teardownCompleted)
+        coordinator.finishAcknowledgement()
+
+        try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertTrue(terminal.startFailureDescription?.contains("outputAcknowledgementFailed") == true)
+    }
+
+    func testRestoredPendingExitedOutputRetirementRetriesWithoutReadingOutput() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: coordinator.sessionID,
+            outputFailureDescription: "outputAcknowledgementFailed",
+            outputFailureKind: .failed
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "restored-final-output-retirement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            pendingExitedOutputRetirement: pending,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { terminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.outputReadCount, 0)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(terminal.startFailureDescription, "outputAcknowledgementFailed")
+        XCTAssertNil(terminal.pendingExitedOutputRetirement)
     }
 
     func testAmbiguousExitMismatchRetiresRuntimeBeforePublishingFailure() throws {
