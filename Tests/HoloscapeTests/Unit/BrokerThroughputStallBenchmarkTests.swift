@@ -4,6 +4,14 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerThroughputStallBenchmarkTests: XCTestCase {
+    private static let socketBenchmarkChildEnvironmentKey = "HOLOSCAPE_SOCKET_BENCHMARK_CHILD"
+
+    private struct SocketBenchmarkChild {
+        let process: Process
+        let exited: DispatchSemaphore
+        let processGroupDirectory: URL
+    }
+
     func testBrokerThroughputHarnessCapturesOutputAndInputLatencyBaseline() throws {
         let harness = BrokerThroughputStallHarness(
             outputSessionCount: 3,
@@ -85,6 +93,268 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             )
         }
     }
+
+    func testBrokerThroughputHarnessExercisesProductionUnixSocketPath() throws {
+        let socketPath = "/tmp/hs-throughput-\(UUID().uuidString).sock"
+        let child = try launchSocketBenchmarkHost(at: socketPath)
+        addTeardownBlock {
+            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 2_000
+        )
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try transport.sendFrame(frame)
+        }
+        try waitForSocketBenchmarkHost(client)
+
+        let harness = BrokerThroughputStallHarness(
+            outputSessionCount: 4,
+            outputLinesPerSession: 120,
+            inputProbeCount: 12,
+            durationBudget: 7.0,
+            outputPayloadBytes: 512,
+            runtimeFactory: { client }
+        )
+
+        let report = try harness.run()
+
+        XCTAssertGreaterThanOrEqual(report.outputBytesRead, report.expectedMinimumOutputBytes, report.description)
+        XCTAssertLessThan(report.maxInputSendLatency, 0.5, report.description)
+        XCTAssertLessThan(report.maxInputEchoLatency, 1.5, report.description)
+        XCTAssertLessThan(report.maxRunLoopProbeGap, 0.5, report.description)
+        XCTAssertLessThan(report.duration, 7.0, report.description)
+        for sessionIndex in 0..<harness.outputSessionCount {
+            XCTAssertTrue(
+                report.outputCompletionTokens.contains(String(format: "session-%d-complete", sessionIndex)),
+                report.description
+            )
+        }
+        for probeIndex in 0..<harness.inputProbeCount {
+            XCTAssertTrue(
+                report.echoedInputTokens.contains(String(format: "probe-%03d", probeIndex)),
+                report.description
+            )
+        }
+    }
+
+    func testSocketBenchmarkHostTerminationCleansLivePTYSession() throws {
+        let socketPath = "/tmp/hs-throughput-cleanup-\(UUID().uuidString).sock"
+        let child = try launchSocketBenchmarkHost(at: socketPath)
+        addTeardownBlock {
+            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 2_000
+        )
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try transport.sendFrame(frame)
+        }
+        try waitForSocketBenchmarkHost(client)
+        let processGroupMarker = child.processGroupDirectory.appendingPathComponent("cleanup-session")
+        try client.createSession(
+            id: BrokerSessionID(rawValue: "socket-benchmark-cleanup"),
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf '%d\\n' $$ > \(shellQuoted(processGroupMarker.path)); exec /bin/cat"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        try waitForProcessGroupMarker(processGroupMarker)
+
+        try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+
+        XCTAssertFalse(child.process.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+    }
+
+    func testSocketBenchmarkChildHost() throws {
+        guard let socketPath = ProcessInfo.processInfo.environment[Self.socketBenchmarkChildEnvironmentKey] else {
+            throw XCTSkip("Executed only by the spawned Unix-socket throughput benchmark host")
+        }
+
+        let runtime = NativePTYBrokerSessionRuntime()
+        signal(SIGTERM, SIG_IGN)
+        let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM)
+        terminationSource.setEventHandler {
+            var cleanupFailed = false
+            do {
+                for id in try runtime.listSessions() {
+                    do {
+                        try runtime.markSessionErrored(id: id)
+                    } catch {
+                        cleanupFailed = true
+                    }
+                }
+            } catch {
+                cleanupFailed = true
+            }
+            Darwin.exit(cleanupFailed ? EXIT_FAILURE : EXIT_SUCCESS)
+        }
+        terminationSource.resume()
+
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime)
+        )
+        try withExtendedLifetime(terminationSource) {
+            try server.run()
+        }
+    }
+
+    private func launchSocketBenchmarkHost(at socketPath: String) throws -> SocketBenchmarkChild {
+        let child = Process()
+        let exited = DispatchSemaphore(value: 0)
+        let processGroupDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-socket-benchmark-pgroups-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: processGroupDirectory, withIntermediateDirectories: true)
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerThroughputStallBenchmarkTests/testSocketBenchmarkChildHost",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            Self.socketBenchmarkChildEnvironmentKey: socketPath,
+        ]) { _, childValue in childValue }
+        child.terminationHandler = { _ in exited.signal() }
+        do {
+            try child.run()
+        } catch {
+            try? FileManager.default.removeItem(at: processGroupDirectory)
+            throw error
+        }
+        return SocketBenchmarkChild(
+            process: child,
+            exited: exited,
+            processGroupDirectory: processGroupDirectory
+        )
+    }
+
+    private func waitForSocketBenchmarkHost(_ client: BrokerSessionHostClientRuntime) throws {
+        let deadline = Date().addingTimeInterval(3)
+        var lastError: Error?
+        while Date() < deadline {
+            do {
+                _ = try client.listSessions()
+                return
+            } catch {
+                lastError = error
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+        }
+        throw lastError ?? BrokerSessionHostUnixSocketTransport.TransportError.timedOut("socket benchmark host did not start")
+    }
+
+    private func waitForProcessGroupMarker(_ marker: URL) throws {
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if let value = try? String(contentsOf: marker, encoding: .utf8),
+               Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) != nil {
+                return
+            }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        throw NSError(
+            domain: "BrokerThroughputStallBenchmarkTests",
+            code: Int(ETIMEDOUT),
+            userInfo: [NSLocalizedDescriptionKey: "socket benchmark PTY did not publish its process group"]
+        )
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func stopSocketBenchmarkHost(_ child: SocketBenchmarkChild, socketPath: String) throws {
+        var failures: [String] = []
+        var forcedBrokerExit = false
+
+        if child.process.isRunning {
+            child.process.terminate()
+            if child.exited.wait(timeout: .now() + 10) == .timedOut {
+                forcedBrokerExit = true
+                let result = Darwin.kill(child.process.processIdentifier, SIGKILL)
+                if result != 0, errno != ESRCH {
+                    failures.append("could not kill socket benchmark host: \(String(cString: strerror(errno)))")
+                } else if child.exited.wait(timeout: .now() + 1) == .timedOut {
+                    failures.append("socket benchmark host did not exit after SIGKILL")
+                }
+            }
+        }
+
+        if child.process.isRunning {
+            failures.append("socket benchmark host remained running after bounded teardown")
+        } else if child.process.terminationReason != .exit || child.process.terminationStatus != EXIT_SUCCESS {
+            failures.append("socket benchmark host did not confirm PTY cleanup")
+        }
+
+        if FileManager.default.fileExists(atPath: child.processGroupDirectory.path) {
+            do {
+                let markers = try FileManager.default.contentsOfDirectory(
+                    at: child.processGroupDirectory,
+                    includingPropertiesForKeys: nil
+                )
+                for marker in markers {
+                    guard let value = try? String(contentsOf: marker, encoding: .utf8),
+                          let processGroup = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        failures.append("invalid process-group marker at \(marker.path)")
+                        continue
+                    }
+                    errno = 0
+                    let groupExists = Darwin.kill(-processGroup, 0) == 0 || errno == EPERM
+                    if groupExists {
+                        if Darwin.kill(-processGroup, SIGKILL) != 0, errno != ESRCH {
+                            failures.append("could not kill leaked PTY process group \(processGroup)")
+                            continue
+                        }
+                        let deadline = Date().addingTimeInterval(1)
+                        while Date() < deadline {
+                            errno = 0
+                            if Darwin.kill(-processGroup, 0) != 0, errno == ESRCH { break }
+                            usleep(10_000)
+                        }
+                        errno = 0
+                        if Darwin.kill(-processGroup, 0) == 0 || errno == EPERM {
+                            failures.append("PTY process group \(processGroup) survived cleanup")
+                        } else if !forcedBrokerExit {
+                            failures.append("child reported successful cleanup while PTY process group \(processGroup) remained live")
+                        }
+                    }
+                }
+            } catch {
+                failures.append("could not inspect PTY process-group markers: \(error)")
+            }
+        }
+
+        for path in [socketPath, socketPath + ".lock"] {
+            if unlink(path) != 0, errno != ENOENT {
+                failures.append("could not remove socket benchmark artifact at \(path): \(String(cString: strerror(errno)))")
+            }
+        }
+        do {
+            if FileManager.default.fileExists(atPath: child.processGroupDirectory.path) {
+                try FileManager.default.removeItem(at: child.processGroupDirectory)
+            }
+        } catch {
+            failures.append("could not remove process-group marker directory: \(error)")
+        }
+
+        if !failures.isEmpty {
+            throw NSError(
+                domain: "BrokerThroughputStallBenchmarkTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "; ")]
+            )
+        }
+    }
 }
 
 private struct BrokerThroughputStallHarness {
@@ -97,9 +367,12 @@ private struct BrokerThroughputStallHarness {
     /// per-session deadline.
     let durationBudget: TimeInterval
     var outputPayloadBytes = 0
+    var runtimeFactory: () throws -> any BrokerSessionRuntime = {
+        NativePTYBrokerSessionRuntime()
+    }
 
     func run() throws -> BrokerThroughputStallReport {
-        let runtime = NativePTYBrokerSessionRuntime()
+        let runtime = try runtimeFactory()
         let inputID = BrokerSessionID(rawValue: "throughput-input-\(UUID().uuidString)")
         var sessionIDs: [BrokerSessionID] = []
         var barrierPaths: [String] = []
@@ -202,16 +475,21 @@ private struct BrokerThroughputStallHarness {
                 }
             }
 
-            if completedOutputSessions.count == outputSessionCount,
-               outputBytesRead >= expectedMinimumOutputBytes,
-               unsentProbeIndex == inputProbeCount,
-               (0..<inputProbeCount).allSatisfy({ echoedInputTokens.contains(String(format: "probe-%03d", $0)) }) {
-                break
+            let completed = completedOutputSessions.count == outputSessionCount
+                && outputBytesRead >= expectedMinimumOutputBytes
+                && unsentProbeIndex == inputProbeCount
+                && (0..<inputProbeCount).allSatisfy({
+                    echoedInputTokens.contains(String(format: "probe-%03d", $0))
+                })
+            if !completed {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             }
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             let runLoopProbe = Date()
             maxRunLoopProbeGap = max(maxRunLoopProbeGap, runLoopProbe.timeIntervalSince(previousRunLoopProbe))
             previousRunLoopProbe = runLoopProbe
+            if completed {
+                break
+            }
         }
 
         return BrokerThroughputStallReport(
