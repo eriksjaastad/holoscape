@@ -6,6 +6,11 @@ import XCTest
 final class BrokerThroughputStallBenchmarkTests: XCTestCase {
     private static let socketBenchmarkChildEnvironmentKey = "HOLOSCAPE_SOCKET_BENCHMARK_CHILD"
 
+    private struct SocketBenchmarkChild {
+        let process: Process
+        let exited: DispatchSemaphore
+    }
+
     func testBrokerThroughputHarnessCapturesOutputAndInputLatencyBaseline() throws {
         let harness = BrokerThroughputStallHarness(
             outputSessionCount: 3,
@@ -91,7 +96,9 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
     func testBrokerThroughputHarnessExercisesProductionUnixSocketPath() throws {
         let socketPath = "/tmp/hs-throughput-\(UUID().uuidString).sock"
         let child = try launchSocketBenchmarkHost(at: socketPath)
-        defer { stopSocketBenchmarkHost(child, socketPath: socketPath) }
+        addTeardownBlock {
+            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+        }
 
         let transport = BrokerSessionHostUnixSocketTransport(
             socketPath: socketPath,
@@ -132,20 +139,68 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         }
     }
 
+    func testSocketBenchmarkHostTerminationCleansLivePTYSession() throws {
+        let socketPath = "/tmp/hs-throughput-cleanup-\(UUID().uuidString).sock"
+        let child = try launchSocketBenchmarkHost(at: socketPath)
+        addTeardownBlock {
+            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+        }
+
+        let transport = BrokerSessionHostUnixSocketTransport(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 2_000
+        )
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try transport.sendFrame(frame)
+        }
+        try waitForSocketBenchmarkHost(client)
+        try client.createSession(
+            id: BrokerSessionID(rawValue: "socket-benchmark-cleanup"),
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+
+        try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+
+        XCTAssertFalse(child.process.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+    }
+
     func testSocketBenchmarkChildHost() throws {
         guard let socketPath = ProcessInfo.processInfo.environment[Self.socketBenchmarkChildEnvironmentKey] else {
             throw XCTSkip("Executed only by the spawned Unix-socket throughput benchmark host")
         }
 
+        let runtime = NativePTYBrokerSessionRuntime()
+        signal(SIGTERM, SIG_IGN)
+        let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM)
+        terminationSource.setEventHandler {
+            do {
+                for id in try runtime.listSessions() {
+                    try runtime.markSessionErrored(id: id)
+                }
+                Darwin.exit(EXIT_SUCCESS)
+            } catch {
+                Darwin.exit(EXIT_FAILURE)
+            }
+        }
+        terminationSource.resume()
+
         let server = BrokerSessionHostUnixSocketServer(
             socketPath: socketPath,
-            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
+            host: BrokerSessionHost(runtime: runtime)
         )
         try server.run()
     }
 
-    private func launchSocketBenchmarkHost(at socketPath: String) throws -> Process {
+    private func launchSocketBenchmarkHost(at socketPath: String) throws -> SocketBenchmarkChild {
         let child = Process()
+        let exited = DispatchSemaphore(value: 0)
         child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         child.arguments = [
             "-XCTest",
@@ -155,8 +210,9 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         child.environment = ProcessInfo.processInfo.environment.merging([
             Self.socketBenchmarkChildEnvironmentKey: socketPath,
         ]) { _, childValue in childValue }
+        child.terminationHandler = { _ in exited.signal() }
         try child.run()
-        return child
+        return SocketBenchmarkChild(process: child, exited: exited)
     }
 
     private func waitForSocketBenchmarkHost(_ client: BrokerSessionHostClientRuntime) throws {
@@ -174,20 +230,44 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         throw lastError ?? BrokerSessionHostUnixSocketTransport.TransportError.timedOut("socket benchmark host did not start")
     }
 
-    private func stopSocketBenchmarkHost(_ child: Process, socketPath: String) {
-        if child.isRunning {
-            child.terminate()
-            let deadline = Date().addingTimeInterval(1)
-            while child.isRunning, Date() < deadline {
-                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    private static func stopSocketBenchmarkHost(_ child: SocketBenchmarkChild, socketPath: String) throws {
+        if child.process.isRunning {
+            child.process.terminate()
+            if child.exited.wait(timeout: .now() + 2) == .timedOut {
+                let result = Darwin.kill(child.process.processIdentifier, SIGKILL)
+                guard result == 0 || errno == ESRCH else {
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(errno),
+                        userInfo: [NSLocalizedDescriptionKey: "could not kill socket benchmark host"]
+                    )
+                }
+                guard child.exited.wait(timeout: .now() + 1) == .success else {
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(ETIMEDOUT),
+                        userInfo: [NSLocalizedDescriptionKey: "socket benchmark host did not exit after SIGKILL"]
+                    )
+                }
             }
         }
-        if child.isRunning {
-            _ = Darwin.kill(child.processIdentifier, SIGKILL)
-            child.waitUntilExit()
+        guard child.process.terminationReason == .exit,
+              child.process.terminationStatus == EXIT_SUCCESS else {
+            throw NSError(
+                domain: "BrokerThroughputStallBenchmarkTests",
+                code: Int(child.process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "socket benchmark host did not confirm PTY cleanup"]
+            )
         }
-        unlink(socketPath)
-        unlink(socketPath + ".lock")
+        for path in [socketPath, socketPath + ".lock"] {
+            guard unlink(path) == 0 || errno == ENOENT else {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errno),
+                    userInfo: [NSLocalizedDescriptionKey: "could not remove socket benchmark artifact at \(path)"]
+                )
+            }
+        }
     }
 }
 
@@ -309,16 +389,21 @@ private struct BrokerThroughputStallHarness {
                 }
             }
 
-            if completedOutputSessions.count == outputSessionCount,
-               outputBytesRead >= expectedMinimumOutputBytes,
-               unsentProbeIndex == inputProbeCount,
-               (0..<inputProbeCount).allSatisfy({ echoedInputTokens.contains(String(format: "probe-%03d", $0)) }) {
-                break
+            let completed = completedOutputSessions.count == outputSessionCount
+                && outputBytesRead >= expectedMinimumOutputBytes
+                && unsentProbeIndex == inputProbeCount
+                && (0..<inputProbeCount).allSatisfy({
+                    echoedInputTokens.contains(String(format: "probe-%03d", $0))
+                })
+            if !completed {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             }
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             let runLoopProbe = Date()
             maxRunLoopProbeGap = max(maxRunLoopProbeGap, runLoopProbe.timeIntervalSince(previousRunLoopProbe))
             previousRunLoopProbe = runLoopProbe
+            if completed {
+                break
+            }
         }
 
         return BrokerThroughputStallReport(
