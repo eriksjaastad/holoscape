@@ -61,6 +61,42 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(waitForProcessToExit(processID), "Ctrl-C left foreground PID \(processID) running")
     }
 
+    func testNativePTYDeliversTerminalGeneratedSuspendAndCleansUpStoppedForegroundProcess() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "native-pty-suspend-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/zsh",
+            arguments: ["-f", "-i"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        try runtime.sendInput(
+            id: id,
+            bytes: Array("echo SHELL:$$; sh -c 'echo CHILD:$$; exec /bin/cat'\n".utf8)
+        )
+        let readyOutput = try waitForOutput(from: runtime, id: id, containing: "CHILD:")
+        guard let shellProcessID = processID(after: "SHELL:", in: readyOutput),
+              let childProcessID = processID(after: "CHILD:", in: readyOutput) else {
+            return XCTFail("Could not parse interactive shell and foreground job PIDs from: \(readyOutput)")
+        }
+        XCTAssertNotEqual(shellProcessID, childProcessID)
+
+        try runtime.sendInput(id: id, bytes: [0x1A])
+
+        XCTAssertTrue(waitForProcessToStop(childProcessID), "Ctrl-Z did not stop foreground PID \(childProcessID)")
+        XCTAssertTrue(try runtime.isRunning(id: id), "A stopped foreground job must leave its interactive shell session live")
+
+        try runtime.markSessionErrored(id: id)
+
+        XCTAssertTrue(waitForProcessToExit(childProcessID), "Broker cleanup left stopped foreground PID \(childProcessID) running")
+        XCTAssertTrue(waitForProcessToExit(shellProcessID), "Broker cleanup left interactive shell PID \(shellProcessID) running")
+    }
+
     func testNativePTYWorksWhenBrokerInheritsClosedStandardInput() throws {
         let savedStandardInput = dup(STDIN_FILENO)
         XCTAssertGreaterThanOrEqual(savedStandardInput, 0)
@@ -2863,6 +2899,36 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTFail("Could not prepare SIGTERM-resistant process tree: \(error)")
             throw error
         }
+    }
+
+    private func processID(after marker: String, in output: String) -> pid_t? {
+        for suffix in output.components(separatedBy: marker).dropFirst() {
+            let digits = suffix.prefix(while: { $0.isNumber })
+            if !digits.isEmpty, let processID = pid_t(digits) {
+                return processID
+            }
+        }
+        return nil
+    }
+
+    private func waitForProcessToStop(_ pid: pid_t) -> Bool {
+        for _ in 0..<100 {
+            var process = kinfo_proc()
+            var byteCount = MemoryLayout<kinfo_proc>.size
+            var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+            let result = query.withUnsafeMutableBufferPointer { pointer in
+                sysctl(pointer.baseAddress, 4, &process, &byteCount, nil, 0)
+            }
+            if result == 0, byteCount == MemoryLayout<kinfo_proc>.size,
+               process.kp_proc.p_stat == SSTOP {
+                return true
+            }
+            if result != 0, errno == ESRCH {
+                return false
+            }
+            usleep(10_000)
+        }
+        return false
     }
 
     private func waitForProcessToExit(_ pid: pid_t) -> Bool {
