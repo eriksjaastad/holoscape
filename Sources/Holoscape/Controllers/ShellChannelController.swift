@@ -391,9 +391,13 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             brokerSessionID = nil
             staleBrokerSessionID = terminal.staleBrokerSessionID
         case .failed, .none:
-            // Hard failures leave whatever durable identity the tab already had;
-            // only a successful attach clears it.
-            break
+            // An indeterminate reattach failure can still belong to the saved
+            // process generation (for example, a temporarily unreadable registry).
+            // Mirror any retained terminal handle so retry cannot create a second
+            // process merely because the failure was not classifiable.
+            if let terminalBrokerSessionID = terminal.brokerOwnedSessionID {
+                brokerSessionID = terminalBrokerSessionID
+            }
         }
         return channelState(for: kind)
     }

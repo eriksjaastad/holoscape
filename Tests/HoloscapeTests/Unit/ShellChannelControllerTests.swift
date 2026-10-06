@@ -134,6 +134,11 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .disconnected)
         XCTAssertEqual(controller.persistentState.kind, .error)
         XCTAssertEqual(controller.persistentState.reason, "capability query failed")
+        XCTAssertEqual(
+            controller.brokerSessionID,
+            BrokerSessionID(rawValue: "capability-failed-shell"),
+            "A capability-query failure must retain the broker identity for persistence and retry"
+        )
         controller.sendInput("must-not-send")
         XCTAssertTrue(terminal.sentBytes.isEmpty)
 
