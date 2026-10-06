@@ -34,6 +34,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockInputWrite = false
         private var blockedInputWriteShouldFail = false
         private var shouldBlockAcknowledgment = false
+        private var trackedTeardownFailuresRemaining = 0
+        private var untrackedTeardownFailuresRemaining = 0
         private var storedAcknowledgedOutputGenerations: [UInt64] = []
         private var storedScrollbackSnapshotCount = 0
         private var storedSuccessfulInputWrites = 0
@@ -55,6 +57,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             teardownEntered.wait(timeout: .now() + timeout) == .success
         }
         func finishTeardown() { teardownRelease.signal() }
+        func failTrackedTeardown(attempts: Int) {
+            lock.withLock { trackedTeardownFailuresRemaining = attempts }
+        }
+        func failUntrackedTeardown(attempts: Int) {
+            lock.withLock { untrackedTeardownFailuresRemaining = attempts }
+        }
 
         func blockStart() { lock.withLock { shouldBlockStart = true } }
         func waitForStart(timeout: TimeInterval = 1) -> Bool {
@@ -130,15 +138,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return record(id: id, ownerToken: nil, lifecycle: .detached)
         }
         func retireUntrackedSession(_ id: BrokerSessionID) throws {
-            let shouldBlock = lock.withLock { () -> Bool in
+            let outcome = lock.withLock { () -> (shouldBlock: Bool, shouldFail: Bool) in
                 detachCalls.append(id)
                 teardownRanOnMainThread.append(Thread.isMainThread)
-                return shouldBlockTeardown
+                let shouldFail = untrackedTeardownFailuresRemaining > 0
+                untrackedTeardownFailuresRemaining = max(0, untrackedTeardownFailuresRemaining - 1)
+                return (shouldBlockTeardown, shouldFail)
             }
-            if shouldBlock {
+            if outcome.shouldBlock {
                 teardownEntered.signal()
                 _ = teardownRelease.wait(timeout: .now() + 2)
             }
+            if outcome.shouldFail { throw RuntimeError.createFailed }
         }
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             lock.withLock { reattachCallCount += 1 }
@@ -150,7 +161,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
-            lock.withLock { markErroredCalls.append(id) }
+            let shouldFail = lock.withLock { () -> Bool in
+                markErroredCalls.append(id)
+                let shouldFail = trackedTeardownFailuresRemaining > 0
+                trackedTeardownFailuresRemaining = max(0, trackedTeardownFailuresRemaining - 1)
+                return shouldFail
+            }
+            if shouldFail { throw RuntimeError.createFailed }
             return record(id: id, ownerToken: nil, lifecycle: .errored)
         }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
@@ -2042,6 +2059,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         coordinator.finishTeardown()
     }
 
+    func testTeardownRetryPolicyBacksOffToFiveSecondCap() {
+        XCTAssertEqual(
+            (1...8).map(BrokerTeardownRetryPolicy.delay(afterFailureCount:)),
+            [0.25, 0.5, 1, 2, 4, 5, 5, 5]
+        )
+    }
+
+    func testTrackedTeardownBackoffEventuallyCompletesExactlyOnce() throws {
+        let sessionID = BrokerSessionID(rawValue: "started-off-main")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        coordinator.failTrackedTeardown(attempts: 7)
+        var requestedFailureCounts: [Int] = []
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "tracked-backoff",
+            environmentProfile: .shell,
+            coordinator: coordinator,
+            teardownRetryDelay: { failureCount in
+                requestedFailureCounts.append(failureCount)
+                return 0
+            }
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForStart())
+        var completionCount = 0
+
+        terminal.detachBrokerSession { completionCount += 1 }
+        coordinator.finishStart()
+
+        try waitUntil { completionCount == 1 }
+        XCTAssertEqual(requestedFailureCounts, Array(1...7))
+        XCTAssertEqual(coordinator.markErroredCalls, Array(repeating: sessionID, count: 8))
+        XCTAssertEqual(completionCount, 1)
+        XCTAssertEqual(coordinator.startCallCount, 1, "Teardown retry must not launch a replacement")
+    }
+
     func testFreshStartBrokerRPCDoesNotBlockMainActor() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockStart()
@@ -2232,6 +2287,36 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForTeardown())
         XCTAssertEqual(coordinator.teardownRanOnMainThread, [false])
         coordinator.finishTeardown()
+    }
+
+    func testUntrackedTeardownBackoffEventuallyCompletesExactlyOnce() throws {
+        let sessionID = BrokerSessionID(rawValue: "untracked-teardown-backoff")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.untrackedStartID = sessionID
+        var requestedFailureCounts: [Int] = []
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "untracked-backoff",
+            environmentProfile: .shell,
+            coordinator: coordinator,
+            teardownRetryDelay: { failureCount in
+                requestedFailureCounts.append(failureCount)
+                return 0
+            }
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        try waitUntil { terminal.untrackedBrokerSessionID == sessionID }
+        coordinator.failUntrackedTeardown(attempts: 7)
+        var completionCount = 0
+
+        terminal.detachBrokerSession { completionCount += 1 }
+
+        try waitUntil { completionCount == 1 }
+        XCTAssertEqual(requestedFailureCounts, Array(1...7))
+        XCTAssertEqual(coordinator.detachCalls, Array(repeating: sessionID, count: 8))
+        XCTAssertEqual(completionCount, 1)
+        XCTAssertEqual(coordinator.startCallCount, 1, "Teardown retry must not launch a replacement")
     }
 
     func testStartReattachesExistingBrokerSessionInsteadOfCreatingReplacement() throws {

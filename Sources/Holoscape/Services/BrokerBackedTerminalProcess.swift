@@ -1,6 +1,19 @@
 import AppKit
 import SwiftTerm
 
+/// Keeps teardown ownership alive during an outage without hammering the
+/// broker or registry at a fixed rate forever.
+enum BrokerTeardownRetryPolicy {
+    static let initialDelay: TimeInterval = 0.25
+    static let maximumDelay: TimeInterval = 5
+
+    static func delay(afterFailureCount failureCount: Int) -> TimeInterval {
+        guard failureCount > 0 else { return initialDelay }
+        let exponent = min(failureCount - 1, 30)
+        return min(initialDelay * pow(2, Double(exponent)), maximumDelay)
+    }
+}
+
 /// TerminalProcess implementation backed by Holoscape's broker runtime instead
 /// of SwiftTerm's LocalProcessTerminalView owning the child process directly.
 ///
@@ -22,6 +35,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let inputCoordinator: BrokerInputCoordinator
     private let outputCoordinator: BrokerOutputCoordinator
     private let failureRecoveryCoordinator: BrokerFailureRecoveryCoordinator
+    private let teardownRetryDelay: (Int) -> TimeInterval
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
@@ -85,7 +99,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         coordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(
             runtime: NativePTYBrokerSessionRuntime(scrollbackDirectory: ScrollbackPersistencePolicy.defaultDiskDirectory)
         ),
-        terminalView: HoloscapeTerminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        terminalView: HoloscapeTerminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600)),
+        teardownRetryDelay: @escaping (Int) -> TimeInterval = BrokerTeardownRetryPolicy.delay(afterFailureCount:)
     ) {
         self.channelID = channelID
         self.channelType = channelType
@@ -95,6 +110,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.inputCoordinator = BrokerInputCoordinator(coordinator)
         self.outputCoordinator = BrokerOutputCoordinator(coordinator)
         self.failureRecoveryCoordinator = BrokerFailureRecoveryCoordinator(coordinator)
+        self.teardownRetryDelay = teardownRetryDelay
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -306,6 +322,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func retireTrackedForTeardown(
         _ id: BrokerSessionID,
+        failureCount: Int = 0,
         completion: @escaping @MainActor () -> Void
     ) {
         failureRecoveryCoordinator.markErrored(id) { [self] error in
@@ -314,9 +331,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     completion()
                     return
                 }
-                NSLog("Broker-backed terminal could not retire tracked session \(id.rawValue) during teardown; retrying: \(error)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
-                    retireTrackedForTeardown(id, completion: completion)
+                let nextFailureCount = failureCount + 1
+                let delay = teardownRetryDelay(nextFailureCount)
+                NSLog("Broker-backed terminal could not retire tracked session \(id.rawValue) during teardown; retrying in \(delay) seconds: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+                    retireTrackedForTeardown(id, failureCount: nextFailureCount, completion: completion)
                 }
             }
         }
@@ -324,6 +343,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func retireUntrackedForTeardown(
         _ id: BrokerSessionID,
+        failureCount: Int = 0,
         completion: @escaping @MainActor () -> Void
     ) {
         failureRecoveryCoordinator.retireUntrackedSession(id) { [self] error in
@@ -335,9 +355,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     completion()
                     return
                 }
-                NSLog("Broker-backed terminal could not retire untracked session \(id.rawValue) during teardown; retrying: \(error)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
-                    retireUntrackedForTeardown(id, completion: completion)
+                let nextFailureCount = failureCount + 1
+                let delay = teardownRetryDelay(nextFailureCount)
+                NSLog("Broker-backed terminal could not retire untracked session \(id.rawValue) during teardown; retrying in \(delay) seconds: \(error)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+                    retireUntrackedForTeardown(id, failureCount: nextFailureCount, completion: completion)
                 }
             }
         }
