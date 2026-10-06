@@ -162,6 +162,7 @@ class SkinEngine {
     /// Task 11's FSEventStream watcher reads from the same location the
     /// loader does.
     let skinsDirectory: URL
+    private let bundledSkinsDirectoryOverride: URL?
 
     /// Density gate. When `isSkinActive()` returns false (Off mode), `apply`
     /// returns its input unchanged so chrome views render the pre-skinning
@@ -224,10 +225,12 @@ class SkinEngine {
 
     init(
         skinsDirectoryOverride: URL? = nil,
+        bundledSkinsDirectoryOverride: URL? = nil,
         cacheDirectoryProvider: () -> URL? = {
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
         }
     ) {
+        self.bundledSkinsDirectoryOverride = bundledSkinsDirectoryOverride
         let environmentOverride = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"]
             .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
 
@@ -244,14 +247,17 @@ class SkinEngine {
         // `~/Library/Caches/<bundleID>/Holoscape/Skins/`. Respects
         // HOLOSCAPE_CONFIG_DIR so tests stage a disposable cache under
         // their temp config dir and don't pollute the real user cache.
+        let userCacheDirectory: URL?
         let cacheRoot: URL?
         if let environmentOverride {
+            userCacheDirectory = nil
             cacheRoot = environmentOverride.appendingPathComponent("caches/Skins")
         } else {
-            cacheRoot = cacheDirectoryProvider()?.appendingPathComponent("Holoscape/Skins")
+            userCacheDirectory = cacheDirectoryProvider()
+            cacheRoot = userCacheDirectory?.appendingPathComponent("Holoscape/Skins")
         }
         self.wampLoader = WampBundleLoader(cacheRoot: cacheRoot)
-        self.bakePipeline = ChromeBakePipeline()
+        self.bakePipeline = ChromeBakePipeline(cacheDirectoryProvider: { userCacheDirectory })
 
         // WampBundleLoader needs the sandbox helpers from `self`.
         // Assignment deferred until after `self` is fully initialized.
@@ -313,6 +319,9 @@ class SkinEngine {
     /// lets integration tests stage a fake bundled-skins directory
     /// without having to mock the module bundle.
     private func bundledSkinsDirectory() -> URL? {
+        if let bundledSkinsDirectoryOverride {
+            return bundledSkinsDirectoryOverride
+        }
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_BUNDLE_SKINS_DIR"],
            !override.isEmpty {
             return URL(fileURLWithPath: override)
@@ -390,17 +399,38 @@ class SkinEngine {
         guard name != "Default" else { return nil }
 
         // User directory: try dir-layout first, then `.wamp`.
-        if let url = try resolveSkinLocation(named: name, under: skinsDirectory) {
+        if let url = try resolveSkinLocationPreservingCacheFailure(
+            named: name,
+            under: skinsDirectory
+        ) {
             return url
         }
 
-        // Bundle directory: same order.
+        // Bundle directory: same order. A malformed user bundle must not
+        // suppress a valid bundled skin with the same name.
         if let bundleRoot = bundledSkinsDirectory(),
-           let url = try resolveSkinLocation(named: name, under: bundleRoot) {
+           let url = try resolveSkinLocationPreservingCacheFailure(
+               named: name,
+               under: bundleRoot
+           ) {
             return url
         }
 
         return nil
+    }
+
+    private func resolveSkinLocationPreservingCacheFailure(
+        named name: String,
+        under root: URL
+    ) throws -> URL? {
+        do {
+            return try resolveSkinLocation(named: name, under: root)
+        } catch WampBundleLoader.LoadError.cacheDirectoryUnavailable {
+            throw WampBundleLoader.LoadError.cacheDirectoryUnavailable
+        } catch {
+            NSLog("SkinEngine: could not resolve '\(name)' under '\(root.path)': \(error)")
+            return nil
+        }
     }
 
     /// Single-location resolver. Checked by `resolveSkinDir` once per

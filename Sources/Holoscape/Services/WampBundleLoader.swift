@@ -114,17 +114,21 @@ final class WampBundleLoader {
         }
 
         // Cache miss. Extract with validation + size caps.
-        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
-
         do {
+            try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
             try extractArchive(at: bundleURL, into: subdir)
         } catch {
-            // Cleanup on any failure so the cache doesn't accumulate
-            // half-extracted subdirectories. Best-effort; a cleanup
-            // failure doesn't change the thrown error (callers care
-            // about the original cause).
-            try? FileManager.default.removeItem(at: subdir)
-            throw error
+            let primaryError = Self.typedIOError(error)
+            if FileManager.default.fileExists(atPath: subdir.path) {
+                do {
+                    try FileManager.default.removeItem(at: subdir)
+                } catch {
+                    throw LoadError.ioFailure(
+                        "bundle extraction failed (\(primaryError)); partial-cache cleanup failed: \(error.localizedDescription)"
+                    )
+                }
+            }
+            throw primaryError
         }
 
         // Post-condition: the extracted tree must have a skin.json at
@@ -132,7 +136,13 @@ final class WampBundleLoader {
         // more generic "unknown skin" error; catching it here pins the
         // issue to the bundle structure.
         guard FileManager.default.fileExists(atPath: manifestPath) else {
-            try? FileManager.default.removeItem(at: subdir)
+            do {
+                try FileManager.default.removeItem(at: subdir)
+            } catch {
+                throw LoadError.ioFailure(
+                    "bundle is missing skin.json and cache cleanup failed: \(error.localizedDescription)"
+                )
+            }
             throw LoadError.missingManifest
         }
 
@@ -150,6 +160,13 @@ final class WampBundleLoader {
         }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func typedIOError(_ error: Error) -> LoadError {
+        if let loadError = error as? LoadError {
+            return loadError
+        }
+        return .ioFailure(error.localizedDescription)
     }
 
     /// Walk `cacheRoot` and remove oldest subdirectories (by directory

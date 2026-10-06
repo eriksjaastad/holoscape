@@ -81,6 +81,24 @@ final class WampBundleLoaderTests: XCTestCase {
                       "Second unzipIfNeeded on unchanged bundle must hit cache (marker survives)")
     }
 
+    func testCacheDirectoryCreationFailureIsTypedIOFailure() throws {
+        let bundleURL = try makeBundle(entries: [
+            ("skin.json", Data(#"{"version":"3.0"}"#.utf8)),
+        ])
+        let blockingFile = tempRoot.appendingPathComponent("not-a-directory")
+        try Data("block child creation".utf8).write(to: blockingFile)
+        let unavailableLoader = WampBundleLoader(
+            cacheRoot: blockingFile.appendingPathComponent("cache")
+        )
+        unavailableLoader.sandbox = engine
+
+        XCTAssertThrowsError(try unavailableLoader.unzipIfNeeded(bundleURL: bundleURL)) { error in
+            guard case .ioFailure = error as? WampBundleLoader.LoadError else {
+                return XCTFail("Expected typed ioFailure, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Missing manifest
 
     func testBundleWithoutManifestThrows() throws {
