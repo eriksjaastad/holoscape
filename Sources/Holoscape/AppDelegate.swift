@@ -262,6 +262,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                   self.terminationTeardownGeneration == generation else { return }
             self.terminationTeardownTimeoutWorkItem?.cancel()
             self.terminationTeardownTimeoutWorkItem = nil
+            // Final-output cleanup can create or clear durable retirement-only
+            // authority after the initial quit snapshot. Persist the resolved
+            // broker truth before allowing AppKit to terminate.
+            channelManager.saveState()
             self.terminationTeardownComplete = true
             reply(true)
         }

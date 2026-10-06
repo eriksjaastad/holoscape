@@ -504,7 +504,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         }
                         guard self.reattachGeneration == authorityGeneration,
                               self.startCompletionPending else {
-                            self.finishExitedOutputResolution()
+                            if let exitCode = record.exitCode {
+                                self.retireExitedSession(
+                                    record,
+                                    exitCode: exitCode,
+                                    deliveryGeneration: self.activeOutputDeliveryGeneration ?? 0,
+                                    notifyStartCompletion: false
+                                )
+                            } else {
+                                self.finishExitedOutputResolution()
+                            }
                             return
                         }
                         self.completeSuccessfulReattach(record, notifyStartCompletion: notifyStartCompletion)
@@ -631,8 +640,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 return
                             }
                             guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
-                                self.completeReattachStartIfNeeded(acknowledgementNotifiesStart)
-                                self.finishExitedOutputResolution()
+                                self.retireExitedSession(
+                                    record,
+                                    exitCode: exitCode,
+                                    deliveryGeneration: deliveryGeneration,
+                                    notifyStartCompletion: false
+                                )
                                 return
                             }
                             self.drainExitedOutput(
@@ -679,6 +692,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         deliveryGeneration: UInt,
         notifyStartCompletion: Bool
     ) {
+        let retirementNotifiesStart = notifyStartCompletion || !startCompletionPending
+        startCompletionPending = true
         let mismatchDescription: String? = {
             guard let requestedExitCode = record.requestedExitCode,
                   requestedExitCode != exitCode else { return nil }
@@ -703,9 +718,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.publishSessionFailure(
                             TerminalSessionFailure(kind: .failed, description: combined.description)
                         )
-                        self.failExitedOutputDelivery(combined, notifyStartCompletion: notifyStartCompletion)
+                        self.failExitedOutputDelivery(combined, notifyStartCompletion: retirementNotifiesStart)
                     } else {
-                        self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                        self.failExitedOutputDelivery(error, notifyStartCompletion: retirementNotifiesStart)
                     }
                     self.finishExitedOutputResolution()
                     return
@@ -713,7 +728,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
-                self.completeReattachStartIfNeeded(notifyStartCompletion)
+                self.completeReattachStartIfNeeded(retirementNotifiesStart)
                 if let mismatchDescription, let completionWarning {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
@@ -740,7 +755,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 }
                 if !presentationLeaseIsActive {
                     self.finishExitedOutputResolution()
-                } else if notifyStartCompletion {
+                } else if retirementNotifiesStart {
                     publishTermination()
                     self.finishExitedOutputResolution()
                 } else {
