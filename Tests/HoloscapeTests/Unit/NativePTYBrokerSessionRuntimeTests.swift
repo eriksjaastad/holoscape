@@ -224,6 +224,20 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertLessThan(elapsed, 500_000_000)
     }
 
+    func testBoundedChildWaitRechecksDeadlineAfterEveryInterruptedSleep() {
+        let startedAt = DispatchTime.now()
+        XCTAssertEqual(
+            holoscape_test_bounded_child_wait_with_eintr(50, 1_000, 1_000),
+            ETIMEDOUT
+        )
+        let elapsed = DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds
+        XCTAssertLessThan(
+            elapsed,
+            500_000_000,
+            "interposed EINTR extended the bounded child wait past its monotonic deadline"
+        )
+    }
+
     func testMissingSecondaryProcessGroupObservationStillCleansNativeValidatedLaunchGroup() throws {
         let signaler = RecordingProcessGroupSignaler()
         let runtime = NativePTYBrokerSessionRuntime(
@@ -1303,10 +1317,14 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         defer { try? runtime.markSessionErrored(id: id) }
         let completed = DispatchSemaphore(value: 0)
         let capturedError = LockedRuntimeErrorBox()
+        let launchGroupStateAtReturn = LockedInt32Box()
 
         DispatchQueue.global().async {
             do {
                 try runtime.terminateSession(id: id, exitCode: nil)
+                launchGroupStateAtReturn.store(
+                    holoscape_process_group_has_live_member(pids.root, pids.root)
+                )
             } catch {
                 capturedError.store(error)
             }
@@ -1321,6 +1339,11 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         XCTAssertEqual(firstWait, .success, "termination exceeded its bounded deadline")
         XCTAssertNil(capturedError.value)
+        XCTAssertEqual(
+            launchGroupStateAtReturn.value,
+            0,
+            "termination returned before its launch-group descendant disappeared"
+        )
         XCTAssertFalse(try runtime.isRunning(id: id))
         XCTAssertNotNil(try runtime.terminationStatus(id: id))
         XCTAssertTrue(waitForProcessToExit(pids.child), "termination left descendant PID \(pids.child) running")
@@ -1424,6 +1447,77 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(
             waitForProcessToExit(foregroundPID),
             "natural leader exit left job-control foreground PID \(foregroundPID) running"
+        )
+    }
+
+    func testNaturalExitKillsForegroundGroupAfterItsLeaderExits() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "leaderless-foreground-native-pty-runtime-test")
+        let python = """
+        import os, signal, time
+        for caught in (signal.SIGHUP, signal.SIGTERM, signal.SIGTTOU):
+            signal.signal(caught, signal.SIG_IGN)
+        os.setpgid(0, 0)
+        terminal = os.open("/dev/tty", os.O_RDWR)
+        os.tcsetpgrp(terminal, os.getpgrp())
+        child = os.fork()
+        if child == 0:
+            while True:
+                time.sleep(30)
+        print(f"SURVIVOR_READY:{os.getpgrp()}:{child}", flush=True)
+        os._exit(0)
+        """
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "/usr/bin/python3 -c '\(python)' & leader=$!; wait \"$leader\"; sleep 1; exit 0"
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        let output = try waitForOutput(from: runtime, id: id, containing: "SURVIVOR_READY:")
+        guard let marker = output.range(of: "SURVIVOR_READY:") else {
+            return XCTFail("Could not find survivor marker in: \(output)")
+        }
+        let components = output[marker.upperBound...]
+            .prefix(while: { $0.isNumber || $0 == ":" })
+            .split(separator: ":")
+        guard components.count == 2,
+              let foregroundGroupID = pid_t(components[0]),
+              let survivingMemberPID = pid_t(components[1]) else {
+            return XCTFail("Could not parse foreground group and survivor PIDs from: \(output)")
+        }
+        XCTAssertNotEqual(foregroundGroupID, survivingMemberPID)
+
+        let leaderExitDeadline = Date().addingTimeInterval(0.5)
+        var observedLeaderlessLiveGroup = false
+        while Date() < leaderExitDeadline, !observedLeaderlessLiveGroup {
+            errno = 0
+            let leaderSession = getsid(foregroundGroupID)
+            observedLeaderlessLiveGroup = leaderSession < 0
+                && errno == ESRCH
+                && holoscape_process_group_has_live_member(foregroundGroupID, -1) == 1
+            if !observedLeaderlessLiveGroup { usleep(10_000) }
+        }
+        XCTAssertTrue(
+            observedLeaderlessLiveGroup,
+            "fixture never produced a live foreground group whose group leader had been reaped"
+        )
+
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 0)
+        XCTAssertEqual(
+            holoscape_process_group_has_live_member(foregroundGroupID, -1),
+            0,
+            "natural-exit cleanup returned while the leaderless foreground group was still live"
+        )
+        XCTAssertTrue(
+            waitForProcessToExit(survivingMemberPID),
+            "natural leader exit left same-group survivor PID \(survivingMemberPID) running"
         )
     }
 
@@ -2443,6 +2537,19 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+}
+
+private final class LockedInt32Box: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Int32?
+
+    var value: Int32? {
+        lock.withLock { storedValue }
+    }
+
+    func store(_ value: Int32) {
+        lock.withLock { storedValue = value }
     }
 }
 

@@ -165,7 +165,27 @@ static int prepare_child_error_descriptor(int *error_fd, long descriptor_limit) 
     return 0;
 }
 
-static int wait_for_child_bounded(pid_t pid, int timeout_milliseconds) {
+typedef int (*holoscape_sleep_function)(
+    const struct timespec *requested,
+    struct timespec *remaining,
+    void *context
+);
+
+static int system_nanosleep(
+    const struct timespec *requested,
+    struct timespec *remaining,
+    void *context
+) {
+    (void)context;
+    return nanosleep(requested, remaining);
+}
+
+static int wait_for_child_bounded_with_sleep(
+    pid_t pid,
+    int timeout_milliseconds,
+    holoscape_sleep_function sleep_function,
+    void *sleep_context
+) {
     int status;
     int64_t deadline;
     int deadline_error = deadline_after_milliseconds(timeout_milliseconds, &deadline);
@@ -187,10 +207,21 @@ static int wait_for_child_bounded(pid_t pid, int timeout_milliseconds) {
         if (now >= deadline) {
             return ETIMEDOUT;
         }
-        struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
-        while (nanosleep(&pause, &pause) != 0 && errno == EINTR) {
+        const struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+        struct timespec remaining = pause;
+        if (sleep_function(&pause, &remaining, sleep_context) != 0 && errno != EINTR) {
+            return errno;
         }
     }
+}
+
+static int wait_for_child_bounded(pid_t pid, int timeout_milliseconds) {
+    return wait_for_child_bounded_with_sleep(
+        pid,
+        timeout_milliseconds,
+        system_nanosleep,
+        NULL
+    );
 }
 
 static int kill_and_wait(pid_t pid, pid_t process_group_id) {
@@ -481,18 +512,21 @@ int holoscape_get_foreground_process_group(
 ) {
     pid_t foreground = tcgetpgrp(master_fd);
     if (foreground < 0) {
-        return errno;
+        int foreground_error = errno;
+        return foreground_error == ENOTTY || foreground_error == EIO
+            ? ESRCH
+            : foreground_error;
     }
     if (foreground == 0) {
         *foreground_process_group_id = 0;
         return 0;
     }
-    pid_t observed_session = getsid(foreground);
-    if (observed_session < 0) {
-        return errno;
+    int validation = holoscape_validate_process_group_session(foreground, session_id);
+    if (validation < 0) {
+        return -validation;
     }
-    if (observed_session != session_id) {
-        return EPROTO;
+    if (validation == 0) {
+        return ESRCH;
     }
     *foreground_process_group_id = foreground;
     return 0;
@@ -514,7 +548,7 @@ int holoscape_observe_pty_exit(
         );
         if (foreground_error == 0 && foreground > 0) {
             *foreground_process_group_id = foreground;
-        } else if (foreground_error == EPROTO) {
+        } else if (foreground_error != ESRCH) {
             return foreground_error;
         }
 
@@ -535,7 +569,7 @@ int holoscape_observe_pty_exit(
             );
             if (foreground_error == 0 && foreground > 0) {
                 *foreground_process_group_id = foreground;
-            } else if (foreground_error == EPROTO) {
+            } else if (foreground_error != ESRCH) {
                 return foreground_error;
             }
             return 0;
@@ -619,6 +653,111 @@ int holoscape_process_group_has_live_member(
     return -ENOMEM;
 }
 
+static int inspect_process_group_session(
+    pid_t process_group_id,
+    pid_t session_id,
+    int *has_live_member,
+    int *has_live_session_member
+) {
+    int query[] = {CTL_KERN, KERN_PROC, KERN_PROC_PGRP, process_group_id};
+    for (int attempt = 0; attempt < 3; attempt++) {
+        size_t byte_count = 0;
+        if (sysctl(query, 4, NULL, &byte_count, NULL, 0) != 0) {
+            return errno;
+        }
+        if (byte_count == 0) {
+            *has_live_member = 0;
+            *has_live_session_member = 0;
+            return 0;
+        }
+        struct kinfo_proc *processes = malloc(byte_count);
+        if (processes == NULL) {
+            return ENOMEM;
+        }
+        size_t populated_byte_count = byte_count;
+        if (sysctl(query, 4, processes, &populated_byte_count, NULL, 0) != 0) {
+            int query_error = errno;
+            free(processes);
+            if (query_error == ENOMEM) {
+                continue;
+            }
+            return query_error;
+        }
+
+        size_t process_count = populated_byte_count / sizeof(struct kinfo_proc);
+        int observed_live_member = 0;
+        int observed_live_session_member = 0;
+        int saw_disappearing_member = 0;
+        for (size_t index = 0; index < process_count; index++) {
+            pid_t member_pid = processes[index].kp_proc.p_pid;
+            if (processes[index].kp_proc.p_stat == SZOMB) {
+                continue;
+            }
+            pid_t observed_session = getsid(member_pid);
+            if (observed_session < 0) {
+                if (errno == ESRCH) {
+                    saw_disappearing_member = 1;
+                    continue;
+                }
+                int session_error = errno;
+                free(processes);
+                return session_error;
+            }
+            observed_live_member = 1;
+            if (observed_session == session_id) {
+                observed_live_session_member = 1;
+            }
+        }
+        free(processes);
+        if (saw_disappearing_member && !observed_live_member && attempt < 2) {
+            continue;
+        }
+        *has_live_member = observed_live_member;
+        *has_live_session_member = observed_live_session_member;
+        return 0;
+    }
+    return EAGAIN;
+}
+
+int holoscape_process_group_has_live_session_member(
+    pid_t process_group_id,
+    pid_t session_id
+) {
+    int has_live_member = 0;
+    int has_live_session_member = 0;
+    int inspection_error = inspect_process_group_session(
+        process_group_id,
+        session_id,
+        &has_live_member,
+        &has_live_session_member
+    );
+    if (inspection_error != 0) {
+        return -inspection_error;
+    }
+    return has_live_session_member;
+}
+
+int holoscape_validate_process_group_session(
+    pid_t process_group_id,
+    pid_t session_id
+) {
+    int has_live_member = 0;
+    int has_live_session_member = 0;
+    int inspection_error = inspect_process_group_session(
+        process_group_id,
+        session_id,
+        &has_live_member,
+        &has_live_session_member
+    );
+    if (inspection_error != 0) {
+        return -inspection_error;
+    }
+    if (has_live_session_member) {
+        return 1;
+    }
+    return has_live_member ? -EPROTO : 0;
+}
+
 int holoscape_test_sigpipe_safe_handshake_write(void) {
     int descriptors[2];
     if (pipe(descriptors) != 0) {
@@ -653,5 +792,63 @@ int holoscape_test_timed_handshake_read(int timeout_milliseconds) {
     }
     close(descriptors[0]);
     close(descriptors[1]);
+    return result;
+}
+
+struct interrupted_sleep_context {
+    int remaining_interruptions;
+    long interruption_delay_nanoseconds;
+};
+
+static int interposed_interrupted_sleep(
+    const struct timespec *requested,
+    struct timespec *remaining,
+    void *raw_context
+) {
+    struct interrupted_sleep_context *context = raw_context;
+    if (context->remaining_interruptions <= 0) {
+        return nanosleep(requested, remaining);
+    }
+    context->remaining_interruptions--;
+    struct timespec delay = {
+        .tv_sec = 0,
+        .tv_nsec = context->interruption_delay_nanoseconds,
+    };
+    while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
+    }
+    *remaining = *requested;
+    errno = EINTR;
+    return -1;
+}
+
+int holoscape_test_bounded_child_wait_with_eintr(
+    int timeout_milliseconds,
+    int interruption_count,
+    int interruption_delay_microseconds
+) {
+    pid_t child = fork();
+    if (child < 0) {
+        return errno;
+    }
+    if (child == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+
+    struct interrupted_sleep_context context = {
+        .remaining_interruptions = interruption_count,
+        .interruption_delay_nanoseconds = interruption_delay_microseconds * 1000L,
+    };
+    int result = wait_for_child_bounded_with_sleep(
+        child,
+        timeout_milliseconds,
+        interposed_interrupted_sleep,
+        &context
+    );
+    (void)kill(child, SIGKILL);
+    int status;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+    }
     return result;
 }

@@ -33,6 +33,16 @@ int holoscape_process_group_has_live_member(
     pid_t excluded_process_id
 );
 
+int holoscape_process_group_has_live_session_member(
+    pid_t process_group_id,
+    pid_t session_id
+);
+
+int holoscape_validate_process_group_session(
+    pid_t process_group_id,
+    pid_t session_id
+);
+
 int holoscape_get_foreground_process_group(
     int master_fd,
     pid_t session_id,
@@ -41,5 +51,10 @@ int holoscape_get_foreground_process_group(
 
 int holoscape_test_sigpipe_safe_handshake_write(void);
 int holoscape_test_timed_handshake_read(int timeout_milliseconds);
+int holoscape_test_bounded_child_wait_with_eintr(
+    int timeout_milliseconds,
+    int interruption_count,
+    int interruption_delay_microseconds
+);
 
 #endif

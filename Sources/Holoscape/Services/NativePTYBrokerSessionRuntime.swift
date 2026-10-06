@@ -82,7 +82,6 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     func startWaiting(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-        processGroupExists: @escaping @Sendable (pid_t) -> Bool,
         cleanupTimeoutMilliseconds: Int
     ) {
         let shouldStart = lock.withLock {
@@ -104,7 +103,6 @@ final class NativePTYChildProcess: @unchecked Sendable {
             if observation.waitError == nil {
                 finalObservation = finishObservedExitCleanup(
                     signalProcessGroup: signalProcessGroup,
-                    processGroupExists: processGroupExists,
                     cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
                 )
             } else {
@@ -137,7 +135,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         )
         if foregroundError == 0, foreground > 0 {
             lock.withLock { retainedForegroundProcessGroupID = foreground }
-        } else if foregroundError == EPROTO {
+        } else if foregroundError != ESRCH {
             return foregroundError
         }
 
@@ -147,7 +145,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         let leaderExitObserved = lock.withLock { exitObserved }
         if let retainedForeground, retainedForeground != processGroupID {
             let error = signalProcessGroup(retainedForeground, signal)
-            if error != 0, error != ESRCH, !(leaderExitObserved && error == EPERM) {
+            if error != 0, error != ESRCH {
                 return error
             }
         }
@@ -155,13 +153,16 @@ final class NativePTYChildProcess: @unchecked Sendable {
         let leaderExitedDuringSignal = lock.withLock { exitObserved }
         let kernelObservedExit = launchError == EPERM
             && holoscape_process_exit_observed(processIdentifier) == 1
-        let launchGroupHasLiveDescendant = launchError == EPERM
+        let launchGroupLiveMemberResult = launchError == EPERM
             ? holoscape_process_group_has_live_member(processGroupID, processIdentifier)
             : 0
+        if launchGroupLiveMemberResult < 0 {
+            return -launchGroupLiveMemberResult
+        }
         if launchError == ESRCH
             || ((leaderExitObserved || leaderExitedDuringSignal || kernelObservedExit)
                 && launchError == EPERM
-                && launchGroupHasLiveDescendant == 0) {
+                && launchGroupLiveMemberResult == 0) {
             return 0
         }
         return launchError
@@ -169,7 +170,6 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     func retryObservedExitCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-        processGroupExists: @escaping @Sendable (pid_t) -> Bool,
         cleanupTimeoutMilliseconds: Int
     ) -> TerminationObservation {
         guard lock.withLock({ exitObserved && !cleanupComplete }) else {
@@ -177,7 +177,6 @@ final class NativePTYChildProcess: @unchecked Sendable {
         }
         let observation = finishObservedExitCleanup(
             signalProcessGroup: signalProcessGroup,
-            processGroupExists: processGroupExists,
             cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
         )
         lock.withLock {
@@ -189,7 +188,6 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     private func finishObservedExitCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-        processGroupExists: @escaping @Sendable (pid_t) -> Bool,
         cleanupTimeoutMilliseconds: Int
     ) -> TerminationObservation {
         lifecycleLock.lock()
@@ -208,8 +206,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         if let foreground, foreground != processGroupID {
             let foregroundSignalError = signalProcessGroup(foreground, SIGKILL)
             if foregroundSignalError != 0,
-               foregroundSignalError != ESRCH,
-               foregroundSignalError != EPERM {
+               foregroundSignalError != ESRCH {
                 return TerminationObservation(
                     status: nil,
                     waitError: foregroundSignalError,
@@ -218,12 +215,19 @@ final class NativePTYChildProcess: @unchecked Sendable {
             }
         }
         let launchSignalError = signalProcessGroup(processGroupID, SIGKILL)
-        let launchGroupHasLiveDescendant = launchSignalError == EPERM
+        let launchGroupLiveMemberResult = launchSignalError == EPERM
             ? holoscape_process_group_has_live_member(processGroupID, processIdentifier)
             : 0
+        if launchGroupLiveMemberResult < 0 {
+            return TerminationObservation(
+                status: nil,
+                waitError: -launchGroupLiveMemberResult,
+                foregroundProcessGroupID: foreground
+            )
+        }
         if launchSignalError != 0,
            launchSignalError != ESRCH,
-           !(launchSignalError == EPERM && launchGroupHasLiveDescendant == 0) {
+           !(launchSignalError == EPERM && launchGroupLiveMemberResult == 0) {
             return TerminationObservation(
                 status: nil,
                 waitError: launchSignalError,
@@ -231,18 +235,15 @@ final class NativePTYChildProcess: @unchecked Sendable {
             )
         }
 
-        if let foreground, foreground != processGroupID {
-            let deadline = DispatchTime.now() + .milliseconds(cleanupTimeoutMilliseconds)
-            while processGroupExists(foreground), DispatchTime.now() < deadline {
-                usleep(10_000)
-            }
-            if processGroupExists(foreground) {
-                return TerminationObservation(
-                    status: nil,
-                    waitError: ETIMEDOUT,
-                    foregroundProcessGroupID: foreground
-                )
-            }
+        if let barrierError = waitForOwnedProcessGroupsToExit(
+            foregroundProcessGroupID: foreground,
+            timeoutMilliseconds: cleanupTimeoutMilliseconds
+        ) {
+            return TerminationObservation(
+                status: nil,
+                waitError: barrierError,
+                foregroundProcessGroupID: foreground
+            )
         }
 
         let reaped = reaper(processIdentifier)
@@ -276,14 +277,50 @@ final class NativePTYChildProcess: @unchecked Sendable {
         guard let foreground = lock.withLock({ retainedForegroundProcessGroupID }) else {
             return (nil, nil)
         }
-        let sessionID = getsid(foreground)
-        if sessionID < 0 {
-            return errno == ESRCH ? (nil, nil) : (foreground, errno)
+        let validation = holoscape_validate_process_group_session(foreground, processIdentifier)
+        if validation < 0 {
+            return (foreground, -validation)
         }
-        guard sessionID == processIdentifier else {
-            return (foreground, EPROTO)
+        guard validation > 0 else {
+            return (nil, nil)
         }
         return (foreground, nil)
+    }
+
+    private func waitForOwnedProcessGroupsToExit(
+        foregroundProcessGroupID: pid_t?,
+        timeoutMilliseconds: Int
+    ) -> Int32? {
+        let deadline = DispatchTime.now() + .milliseconds(timeoutMilliseconds)
+        while true {
+            let launchGroupResult = holoscape_process_group_has_live_member(
+                processGroupID,
+                processIdentifier
+            )
+            if launchGroupResult < 0 {
+                return -launchGroupResult
+            }
+
+            var foregroundGroupResult: Int32 = 0
+            if let foregroundProcessGroupID,
+               foregroundProcessGroupID != processGroupID {
+                foregroundGroupResult = holoscape_process_group_has_live_session_member(
+                    foregroundProcessGroupID,
+                    processIdentifier
+                )
+                if foregroundGroupResult < 0 {
+                    return -foregroundGroupResult
+                }
+            }
+
+            if launchGroupResult == 0, foregroundGroupResult == 0 {
+                return nil
+            }
+            if DispatchTime.now() >= deadline {
+                return ETIMEDOUT
+            }
+            usleep(10_000)
+        }
     }
 
     static func launch(
@@ -1339,7 +1376,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             if !retained.process.cleanupIsComplete, !retained.process.isRunning {
                 _ = retained.process.retryObservedExitCleanup(
                     signalProcessGroup: processGroupSignal,
-                    processGroupExists: processGroupExists,
                     cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                 )
             }
@@ -1508,7 +1544,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         // retained as cleanup authority until the leader is safely reaped.
         process.startWaiting(
             signalProcessGroup: processGroupSignal,
-            processGroupExists: processGroupExists,
             cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
         )
 
@@ -1876,7 +1911,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         process.retainMasterDescriptorUntilCleanupCompletes()
         process.startWaiting(
             signalProcessGroup: processGroupSignal,
-            processGroupExists: processGroupExists,
             cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
         )
         let signalError = process.signalOwnedProcessGroups(
@@ -1889,7 +1923,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if !process.cleanupIsComplete, !process.isRunning {
             _ = process.retryObservedExitCleanup(
                 signalProcessGroup: processGroupSignal,
-                processGroupExists: processGroupExists,
                 cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
             )
         }
@@ -1917,7 +1950,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if !retained.process.cleanupIsComplete, !retained.process.isRunning {
             _ = retained.process.retryObservedExitCleanup(
                 signalProcessGroup: processGroupSignal,
-                processGroupExists: processGroupExists,
                 cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
             )
         }
@@ -1958,7 +1990,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             if !session.process.isRunning {
                 let retryObservation = session.process.retryObservedExitCleanup(
                     signalProcessGroup: processGroupSignal,
-                    processGroupExists: processGroupExists,
                     cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                 )
                 session.updateProcessCleanupObservation(retryObservation)
@@ -1975,7 +2006,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 if !session.process.isRunning {
                     let retryObservation = session.process.retryObservedExitCleanup(
                         signalProcessGroup: processGroupSignal,
-                        processGroupExists: processGroupExists,
                         cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                     )
                     session.updateProcessCleanupObservation(retryObservation)
@@ -2013,11 +2043,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             usleep(10_000)
         }
         return process.cleanupIsComplete
-    }
-
-    private func processGroupExists(_ processGroupID: pid_t) -> Bool {
-        if Darwin.kill(-processGroupID, 0) == 0 { return true }
-        return errno != ESRCH
     }
 
     private func session(for id: BrokerSessionID) throws -> Session {
