@@ -258,6 +258,59 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(observer.childHasExited, "The retained leader must be reaped before cleanup succeeds")
     }
 
+    func testReapedStatusAndLifecycleCompletionPublishAtomically() throws {
+        let observer = TransientExitObserver()
+        let publicationGate = OneShotLifecyclePublicationGate()
+        let runtime = NativePTYBrokerSessionRuntime(
+            childProcessWaiter: observer.wait,
+            childProcessReaper: observer.reap,
+            childProcessLifecycleWillPublish: publicationGate.pause
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-atomic-lifecycle-publication")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exit 42"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer {
+            publicationGate.release()
+            try? runtime.markSessionErrored(id: id)
+            observer.forceCleanup()
+        }
+
+        XCTAssertEqual(publicationGate.waitUntilPaused(), .success)
+        XCTAssertTrue(
+            try runtime.isRunning(id: id),
+            "stopped truth must not publish before the authoritative reaped result"
+        )
+
+        let terminationFinished = DispatchSemaphore(value: 0)
+        let terminationError = LockedRuntimeErrorBox()
+        DispatchQueue.global().async {
+            do {
+                try runtime.terminateSession(id: id, exitCode: 42)
+            } catch {
+                terminationError.store(error)
+            }
+            terminationFinished.signal()
+        }
+
+        XCTAssertEqual(
+            terminationFinished.wait(timeout: .now() + .milliseconds(100)),
+            .timedOut,
+            "termination returned through cleanupComplete before final status publication"
+        )
+        publicationGate.release()
+        XCTAssertEqual(terminationFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(terminationError.value)
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 42)
+    }
+
     func testDeinitConvergesRetainedLaunchCleanupAfterPersistentTransientExitObservation() throws {
         let observer = PersistentTransientExitObserver()
         let signaler = FailFirstProcessGroupSignaler()
@@ -304,6 +357,35 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(observer.reapCount, 1, "Forced cleanup and observation must share one reap authority")
         XCTAssertTrue(observer.childHasExited, "Deinit must not leave the retained leader live or unreaped")
         XCTAssertTrue(observer.waitForMasterDescriptorToClose(), "Cleanup must release the retained PTY master")
+    }
+
+    func testDeinitCleansNormalLiveSessionAndReleasesDescriptors() throws {
+        let descriptorCountBefore = openFileDescriptorCount()
+        let closer = TrackingInputDescriptorCloser()
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            inputDescriptorCloser: closer.close
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit")
+        let pids = try createSIGTERMResistantSession(runtime: try XCTUnwrap(runtime), id: id)
+        defer {
+            _ = Darwin.kill(-pids.child, SIGKILL)
+            _ = Darwin.kill(-pids.root, SIGKILL)
+            _ = Darwin.kill(pids.child, SIGKILL)
+            _ = Darwin.kill(pids.root, SIGKILL)
+            var status: Int32 = 0
+            _ = waitpid(pids.root, &status, WNOHANG)
+        }
+
+        runtime = nil
+
+        XCTAssertTrue(waitForProcessToExit(pids.root), "runtime deinit left root PID \(pids.root) live or unreaped")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "runtime deinit left same-session child PID \(pids.child) live")
+        XCTAssertEqual(closer.attemptCount, 1, "runtime deinit must release the duplicated input descriptor exactly once")
+        XCTAssertEqual(
+            openFileDescriptorCount(),
+            descriptorCountBefore,
+            "runtime deinit must release both owned PTY descriptors"
+        )
     }
 
     func testExplicitTeardownConvergesPersistentTransientObservationAndSameSessionProcesses() throws {
@@ -2511,7 +2593,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             command: "/bin/sh",
             arguments: [
                 "-c",
-                "ready=0; trap 'ready=1' USR1; trap '' TERM; /bin/sh -c 'trap \"\" TERM; kill -USR1 \"$1\"; while :; do :; done' sh \"$$\" & child=$!; while [ \"$ready\" -eq 0 ]; do :; done; printf 'SIGTERM_READY:%d:%d\\n' \"$$\" \"$child\"; wait \"$child\""
+                "ready=0; trap 'ready=1' USR1; trap '' HUP TERM; /bin/sh -c 'trap \"\" HUP TERM; kill -USR1 \"$1\"; while :; do :; done' sh \"$$\" & child=$!; while [ \"$ready\" -eq 0 ]; do :; done; printf 'SIGTERM_READY:%d:%d\\n' \"$$\" \"$child\"; wait \"$child\""
             ],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
@@ -2759,6 +2841,32 @@ private final class OneShotOutputReadGate: @unchecked Sendable {
         guard shouldBlock else { return }
         started.signal()
         _ = allowRead.wait(timeout: .now() + 3)
+    }
+}
+
+private final class OneShotLifecyclePublicationGate: @unchecked Sendable {
+    private let paused = DispatchSemaphore(value: 0)
+    private let resume = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var hasPaused = false
+
+    func pause() {
+        let shouldPause = lock.withLock {
+            guard !hasPaused else { return false }
+            hasPaused = true
+            return true
+        }
+        guard shouldPause else { return }
+        paused.signal()
+        _ = resume.wait(timeout: .now() + 3)
+    }
+
+    func waitUntilPaused() -> DispatchTimeoutResult {
+        paused.wait(timeout: .now() + 3)
+    }
+
+    func release() {
+        resume.signal()
     }
 }
 
