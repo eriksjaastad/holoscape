@@ -293,6 +293,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var terminationStatusError: Error?
         var finalizationError: Error?
         var retirementError: Error?
+        var outputSnapshotError: Error?
+        var acknowledgementError: Error?
         private let outputReadRelease = DispatchSemaphore(value: 0)
         private var shouldBlockOutputRead = false
 
@@ -348,6 +350,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
             outputReadCount += 1
+            if let outputSnapshotError { throw outputSnapshotError }
             if shouldBlockOutputRead {
                 _ = outputReadRelease.wait(timeout: .now() + 1)
             }
@@ -362,6 +365,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
             acknowledgedGenerations.append(generation)
+            if let acknowledgementError { throw acknowledgementError }
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func readScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> ScrollbackReplay {
@@ -438,6 +442,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
     }
     private enum RuntimeError: Error, Equatable {
         case createFailed
+        case outputReadFailed
+        case outputAcknowledgementFailed
+        case retirementFailed
     }
 
     private final class FailingReattachRuntime: BrokerSessionRuntime {
@@ -2952,6 +2959,104 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(failures.first?.description.contains("exitCodeMismatch") == true)
         XCTAssertEqual(events.first, "output")
         XCTAssertNil(restoredTerminal.brokerSessionID)
+    }
+
+    func testRecoveredExitedOutputReadFailureRetiresRuntimeBeforeReleasingIdentity() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.outputSnapshotError = RuntimeError.outputReadFailed
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "failed-final-output-read",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { restoredTerminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+        XCTAssertEqual(restoredTerminal.startFailureKind, .failed)
+        XCTAssertTrue(
+            restoredTerminal.startFailureDescription?.contains("outputReadFailed") == true,
+            restoredTerminal.startFailureDescription ?? "nil"
+        )
+    }
+
+    func testRecoveredExitedOutputAcknowledgementFailureRetiresRuntime() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.acknowledgementError = RuntimeError.outputAcknowledgementFailed
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "failed-final-output-acknowledgement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { restoredTerminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24])
+        XCTAssertNil(restoredTerminal.brokerSessionID)
+        XCTAssertEqual(restoredTerminal.startFailureKind, .failed)
+        XCTAssertTrue(
+            restoredTerminal.startFailureDescription?.contains("outputAcknowledgementFailed") == true,
+            restoredTerminal.startFailureDescription ?? "nil"
+        )
+    }
+
+    func testRecoveredExitedOutputFailurePreservesIdentityWhenRetirementFails() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.outputSnapshotError = RuntimeError.outputReadFailed
+        coordinator.retirementError = RuntimeError.retirementFailed
+        let restoredTerminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "failed-final-output-cleanup",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        restoredTerminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil {
+            restoredTerminal.startFailureDescription?.contains("retirementFailed") == true
+        }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertEqual(restoredTerminal.startFailureKind, .failed)
+        XCTAssertTrue(
+            restoredTerminal.startFailureDescription?.contains("outputReadFailed") == true,
+            restoredTerminal.startFailureDescription ?? "nil"
+        )
+        XCTAssertTrue(
+            restoredTerminal.startFailureDescription?.contains("retirementFailed") == true,
+            restoredTerminal.startFailureDescription ?? "nil"
+        )
     }
 
     func testAmbiguousExitMismatchRetiresRuntimeBeforePublishingFailure() throws {

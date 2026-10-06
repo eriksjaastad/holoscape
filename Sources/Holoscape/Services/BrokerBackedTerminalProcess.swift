@@ -579,7 +579,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             guard self.brokerSessionID == record.id,
                                   self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
                             if let error {
-                                self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                                self.retireExitedSessionAfterOutputFailure(
+                                    record.id,
+                                    error: error,
+                                    deliveryGeneration: deliveryGeneration,
+                                    notifyStartCompletion: notifyStartCompletion
+                                )
                                 return
                             }
                             self.drainExitedOutput(
@@ -599,7 +604,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     )
                 }
             } catch {
-                self.failExitedOutputDelivery(error, notifyStartCompletion: notifyStartCompletion)
+                self.retireExitedSessionAfterOutputFailure(
+                    record.id,
+                    error: error,
+                    deliveryGeneration: deliveryGeneration,
+                    notifyStartCompletion: notifyStartCompletion
+                )
             }
         }
 
@@ -709,6 +719,57 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startFailureDescription = String(describing: error)
         startFailureKind = classifyStartFailure(error)
         completeReattachStartIfNeeded(notifyStartCompletion)
+    }
+
+    private func retireExitedSessionAfterOutputFailure(
+        _ id: BrokerSessionID,
+        error outputError: Error,
+        deliveryGeneration: UInt,
+        notifyStartCompletion: Bool
+    ) {
+        let completion: @Sendable (Error?) -> Void = { [weak self] retirementError in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.brokerSessionID == id,
+                      self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
+
+                let completionWarning = retirementError.flatMap {
+                    self.isCompletedRetirementWarning($0) ? $0 : nil
+                }
+                let failure: Error
+                if let retirementError, completionWarning == nil {
+                    failure = BrokerSessionCompositeFailure(
+                        description: "\(outputError); failed to retire completed broker session: \(retirementError)"
+                    )
+                } else if let completionWarning {
+                    failure = BrokerSessionCompositeFailure(
+                        description: "\(outputError); broker retirement completed with warning: \(completionWarning)"
+                    )
+                    self.brokerSessionID = nil
+                    self.agentStatusOwnerToken = nil
+                } else {
+                    failure = outputError
+                    self.brokerSessionID = nil
+                    self.agentStatusOwnerToken = nil
+                }
+
+                self.failExitedOutputDelivery(
+                    failure,
+                    notifyStartCompletion: notifyStartCompletion
+                )
+            }
+        }
+
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.retireCompletedSession(id, completion: completion)
+        } else {
+            do {
+                try coordinator.retireCompletedSession(id)
+                completion(nil)
+            } catch {
+                completion(error)
+            }
+        }
     }
 
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
