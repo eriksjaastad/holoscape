@@ -32,6 +32,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var scrollbackOutput = Data("reattach scrollback tail".utf8)
         var scrollbackTailReadCount = 0
         var scrollbackReplayReadCount = 0
+        var availableOutput = Data()
+        var availableOutputReadCount = 0
         var listedSessionIDs: [BrokerSessionID] = []
 
         func listSessions() throws -> [BrokerSessionID] { listedSessionIDs }
@@ -72,7 +74,11 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
 
         func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
-        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data {
+            availableOutputReadCount += 1
+            defer { availableOutput.removeAll(keepingCapacity: true) }
+            return availableOutput
+        }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data {
             scrollbackTailReadCount += 1
             return maxBytes > 0 ? Data(scrollbackOutput.suffix(maxBytes)) : Data()
@@ -1883,6 +1889,33 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             try coordinator.loadAll().map(\.id).sorted { $0.rawValue < $1.rawValue },
             [oldDetached.id, oldStale.id, recentExited.id].sorted { $0.rawValue < $1.rawValue }
         )
+    }
+
+    func testLegacyOutputSnapshotRemainsPendingUntilAcknowledged() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.availableOutput = Data("legacy-output".utf8)
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            now: { Date(timeIntervalSince1970: 1_300) }
+        )
+        let record = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/legacy-output"),
+            channelType: .shell,
+            label: "legacy-output",
+            attachedChannelID: nil
+        )
+
+        let first = try coordinator.snapshotAvailableOutput(record.id)
+        let retry = try coordinator.snapshotAvailableOutput(record.id)
+
+        XCTAssertEqual(first.data, Data("legacy-output".utf8))
+        XCTAssertEqual(retry, first)
+        XCTAssertNotNil(first.generation)
+        XCTAssertEqual(runtime.availableOutputReadCount, 1)
+
+        try coordinator.acknowledgeOutput(record.id, through: try XCTUnwrap(first.generation))
+        XCTAssertEqual(try coordinator.snapshotAvailableOutput(record.id).data, Data())
+        XCTAssertEqual(runtime.availableOutputReadCount, 2)
     }
 
     private func makeCoordinator(

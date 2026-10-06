@@ -71,6 +71,62 @@ extension BrokerSessionCoordinating {
     }
 }
 
+/// Gives legacy in-process runtimes transactional output semantics. Their
+/// `readAvailableOutput` call consumes bytes, so a cancelled UI handoff must
+/// retain that sample until the output lane explicitly acknowledges delivery.
+private final class LegacyBrokerOutputTransactions: @unchecked Sendable {
+    private final class SessionState: @unchecked Sendable {
+        struct PendingSample {
+            let data: Data
+            let generation: UInt64
+        }
+
+        let lock = NSLock()
+        var nextGeneration: UInt64 = 0
+        var pending: PendingSample?
+    }
+
+    private let lock = NSLock()
+    private var sessions: [BrokerSessionID: SessionState] = [:]
+
+    func snapshot(
+        for id: BrokerSessionID,
+        read: () throws -> Data
+    ) rethrows -> BrokerOutputSnapshot {
+        let state = state(for: id)
+        return try state.lock.withLock {
+            if let pending = state.pending {
+                return BrokerOutputSnapshot(data: pending.data, generation: pending.generation)
+            }
+            let data = try read()
+            guard !data.isEmpty else {
+                return BrokerOutputSnapshot(data: Data(), generation: nil)
+            }
+            state.nextGeneration &+= 1
+            let sample = SessionState.PendingSample(data: data, generation: state.nextGeneration)
+            state.pending = sample
+            return BrokerOutputSnapshot(data: sample.data, generation: sample.generation)
+        }
+    }
+
+    func acknowledge(_ id: BrokerSessionID, through generation: UInt64) {
+        let state = state(for: id)
+        state.lock.withLock {
+            guard let sample = state.pending, sample.generation <= generation else { return }
+            state.pending = nil
+        }
+    }
+
+    private func state(for id: BrokerSessionID) -> SessionState {
+        lock.withLock {
+            if let state = sessions[id] { return state }
+            let state = SessionState()
+            sessions[id] = state
+            return state
+        }
+    }
+}
+
 /// Coordinates durable metadata transitions for Holoscape-owned broker sessions.
 ///
 /// This service is the UI/app-side contract for #7168: controllers should not
@@ -99,6 +155,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     private let registry: BrokerSessionRegistry
     private let runtime: any BrokerSessionRuntime
     private let now: () -> Date
+    private let legacyOutputTransactions = LegacyBrokerOutputTransactions()
 
     init(
         registry: BrokerSessionRegistry = BrokerSessionRegistry(),
@@ -938,13 +995,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 maxBytes: BrokerSessionHostProtocolLimits.maximumOutputPayloadSize
             )
         }
-        return BrokerOutputSnapshot(data: try runtime.readAvailableOutput(id: id), generation: nil)
+        return try legacyOutputTransactions.snapshot(for: id) {
+            try runtime.readAvailableOutput(id: id)
+        }
     }
 
     func acknowledgeOutput(_ id: BrokerSessionID, through generation: UInt64) throws {
         _ = try record(for: id)
-        guard let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime else { return }
-        try transactionalRuntime.acknowledgeOutput(id: id, through: generation)
+        if let transactionalRuntime = runtime as? BrokerTransactionalOutputRuntime {
+            try transactionalRuntime.acknowledgeOutput(id: id, through: generation)
+        } else {
+            legacyOutputTransactions.acknowledge(id, through: generation)
+        }
     }
 
     func setOutputAvailabilityHandler(
