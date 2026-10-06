@@ -16,6 +16,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let resizeRelease = DispatchSemaphore(value: 0)
         private let outputSnapshotEntered = DispatchSemaphore(value: 0)
         private let outputSnapshotRelease = DispatchSemaphore(value: 0)
+        private let outputSnapshotReturned = DispatchSemaphore(value: 0)
         private let inputWriteEntered = DispatchSemaphore(value: 0)
         private let inputWriteRelease = DispatchSemaphore(value: 0)
         private let acknowledgmentRelease = DispatchSemaphore(value: 0)
@@ -92,6 +93,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             outputSnapshotEntered.wait(timeout: .now() + timeout) == .success
         }
         func finishOutputSnapshot() { outputSnapshotRelease.signal() }
+        func waitForOutputSnapshotReturn(timeout: TimeInterval = 1) -> Bool {
+            outputSnapshotReturned.wait(timeout: .now() + timeout) == .success
+        }
         var acknowledgedOutputGenerations: [UInt64] {
             lock.withLock { storedAcknowledgedOutputGenerations }
         }
@@ -204,6 +208,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
                 outputSnapshotEntered.signal()
                 _ = outputSnapshotRelease.wait(timeout: .now() + 2)
             }
+            outputSnapshotReturned.signal()
             if snapshotConfiguration.shouldReturnEmpty {
                 return BrokerOutputSnapshot(data: Data(), generation: nil)
             }
@@ -1194,7 +1199,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
 
         coordinator.finishOutputSnapshot()
-        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertTrue(coordinator.waitForOutputSnapshotReturn())
+        Thread.sleep(forTimeInterval: 0.5)
         try waitUntil { failures.count == 1 }
 
         XCTAssertEqual(failures.first?.kind, .failed)
@@ -1230,7 +1236,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
 
         coordinator.finishOutputSnapshot()
-        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertTrue(coordinator.waitForOutputSnapshotReturn())
+        Thread.sleep(forTimeInterval: 0.5)
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
 
         XCTAssertTrue(failures.isEmpty)
