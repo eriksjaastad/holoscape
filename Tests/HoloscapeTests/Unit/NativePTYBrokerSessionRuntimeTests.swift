@@ -561,6 +561,384 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(scrollback.contains("preserved-scrollback"), scrollback)
     }
 
+    func testForcedRetirementDrainsUnreadPTYOutputBeforeRemovingSession() throws {
+        let scrollbackDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forced-retirement-output-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scrollbackDirectory) }
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackDirectory: scrollbackDirectory,
+            installsOutputReadabilityHandler: false
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-output")
+        let marker = "unread-final-output-marker"
+        let outputWrittenSentinel = scrollbackDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("forced-retirement-written-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputWrittenSentinel) }
+
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: [
+                    "-c",
+                    "printf \(marker); touch \(outputWrittenSentinel.path); exec sleep 30",
+                ],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+
+        let outputDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: outputWrittenSentinel.path), Date() < outputDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputWrittenSentinel.path), "test command did not write output")
+
+        try runtime.markSessionErrored(id: id)
+
+        XCTAssertTrue(try runtime.listSessions().isEmpty)
+        let persisted = try runtime.readScrollbackTail(id: id, maxBytes: 4_096)
+        XCTAssertTrue(persisted.contains(Data(marker.utf8)), String(decoding: persisted, as: UTF8.self))
+    }
+
+    func testForcedRetirementSerializesWithReadabilityAndPersistsBytesExactlyOnce() throws {
+        let scrollbackDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forced-retirement-read-race-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scrollbackDirectory) }
+        let readGate = OneShotOutputReadGate()
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackDirectory: scrollbackDirectory,
+            outputReadDidStart: { _ in readGate.blockFirstRead() }
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-read-race")
+        let marker = "serialized-final-output-marker"
+
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf \(marker); exec sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(readGate.started.wait(timeout: .now() + 3), .success)
+
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 0.05), .timedOut)
+        readGate.allowRead.signal()
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(retirementError.value)
+
+        let persisted = try runtime.readScrollbackTail(id: id, maxBytes: 4_096)
+        let text = String(decoding: persisted, as: UTF8.self)
+        XCTAssertEqual(text.components(separatedBy: marker).count - 1, 1, text)
+    }
+
+    func testForcedRetirementSurfacesFinalOutputPersistenceFailureAfterCleanup() throws {
+        let outputWrittenSentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forced-retirement-failed-persistence-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outputWrittenSentinel) }
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: { _, _ in throw CocoaError(.fileWriteNoPermission) },
+            installsOutputReadabilityHandler: false
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-persistence-failure")
+
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: [
+                    "-c",
+                    "printf final-output; touch \(outputWrittenSentinel.path); exec sleep 30",
+                ],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        let outputDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: outputWrittenSentinel.path), Date() < outputDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputWrittenSentinel.path), "test command did not write output")
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+                warningID,
+                reason
+            ) = error else {
+                return XCTFail("Expected completed output warning, got \(error)")
+            }
+            XCTAssertEqual(warningID, id)
+            XCTAssertTrue(reason.contains("fileWriteNoPermission") || reason.contains("permission"), reason)
+        }
+        XCTAssertTrue(try runtime.listSessions().isEmpty)
+    }
+
+    func testForcedRetirementPreservesOutputAndInputCleanupWarningsTogether() throws {
+        let closer = FailingInputDescriptorCloser()
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: { _, _ in throw CocoaError(.fileWriteNoPermission) },
+            inputDescriptorCloser: closer.close,
+            installsOutputReadabilityHandler: false
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-combined-output-input-warning")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf final-output; exec sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        usleep(100_000)
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+                warningID,
+                reason
+            ) = error else {
+                return XCTFail("Expected combined completed output warning, got \(error)")
+            }
+            XCTAssertEqual(warningID, id)
+            XCTAssertTrue(reason.contains("permission"), reason)
+            XCTAssertTrue(reason.contains("inputCloseFailed"), reason)
+        }
+        XCTAssertTrue(try runtime.listSessions().isEmpty)
+    }
+
+    func testUnexpectedReadFailureIsObservableWhileChildRemainsAlive() throws {
+        let runtime = NativePTYBrokerSessionRuntime(
+            installsOutputReadabilityHandler: false,
+            outputReader: { _, _, _ in (-1, EFAULT) }
+        )
+        let id = BrokerSessionID(rawValue: "unexpected-live-pty-read-failure")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exec sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        XCTAssertFalse(try runtime.consumeOutputReadabilityEvent(id: id))
+        XCTAssertThrowsError(try runtime.snapshotAvailableOutput(id: id, maxBytes: 1_024)) { error in
+            guard case let NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+                failedID,
+                reason
+            ) = error else {
+                return XCTFail("Expected observable PTY read failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertTrue(reason.contains("Bad address"), reason)
+        }
+        XCTAssertThrowsError(try runtime.isRunning(id: id)) { error in
+            guard case NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed = error else {
+                return XCTFail("Expected liveness query to surface PTY read failure, got \(error)")
+            }
+        }
+    }
+
+    func testForcedRetirementBoundsContinuousPTYOutputBeforeTerminatingProcess() throws {
+        let runtime = NativePTYBrokerSessionRuntime(
+            outputCleanupTimeoutMilliseconds: 50,
+            installsOutputReadabilityHandler: false
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-continuous-output")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/usr/bin/yes",
+                arguments: ["0123456789abcdef"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        usleep(50_000)
+
+        let startedAt = DispatchTime.now()
+        let retirementError: Error?
+        do {
+            try runtime.markSessionErrored(id: id)
+            retirementError = nil
+        } catch {
+            retirementError = error
+        }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds
+
+        XCTAssertLessThan(elapsed, 2_000_000_000)
+        if let retirementError {
+            guard case NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed = retirementError else {
+                return XCTFail("Expected bounded retirement failure, got \(retirementError)")
+            }
+            XCTAssertEqual(try runtime.listSessions(), [id])
+        } else {
+            XCTAssertTrue(try runtime.listSessions().isEmpty)
+        }
+    }
+
+    func testForcedRetirementTimesOutBlockedPersistenceWithoutReportingSuccess() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            installsOutputReadabilityHandler: false
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-blocked-persistence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf blocked-final-output; exec sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        usleep(50_000)
+
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+        appender.release()
+
+        guard case let NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
+            warningID,
+            _,
+            reason
+        )? = retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected pending-persistence retirement failure, got \(String(describing: retirementError.value))")
+        }
+        XCTAssertEqual(warningID, id)
+        XCTAssertTrue(reason.contains("persistence timed out"), reason)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+
+        let persistenceDeadline = Date().addingTimeInterval(2)
+        while try runtime.outputPersistenceBacklogByteCount(id: id) > 0,
+              Date() < persistenceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
+            guard case let .retirementCompletedWithOutputFailure(retryID, retryReason) =
+                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected completed warning after persistence settled, got \(retryError)")
+            }
+            XCTAssertEqual(retryID, id)
+            XCTAssertTrue(retryReason.contains("persistence timed out"), retryReason)
+        }
+        XCTAssertTrue(try runtime.listSessions().isEmpty)
+    }
+
+    func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/usr/bin/yes",
+                arguments: ["0123456789abcdef"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        defer { appender.release() }
+        var backlogReachedLimit = false
+        for _ in 0..<200 {
+            if try runtime.outputPersistenceBacklogByteCount(id: id)
+                == ScrollbackPersistencePolicy.maxRetainedBytesPerSession {
+                backlogReachedLimit = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(backlogReachedLimit, "Continuous output must pause at the persistence backlog limit")
+        XCTAssertLessThanOrEqual(
+            try runtime.outputPersistenceBacklogByteCount(id: id),
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        )
+        XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+
+        guard let observedError = retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected bounded retirement failure, got \(String(describing: retirementError.value))")
+        }
+        guard case let .retirementFailed(warningID, _, processFailure) = observedError else {
+            return XCTFail("Expected pending-persistence retirement failure, got \(observedError)")
+        }
+        XCTAssertEqual(warningID, id)
+        XCTAssertTrue(processFailure.contains("bounded retention limit"), processFailure)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+
+        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
+            guard case let .retirementFailed(retryID, _, retryReason) =
+                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retry to retain pending persistence authority, got \(retryError)")
+            }
+            XCTAssertEqual(retryID, id)
+            XCTAssertTrue(retryReason.contains("bounded retention limit"), retryReason)
+        }
+        XCTAssertEqual(appender.attemptCount, 1)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        appender.release()
+        let persistenceDeadline = Date().addingTimeInterval(2)
+        while try runtime.outputPersistenceBacklogByteCount(id: id) > 0,
+              Date() < persistenceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
+        XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+    }
+
     func testTerminatePreservesExitCodeMismatchFailure() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "exit-code-mismatch-native-pty-runtime-test")
@@ -1667,17 +2045,39 @@ private final class LockedRuntimeErrorBox: @unchecked Sendable {
     }
 }
 
+private final class OneShotOutputReadGate: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let allowRead = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var hasBlocked = false
+
+    func blockFirstRead() {
+        let shouldBlock = lock.withLock {
+            guard !hasBlocked else { return false }
+            hasBlocked = true
+            return true
+        }
+        guard shouldBlock else { return }
+        started.signal()
+        _ = allowRead.wait(timeout: .now() + 3)
+    }
+}
+
 private final class BlockingScrollbackAppender: @unchecked Sendable {
     private let shouldFail: Bool
     private let entered = DispatchSemaphore(value: 0)
     private let releaseCondition = NSCondition()
     private var isReleased = false
+    private var storedAttemptCount = 0
 
     init(shouldFail: Bool) {
         self.shouldFail = shouldFail
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
+        releaseCondition.lock()
+        storedAttemptCount += 1
+        releaseCondition.unlock()
         entered.signal()
         releaseCondition.lock()
         let deadline = Date().addingTimeInterval(3)
@@ -1695,6 +2095,12 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
 
     func waitUntilEntered() -> DispatchTimeoutResult {
         entered.wait(timeout: .now() + 3)
+    }
+
+    var attemptCount: Int {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedAttemptCount
     }
 
     func release() {

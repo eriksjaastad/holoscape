@@ -630,15 +630,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
                 self.completeReattachStartIfNeeded(notifyStartCompletion)
-                if let mismatchDescription {
+                if let mismatchDescription, let completionWarning {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
-                            description: mismatchDescription
+                            description: "\(mismatchDescription); broker retirement completed with warning: \(completionWarning)"
                         )
                     )
-                }
-                if let completionWarning {
+                } else if let mismatchDescription {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .failed, description: mismatchDescription)
+                    )
+                } else if let completionWarning {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
@@ -976,8 +979,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32) -> Void {
-        { [weak self] id, exitCode in
+    private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32, Error?) -> Void {
+        { [weak self] id, exitCode, exitWarning in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.brokerSessionID == id,
@@ -986,6 +989,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.outputReadLane.stop()
                 self.sessionIOReady = false
                 self.inputWriteLane.close()
+                if let exitWarning {
+                    self.publishSessionFailure(
+                        TerminalSessionFailure(kind: .failed, description: String(describing: exitWarning))
+                    )
+                }
 
                 let completion: @Sendable (Error?) -> Void = { [weak self] error in
                     DispatchQueue.main.async {
@@ -993,7 +1001,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                               self.brokerSessionID == id,
                               self.activeOutputDeliveryGeneration == deliveryGeneration,
                               !self.didNotifyTermination else { return }
-                        if let error, !self.isCompletedRetirementWarning(error) {
+                        let completionWarning = error.flatMap {
+                            self.isCompletedRetirementWarning($0) ? $0 : nil
+                        }
+                        if let error, completionWarning == nil {
                             self.reportSessionFailure(
                                 error,
                                 for: id,
@@ -1005,6 +1016,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.revokeOutputDeliveryOwnership()
                         self.brokerSessionID = nil
                         self.agentStatusOwnerToken = nil
+                        if let completionWarning,
+                           self.sessionFailure == nil || self.isCompletedOutputRetirementWarning(completionWarning) {
+                            self.publishSessionFailure(
+                                TerminalSessionFailure(
+                                    kind: .failed,
+                                    description: String(describing: completionWarning)
+                                )
+                            )
+                        }
                         self.terminationHandler?(exitCode)
                     }
                 }
@@ -1072,8 +1092,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
             return true
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = error {
+            return true
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
             return code == "retirement-completed-with-input-close-failure"
+                || code == "retirement-completed-with-output-failure"
+        }
+        return false
+    }
+
+    private func isCompletedOutputRetirementWarning(_ error: Error) -> Bool {
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = error {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "retirement-completed-with-output-failure"
         }
         return false
     }
@@ -1090,7 +1124,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.brokerSessionID == id,
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       !self.didNotifyTermination else { return }
-                if let retirementError {
+                let completionWarning = retirementError.flatMap {
+                    self.isCompletedRetirementWarning($0) ? $0 : nil
+                }
+                if let retirementError, completionWarning == nil {
                     let combined = BrokerSessionCompositeFailure(
                         description: "\(mismatchError); failed to retire completed broker session: \(retirementError)"
                     )
@@ -1105,8 +1142,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.revokeOutputDeliveryOwnership()
                 self.brokerSessionID = nil
                 self.agentStatusOwnerToken = nil
+                let failureDescription: String
+                if let completionWarning {
+                    failureDescription = "\(mismatchError); broker retirement completed with warning: \(completionWarning)"
+                } else {
+                    failureDescription = String(describing: mismatchError)
+                }
                 self.publishSessionFailure(
-                    TerminalSessionFailure(kind: .failed, description: String(describing: mismatchError))
+                    TerminalSessionFailure(kind: .failed, description: failureDescription)
                 )
                 self.terminationHandler?(observedExitCode)
             }
@@ -1155,8 +1198,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         stopOutputPump()
         revokeOutputDeliveryOwnership()
 
-        if kind == .brokerSessionStale, isScrollbackPersistenceFailure(error) {
-            beginScrollbackFailureRecovery(error, for: sessionID)
+        if kind == .brokerSessionStale,
+           isScrollbackPersistenceFailure(error) || isOutputMonitoringFailure(error) {
+            beginOutputFailureRecovery(error, for: sessionID)
             return
         }
 
@@ -1176,7 +1220,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         publishSessionFailure(TerminalSessionFailure(kind: kind, description: description))
     }
 
-    private func beginScrollbackFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
+    private func beginOutputFailureRecovery(_ error: Error, for sessionID: BrokerSessionID) {
         guard recoveringBrokerSessionID == nil else { return }
         recoveringBrokerSessionID = sessionID
         let originalDescription = String(describing: error)
@@ -1187,7 +1231,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                       self.brokerSessionID == sessionID else { return }
                 self.recoveringBrokerSessionID = nil
 
-                if let recoveryError {
+                if let recoveryError,
+                   !self.isCompletedRetirementWarning(recoveryError) {
                     self.publishSessionFailure(
                         TerminalSessionFailure(
                             kind: .failed,
@@ -1195,14 +1240,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 + "; failed to retire persistence-broken broker session: \(recoveryError)"
                         )
                     )
-                } else {
-                    self.brokerSessionID = nil
-                    self.sessionIOReady = false
-                    self.staleBrokerSessionID = sessionID
-                    self.publishSessionFailure(
-                        TerminalSessionFailure(kind: .brokerSessionStale, description: originalDescription)
-                    )
+                    return
                 }
+
+                let completedWarningDescription = recoveryError.map {
+                    "; broker retirement completed with warning: \($0)"
+                } ?? ""
+                self.brokerSessionID = nil
+                self.sessionIOReady = false
+                self.staleBrokerSessionID = sessionID
+                self.publishSessionFailure(
+                    TerminalSessionFailure(
+                        kind: .brokerSessionStale,
+                        description: originalDescription + completedWarningDescription
+                    )
+                )
             }
         }
     }
@@ -1239,14 +1291,29 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         return false
     }
 
+    private func isOutputMonitoringFailure(_ error: Error) -> Bool {
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .outputMonitoringFailed = runtimeError {
+            return true
+        }
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
+            return code == "output-monitoring-failed"
+        }
+        return false
+    }
+
     private func classifyStartFailure(_ error: Error) -> TerminalStartFailureKind {
+        if isCompletedRetirementWarning(error) {
+            return .brokerSessionStale
+        }
         if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError {
             switch coordinatorError {
             case .missingSession, .staleSession:
                 return .brokerSessionStale
             case .brokerHostUnavailable:
                 return .brokerHostUnavailable
-            case .retirementRollbackFailed, .detachRollbackFailed, .reattachRollbackFailed,
+            case .retirementRollbackFailed, .retirementFinalizationFailed,
+                 .detachRollbackFailed, .reattachRollbackFailed,
                  .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,
                  .exitCodeMismatch, .exitStillPending:
                 return .failed
@@ -1265,8 +1332,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
            case .scrollbackPersistenceFailed = runtimeError {
             return .brokerSessionStale
         }
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
+           case .outputMonitoringFailed = runtimeError {
+            return .brokerSessionStale
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
            code == "scrollback-persistence-failed"
+               || code == "output-monitoring-failed"
                || (code == "missing-session" && message.contains("missingSession")) {
             return .brokerSessionStale
         }
@@ -1591,7 +1663,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         stop()
@@ -1642,10 +1714,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // actor before durable exit authority is published.
                         let completionWarning = try finishTermination(sessionID, exitCode)
                         if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
-                            onTermination(sessionID, exitCode)
-                            if let completionWarning {
-                                onFailure(sessionID, completionWarning)
-                            }
+                            onTermination(sessionID, exitCode, completionWarning)
                         }
                         return
                     }
@@ -1666,7 +1735,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32) -> Void,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
     ) {
         if isOpen(for: sessionID) {
@@ -1703,10 +1772,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     ) else { return }
                     let completionWarning = try finishTermination(sessionID, exitCode)
                     if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
-                        onTermination(sessionID, exitCode)
-                        if let completionWarning {
-                            onFailure(sessionID, completionWarning)
-                        }
+                        onTermination(sessionID, exitCode, completionWarning)
                     }
                     return
                 }

@@ -84,6 +84,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case staleSession(BrokerSessionID)
         case brokerHostUnavailable(BrokerSessionID, String)
         case retirementRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
+        case retirementFinalizationFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case detachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachRollbackFailed(BrokerSessionID, runtimeFailure: String, registryFailure: String)
         case reattachCleanupFailed(BrokerSessionID, runtimeFailure: String)
@@ -124,12 +125,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         // inventory is the durable fallback authority: retire any generation
         // that has no registry record before offering sessions for restore.
         for orphanID in runtimeSessionIDs where !recordedIDs.contains(orphanID) {
-            try retireUntrackedSession(orphanID)
+            do {
+                try retireUntrackedSession(orphanID)
+            } catch let error where isCompletedRetirementFailure(error) {
+                // The runtime owner is gone. Discovery has no interactive caller
+                // to receive this warning, so continue restoring unrelated tabs.
+            }
         }
         return try records.compactMap { record in
             switch record.lifecycle {
             case .running, .detached, .reattaching, .stale:
-                let reconciled = try reconcileRuntimeStatus(record.id)
+                guard let reconciled = try reconcileRuntimeStatusForDiscovery(record.id) else {
+                    return nil
+                }
                 switch reconciled.lifecycle {
                 case .running, .detached, .stale:
                     return reconciled
@@ -150,7 +158,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         if try registry.replace(detached, ifUnchangedFrom: current) {
                             return detached
                         }
-                        current = try reconcileRuntimeStatus(record.id)
+                        guard let next = try reconcileRuntimeStatusForDiscovery(record.id) else {
+                            return nil
+                        }
+                        current = next
                     }
                     switch current.lifecycle {
                     case .running, .detached, .stale:
@@ -168,7 +179,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     _ = try markErrored(record.id)
                     return nil
                 }
-                let reconciled = try reconcileExitingSession(record.id)
+                guard let reconciled = try reconcileExitingSessionForDiscovery(record.id) else {
+                    return nil
+                }
                 return reconciled.lifecycle == .exited || reconciled.lifecycle == .exiting
                     ? reconciled
                     : nil
@@ -177,7 +190,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // response reaching Holoscape. Relaunch must finish this
                 // idempotent transition before restore can classify the saved
                 // identity as stale and permit a replacement process.
-                _ = try markErrored(record.id)
+                do {
+                    _ = try markErrored(record.id)
+                } catch let error where isCompletedRetirementFailure(error) {
+                    // Cleanup and durable finalization both completed. Preserve
+                    // the warning for interactive callers, but discovery has no
+                    // live identity to recover and can safely continue.
+                }
                 return nil
             case .exited:
                 // Native broker sessions retain their completed scrollback until
@@ -737,8 +756,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithInputCloseFailure = error {
             return true
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure = error {
+            return true
+        }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error {
             return code == "retirement-completed-with-input-close-failure"
+                || code == "retirement-completed-with-output-failure"
         }
         return false
     }
@@ -836,6 +859,25 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             throw error
         }
         let updated: BrokerSessionRecord
+        do {
+            updated = try finalizeErroredRecord(id)
+        } catch {
+            if let completedRetirementFailure {
+                throw CoordinatorError.retirementFinalizationFailed(
+                    id,
+                    runtimeFailure: String(describing: completedRetirementFailure),
+                    registryFailure: String(describing: error)
+                )
+            }
+            throw error
+        }
+        if let completedRetirementFailure {
+            throw completedRetirementFailure
+        }
+        return updated
+    }
+
+    private func finalizeErroredRecord(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         // Runtime retirement may overlap metadata-only mutations (for example a
         // working-directory update). Rebase the final lifecycle transition on
         // the current record instead of losing the truthful `.errored` state
@@ -843,10 +885,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         while true {
             let current = try record(for: id)
             guard current.lifecycle == .terminating else {
-                if current.lifecycle == .errored {
-                    if let completedRetirementFailure { throw completedRetirementFailure }
-                    return current
-                }
+                if current.lifecycle == .errored { return current }
                 throw CoordinatorError.concurrentSessionTransition(id)
             }
             let candidate = current.withLifecycle(
@@ -856,14 +895,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 lastAttachedChannelID: nil
             )
             if try registry.replace(candidate, ifUnchangedFrom: current) {
-                updated = candidate
-                break
+                return candidate
             }
         }
-        if let completedRetirementFailure {
-            throw completedRetirementFailure
-        }
-        return updated
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
@@ -1022,8 +1056,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 )
             }
         } catch let error where isUnrecoverableRuntimeSessionError(error, id: id) {
-            // A persistence-broken runtime is still owned, unlike a missing
-            // session. Retire it before publishing a final lifecycle record.
+            // A durability- or monitoring-broken runtime is still owned, unlike
+            // a missing session. Retire it before publishing final lifecycle truth.
             return try markErrored(id)
         }
     }
@@ -1073,14 +1107,43 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     private func isUnrecoverableRuntimeSessionError(_ error: Error, id: BrokerSessionID) -> Bool {
-        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
-           case let .scrollbackPersistenceFailed(failedID, _) = runtimeError {
-            return failedID == id
+        if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
+            switch runtimeError {
+            case let .scrollbackPersistenceFailed(failedID, _),
+                 let .outputMonitoringFailed(failedID, _):
+                return failedID == id
+            default:
+                break
+            }
         }
         if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error {
-            return code == "scrollback-persistence-failed" && message.contains(id.rawValue)
+            return (code == "scrollback-persistence-failed" || code == "output-monitoring-failed")
+                && message.contains(id.rawValue)
         }
         return false
+    }
+
+    private func reconcileRuntimeStatusForDiscovery(_ id: BrokerSessionID) throws -> BrokerSessionRecord? {
+        do {
+            return try reconcileRuntimeStatus(id)
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Reconciliation retired the broken runtime and finalized durable
+            // truth before returning the warning. Discovery has no interactive
+            // caller to receive it, so omit only this dead identity and continue.
+            return nil
+        }
+    }
+
+    private func reconcileExitingSessionForDiscovery(_ id: BrokerSessionID) throws -> BrokerSessionRecord? {
+        do {
+            return try reconcileExitingSession(id)
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Exit reconciliation retired the broken runtime and finalized
+            // durable truth before returning the warning. Discovery has no
+            // interactive caller to receive it, so omit the dead identity and
+            // continue restoring unrelated sessions.
+            return nil
+        }
     }
 }
 
