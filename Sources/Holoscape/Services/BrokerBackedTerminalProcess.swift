@@ -27,6 +27,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         case sessionNotStarted
     }
 
+    private struct PendingExitedOutputRetirement {
+        let sessionID: BrokerSessionID
+        let outputFailureDescription: String
+        let outputFailureKind: TerminalStartFailureKind
+    }
+
     private let channelID: UUID
     private let channelType: ChannelType
     private let label: String?
@@ -86,6 +92,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var lastScrollbackReplay: ScrollbackReplay?
     /// The broker generation already represented by this terminal view.
     private var presentedBrokerSessionID: BrokerSessionID?
+    /// Cleanup authority survives presentation-lease revocation. A retry resumes
+    /// retirement instead of rendering unacknowledged final bytes again.
+    private var pendingExitedOutputRetirement: PendingExitedOutputRetirement?
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
@@ -152,6 +161,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         guard recoveringBrokerSessionID == nil, !startCompletionPending else {
             NSLog("Broker-backed terminal retry ignored while session recovery is still running")
+            return
+        }
+        if let pendingExitedOutputRetirement {
+            retryExitedOutputRetirement(pendingExitedOutputRetirement)
             return
         }
         if let untrackedBrokerSessionID {
@@ -582,7 +595,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 self.retireExitedSessionAfterOutputFailure(
                                     record.id,
                                     error: error,
-                                    deliveryGeneration: deliveryGeneration,
                                     notifyStartCompletion: notifyStartCompletion
                                 )
                                 return
@@ -607,7 +619,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.retireExitedSessionAfterOutputFailure(
                     record.id,
                     error: error,
-                    deliveryGeneration: deliveryGeneration,
                     notifyStartCompletion: notifyStartCompletion
                 )
             }
@@ -724,56 +735,89 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func retireExitedSessionAfterOutputFailure(
         _ id: BrokerSessionID,
         error outputError: Error,
-        deliveryGeneration: UInt,
         notifyStartCompletion: Bool
     ) {
-        let completion: @Sendable (Error?) -> Void = { [weak self] retirementError in
-            DispatchQueue.main.async {
-                guard let self,
-                      self.brokerSessionID == id,
-                      self.activeOutputDeliveryGeneration == deliveryGeneration else { return }
-
-                let completionWarning = retirementError.flatMap {
-                    self.isCompletedRetirementWarning($0) ? $0 : nil
-                }
-                let failure: Error
-                if let retirementError, completionWarning == nil {
-                    failure = BrokerSessionCompositeFailure(
-                        description: "\(outputError); failed to retire completed broker session: \(retirementError)"
-                    )
-                } else if let completionWarning {
-                    failure = BrokerSessionCompositeFailure(
-                        description: "\(outputError); broker retirement completed with warning: \(completionWarning)"
-                    )
-                    self.brokerSessionID = nil
-                    self.agentStatusOwnerToken = nil
-                } else {
-                    failure = outputError
-                    self.brokerSessionID = nil
-                    self.agentStatusOwnerToken = nil
-                }
-
-                self.failExitedOutputDelivery(
-                    failure,
-                    notifyStartCompletion: notifyStartCompletion
-                )
-            }
-        }
+        let pending = PendingExitedOutputRetirement(
+            sessionID: id,
+            outputFailureDescription: String(describing: outputError),
+            outputFailureKind: classifyStartFailure(outputError)
+        )
+        pendingExitedOutputRetirement = pending
 
         if coordinator.requiresOffMainBrokerWork {
-            failureRecoveryCoordinator.retireCompletedSession(id, completion: completion)
-        } else {
-            do {
-                try coordinator.retireCompletedSession(id)
-                completion(nil)
-            } catch {
-                completion(error)
+            failureRecoveryCoordinator.retireCompletedSession(id) { [weak self] retirementError in
+                DispatchQueue.main.async {
+                    self?.finishExitedOutputRetirement(
+                        pending,
+                        retirementError: retirementError,
+                        notifyStartCompletion: notifyStartCompletion
+                    )
+                }
+            }
+            return
+        }
+        do {
+            try coordinator.retireCompletedSession(id)
+            finishExitedOutputRetirement(
+                pending,
+                retirementError: nil,
+                notifyStartCompletion: notifyStartCompletion
+            )
+        } catch {
+            finishExitedOutputRetirement(
+                pending,
+                retirementError: error,
+                notifyStartCompletion: notifyStartCompletion
+            )
+        }
+    }
+
+    private func retryExitedOutputRetirement(_ pending: PendingExitedOutputRetirement) {
+        startCompletionPending = true
+        failureRecoveryCoordinator.retireCompletedSession(pending.sessionID) { [weak self] retirementError in
+            DispatchQueue.main.async {
+                self?.finishExitedOutputRetirement(
+                    pending,
+                    retirementError: retirementError,
+                    notifyStartCompletion: true
+                )
             }
         }
     }
 
+    private func finishExitedOutputRetirement(
+        _ pending: PendingExitedOutputRetirement,
+        retirementError: Error?,
+        notifyStartCompletion: Bool
+    ) {
+        guard brokerSessionID == pending.sessionID,
+              pendingExitedOutputRetirement?.sessionID == pending.sessionID else { return }
+
+        let completionWarning = retirementError.flatMap {
+            isCompletedRetirementWarning($0) ? $0 : nil
+        }
+        if let retirementError, completionWarning == nil {
+            startFailureDescription = "\(pending.outputFailureDescription); failed to retire completed broker session: \(retirementError)"
+            startFailureKind = .failed
+        } else {
+            if let completionWarning {
+                startFailureDescription = "\(pending.outputFailureDescription); broker retirement completed with warning: \(completionWarning)"
+                startFailureKind = .failed
+            } else {
+                startFailureDescription = pending.outputFailureDescription
+                startFailureKind = pending.outputFailureKind
+            }
+            pendingExitedOutputRetirement = nil
+            brokerSessionID = nil
+            agentStatusOwnerToken = nil
+        }
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        completeReattachStartIfNeeded(notifyStartCompletion)
+    }
+
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
-        guard notifyStartCompletion else { return }
+        guard notifyStartCompletion, startCompletionPending else { return }
         startCompletionPending = false
         startCompletionHandler?()
     }
