@@ -57,31 +57,41 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     }
 
     func run(maxConnections: Int? = nil) throws {
+        var brokerLockFD: Int32?
+        var serverFD: Int32?
+        var handlerGroup: DispatchGroup?
         let socketHadBrokerLockMarker = FileManager.default.fileExists(atPath: socketPath + ".lock")
-        let brokerLockFD = try acquireBrokerLock()
         var shouldRemoveNewLockMarker = !socketHadBrokerLockMarker
         defer {
-            if shouldRemoveNewLockMarker {
+            handlerGroup?.wait()
+            // Keep the listening socket and exclusive broker lock authoritative
+            // until every owned process has completed destruction cleanup.
+            host.shutDownRuntimeBeforeExit()
+            if let serverFD {
+                Darwin.close(serverFD)
+                unlink(socketPath)
+            }
+            if brokerLockFD != nil, shouldRemoveNewLockMarker {
                 unlink(socketPath + ".lock")
             }
-            Darwin.close(brokerLockFD)
+            if let brokerLockFD {
+                Darwin.close(brokerLockFD)
+            }
         }
-        let serverFD = try makeListeningSocket(
+        brokerLockFD = try acquireBrokerLock()
+        let createdServerFD = try makeListeningSocket(
             socketHadBrokerLockMarker: socketHadBrokerLockMarker
         )
+        serverFD = createdServerFD
         shouldRemoveNewLockMarker = false
         let group = DispatchGroup()
+        handlerGroup = group
         let errorBox = BrokerSocketServerErrorBox()
         let handlerSlots = DispatchSemaphore(value: maxConcurrentHandlers)
-        defer {
-            group.wait()
-            Darwin.close(serverFD)
-            unlink(socketPath)
-        }
 
         var handledConnections = 0
         while maxConnections.map({ handledConnections < $0 }) ?? true {
-            let clientFD = accept(serverFD, nil, nil)
+            let clientFD = accept(createdServerFD, nil, nil)
             if clientFD < 0 {
                 if errno == EINTR { continue }
                 throw ServerError.acceptFailed(String(cString: strerror(errno)))

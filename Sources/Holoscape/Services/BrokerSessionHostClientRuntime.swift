@@ -10,6 +10,7 @@ import Foundation
 final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
+        case launchCleanupPending(BrokerSessionID, reason: String)
         case exitCompletedWithInputCloseFailure(
             BrokerSessionID,
             observedExitCode: Int32,
@@ -323,6 +324,10 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             throw ClientError.transportFailed("responseDecodeFailed(\(error))")
         }
         if case let .failure(failure) = response {
+            if failure.code == "launch-cleanup-pending",
+               let sessionID = failure.sessionID {
+                throw ClientError.launchCleanupPending(sessionID, reason: failure.message)
+            }
             if failure.code == "exit-completed-with-input-close-failure",
                let sessionID = failure.sessionID,
                let observedExitCode = failure.observedExitCode,
@@ -347,7 +352,7 @@ extension BrokerSessionHostClientRuntime.ClientError {
             return reason
         case .unexpectedResponse(let expected, let actual):
             return "unexpected response; expected \(expected), got \(actual)"
-        case .hostFailure, .exitCompletedWithInputCloseFailure:
+        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
             return nil
         }
     }

@@ -288,9 +288,26 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 try runtime.createSession(id: id, request: request)
                 ownerTokenWasApplied = false
             }
-        } catch let clientError as BrokerSessionHostClientRuntime.ClientError
-            where clientError.ambiguousCreateFailureReason != nil {
-            let message = clientError.ambiguousCreateFailureReason!
+        } catch let runtimeError as NativePTYBrokerSessionRuntime.RuntimeError {
+            guard case let .launchCleanupPending(pendingID, reason) = runtimeError else {
+                throw runtimeError
+            }
+            throw CoordinatorError.untrackedSession(
+                pendingID,
+                registryFailure: "broker launch failed before registry persistence",
+                rollbackFailure: reason
+            )
+        } catch let clientError as BrokerSessionHostClientRuntime.ClientError {
+            if case let .launchCleanupPending(pendingID, reason) = clientError {
+                throw CoordinatorError.untrackedSession(
+                    pendingID,
+                    registryFailure: "broker launch failed before registry persistence",
+                    rollbackFailure: reason
+                )
+            }
+            guard let message = clientError.ambiguousCreateFailureReason else {
+                throw clientError
+            }
             // A lost or malformed response does not prove create failed: the
             // broker may own a
             // live process under this generated ID. Retire that exact generation
@@ -780,7 +797,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch clientError {
         case .transportFailed, .unexpectedResponse:
             return true
-        case .hostFailure, .exitCompletedWithInputCloseFailure:
+        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
             return false
         }
     }

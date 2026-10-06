@@ -476,6 +476,79 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
     }
 
+    private final class LaunchCleanupPendingRuntime: BrokerSessionRuntime, @unchecked Sendable {
+        private let lock = NSLock()
+        private var retainedLaunchID: BrokerSessionID?
+        private var liveIDs: Set<BrokerSessionID> = []
+        private var cleanupAllowed = false
+        private var storedCreateAttempts: [BrokerSessionID] = []
+        private var storedRetirementAttempts: [BrokerSessionID] = []
+
+        var pendingID: BrokerSessionID? {
+            lock.withLock { retainedLaunchID }
+        }
+
+        var createAttempts: [BrokerSessionID] {
+            lock.withLock { storedCreateAttempts }
+        }
+
+        var retirementAttempts: [BrokerSessionID] {
+            lock.withLock { storedRetirementAttempts }
+        }
+
+        func allowCleanup() {
+            lock.withLock { cleanupAllowed = true }
+        }
+
+        func listSessions() throws -> [BrokerSessionID] {
+            lock.withLock {
+                Array(liveIDs.union(retainedLaunchID.map { [$0] } ?? []))
+            }
+        }
+
+        func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
+            try lock.withLock {
+                storedCreateAttempts.append(id)
+                if retainedLaunchID == nil, liveIDs.isEmpty, storedCreateAttempts.count == 1 {
+                    retainedLaunchID = id
+                    throw NativePTYBrokerSessionRuntime.RuntimeError.launchCleanupPending(
+                        id,
+                        reason: "synthetic launch cleanup remains retryable"
+                    )
+                }
+                liveIDs.insert(id)
+            }
+        }
+
+        func detachSession(id: BrokerSessionID) throws {}
+        func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
+        func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {}
+
+        func markSessionErrored(id: BrokerSessionID) throws {
+            try lock.withLock {
+                storedRetirementAttempts.append(id)
+                if retainedLaunchID == id {
+                    guard cleanupAllowed else {
+                        throw NativePTYBrokerSessionRuntime.RuntimeError.launchCleanupPending(
+                            id,
+                            reason: "synthetic launch cleanup remains retryable"
+                        )
+                    }
+                    retainedLaunchID = nil
+                    return
+                }
+                liveIDs.remove(id)
+            }
+        }
+
+        func sendInput(id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(id: BrokerSessionID) throws -> Bool { lock.withLock { liveIDs.contains(id) } }
+        func terminationStatus(id: BrokerSessionID) throws -> Int32? { nil }
+    }
+
     private final class BlockingUntrackedRetirementRuntime: BrokerSessionRuntime, @unchecked Sendable {
         private let retirementEntered = DispatchSemaphore(value: 0)
         private let retirementRelease = DispatchSemaphore(value: 0)
@@ -1863,6 +1936,83 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.untrackedBrokerSessionID)
         XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
         XCTAssertEqual(runtime.createdIDs, [untrackedID], "Replacement cannot start before the old generation is retired")
+    }
+
+    func testProductionLaunchCleanupFailurePreservesGeneratedIdentityUntilRetirement() throws {
+        let runtime = LaunchCleanupPendingRuntime()
+        let host = BrokerSessionHost(runtime: runtime)
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try host.handle(frame)
+        }
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalLaunchCleanupTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "launch-cleanup",
+            environmentProfile: .shell,
+            coordinator: BrokerSessionCoordinator(
+                registry: BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json")),
+                runtime: client
+            )
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        let generatedID = try XCTUnwrap(runtime.pendingID)
+        XCTAssertEqual(
+            terminal.untrackedBrokerSessionID,
+            generatedID,
+            "The host error must carry the runtime-generated cleanup identity through the coordinator and terminal"
+        )
+        guard terminal.untrackedBrokerSessionID == generatedID else {
+            return
+        }
+        XCTAssertNil(terminal.brokerOwnedSessionID, "Cleanup-only authority must not become attachable")
+        XCTAssertTrue(terminal.startFailureDescription?.contains("launch cleanup remains retryable") == true)
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertEqual(runtime.createAttempts, [generatedID], "A failed cleanup retry must not launch a replacement")
+        XCTAssertEqual(terminal.untrackedBrokerSessionID, generatedID)
+        XCTAssertEqual(runtime.retirementAttempts, [generatedID])
+        XCTAssertTrue(terminal.startFailureDescription?.contains("launch cleanup remains retryable") == true)
+
+        runtime.allowCleanup()
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        let replacementID = try XCTUnwrap(terminal.brokerOwnedSessionID)
+        XCTAssertNotEqual(replacementID, generatedID)
+        XCTAssertEqual(runtime.createAttempts, [generatedID, replacementID])
+        XCTAssertEqual(runtime.retirementAttempts, [generatedID, generatedID])
+        XCTAssertNil(terminal.untrackedBrokerSessionID)
+
+        var teardownCompleted = false
+        terminal.detachBrokerSession { teardownCompleted = true }
+        try waitUntil { teardownCompleted }
     }
 
     func testTeardownRetiresRememberedUntrackedGeneration() throws {

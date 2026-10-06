@@ -852,6 +852,40 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testStdioServerCompletesRuntimeShutdownBeforeReturningFromEOF() throws {
+        let runtime = ShutdownRecordingBrokerSessionRuntime()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        try inputPipe.fileHandleForWriting.close()
+        let server = BrokerSessionHostStdioServer(
+            host: BrokerSessionHost(runtime: runtime),
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting
+        )
+
+        try server.runUntilEOF()
+
+        XCTAssertTrue(runtime.shutdownCompleted)
+    }
+
+    func testStdioServerCompletesRuntimeShutdownBeforePropagatingWriteFailure() throws {
+        let runtime = ShutdownRecordingBrokerSessionRuntime()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        try inputPipe.fileHandleForWriting.write(contentsOf: Data("truncated".utf8))
+        try inputPipe.fileHandleForWriting.close()
+        try outputPipe.fileHandleForWriting.close()
+        let server = BrokerSessionHostStdioServer(
+            host: BrokerSessionHost(runtime: runtime),
+            input: inputPipe.fileHandleForReading,
+            output: outputPipe.fileHandleForWriting
+        )
+
+        XCTAssertThrowsError(try server.runUntilEOF())
+
+        XCTAssertTrue(runtime.shutdownCompleted)
+    }
+
     func testStdioServerReturnsProtocolFailureForMalformedFramesAndKeepsRunning() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
@@ -1630,6 +1664,30 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertTrue(scrollback.contains("reattached-hosted-native-pty"), scrollback)
         try secondClient.markSessionErrored(id: sessionID)
         XCTAssertEqual(try secondClient.listSessions(), [])
+    }
+
+    func testUnixSocketServerShutsDownRuntimeBeforeReleasingLockOnSetupError() throws {
+        let socketPath = "/tmp/" + String(repeating: "s", count: 160)
+        var observedLockDuringShutdown = false
+        let runtime = ShutdownRecordingBrokerSessionRuntime {
+            observedLockDuringShutdown = BrokerSessionHostUnixSocketServer
+                .socketPathHasActiveBrokerLock(socketPath)
+        }
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime)
+        )
+
+        XCTAssertThrowsError(try server.run(maxConnections: 0)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostUnixSocketServer.ServerError,
+                .socketPathTooLong(socketPath)
+            )
+        }
+
+        XCTAssertTrue(runtime.shutdownCompleted)
+        XCTAssertTrue(observedLockDuringShutdown)
+        XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
     }
 
     func testUnixSocketServerRejectsOversizedRequestWithoutDispatchingRuntime() throws {
@@ -3352,6 +3410,23 @@ private final class DelayedBrokerSessionRuntime: BrokerSessionRuntime, BrokerTra
         lock.lock()
         storedEvents.append(event)
         lock.unlock()
+    }
+}
+
+private final class ShutdownRecordingBrokerSessionRuntime:
+    RecordingBrokerSessionRuntime,
+    BrokerSessionHostShutdownRuntime
+{
+    private(set) var shutdownCompleted = false
+    private let onShutdown: () -> Void
+
+    init(onShutdown: @escaping () -> Void = {}) {
+        self.onShutdown = onShutdown
+    }
+
+    func shutDownBeforeHostExit() {
+        onShutdown()
+        shutdownCompleted = true
     }
 }
 

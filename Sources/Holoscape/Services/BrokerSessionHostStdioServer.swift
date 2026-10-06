@@ -34,6 +34,7 @@ struct BrokerSessionHostStdioServer {
     }
 
     func runUntilEOF() throws {
+        defer { host.shutDownRuntimeBeforeExit() }
         var buffer = Data()
         var discardingOversizedFrame = false
 

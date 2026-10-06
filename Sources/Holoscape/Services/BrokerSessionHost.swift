@@ -26,6 +26,10 @@ struct BrokerSessionHost {
         self.scheduler = scheduler
     }
 
+    func shutDownRuntimeBeforeExit() {
+        (runtime as? BrokerSessionHostShutdownRuntime)?.shutDownBeforeHostExit()
+    }
+
     func handle(
         _ frame: Data,
         executionIsAllowed: () -> Bool = { true }
@@ -213,10 +217,20 @@ struct BrokerSessionHost {
         if case NativePTYBrokerSessionRuntime.RuntimeError.launchFailedWithInputCloseFailure = error {
             return "launch-failed-with-input-close-failure"
         }
+        if case NativePTYBrokerSessionRuntime.RuntimeError.launchCleanupPending = error {
+            return "launch-cleanup-pending"
+        }
         return "runtime-error"
     }
 
     private func failure(for error: Error) -> BrokerSessionHostFailure {
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.launchCleanupPending(id, reason) = error {
+            return BrokerSessionHostFailure(
+                code: failureCode(for: error),
+                message: reason,
+                sessionID: id
+            )
+        }
         if case let NativePTYBrokerSessionRuntime.RuntimeError.exitCompletedWithInputCloseFailure(
             id,
             observedExitCode,
