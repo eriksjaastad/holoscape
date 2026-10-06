@@ -87,6 +87,49 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         try runtime.markSessionErrored(id: id)
     }
 
+    func testLaunchingSecondSessionDoesNotInheritFirstSessionDescriptors() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+
+        func probeDescriptors(id: BrokerSessionID) throws -> Set<Int> {
+            try runtime.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/ls",
+                    arguments: ["-1", "/dev/fd"],
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+            _ = try waitForTerminationStatus(from: runtime, id: id)
+            let output = try collectOutput(from: runtime, id: id)
+            try runtime.markSessionErrored(id: id)
+            return Set(output.split(whereSeparator: \.isNewline).compactMap { line in
+                Int(line.trimmingCharacters(in: .whitespacesAndNewlines))
+            })
+        }
+
+        let baselineDescriptors = try probeDescriptors(
+            id: BrokerSessionID(rawValue: "native-pty-descriptor-baseline")
+        )
+        let firstID = BrokerSessionID(rawValue: "native-pty-descriptor-owner")
+        try runtime.createSession(
+            id: firstID,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? runtime.markSessionErrored(id: firstID) }
+
+        let concurrentDescriptors = try probeDescriptors(
+            id: BrokerSessionID(rawValue: "native-pty-descriptor-probe")
+        )
+        XCTAssertEqual(concurrentDescriptors, baselineDescriptors)
+    }
+
     func testNativePTYInputPreservesWriteOrderAndBytes() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "native-pty-input-order-test")

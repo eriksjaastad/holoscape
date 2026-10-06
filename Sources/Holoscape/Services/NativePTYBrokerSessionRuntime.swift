@@ -1098,7 +1098,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 waiter: childProcessWaiter
             )
         } catch let failure as NativePTYChildProcess.LaunchFailure {
-            let inputDescriptor = dup(failure.masterDescriptor)
+            let inputDescriptor = fcntl(failure.masterDescriptor, F_DUPFD_CLOEXEC, 0)
             let duplicationError = inputDescriptor < 0 ? errno : nil
             let closeResult = inputDescriptor >= 0
                 ? inputDescriptorCloser(inputDescriptor)
@@ -1123,7 +1123,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let process = launch.process
         let masterFD = launch.masterDescriptor
 
-        let inputDescriptor = dup(masterFD)
+        let inputDescriptor = fcntl(masterFD, F_DUPFD_CLOEXEC, 0)
         guard inputDescriptor >= 0 else {
             let duplicationError = errno
             _ = Darwin.kill(-process.processIdentifier, SIGKILL)

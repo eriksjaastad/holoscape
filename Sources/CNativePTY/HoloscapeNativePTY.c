@@ -2,6 +2,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -32,6 +34,24 @@ static int move_descriptor_above_stdio(int *descriptor) {
     return 0;
 }
 
+static int prepare_child_error_descriptor(int *error_fd, long descriptor_limit) {
+    const int child_error_fd = STDERR_FILENO + 1;
+    if (*error_fd != child_error_fd) {
+        if (dup2(*error_fd, child_error_fd) < 0) {
+            return errno;
+        }
+        close(*error_fd);
+        *error_fd = child_error_fd;
+    }
+    if (fcntl(child_error_fd, F_SETFD, FD_CLOEXEC) != 0) {
+        return errno;
+    }
+    for (int descriptor = child_error_fd + 1; descriptor < descriptor_limit; descriptor++) {
+        close(descriptor);
+    }
+    return 0;
+}
+
 int holoscape_spawn_pty(
     const char *executable,
     char *const argv[],
@@ -55,6 +75,14 @@ int holoscape_spawn_pty(
         close(error_pipe[1]);
         return descriptor_error;
     }
+    errno = 0;
+    long descriptor_limit = sysconf(_SC_OPEN_MAX);
+    if (descriptor_limit < 0 || descriptor_limit > INT_MAX) {
+        int error_code = errno != 0 ? errno : EOVERFLOW;
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        return error_code;
+    }
 
     struct winsize size = {
         .ws_row = rows,
@@ -73,11 +101,27 @@ int holoscape_spawn_pty(
 
     if (pid == 0) {
         close(error_pipe[0]);
+        int child_descriptor_error = prepare_child_error_descriptor(&error_pipe[1], descriptor_limit);
+        if (child_descriptor_error != 0) {
+            report_child_error_and_exit(error_pipe[1], child_descriptor_error);
+        }
         if (working_directory != NULL && chdir(working_directory) != 0) {
             report_child_error_and_exit(error_pipe[1], errno);
         }
         execve(executable, argv, envp);
         report_child_error_and_exit(error_pipe[1], errno);
+    }
+
+    if (fcntl(spawned_master, F_SETFD, FD_CLOEXEC) != 0) {
+        int error_code = errno;
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        kill(pid, SIGKILL);
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        close(spawned_master);
+        return error_code;
     }
 
     *child_pid = pid;
