@@ -61,6 +61,130 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(waitForProcessToExit(processID), "Ctrl-C left foreground PID \(processID) running")
     }
 
+    func testNativePTYDeliversTerminalGeneratedSuspendAndCleansUpStoppedForegroundProcess() throws {
+        let childEnvironmentKey = "HOLOSCAPE_CTRL_Z_TEST_CHILD"
+        if let markerPath = ProcessInfo.processInfo.environment[childEnvironmentKey] {
+            try exerciseTerminalGeneratedSuspend(markerURL: URL(fileURLWithPath: markerPath))
+            return
+        }
+
+        let markerURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ctrl-z-\(UUID().uuidString).marker")
+        defer { try? FileManager.default.removeItem(at: markerURL) }
+
+        let child = Process()
+        let childExited = DispatchSemaphore(value: 0)
+        let childOutput = Pipe()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.NativePTYBrokerSessionRuntimeTests/testNativePTYDeliversTerminalGeneratedSuspendAndCleansUpStoppedForegroundProcess",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            childEnvironmentKey: markerURL.path,
+        ]) { _, childValue in childValue }
+        child.standardOutput = childOutput
+        child.standardError = childOutput
+        child.terminationHandler = { _ in childExited.signal() }
+        try child.run()
+
+        let childWait = childExited.wait(timeout: .now() + 6)
+        if childWait == .timedOut {
+            var cleanupFailures = emergencyCleanupFromMarker(markerURL)
+            child.terminate()
+            if childExited.wait(timeout: .now() + 1) == .timedOut {
+                let killResult = Darwin.kill(child.processIdentifier, SIGKILL)
+                if killResult != 0, errno != ESRCH {
+                    cleanupFailures.append("could not SIGKILL child xctest: \(String(cString: strerror(errno)))")
+                }
+                if childExited.wait(timeout: .now() + 1) == .timedOut {
+                    cleanupFailures.append("child xctest remained alive after SIGKILL")
+                }
+            }
+            if child.isRunning {
+                cleanupFailures.append("child xctest still reports running after bounded teardown")
+            }
+            XCTFail(
+                "Ctrl-Z regression exceeded its process-level deadline"
+                    + (cleanupFailures.isEmpty ? "" : "; cleanup failures: \(cleanupFailures.joined(separator: "; "))")
+            )
+            return
+        }
+
+        let output = String(decoding: childOutput.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(
+            child.terminationReason,
+            .exit,
+            "Ctrl-Z regression child was terminated by a signal. Output: \(output)"
+        )
+        XCTAssertEqual(
+            child.terminationStatus,
+            EXIT_SUCCESS,
+            "Ctrl-Z regression child failed. Output: \(output)"
+        )
+    }
+
+    private func exerciseTerminalGeneratedSuspend(markerURL: URL) throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "native-pty-suspend-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: ["-c", "stty -echo; exec /bin/zsh -f -i"],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch let error as NativePTYBrokerSessionRuntime.RuntimeError where error == .missingSession(id) {
+                // Explicit teardown already removed the session.
+            } catch {
+                XCTFail("Stopped-job child fallback cleanup failed: \(error)")
+            }
+        }
+
+        try runtime.sendInput(
+            id: id,
+            bytes: Array("printf 'SHELL:%d:END\\n' $$; sh -c 'printf \"CHILD:%d:END\\n\" $$; exec /bin/cat'\n".utf8)
+        )
+        let readyOutput = try waitForOutput(from: runtime, id: id, containing: ":END\r\n") { output in
+            self.processID(after: "SHELL:", in: output) != nil
+                && self.processID(after: "CHILD:", in: output) != nil
+        }
+        guard let shellProcessID = processID(after: "SHELL:", in: readyOutput),
+              let childProcessID = processID(after: "CHILD:", in: readyOutput) else {
+            return XCTFail("Could not parse interactive shell and foreground job PIDs from: \(readyOutput)")
+        }
+        let shellProcessGroupID = getpgid(shellProcessID)
+        let childProcessGroupID = getpgid(childProcessID)
+        guard shellProcessGroupID > 0, childProcessGroupID > 0 else {
+            return XCTFail(
+                "Could not resolve shell/job process groups: shell=\(shellProcessGroupID), child=\(childProcessGroupID)"
+            )
+        }
+        guard shellProcessGroupID != childProcessGroupID else {
+            return XCTFail("Foreground job remained in interactive shell process group \(shellProcessGroupID)")
+        }
+        try "\(shellProcessID),\(shellProcessGroupID),\(childProcessGroupID)"
+            .write(to: markerURL, atomically: true, encoding: .utf8)
+
+        try runtime.sendInput(id: id, bytes: [0x1A])
+
+        XCTAssertTrue(waitForProcessToStop(childProcessID), "Ctrl-Z did not stop foreground PID \(childProcessID)")
+        let shellState = try XCTUnwrap(processState(shellProcessID), "Interactive shell disappeared after Ctrl-Z")
+        XCTAssertNotEqual(shellState, SSTOP, "Ctrl-Z also stopped the interactive shell")
+        XCTAssertNotEqual(shellState, SZOMB, "Interactive shell became a zombie after Ctrl-Z")
+        XCTAssertTrue(try runtime.isRunning(id: id), "A stopped foreground job must leave its interactive shell session live")
+
+        try runtime.markSessionErrored(id: id)
+        XCTAssertTrue(waitForProcessToExit(childProcessID), "Broker cleanup left stopped foreground PID \(childProcessID) running")
+        XCTAssertTrue(waitForProcessToExit(shellProcessID), "Broker cleanup left interactive shell PID \(shellProcessID) running")
+    }
+
     func testNativePTYWorksWhenBrokerInheritsClosedStandardInput() throws {
         let savedStandardInput = dup(STDIN_FILENO)
         XCTAssertGreaterThanOrEqual(savedStandardInput, 0)
@@ -2865,6 +2989,87 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
     }
 
+    private func processID(after marker: String, in output: String) -> pid_t? {
+        for suffix in output.components(separatedBy: marker).dropFirst() {
+            guard let terminator = suffix.range(of: ":END\r\n") else { continue }
+            let digits = suffix[..<terminator.lowerBound]
+            if !digits.isEmpty, digits.allSatisfy(\.isNumber), let processID = pid_t(digits) {
+                return processID
+            }
+        }
+        return nil
+    }
+
+    private func emergencyCleanupFromMarker(_ markerURL: URL) -> [String] {
+        let marker: String
+        do {
+            marker = try String(contentsOf: markerURL, encoding: .utf8)
+        } catch {
+            return ["could not read process-group marker: \(error)"]
+        }
+        let values = marker.split(separator: ",").compactMap { pid_t(String($0)) }
+        guard values.count == 3 else {
+            return ["process-group marker was incomplete or corrupt: \(marker)"]
+        }
+        let sessionID = values[0]
+        var failures: [String] = []
+        for processGroupID in values.dropFirst() {
+            let validation = holoscape_validate_process_group_session(processGroupID, sessionID)
+            if validation < 0 {
+                failures.append(
+                    "could not validate process group \(processGroupID): \(String(cString: strerror(-validation)))"
+                )
+                continue
+            }
+            guard validation == 1 else { continue }
+            if Darwin.kill(-processGroupID, SIGKILL) != 0, errno != ESRCH {
+                failures.append(
+                    "could not SIGKILL owned process group \(processGroupID): \(String(cString: strerror(errno)))"
+                )
+            }
+        }
+        for processGroupID in values.dropFirst() {
+            let deadline = Date().addingTimeInterval(1)
+            while Date() < deadline,
+                  holoscape_validate_process_group_session(processGroupID, sessionID) == 1 {
+                usleep(10_000)
+            }
+            let validation = holoscape_validate_process_group_session(processGroupID, sessionID)
+            if validation == 1 {
+                failures.append("owned process group \(processGroupID) remained alive after SIGKILL")
+            } else if validation < 0 {
+                failures.append(
+                    "could not confirm process group \(processGroupID) cleanup: \(String(cString: strerror(-validation)))"
+                )
+            }
+        }
+        return failures
+    }
+
+    private func processState(_ pid: pid_t) -> Int32? {
+        var process = kinfo_proc()
+        var byteCount = MemoryLayout<kinfo_proc>.size
+        var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = query.withUnsafeMutableBufferPointer { pointer in
+            sysctl(pointer.baseAddress, 4, &process, &byteCount, nil, 0)
+        }
+        guard result == 0, byteCount == MemoryLayout<kinfo_proc>.size else { return nil }
+        return Int32(process.kp_proc.p_stat)
+    }
+
+    private func waitForProcessToStop(_ pid: pid_t) -> Bool {
+        for _ in 0..<100 {
+            if processState(pid) == SSTOP {
+                return true
+            }
+            if Darwin.kill(pid, 0) == -1, errno == ESRCH {
+                return false
+            }
+            usleep(10_000)
+        }
+        return false
+    }
+
     private func waitForProcessToExit(_ pid: pid_t) -> Bool {
         for _ in 0..<100 {
             if Darwin.kill(pid, 0) == -1, errno == ESRCH {
@@ -2879,6 +3084,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         from runtime: NativePTYBrokerSessionRuntime,
         id: BrokerSessionID,
         containing expected: String,
+        ready: ((String) -> Bool)? = nil,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> String {
@@ -2887,7 +3093,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         while Date() < deadline {
             collected.append(try runtime.readAvailableOutput(id: id))
             let output = String(decoding: collected, as: UTF8.self)
-            if output.contains(expected) {
+            if output.contains(expected), ready?(output) ?? true {
                 return output
             }
             usleep(20_000)
