@@ -16,6 +16,11 @@ let package = Package(
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0"),
     ],
     targets: [
+        .target(
+            name: "CNativePTY",
+            path: "Sources/CNativePTY",
+            publicHeadersPath: "include"
+        ),
         // Vendored C++ libraries for shader pipeline (#5930).
         // See docs/skins/04-ghostty-investigation.md §E.1 for the committed
         // decision to adopt Ghostty's GLSL→SPIR-V→MSL pipeline.
@@ -156,7 +161,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Holoscape",
-            dependencies: ["SwiftTerm", "Cglslang", "Cspirv_cross", "ZIPFoundation"],
+            dependencies: ["SwiftTerm", "Cglslang", "Cspirv_cross", "CNativePTY", "ZIPFoundation"],
             path: "Sources/Holoscape",
             resources: [
                 // GLSL shader prefix prepended to every user shader before

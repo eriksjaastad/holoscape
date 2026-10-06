@@ -1,5 +1,91 @@
 import Darwin
 import Foundation
+import CNativePTY
+
+private final class NativePTYChildProcess: @unchecked Sendable {
+    struct LaunchFailure: Error {
+        let errno: Int32
+        let masterDescriptor: Int32
+    }
+    typealias TerminationHandler = @Sendable (NativePTYChildProcess) -> Void
+
+    let processIdentifier: pid_t
+    private let lock = NSLock()
+    private var running = true
+    private var status: Int32 = 0
+    private var storedTerminationHandler: TerminationHandler?
+
+    var isRunning: Bool {
+        lock.withLock { running }
+    }
+
+    var terminationStatus: Int32 {
+        lock.withLock { status }
+    }
+
+    var terminationHandler: TerminationHandler? {
+        get { lock.withLock { storedTerminationHandler } }
+        set {
+            let shouldNotify = lock.withLock {
+                storedTerminationHandler = newValue
+                return !running && newValue != nil
+            }
+            if shouldNotify { newValue?(self) }
+        }
+    }
+
+    private init(processIdentifier: pid_t) {
+        self.processIdentifier = processIdentifier
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            var observedStatus: Int32 = 0
+            let waitError = holoscape_wait_pid(processIdentifier, &observedStatus)
+            let handler = lock.withLock { () -> TerminationHandler? in
+                status = waitError == 0 ? observedStatus : Int32.max
+                running = false
+                return storedTerminationHandler
+            }
+            handler?(self)
+        }
+    }
+
+    static func launch(
+        executable: String,
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: String?,
+        size: TerminalGridSize
+    ) throws -> (process: NativePTYChildProcess, masterDescriptor: Int32) {
+        let argumentPointers = ([executable] + arguments).map { strdup($0) } + [nil]
+        let environmentPointers = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        let workingDirectoryPointer: UnsafeMutablePointer<CChar>? = workingDirectory.flatMap { strdup($0) }
+        defer {
+            argumentPointers.compactMap { $0 }.forEach { free($0) }
+            environmentPointers.compactMap { $0 }.forEach { free($0) }
+            workingDirectoryPointer.map { free($0) }
+        }
+
+        var childPID: pid_t = 0
+        var masterDescriptor: Int32 = -1
+        let launchError = argumentPointers.withUnsafeBufferPointer { argv in
+            environmentPointers.withUnsafeBufferPointer { envp in
+                holoscape_spawn_pty(
+                    argv[0],
+                    UnsafeMutablePointer(mutating: argv.baseAddress),
+                    UnsafeMutablePointer(mutating: envp.baseAddress),
+                    workingDirectoryPointer,
+                    UInt16(size.rows),
+                    UInt16(size.columns),
+                    &childPID,
+                    &masterDescriptor
+                )
+            }
+        }
+        guard launchError == 0 else {
+            throw LaunchFailure(errno: launchError, masterDescriptor: masterDescriptor)
+        }
+        return (NativePTYChildProcess(processIdentifier: childPID), masterDescriptor)
+    }
+}
 
 /// In-process native PTY runtime for the first broker-backed local sessions.
 ///
@@ -51,7 +137,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         let id: BrokerSessionID
-        let process: Process
+        let process: NativePTYChildProcess
         let masterHandle: FileHandle
         private let inputDescriptor: Int32
         private let inputWriteTimeoutMilliseconds: Int32
@@ -93,7 +179,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         init(
             id: BrokerSessionID,
-            process: Process,
+            process: NativePTYChildProcess,
             masterHandle: FileHandle,
             inputDescriptor: Int32,
             inputWriteTimeoutMilliseconds: Int32,
@@ -958,49 +1044,53 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
         }
 
-        var masterFD: Int32 = -1
-        var slaveFD: Int32 = -1
-        var size = winsize(
-            ws_row: UInt16(request.initialSize.rows),
-            ws_col: UInt16(request.initialSize.columns),
-            ws_xpixel: 0,
-            ws_ypixel: 0
-        )
-
-        guard openpty(&masterFD, &slaveFD, nil, nil, &size) == 0 else {
-            throw RuntimeError.openPTYFailed(errno: errno)
+        let launch: (process: NativePTYChildProcess, masterDescriptor: Int32)
+        do {
+            launch = try NativePTYChildProcess.launch(
+                executable: request.command,
+                arguments: request.arguments,
+                environment: resolvedEnvironment,
+                workingDirectory: request.workingDirectory,
+                size: request.initialSize
+            )
+        } catch let failure as NativePTYChildProcess.LaunchFailure {
+            let inputDescriptor = dup(failure.masterDescriptor)
+            let duplicationError = inputDescriptor < 0 ? errno : nil
+            let closeResult = inputDescriptor >= 0
+                ? inputDescriptorCloser(inputDescriptor)
+                : nil
+            _ = Darwin.close(failure.masterDescriptor)
+            let reason = String(cString: strerror(failure.errno))
+            switch closeResult {
+            case let .closedWithWarning(closeErrno), let .ownershipRetained(closeErrno):
+                throw RuntimeError.launchFailedWithInputCloseFailure(reason: reason, errno: closeErrno)
+            case .closed:
+                throw RuntimeError.launchFailed(reason)
+            case nil:
+                throw RuntimeError.launchFailed(
+                    duplicationError.map { "\(reason); PTY input duplication failed: \(String(cString: strerror($0)))" }
+                        ?? reason
+                )
+            }
         }
+        let process = launch.process
+        let masterFD = launch.masterDescriptor
 
         let inputDescriptor = dup(masterFD)
         guard inputDescriptor >= 0 else {
             let duplicationError = errno
+            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
-            _ = Darwin.close(slaveFD)
             throw RuntimeError.openPTYFailed(errno: duplicationError)
         }
         let descriptorFlags = fcntl(inputDescriptor, F_GETFL)
         guard descriptorFlags >= 0, fcntl(inputDescriptor, F_SETFL, descriptorFlags | O_NONBLOCK) == 0 else {
             let configurationError = errno
             _ = Darwin.close(inputDescriptor)
+            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
-            _ = Darwin.close(slaveFD)
             throw RuntimeError.openPTYFailed(errno: configurationError)
         }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: request.command)
-        process.arguments = request.arguments
-        if let workingDirectory = request.workingDirectory {
-            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true)
-        }
-        process.environment = resolvedEnvironment
-
-        let slaveRead = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
-        let slaveWrite = FileHandle(fileDescriptor: dup(slaveFD), closeOnDealloc: true)
-        let slaveError = FileHandle(fileDescriptor: dup(slaveFD), closeOnDealloc: true)
-        process.standardInput = slaveRead
-        process.standardOutput = slaveWrite
-        process.standardError = slaveError
 
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
         let session = Session(
@@ -1028,40 +1118,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             session.startOutputMonitoring()
         }
 
-        do {
-            try process.run()
-        } catch {
-            session.shutDownOutputMonitoring()
-            let inputCloseError = inputCloseFailure(for: session)
-            masterHandle.closeFile()
-            slaveRead.closeFile()
-            slaveWrite.closeFile()
-            slaveError.closeFile()
-            throw combinedLaunchFailure(
-                reason: error.localizedDescription,
-                inputCloseError: inputCloseError
-            )
-        }
-
         let expectedProcessGroupID = process.processIdentifier
         let observedProcessGroupID = getpgid(process.processIdentifier)
         if process.isRunning, observedProcessGroupID != expectedProcessGroupID {
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
             session.shutDownOutputMonitoring()
             let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
-            slaveRead.closeFile()
-            slaveWrite.closeFile()
-            slaveError.closeFile()
             throw combinedLaunchFailure(
                 reason: "PTY child did not start in an isolated process group",
                 inputCloseError: inputCloseError
             )
         }
-        // Foundation launches each Process as its own process-group leader on
-        // Darwin. The process group is this runtime's ownership boundary; a
-        // command that deliberately moves itself to another group/session has
-        // detached from broker-managed terminal lifetime.
+        // forkpty creates a session leader with the slave PTY as its controlling
+        // terminal. Its process group is both the foreground signal target and
+        // this runtime's cleanup ownership boundary.
         let alreadyTerminatedStatus = session.setProcessGroupID(expectedProcessGroupID)
         if let alreadyTerminatedStatus {
             session.handleProcessTermination(
@@ -1075,9 +1146,6 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
         }
 
-        slaveRead.closeFile()
-        slaveWrite.closeFile()
-        slaveError.closeFile()
         sessions[id] = session
     }
 
@@ -1454,7 +1522,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
     }
 
-    private func waitForTermination(of process: Process, processGroupID: pid_t) -> Bool {
+    private func waitForTermination(of process: NativePTYChildProcess, processGroupID: pid_t) -> Bool {
         let deadline = DispatchTime.now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
         while (process.isRunning || processGroupExists(processGroupID)), DispatchTime.now() < deadline {
             usleep(10_000)

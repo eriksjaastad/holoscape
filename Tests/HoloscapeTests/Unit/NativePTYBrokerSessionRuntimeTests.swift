@@ -29,6 +29,37 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(try runtime.readScrollbackTail(id: id, maxBytes: 4096).contains(Data("holoscape-native-pty".utf8)))
     }
 
+    func testNativePTYDeliversTerminalGeneratedInterruptToForegroundProcess() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "native-pty-interrupt-test")
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "trap 'echo INTERRUPTED; exit 42' INT; echo READY:$$; while :; do sleep 1; done",
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let readyOutput = try waitForOutput(from: runtime, id: id, containing: "READY:")
+        guard let marker = readyOutput.range(of: "READY:"),
+              let processID = pid_t(readyOutput[marker.upperBound...].prefix(while: { $0.isNumber })) else {
+            return XCTFail("Could not parse foreground process PID from: \(readyOutput)")
+        }
+
+        try runtime.sendInput(id: id, bytes: [0x03])
+
+        let interruptOutput = try waitForOutput(from: runtime, id: id, containing: "INTERRUPTED")
+        XCTAssertTrue(interruptOutput.contains("INTERRUPTED"), interruptOutput)
+        XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 42)
+        XCTAssertTrue(waitForProcessToExit(processID), "Ctrl-C left foreground PID \(processID) running")
+    }
+
     func testNativePTYInputPreservesWriteOrderAndBytes() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "native-pty-input-order-test")
