@@ -532,44 +532,120 @@ int holoscape_get_foreground_process_group(
     return 0;
 }
 
-int holoscape_observe_pty_exit(
+typedef int (*holoscape_foreground_snapshot_function)(
+    int master_fd,
+    pid_t session_id,
+    pid_t *foreground_process_group_id,
+    void *context
+);
+
+typedef int (*holoscape_child_exit_observation_function)(
+    pid_t child_pid,
+    int *exit_observed,
+    void *context
+);
+
+static int system_foreground_snapshot(
+    int master_fd,
+    pid_t session_id,
+    pid_t *foreground_process_group_id,
+    void *context
+) {
+    (void)context;
+    return holoscape_get_foreground_process_group(
+        master_fd,
+        session_id,
+        foreground_process_group_id
+    );
+}
+
+static int system_child_exit_observation(
+    pid_t child_pid,
+    int *exit_observed,
+    void *context
+) {
+    (void)context;
+    siginfo_t information;
+    memset(&information, 0, sizeof(information));
+    if (waitid(P_PID, (id_t)child_pid, &information, WEXITED | WNOHANG | WNOWAIT) != 0) {
+        return errno;
+    }
+    *exit_observed = information.si_pid == child_pid;
+    return 0;
+}
+
+static int transient_exit_observation_error(int error_code) {
+    return error_code == EAGAIN || error_code == EINTR;
+}
+
+static int capture_foreground_snapshot(
+    int master_fd,
+    pid_t session_id,
+    pid_t *foreground_process_group_id,
+    holoscape_foreground_snapshot_function foreground_snapshot,
+    void *context
+) {
+    pid_t foreground = 0;
+    int snapshot_error = foreground_snapshot(
+        master_fd,
+        session_id,
+        &foreground,
+        context
+    );
+    if (snapshot_error == 0 && foreground > 0) {
+        *foreground_process_group_id = foreground;
+        return 0;
+    }
+    // Foreground identity is an optimization, not exit authority. Process-group
+    // churn may make this snapshot transiently unavailable; keep polling the
+    // child with WNOWAIT so its PID/session identity stays reserved. Swift later
+    // enumerates and kills every live same-session group before the sole reap.
+    if (snapshot_error == ESRCH || transient_exit_observation_error(snapshot_error)) {
+        return 0;
+    }
+    return snapshot_error;
+}
+
+static int observe_pty_exit_with_functions(
     pid_t child_pid,
     pid_t session_id,
     int master_fd,
-    pid_t *foreground_process_group_id
+    pid_t *foreground_process_group_id,
+    holoscape_foreground_snapshot_function foreground_snapshot,
+    holoscape_child_exit_observation_function child_exit_observation,
+    void *context
 ) {
     *foreground_process_group_id = 0;
     for (;;) {
-        pid_t foreground = 0;
-        int foreground_error = holoscape_get_foreground_process_group(
+        int foreground_error = capture_foreground_snapshot(
             master_fd,
             session_id,
-            &foreground
+            foreground_process_group_id,
+            foreground_snapshot,
+            context
         );
-        if (foreground_error == 0 && foreground > 0) {
-            *foreground_process_group_id = foreground;
-        } else if (foreground_error != ESRCH) {
+        if (foreground_error != 0) {
             return foreground_error;
         }
 
-        siginfo_t information;
-        memset(&information, 0, sizeof(information));
-        if (waitid(P_PID, (id_t)child_pid, &information, WEXITED | WNOHANG | WNOWAIT) != 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return errno;
+        int exit_observed = 0;
+        int observation_error = child_exit_observation(
+            child_pid,
+            &exit_observed,
+            context
+        );
+        if (observation_error != 0 && !transient_exit_observation_error(observation_error)) {
+            return observation_error;
         }
-        if (information.si_pid == child_pid) {
-            foreground = 0;
-            foreground_error = holoscape_get_foreground_process_group(
+        if (observation_error == 0 && exit_observed) {
+            foreground_error = capture_foreground_snapshot(
                 master_fd,
                 session_id,
-                &foreground
+                foreground_process_group_id,
+                foreground_snapshot,
+                context
             );
-            if (foreground_error == 0 && foreground > 0) {
-                *foreground_process_group_id = foreground;
-            } else if (foreground_error != ESRCH) {
+            if (foreground_error != 0) {
                 return foreground_error;
             }
             return 0;
@@ -578,6 +654,23 @@ int holoscape_observe_pty_exit(
         while (nanosleep(&pause, &pause) != 0 && errno == EINTR) {
         }
     }
+}
+
+int holoscape_observe_pty_exit(
+    pid_t child_pid,
+    pid_t session_id,
+    int master_fd,
+    pid_t *foreground_process_group_id
+) {
+    return observe_pty_exit_with_functions(
+        child_pid,
+        session_id,
+        master_fd,
+        foreground_process_group_id,
+        system_foreground_snapshot,
+        system_child_exit_observation,
+        NULL
+    );
 }
 
 int holoscape_reap_pid(pid_t child_pid, int32_t *termination_status) {
@@ -1019,4 +1112,57 @@ int holoscape_test_exhausted_process_group_instability(void) {
         &has_live_session_member,
         disappearing_test_session_lookup
     );
+}
+
+struct persistent_foreground_instability_context {
+    int foreground_attempt_count;
+    int child_observation_count;
+};
+
+static int persistently_unstable_foreground_snapshot(
+    int master_fd,
+    pid_t session_id,
+    pid_t *foreground_process_group_id,
+    void *raw_context
+) {
+    (void)master_fd;
+    (void)session_id;
+    (void)foreground_process_group_id;
+    struct persistent_foreground_instability_context *context = raw_context;
+    context->foreground_attempt_count++;
+    return EAGAIN;
+}
+
+static int eventually_exited_child_observation(
+    pid_t child_pid,
+    int *exit_observed,
+    void *raw_context
+) {
+    (void)child_pid;
+    struct persistent_foreground_instability_context *context = raw_context;
+    context->child_observation_count++;
+    *exit_observed = context->child_observation_count >= 5;
+    return 0;
+}
+
+int holoscape_test_persistent_foreground_instability_observes_exit(void) {
+    struct persistent_foreground_instability_context context = {0};
+    pid_t foreground_process_group_id = 0;
+    int result = observe_pty_exit_with_functions(
+        1,
+        1,
+        -1,
+        &foreground_process_group_id,
+        persistently_unstable_foreground_snapshot,
+        eventually_exited_child_observation,
+        &context
+    );
+    if (result != 0) {
+        return result;
+    }
+    return context.child_observation_count == 5
+        && context.foreground_attempt_count == 6
+        && foreground_process_group_id == 0
+        ? 0
+        : EPROTO;
 }

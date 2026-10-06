@@ -22,9 +22,11 @@ final class NativePTYChildProcess: @unchecked Sendable {
     private let masterDescriptor: Int32
     private let lock = NSLock()
     private let lifecycleLock = NSLock()
+    private let observationCondition = NSCondition()
     private var running = true
     private var cleanupComplete = false
     private var exitObserved = false
+    private var forcedCleanupRequested = false
     private var retainedForegroundProcessGroupID: pid_t?
     private var ownsMasterDescriptor = false
     private var masterDescriptorClosed = false
@@ -93,6 +95,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         guard shouldStart else { return }
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let observation: TerminationObservation
+            var shouldForceCleanup = false
             while true {
                 let attempt = waiter(processIdentifier, processIdentifier, masterDescriptor)
                 let shouldRetry = attempt.waitError == EAGAIN || attempt.waitError == EINTR
@@ -107,12 +110,16 @@ final class NativePTYChildProcess: @unchecked Sendable {
                     break
                 }
 
-                // A foreground/session snapshot can race process-group turnover
-                // before waitid confirms leader exit. Keep the one waiter as the
-                // observation authority, expose the transient error to status
-                // callers, and retry with a delay rather than declaring the
-                // process stopped or spinning on a reused PID.
-                usleep(Self.exitObservationRetryDelayMicroseconds)
+                // Production C observation absorbs transient foreground/session
+                // snapshots while continuing to poll leader exit. Keep this
+                // retry for injected/platform transient wait failures, but let a
+                // successful forced SIGKILL transfer the same waiter into the
+                // all-session cleanup barrier and sole reap path.
+                guard waitForObservationRetry() else {
+                    observation = attempt
+                    shouldForceCleanup = true
+                    break
+                }
             }
             lock.withLock {
                 running = false
@@ -123,8 +130,8 @@ final class NativePTYChildProcess: @unchecked Sendable {
                 waitError = observation.waitError
             }
             let finalObservation: TerminationObservation
-            if observation.waitError == nil {
-                finalObservation = finishObservedExitCleanup(
+            if observation.waitError == nil || shouldForceCleanup {
+                finalObservation = finishExitCleanup(
                     signalProcessGroup: signalProcessGroup,
                     cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
                 )
@@ -142,24 +149,55 @@ final class NativePTYChildProcess: @unchecked Sendable {
         }
     }
 
+    private func waitForObservationRetry() -> Bool {
+        observationCondition.lock()
+        defer { observationCondition.unlock() }
+        if forcedCleanupRequested { return false }
+        _ = observationCondition.wait(
+            until: Date().addingTimeInterval(
+                TimeInterval(Self.exitObservationRetryDelayMicroseconds) / 1_000_000
+            )
+        )
+        return !forcedCleanupRequested
+    }
+
+    private func requestForcedCleanup() {
+        observationCondition.lock()
+        forcedCleanupRequested = true
+        observationCondition.broadcast()
+        observationCondition.unlock()
+    }
+
+    private var cleanupIsAuthorized: Bool {
+        if lock.withLock({ exitObserved }) { return true }
+        return observationCondition.withLock { forcedCleanupRequested }
+    }
+
     func signalOwnedProcessGroups(
         _ signal: Int32,
         signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
     ) -> Int32 {
         lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-        if lock.withLock({ cleanupComplete }) { return 0 }
-        return signalLiveSessionProcessGroups(signal, signalProcessGroup: signalProcessGroup)
+        if lock.withLock({ cleanupComplete }) {
+            lifecycleLock.unlock()
+            return 0
+        }
+        let signalError = signalLiveSessionProcessGroups(signal, signalProcessGroup: signalProcessGroup)
+        lifecycleLock.unlock()
+        if signal == SIGKILL, signalError == 0 {
+            requestForcedCleanup()
+        }
+        return signalError
     }
 
-    func retryObservedExitCleanup(
+    func retryExitCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
         cleanupTimeoutMilliseconds: Int
     ) -> TerminationObservation {
-        guard lock.withLock({ exitObserved && !cleanupComplete }) else {
+        guard cleanupIsAuthorized, !lock.withLock({ cleanupComplete }) else {
             return terminationObservation
         }
-        let observation = finishObservedExitCleanup(
+        let observation = finishExitCleanup(
             signalProcessGroup: signalProcessGroup,
             cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
         )
@@ -170,7 +208,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         return observation
     }
 
-    private func finishObservedExitCleanup(
+    private func finishExitCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
         cleanupTimeoutMilliseconds: Int
     ) -> TerminationObservation {
@@ -1338,7 +1376,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
             waitForCleanupCompletion(of: retained.process)
             if !retained.process.cleanupIsComplete, !retained.process.isRunning {
-                _ = retained.process.retryObservedExitCleanup(
+                _ = retained.process.retryExitCleanup(
                     signalProcessGroup: processGroupSignal,
                     cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                 )
@@ -1906,7 +1944,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             waitForCleanupCompletion(of: process)
         }
         if !process.cleanupIsComplete, !process.isRunning {
-            _ = process.retryObservedExitCleanup(
+            _ = process.retryExitCleanup(
                 signalProcessGroup: processGroupSignal,
                 cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
             )
@@ -1933,7 +1971,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             waitForCleanupCompletion(of: retained.process)
         }
         if !retained.process.cleanupIsComplete, !retained.process.isRunning {
-            _ = retained.process.retryObservedExitCleanup(
+            _ = retained.process.retryExitCleanup(
                 signalProcessGroup: processGroupSignal,
                 cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
             )
@@ -1973,7 +2011,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             }
 
             if !session.process.isRunning {
-                let retryObservation = session.process.retryObservedExitCleanup(
+                let retryObservation = session.process.retryExitCleanup(
                     signalProcessGroup: processGroupSignal,
                     cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                 )
@@ -1989,7 +2027,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             try signalOwnedProcessGroups(of: session, signal: SIGKILL)
             guard waitForTermination(of: session.process) else {
                 if !session.process.isRunning {
-                    let retryObservation = session.process.retryObservedExitCleanup(
+                    let retryObservation = session.process.retryExitCleanup(
                         signalProcessGroup: processGroupSignal,
                         cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
                     )

@@ -258,6 +258,76 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertTrue(observer.childHasExited, "The retained leader must be reaped before cleanup succeeds")
     }
 
+    func testDeinitConvergesRetainedLaunchCleanupAfterPersistentTransientExitObservation() throws {
+        let observer = PersistentTransientExitObserver()
+        let signaler = FailFirstProcessGroupSignaler()
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            inputDescriptorDuplicator: { _ in (-1, EMFILE) },
+            childProcessWaiter: observer.wait,
+            childProcessReaper: observer.reap,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-persistent-transient-deinit")
+        defer {
+            signaler.forceCleanup()
+            observer.forceCleanup()
+        }
+
+        XCTAssertThrowsError(
+            try runtime?.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/cat",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case .launchCleanupPending = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retained launch cleanup authority, got \(error)")
+            }
+        }
+
+        XCTAssertTrue(
+            observer.waitForAttemptCount(3),
+            "The regression must sustain transient observation rather than recover on the next attempt"
+        )
+        XCTAssertEqual(observer.reapCount, 0)
+
+        runtime = nil
+
+        XCTAssertTrue(
+            observer.waitForReapCount(1),
+            "Runtime deinit must transfer persistent transient observation into bounded forced cleanup"
+        )
+        XCTAssertEqual(observer.reapCount, 1, "Forced cleanup and observation must share one reap authority")
+        XCTAssertTrue(observer.childHasExited, "Deinit must not leave the retained leader live or unreaped")
+        XCTAssertTrue(observer.waitForMasterDescriptorToClose(), "Cleanup must release the retained PTY master")
+    }
+
+    func testExplicitTeardownConvergesPersistentTransientObservationAndSameSessionProcesses() throws {
+        let observer = PersistentTransientExitObserver()
+        let runtime = NativePTYBrokerSessionRuntime(
+            childProcessWaiter: observer.wait,
+            childProcessReaper: observer.reap
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-persistent-transient-teardown")
+        let pids = try createSIGTERMResistantSession(runtime: runtime, id: id)
+        defer { observer.forceCleanup() }
+
+        XCTAssertTrue(observer.waitForAttemptCount(3))
+        let startedAt = Date()
+
+        try runtime.markSessionErrored(id: id)
+
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1.5, "teardown exceeded its bounded deadline")
+        XCTAssertEqual(observer.reapCount, 1, "teardown and observation must share one reap authority")
+        XCTAssertEqual(try runtime.listSessions(), [])
+        XCTAssertTrue(waitForProcessToExit(pids.root), "teardown left root PID \(pids.root) running")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "teardown left same-session child PID \(pids.child) running")
+    }
+
     func testHandshakeWriteToClosedReaderReturnsEPIPEWithoutSIGPIPE() {
         XCTAssertEqual(holoscape_test_sigpipe_safe_handshake_write(), EPIPE)
     }
@@ -285,6 +355,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
     func testExhaustedProcessGroupEnumerationInstabilityReturnsEAGAIN() {
         XCTAssertEqual(holoscape_test_exhausted_process_group_instability(), EAGAIN)
+    }
+
+    func testExitObserverAbsorbsPersistentForegroundSnapshotInstabilityUntilExit() {
+        XCTAssertEqual(holoscape_test_persistent_foreground_instability_observes_exit(), 0)
     }
 
     func testMissingSecondaryProcessGroupObservationStillCleansNativeValidatedLaunchGroup() throws {
@@ -2876,6 +2950,115 @@ private final class TransientExitObserver: @unchecked Sendable {
         }
         var status: Int32 = 0
         _ = waitpid(childPID, &status, WNOHANG)
+    }
+}
+
+private final class PersistentTransientExitObserver: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedAttemptCount = 0
+    private var storedReapCount = 0
+    private var storedReapSucceeded = false
+    private var storedChildPID: pid_t?
+    private var storedMasterDescriptor: Int32?
+    private var permitsObservation = false
+
+    var reapCount: Int {
+        condition.withLock { storedReapCount }
+    }
+
+    var childHasExited: Bool {
+        condition.withLock { storedReapSucceeded }
+    }
+
+    func wait(
+        _ processIdentifier: pid_t,
+        _ sessionID: pid_t,
+        _ masterDescriptor: Int32
+    ) -> NativePTYChildProcess.TerminationObservation {
+        let shouldObserve = condition.withLock { () -> Bool in
+            storedChildPID = processIdentifier
+            storedMasterDescriptor = masterDescriptor
+            storedAttemptCount += 1
+            condition.broadcast()
+            return permitsObservation
+        }
+        guard shouldObserve else {
+            return NativePTYChildProcess.TerminationObservation(
+                status: nil,
+                waitError: EAGAIN,
+                foregroundProcessGroupID: nil
+            )
+        }
+
+        var foregroundProcessGroupID: pid_t = 0
+        let waitError = holoscape_observe_pty_exit(
+            processIdentifier,
+            sessionID,
+            masterDescriptor,
+            &foregroundProcessGroupID
+        )
+        return NativePTYChildProcess.TerminationObservation(
+            status: nil,
+            waitError: waitError == 0 ? nil : waitError,
+            foregroundProcessGroupID: foregroundProcessGroupID > 0 ? foregroundProcessGroupID : nil
+        )
+    }
+
+    func reap(_ processIdentifier: pid_t) -> NativePTYChildProcess.TerminationObservation {
+        var observedStatus: Int32 = 0
+        let waitError = holoscape_reap_pid(processIdentifier, &observedStatus)
+        condition.withLock {
+            storedReapCount += 1
+            storedReapSucceeded = waitError == 0
+            condition.broadcast()
+        }
+        return NativePTYChildProcess.TerminationObservation(
+            status: waitError == 0 ? observedStatus : nil,
+            waitError: waitError == 0 ? nil : waitError,
+            foregroundProcessGroupID: nil
+        )
+    }
+
+    func waitForAttemptCount(_ count: Int, timeout: TimeInterval = 1) -> Bool {
+        waitUntil(timeout: timeout) { storedAttemptCount >= count }
+    }
+
+    func waitForReapCount(_ count: Int, timeout: TimeInterval = 1) -> Bool {
+        waitUntil(timeout: timeout) { storedReapCount >= count }
+    }
+
+    func waitForMasterDescriptorToClose(timeout: TimeInterval = 1) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let descriptor = condition.withLock { storedMasterDescriptor }
+            if let descriptor, fcntl(descriptor, F_GETFD) == -1, errno == EBADF {
+                return true
+            }
+            usleep(10_000)
+        }
+        return false
+    }
+
+    func forceCleanup() {
+        let childPID = condition.withLock { () -> pid_t? in
+            guard storedReapCount == 0 else { return nil }
+            permitsObservation = true
+            condition.broadcast()
+            return storedChildPID
+        }
+        guard let childPID else { return }
+        _ = Darwin.kill(-childPID, SIGKILL)
+        _ = Darwin.kill(childPID, SIGKILL)
+    }
+
+    private func waitUntil(timeout: TimeInterval, predicate: () -> Bool) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !predicate() {
+            if !condition.wait(until: deadline) { break }
+        }
+        return predicate()
     }
 }
 

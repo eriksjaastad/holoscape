@@ -66,5 +66,6 @@ int holoscape_test_bounded_child_wait_with_eintr(
     int interruption_delay_microseconds
 );
 int holoscape_test_exhausted_process_group_instability(void);
+int holoscape_test_persistent_foreground_instability_observes_exit(void);
 
 #endif
