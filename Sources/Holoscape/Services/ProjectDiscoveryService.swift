@@ -4,6 +4,7 @@ import Darwin
 @MainActor
 class ProjectDiscoveryService {
     private var cachedProjects: [SessionProfile] = []
+    private var cachedSource: CacheSource?
     private var lastRefresh: Date?
     private let configService: ConfigService
 
@@ -17,11 +18,14 @@ class ProjectDiscoveryService {
     func discover() async -> [SessionProfile] {
         let config = configService.load()
         guard let discovery = config.projectDiscovery, discovery.enabled else {
-            return cachedProjects
+            clearCache()
+            return []
         }
 
         let defaults = config.sshDefaults ?? .default
-        if discovery.connection == "local" || defaults.host.isEmpty || defaults.user.isEmpty {
+        let source = CacheSource(discovery: discovery, defaults: defaults)
+        reconcileCache(with: source)
+        if source.kind == .local {
             do {
                 cachedProjects = try profilesFromLocalProjectRoot(discovery)
                 lastRefresh = Date()
@@ -55,7 +59,29 @@ class ProjectDiscoveryService {
 
     /// Return cached projects without SSH call.
     func cached() -> [SessionProfile] {
+        let config = configService.load()
+        guard let discovery = config.projectDiscovery, discovery.enabled else {
+            clearCache()
+            return []
+        }
+        reconcileCache(with: CacheSource(
+            discovery: discovery,
+            defaults: config.sshDefaults ?? .default
+        ))
         return cachedProjects
+    }
+
+    private func reconcileCache(with source: CacheSource) {
+        guard cachedSource != source else { return }
+        cachedProjects = []
+        cachedSource = source
+        lastRefresh = nil
+    }
+
+    private func clearCache() {
+        cachedProjects = []
+        cachedSource = nil
+        lastRefresh = nil
     }
 
     // MARK: - Internal (exposed for testing)
@@ -269,6 +295,32 @@ class ProjectDiscoveryService {
         case processTimedOut
         case outputLimitExceeded(stream: String, maxBytes: Int)
         case outputReadFailed(stream: String, message: String)
+    }
+
+    private struct CacheSource: Equatable {
+        enum Kind: Equatable {
+            case local
+            case ssh(host: String, user: String)
+        }
+
+        let kind: Kind
+        let root: String
+        let command: String?
+
+        init(discovery: ProjectDiscoveryConfig, defaults: SSHDefaults) {
+            if discovery.connection == "local" || defaults.host.isEmpty || defaults.user.isEmpty {
+                kind = .local
+                root = URL(
+                    fileURLWithPath: (discovery.root as NSString).expandingTildeInPath,
+                    isDirectory: true
+                ).standardizedFileURL.path
+                command = nil
+            } else {
+                kind = .ssh(host: defaults.host, user: defaults.user)
+                root = discovery.root
+                command = discovery.command
+            }
+        }
     }
 }
 

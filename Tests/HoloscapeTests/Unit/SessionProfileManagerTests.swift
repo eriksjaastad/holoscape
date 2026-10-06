@@ -336,6 +336,68 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertTrue(manager.allSessions().discovered.isEmpty)
     }
 
+    @MainActor
+    func testRefreshDiscoveredSessionsClearsCacheWhenDiscoveryIsDisabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-disabled-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-disabled-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        config.projectDiscovery?.enabled = false
+        configService.save(config)
+
+        let projectsAfterDisable = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterDisable.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsDoesNotReuseCacheAfterConfigurationChanges() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-source-a-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-source-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        config.projectDiscovery?.root = root.appendingPathComponent("missing-root", isDirectory: true).path
+        configService.save(config)
+
+        let projectsAfterSourceChange = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterSourceChange.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
+    }
+
     // MARK: - Resolve
 
     @MainActor
