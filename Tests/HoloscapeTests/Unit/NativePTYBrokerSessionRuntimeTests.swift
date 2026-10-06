@@ -130,6 +130,62 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(concurrentDescriptors, baselineDescriptors)
     }
 
+    func testDescriptorSetupFailureReportsProcessGroupCleanupFailure() throws {
+        let signaler = FailFirstProcessGroupSignaler()
+        let runtime = NativePTYBrokerSessionRuntime(
+            inputDescriptorDuplicator: { _ in (-1, EMFILE) },
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-setup-cleanup-failure")
+        defer { signaler.forceCleanup() }
+
+        XCTAssertThrowsError(
+            try runtime.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/cat",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case let .terminationFailed(failedID, reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected truthful launch cleanup failure, got \(error)")
+            }
+            XCTAssertEqual(failedID, id)
+            XCTAssertTrue(reason.contains("input duplication failed"), reason)
+            XCTAssertTrue(reason.contains("launch cleanup failed"), reason)
+        }
+    }
+
+    func testMissingProcessGroupIdentityDoesNotSignalAnUnverifiedGroup() throws {
+        let signaler = RecordingProcessGroupSignaler()
+        let runtime = NativePTYBrokerSessionRuntime(
+            processGroupLookup: { _ in (-1, ESRCH) },
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-unverified-process-group")
+
+        XCTAssertThrowsError(
+            try runtime.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/usr/bin/true",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case let .launchFailed(reason) = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected process-group identity failure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("identity could not be established safely"), reason)
+        }
+        XCTAssertEqual(signaler.callCount, 0)
+    }
+
     func testNativePTYInputPreservesWriteOrderAndBytes() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "native-pty-input-order-test")
@@ -2272,6 +2328,20 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         isReleased = true
         releaseCondition.broadcast()
         releaseCondition.unlock()
+    }
+}
+
+private final class RecordingProcessGroupSignaler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCallCount = 0
+
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
+        lock.withLock { storedCallCount += 1 }
+        return Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
     }
 }
 

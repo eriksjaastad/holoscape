@@ -1000,7 +1000,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let processEnvironment: [String: String]
     private let childProcessWaiter: NativePTYChildProcess.Waiter
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
+    private let processGroupLookup: @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?)
     private let inputWriteTimeoutMilliseconds: Int32
+    private let inputDescriptorDuplicator: @Sendable (Int32) -> (descriptor: Int32, errno: Int32?)
     private let inputDescriptorCloser: @Sendable (Int32) -> InputDescriptorCloseResult
     private let inputWriteDidStart: @Sendable (BrokerSessionID) -> Void
     private let outputReadDidStart: @Sendable (BrokerSessionID) -> Void
@@ -1014,6 +1016,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         inputWriteTimeoutMilliseconds: Int32 = 1_000,
+        inputDescriptorDuplicator: @escaping @Sendable (Int32) -> (descriptor: Int32, errno: Int32?) = { descriptor in
+            let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+            return (duplicate, duplicate < 0 ? errno : nil)
+        },
         inputDescriptorCloser: @escaping @Sendable (Int32) -> InputDescriptorCloseResult = { descriptor in
             Darwin.close(descriptor) == 0 ? .closed : .ownershipRetained(errno)
         },
@@ -1033,6 +1039,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 waitError: waitError == 0 ? nil : waitError
             )
         },
+        processGroupLookup: @escaping @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?) = { processIdentifier in
+            let processGroupID = getpgid(processIdentifier)
+            return (processGroupID, processGroupID < 0 ? errno : nil)
+        },
         processGroupSignal: @escaping @Sendable (pid_t, Int32) -> Int32 = { processGroupID, signal in
             Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
         }
@@ -1049,6 +1059,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
         self.processEnvironment = processEnvironment
         self.inputWriteTimeoutMilliseconds = max(1, inputWriteTimeoutMilliseconds)
+        self.inputDescriptorDuplicator = inputDescriptorDuplicator
         self.inputDescriptorCloser = inputDescriptorCloser
         self.inputWriteDidStart = inputWriteDidStart
         self.outputReadDidStart = outputReadDidStart
@@ -1056,6 +1067,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.childProcessWaiter = childProcessWaiter
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
+        self.processGroupLookup = processGroupLookup
         self.processGroupSignal = processGroupSignal
     }
 
@@ -1098,8 +1110,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 waiter: childProcessWaiter
             )
         } catch let failure as NativePTYChildProcess.LaunchFailure {
-            let inputDescriptor = fcntl(failure.masterDescriptor, F_DUPFD_CLOEXEC, 0)
-            let duplicationError = inputDescriptor < 0 ? errno : nil
+            let duplication = inputDescriptorDuplicator(failure.masterDescriptor)
+            let inputDescriptor = duplication.descriptor
+            let duplicationError = duplication.errno
             let closeResult = inputDescriptor >= 0
                 ? inputDescriptorCloser(inputDescriptor)
                 : nil
@@ -1123,19 +1136,34 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let process = launch.process
         let masterFD = launch.masterDescriptor
 
-        let inputDescriptor = fcntl(masterFD, F_DUPFD_CLOEXEC, 0)
+        let duplication = inputDescriptorDuplicator(masterFD)
+        let inputDescriptor = duplication.descriptor
         guard inputDescriptor >= 0 else {
-            let duplicationError = errno
-            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
+            let duplicationError = duplication.errno ?? EIO
+            let cleanupError = processGroupSignal(process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
+            if cleanupError != 0 && cleanupError != ESRCH {
+                throw RuntimeError.terminationFailed(
+                    id,
+                    reason: "PTY input duplication failed: \(String(cString: strerror(duplicationError))); "
+                        + "launch cleanup failed: \(String(cString: strerror(cleanupError)))"
+                )
+            }
             throw RuntimeError.openPTYFailed(errno: duplicationError)
         }
         let descriptorFlags = fcntl(inputDescriptor, F_GETFL)
         guard descriptorFlags >= 0, fcntl(inputDescriptor, F_SETFL, descriptorFlags | O_NONBLOCK) == 0 else {
             let configurationError = errno
             _ = Darwin.close(inputDescriptor)
-            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
+            let cleanupError = processGroupSignal(process.processIdentifier, SIGKILL)
             _ = Darwin.close(masterFD)
+            if cleanupError != 0 && cleanupError != ESRCH {
+                throw RuntimeError.terminationFailed(
+                    id,
+                    reason: "PTY input configuration failed: \(String(cString: strerror(configurationError))); "
+                        + "launch cleanup failed: \(String(cString: strerror(cleanupError)))"
+                )
+            }
             throw RuntimeError.openPTYFailed(errno: configurationError)
         }
 
@@ -1166,14 +1194,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         let expectedProcessGroupID = process.processIdentifier
-        let observedProcessGroupID = getpgid(process.processIdentifier)
-        if process.isRunning, observedProcessGroupID != expectedProcessGroupID {
-            _ = Darwin.kill(-process.processIdentifier, SIGKILL)
+        let processGroupObservation = processGroupLookup(process.processIdentifier)
+        if processGroupObservation.processGroupID != expectedProcessGroupID {
             session.shutDownOutputMonitoring()
             let inputCloseError = inputCloseFailure(for: session)
             masterHandle.closeFile()
+            let observationReason = processGroupObservation.errno.map {
+                String(cString: strerror($0))
+            } ?? "observed process group \(processGroupObservation.processGroupID)"
             throw combinedLaunchFailure(
-                reason: "PTY child did not start in an isolated process group",
+                reason: "PTY child process-group identity could not be established safely: \(observationReason)",
                 inputCloseError: inputCloseError
             )
         }

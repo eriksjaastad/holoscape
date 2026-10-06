@@ -113,15 +113,26 @@ int holoscape_spawn_pty(
     }
 
     if (fcntl(spawned_master, F_SETFD, FD_CLOEXEC) != 0) {
-        int error_code = errno;
+        int descriptor_error = errno;
         close(error_pipe[0]);
         close(error_pipe[1]);
-        kill(pid, SIGKILL);
-        int status;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        int signal_error = 0;
+        if (kill(-pid, SIGKILL) != 0 && errno != ESRCH) {
+            signal_error = errno;
+        }
+        int wait_error = 0;
+        if (signal_error == 0) {
+            int status;
+            pid_t wait_result;
+            do {
+                wait_result = waitpid(pid, &status, 0);
+            } while (wait_result < 0 && errno == EINTR);
+            if (wait_result < 0 && errno != ECHILD) {
+                wait_error = errno;
+            }
         }
         close(spawned_master);
-        return error_code;
+        return signal_error != 0 ? signal_error : (wait_error != 0 ? wait_error : descriptor_error);
     }
 
     *child_pid = pid;
