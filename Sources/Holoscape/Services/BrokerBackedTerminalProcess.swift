@@ -36,6 +36,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let outputCoordinator: BrokerOutputCoordinator
     private let failureRecoveryCoordinator: BrokerFailureRecoveryCoordinator
     private let teardownRetryDelay: (Int) -> TimeInterval
+    private let outputDeliveryTimeout: TimeInterval
     private let terminalView: HoloscapeTerminalView
     private var outputHandler: (() -> Void)?
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
@@ -62,6 +63,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// preserves that ID for later reattach.
     private var nextOutputDeliveryGeneration: UInt = 0
     private var activeOutputDeliveryGeneration: UInt?
+    private var activeOutputHandoffGeneration: UInt?
+    private let outputDeliveryGate = BrokerOutputDeliveryGate()
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private(set) var brokerSessionID: BrokerSessionID?
@@ -100,7 +103,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             runtime: NativePTYBrokerSessionRuntime(scrollbackDirectory: ScrollbackPersistencePolicy.defaultDiskDirectory)
         ),
         terminalView: HoloscapeTerminalView = HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600)),
-        teardownRetryDelay: @escaping (Int) -> TimeInterval = BrokerTeardownRetryPolicy.delay(afterFailureCount:)
+        teardownRetryDelay: @escaping (Int) -> TimeInterval = BrokerTeardownRetryPolicy.delay(afterFailureCount:),
+        outputDeliveryTimeout: TimeInterval = 5.0
     ) {
         self.channelID = channelID
         self.channelType = channelType
@@ -111,6 +115,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.outputCoordinator = BrokerOutputCoordinator(coordinator)
         self.failureRecoveryCoordinator = BrokerFailureRecoveryCoordinator(coordinator)
         self.teardownRetryDelay = teardownRetryDelay
+        self.outputDeliveryTimeout = outputDeliveryTimeout
         self.terminalView = terminalView
         self.brokerSessionID = existingBrokerSessionID
 
@@ -887,6 +892,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
         guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        let handoffGeneration = activeOutputHandoffGeneration ?? beginOutputHandoff()
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
             read: { [outputCoordinator] id in
@@ -901,7 +907,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onSample: outputSampleHandler(
+                deliveryGeneration: deliveryGeneration,
+                handoffGeneration: handoffGeneration
+            ),
             onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
             onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
@@ -949,6 +958,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
             return
         }
+        let handoffGeneration = beginOutputHandoff()
         outputReadLane.start(
             sessionID: brokerSessionID,
             mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
@@ -964,7 +974,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
-            onSample: outputSampleHandler(deliveryGeneration: deliveryGeneration),
+            onSample: outputSampleHandler(
+                deliveryGeneration: deliveryGeneration,
+                handoffGeneration: handoffGeneration
+            ),
             onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
             onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration)
         )
@@ -985,24 +998,53 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputSampleHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Data) -> Bool {
+    private func outputSampleHandler(
+        deliveryGeneration: UInt,
+        handoffGeneration: UInt
+    ) -> @Sendable (BrokerSessionID, Data) -> Bool {
+        let outputDeliveryTimeout = self.outputDeliveryTimeout
+        let outputDeliveryGate = self.outputDeliveryGate
         return { [weak self] id, data in
+            // Empty polls carry no terminal work or transactional generation.
+            // Accept them on the output lane so an unavailable main actor cannot
+            // turn an otherwise healthy idle session into a delivery failure;
+            // the caller still proceeds to its termination-status check.
+            guard !data.isEmpty else { return true }
             // The serial lane does not perform liveness/exit RPCs until the main
             // actor has consumed this sample, preserving final-byte ordering
             // without making the main actor call the broker.
-            let delivered = DispatchSemaphore(value: 0)
             let acceptance = BrokerOutputDeliveryAcceptance()
+            guard outputDeliveryGate.install(acceptance, generation: handoffGeneration) else {
+                return false
+            }
+            defer { outputDeliveryGate.remove(acceptance) }
             DispatchQueue.main.async { [weak self] in
-                defer { delivered.signal() }
+                defer { acceptance.signalCompletion() }
                 guard let self,
                       self.activeOutputDeliveryGeneration == deliveryGeneration,
                       self.brokerSessionID == id,
                       self.sessionIOReady,
-                      self.sessionFailure == nil else { return }
+                      self.sessionFailure == nil,
+                      acceptance.beginDelivery() else { return }
                 self.handleOutputPumpSample(data, for: id)
-                acceptance.accept()
+                acceptance.finishDelivery()
             }
-            delivered.wait()
+            if acceptance.wait(timeout: outputDeliveryTimeout) == .timedOut,
+               acceptance.cancelIfPending() {
+                DispatchQueue.main.async { [weak self] in
+                    self?.reportSessionFailure(
+                        BrokerOutputDeliveryFailure.timedOut,
+                        for: id,
+                        deliveryGeneration: deliveryGeneration
+                    )
+                }
+                return false
+            }
+            // Once the main actor has claimed the sample it owns completion;
+            // cancellation after that point could replay bytes already rendered.
+            if acceptance.isDelivering {
+                acceptance.wait()
+            }
             return acceptance.wasAccepted
         }
     }
@@ -1196,6 +1238,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func stopOutputPump() {
+        activeOutputHandoffGeneration = nil
+        outputDeliveryGate.close()
         if let brokerSessionID {
             try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
         }
@@ -1306,6 +1350,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func revokeOutputDeliveryOwnership() {
         activeOutputDeliveryGeneration = nil
+        activeOutputHandoffGeneration = nil
+        outputDeliveryGate.close()
+    }
+
+    private func beginOutputHandoff() -> UInt {
+        let generation = outputDeliveryGate.open()
+        activeOutputHandoffGeneration = generation
+        return generation
     }
 
     private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
@@ -1646,16 +1698,128 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     }
 }
 
-private final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
-    private let lock = NSLock()
-    private var accepted = false
+final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
+    private enum State {
+        case pending
+        case delivering
+        case accepted
+        case cancelled
+    }
 
-    func accept() {
-        lock.withLock { accepted = true }
+    private let lock = NSLock()
+    private let completion = DispatchSemaphore(value: 0)
+    private var state = State.pending
+    private var completionSignaled = false
+
+    func beginDelivery() -> Bool {
+        lock.withLock {
+            guard state == .pending else { return false }
+            state = .delivering
+            return true
+        }
+    }
+
+    func finishDelivery() {
+        lock.withLock {
+            if state == .delivering {
+                state = .accepted
+            }
+        }
+    }
+
+    func cancelIfPending() -> Bool {
+        let cancelled = lock.withLock { () -> Bool in
+            guard state == .pending else { return false }
+            state = .cancelled
+            return true
+        }
+        if cancelled { signalCompletion() }
+        return cancelled
+    }
+
+    func signalCompletion() {
+        let shouldSignal = lock.withLock { () -> Bool in
+            guard !completionSignaled else { return false }
+            completionSignaled = true
+            return true
+        }
+        if shouldSignal { completion.signal() }
+    }
+
+    func wait(timeout: TimeInterval) -> DispatchTimeoutResult {
+        completion.wait(timeout: .now() + timeout)
+    }
+
+    func wait() {
+        completion.wait()
+    }
+
+    var isDelivering: Bool {
+        lock.withLock { state == .delivering }
     }
 
     var wasAccepted: Bool {
-        lock.withLock { accepted }
+        lock.withLock { state == .accepted }
+    }
+}
+
+final class BrokerOutputDeliveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextGeneration: UInt = 0
+    private var activeGeneration: UInt?
+    private var current: BrokerOutputDeliveryAcceptance?
+
+    func open() -> UInt {
+        let result = lock.withLock { () -> (generation: UInt, previous: BrokerOutputDeliveryAcceptance?) in
+            nextGeneration &+= 1
+            let previous = current
+            activeGeneration = nextGeneration
+            current = nil
+            return (nextGeneration, previous)
+        }
+        _ = result.previous?.cancelIfPending()
+        return result.generation
+    }
+
+    func install(_ acceptance: BrokerOutputDeliveryAcceptance, generation: UInt) -> Bool {
+        let result = lock.withLock { () -> (installed: Bool, previous: BrokerOutputDeliveryAcceptance?) in
+            guard activeGeneration == generation else { return (false, nil) }
+            let previous = current
+            current = acceptance
+            return (true, previous)
+        }
+        guard result.installed else {
+            _ = acceptance.cancelIfPending()
+            return false
+        }
+        _ = result.previous?.cancelIfPending()
+        return true
+    }
+
+    func remove(_ acceptance: BrokerOutputDeliveryAcceptance) {
+        lock.withLock {
+            if current === acceptance {
+                current = nil
+            }
+        }
+    }
+
+    func close() {
+        let acceptance = lock.withLock { () -> BrokerOutputDeliveryAcceptance? in
+            activeGeneration = nil
+            let acceptance = current
+            current = nil
+            return acceptance
+        }
+        _ = acceptance?.cancelIfPending()
+    }
+}
+
+private enum BrokerOutputDeliveryFailure: Error, CustomStringConvertible {
+    case timedOut
+
+    var description: String {
+        "Broker output delivery to the terminal timed out"
     }
 }
 

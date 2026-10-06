@@ -16,6 +16,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private let resizeRelease = DispatchSemaphore(value: 0)
         private let outputSnapshotEntered = DispatchSemaphore(value: 0)
         private let outputSnapshotRelease = DispatchSemaphore(value: 0)
+        private let outputSnapshotReturned = DispatchSemaphore(value: 0)
         private let inputWriteEntered = DispatchSemaphore(value: 0)
         private let inputWriteRelease = DispatchSemaphore(value: 0)
         private let acknowledgmentRelease = DispatchSemaphore(value: 0)
@@ -31,6 +32,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var shouldBlockResize = false
         private var blockedResizeShouldFail = false
         private var shouldBlockOutputSnapshot = false
+        private var shouldReturnEmptyOutputSnapshot = false
         private var shouldBlockInputWrite = false
         private var blockedInputWriteShouldFail = false
         private var shouldBlockAcknowledgment = false
@@ -86,10 +88,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func finishResize() { resizeRelease.signal() }
 
         func blockOutputSnapshot() { lock.withLock { shouldBlockOutputSnapshot = true } }
+        func returnEmptyOutputSnapshots() { lock.withLock { shouldReturnEmptyOutputSnapshot = true } }
         func waitForOutputSnapshot(timeout: TimeInterval = 1) -> Bool {
             outputSnapshotEntered.wait(timeout: .now() + timeout) == .success
         }
         func finishOutputSnapshot() { outputSnapshotRelease.signal() }
+        func waitForOutputSnapshotReturn(timeout: TimeInterval = 1) -> Bool {
+            outputSnapshotReturned.wait(timeout: .now() + timeout) == .success
+        }
         var acknowledgedOutputGenerations: [UInt64] {
             lock.withLock { storedAcknowledgedOutputGenerations }
         }
@@ -194,13 +200,17 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return Data()
         }
         func snapshotAvailableOutput(_ id: BrokerSessionID) throws -> BrokerOutputSnapshot {
-            let shouldBlock = lock.withLock { () -> Bool in
+            let snapshotConfiguration = lock.withLock { () -> (shouldBlock: Bool, shouldReturnEmpty: Bool) in
                 outputReadCount += 1
-                return shouldBlockOutputSnapshot
+                return (shouldBlockOutputSnapshot, shouldReturnEmptyOutputSnapshot)
             }
-            if shouldBlock {
+            if snapshotConfiguration.shouldBlock {
                 outputSnapshotEntered.signal()
                 _ = outputSnapshotRelease.wait(timeout: .now() + 2)
+            }
+            outputSnapshotReturned.signal()
+            if snapshotConfiguration.shouldReturnEmpty {
+                return BrokerOutputSnapshot(data: Data(), generation: nil)
             }
             return BrokerOutputSnapshot(data: Data("cancelled-before-delivery".utf8), generation: 42)
         }
@@ -1141,6 +1151,98 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
         XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
+    }
+
+    func testOutputDeliveryGateRejectsInstallationAfterClosedGeneration() {
+        let gate = BrokerOutputDeliveryGate()
+        let staleGeneration = gate.open()
+        gate.close()
+
+        let staleAcceptance = BrokerOutputDeliveryAcceptance()
+        XCTAssertFalse(gate.install(staleAcceptance, generation: staleGeneration))
+        XCTAssertEqual(staleAcceptance.wait(timeout: 0), .success)
+        XCTAssertFalse(staleAcceptance.beginDelivery())
+
+        let replacementGeneration = gate.open()
+        let replacementAcceptance = BrokerOutputDeliveryAcceptance()
+        XCTAssertTrue(gate.install(replacementAcceptance, generation: replacementGeneration))
+        XCTAssertTrue(replacementAcceptance.beginDelivery())
+        replacementAcceptance.finishDelivery()
+        replacementAcceptance.signalCompletion()
+        XCTAssertEqual(replacementAcceptance.wait(timeout: 0), .success)
+        XCTAssertTrue(replacementAcceptance.wasAccepted)
+    }
+
+    func testOutputDeliveryTimeoutDoesNotAcknowledgeOrDiscardPendingOutput() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "delivery-timeout",
+            environmentProfile: .shell,
+            coordinator: coordinator,
+            outputDeliveryTimeout: 0.02
+        )
+        defer { terminal.detachBrokerSession() }
+        var failures: [TerminalSessionFailure] = []
+        terminal.setSessionFailureHandler { failures.append($0) }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { terminal.brokerSessionID != nil }
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        coordinator.finishOutputSnapshot()
+        XCTAssertTrue(coordinator.waitForOutputSnapshotReturn())
+        Thread.sleep(forTimeInterval: 0.5)
+        try waitUntil { failures.count == 1 }
+
+        XCTAssertEqual(failures.first?.kind, .failed)
+        XCTAssertTrue(failures.first?.description.contains("output delivery") == true)
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
+        XCTAssertFalse(terminal.lastLines(5).joined(separator: "\n").contains("cancelled-before-delivery"))
+    }
+
+    func testEmptyPollingSnapshotDoesNotTimeOutWhileMainActorIsBusy() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.returnEmptyOutputSnapshots()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "empty-delivery",
+            environmentProfile: .shell,
+            coordinator: coordinator,
+            outputDeliveryTimeout: 0.02
+        )
+        defer { terminal.detachBrokerSession() }
+        var failures: [TerminalSessionFailure] = []
+        terminal.setSessionFailureHandler { failures.append($0) }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { terminal.brokerSessionID != nil }
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        coordinator.finishOutputSnapshot()
+        XCTAssertTrue(coordinator.waitForOutputSnapshotReturn())
+        Thread.sleep(forTimeInterval: 0.5)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(failures.isEmpty)
+        XCTAssertNil(terminal.sessionFailure)
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
     }
 
     func testQueuedOutputDeliveryIsRevokedWhenTeardownWinsMainActor() throws {
