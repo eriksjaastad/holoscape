@@ -47,7 +47,7 @@ final class SessionProfileManagerTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
         let discovery = ProjectDiscoveryService(configService: ConfigService())
-        let profiles = discovery.profilesFromLocalProjectRoot(
+        let profiles = try discovery.profilesFromLocalProjectRoot(
             ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
         )
 
@@ -275,6 +275,65 @@ final class SessionProfileManagerTests: XCTestCase {
         _ = await manager.refreshDiscoveredSessions()
 
         XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsPreservesCacheWhenLocalRootBecomesUnreadable() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-failure-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        try FileManager.default.removeItem(at: root)
+        try Data("not a directory".utf8).write(to: root)
+
+        let projectsAfterFailure = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(projectsAfterFailure.map(\.label), ["holoscape"])
+        XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
+    }
+
+    @MainActor
+    func testRefreshDiscoveredSessionsTreatsReadableEmptyLocalRootAsAuthoritative() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-empty-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("holoscape", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-local-refresh-empty-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.projectDiscovery = ProjectDiscoveryConfig(enabled: true, root: root.path, connection: "local", command: "claude")
+        configService.save(config)
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let initialProjects = await manager.refreshDiscoveredSessions()
+        XCTAssertEqual(initialProjects.map(\.label), ["holoscape"])
+
+        try FileManager.default.removeItem(at: project)
+
+        let projectsAfterEmptyRefresh = await manager.refreshDiscoveredSessions()
+        XCTAssertTrue(projectsAfterEmptyRefresh.isEmpty)
+        XCTAssertTrue(manager.allSessions().discovered.isEmpty)
     }
 
     // MARK: - Resolve

@@ -22,8 +22,12 @@ class ProjectDiscoveryService {
 
         let defaults = config.sshDefaults ?? .default
         if discovery.connection == "local" || defaults.host.isEmpty || defaults.user.isEmpty {
-            cachedProjects = profilesFromLocalProjectRoot(discovery)
-            lastRefresh = Date()
+            do {
+                cachedProjects = try profilesFromLocalProjectRoot(discovery)
+                lastRefresh = Date()
+            } catch {
+                NSLog("ProjectDiscovery: local project root read failed (\(error)). Using cache.")
+            }
             return cachedProjects
         }
 
@@ -42,9 +46,10 @@ class ProjectDiscoveryService {
         }
     }
 
-    /// Force refresh, clearing cache first.
+    /// Force a source refresh while retaining the last successful snapshot if
+    /// the configured source cannot be read. A successful empty result still
+    /// replaces the cache.
     func refresh() async -> [SessionProfile] {
-        cachedProjects = []
         return await discover()
     }
 
@@ -68,9 +73,9 @@ class ProjectDiscoveryService {
         }
     }
 
-    func profilesFromLocalProjectRoot(_ discovery: ProjectDiscoveryConfig) -> [SessionProfile] {
+    func profilesFromLocalProjectRoot(_ discovery: ProjectDiscoveryConfig) throws -> [SessionProfile] {
         let rootURL = URL(fileURLWithPath: (discovery.root as NSString).expandingTildeInPath, isDirectory: true)
-        let directoryNames = localDirectoryNames(in: rootURL)
+        let directoryNames = try localDirectoryNames(in: rootURL)
         return directoryNames.map { dirName in
             SessionProfile(
                 label: dirName,
@@ -81,17 +86,15 @@ class ProjectDiscoveryService {
         }
     }
 
-    private func localDirectoryNames(in rootURL: URL) -> [String] {
-        guard let urls = try? FileManager.default.contentsOfDirectory(
+    private func localDirectoryNames(in rootURL: URL) throws -> [String] {
+        let urls = try FileManager.default.contentsOfDirectory(
             at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
+        )
 
-        return urls.compactMap { url in
-            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
+        return try urls.compactMap { url in
+            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { return nil }
             return url.lastPathComponent
         }.sorted()
     }
