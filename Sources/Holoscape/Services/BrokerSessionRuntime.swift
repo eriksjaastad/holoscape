@@ -30,6 +30,13 @@ protocol BrokerSessionInputInterruptingRuntime {
     func interruptInput(id: BrokerSessionID) throws
 }
 
+/// Optional lifecycle boundary for a process-backed broker runtime. A host must
+/// invoke this while it still owns its broker identity/lock so destruction cannot
+/// make a live owned process undiscoverable before cleanup authority is complete.
+protocol BrokerSessionHostShutdownRuntime {
+    func shutDownBeforeHostExit()
+}
+
 /// Optional launch capability used to prove that the runtime actually injected
 /// the status-owner token into the child process. Older durable broker hosts can
 /// decode the additive request field but return only the legacy `.ok` response;

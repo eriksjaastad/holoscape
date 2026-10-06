@@ -26,6 +26,10 @@ struct BrokerSessionHost {
         self.scheduler = scheduler
     }
 
+    func shutDownRuntimeBeforeExit() {
+        (runtime as? BrokerSessionHostShutdownRuntime)?.shutDownBeforeHostExit()
+    }
+
     func handle(
         _ frame: Data,
         executionIsAllowed: () -> Bool = { true }

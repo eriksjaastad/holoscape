@@ -675,10 +675,10 @@ int holoscape_observe_pty_exit(
 
 int holoscape_reap_pid(pid_t child_pid, int32_t *termination_status) {
     int status;
-    pid_t result;
-    do {
-        result = waitpid(child_pid, &status, 0);
-    } while (result < 0 && errno == EINTR);
+    // Return EINTR to the Swift cleanup owner. It owns the single monotonic
+    // deadline and decides whether another sole-reap attempt is still allowed;
+    // retrying here would invisibly extend that deadline.
+    pid_t result = waitpid(child_pid, &status, 0);
     if (result < 0) {
         return errno;
     }

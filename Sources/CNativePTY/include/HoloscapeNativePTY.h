@@ -25,6 +25,8 @@ int holoscape_observe_pty_exit(
     pid_t *foreground_process_group_id
 );
 
+// Performs one waitpid attempt. EINTR is returned to the caller so its
+// authoritative monotonic deadline controls any retry.
 int holoscape_reap_pid(pid_t child_pid, int32_t *termination_status);
 
 int holoscape_process_exit_observed(pid_t child_pid);

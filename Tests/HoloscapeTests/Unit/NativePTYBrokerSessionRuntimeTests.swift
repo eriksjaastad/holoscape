@@ -132,16 +132,17 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     }
 
     func testDescriptorSetupFailureReportsProcessGroupCleanupFailure() throws {
-        let signaler = FailFirstProcessGroupSignaler()
-        let runtime = NativePTYBrokerSessionRuntime(
+        let signaler = SequencedProcessGroupSignaler(failures: [EPERM])
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
             inputDescriptorDuplicator: { _ in (-1, EMFILE) },
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
             processGroupSignal: signaler.signal
         )
         let id = BrokerSessionID(rawValue: "native-pty-setup-cleanup-failure")
-        defer { signaler.forceCleanup() }
 
         XCTAssertThrowsError(
-            try runtime.createSession(
+            try runtime?.createSession(
                 id: id,
                 request: BrokerSessionLaunchRequest(
                     command: "/bin/cat",
@@ -158,6 +159,14 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             XCTAssertTrue(reason.contains("input duplication failed"), reason)
             XCTAssertTrue(reason.contains("cleanup remains retryable"), reason)
         }
+
+        runtime = nil
+
+        XCTAssertGreaterThanOrEqual(
+            signaler.callCount,
+            2,
+            "Runtime deinit must consume the retained failed-launch cleanup authority"
+        )
     }
 
     func testDescriptorSetupFailureSynchronouslyReapsSpawnedLeader() throws {
@@ -313,16 +322,20 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
     func testDeinitConvergesRetainedLaunchCleanupAfterPersistentTransientExitObservation() throws {
         let observer = PersistentTransientExitObserver()
-        let signaler = FailFirstProcessGroupSignaler()
+        let signaler = SequencedProcessGroupSignaler(failures: [EPERM])
         var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
             inputDescriptorDuplicator: { _ in (-1, EMFILE) },
             childProcessWaiter: observer.wait,
             childProcessReaper: observer.reap,
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
             processGroupSignal: signaler.signal
         )
         let id = BrokerSessionID(rawValue: "native-pty-persistent-transient-deinit")
         defer {
-            signaler.forceCleanup()
+            if let leaderPID = signaler.lastProcessGroupID {
+                signaler.forceCleanupAndReapLeader(leaderPID)
+            }
             observer.forceCleanup()
         }
 
@@ -362,8 +375,12 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     func testDeinitCleansNormalLiveSessionAndReleasesDescriptors() throws {
         let descriptorCountBefore = openFileDescriptorCount()
         let closer = TrackingInputDescriptorCloser()
+        let signaler = SequencedProcessGroupSignaler(failures: [])
         var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
-            inputDescriptorCloser: closer.close
+            inputDescriptorCloser: closer.close,
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
         )
         let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit")
         let pids = try createSIGTERMResistantSession(runtime: try XCTUnwrap(runtime), id: id)
@@ -386,6 +403,163 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             descriptorCountBefore,
             "runtime deinit must release both owned PTY descriptors"
         )
+    }
+
+    func testDeinitRetriesFirstSignalFailureForNormalLiveSession() throws {
+        let descriptorCountBefore = openFileDescriptorCount()
+        let closer = TrackingInputDescriptorCloser()
+        let signaler = SequencedProcessGroupSignaler(failures: [EAGAIN])
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            inputDescriptorCloser: closer.close,
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit-signal-retry")
+        let pids = try createSIGTERMResistantSession(runtime: try XCTUnwrap(runtime), id: id)
+        defer { signaler.forceCleanupAndReapLeader(pids.root) }
+
+        XCTAssertEqual(signaler.callCount, 0, "The injected failure must be reserved for deinit")
+
+        runtime = nil
+
+        XCTAssertGreaterThanOrEqual(signaler.callCount, 2, "Deinit must retry its transient first signal failure")
+        XCTAssertTrue(waitForProcessToExit(pids.root), "runtime deinit left root PID \(pids.root) live or unreaped")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "runtime deinit left same-session child PID \(pids.child) live")
+        XCTAssertEqual(closer.attemptCount, 1, "runtime deinit must close the input descriptor exactly once")
+        XCTAssertEqual(openFileDescriptorCount(), descriptorCountBefore)
+    }
+
+    func testDeinitRetriesTransientEnumerationFailuresForNormalLiveSession() throws {
+        let signaler = SequencedProcessGroupSignaler(
+            failures: [],
+            enumerationFailures: [EAGAIN, EINTR]
+        )
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit-enumeration-retry")
+        let pids = try createSIGTERMResistantSession(runtime: try XCTUnwrap(runtime), id: id)
+        defer { signaler.forceCleanupAndReapLeader(pids.root) }
+
+        XCTAssertEqual(signaler.enumerationCallCount, 0, "The injected failures must be reserved for deinit")
+
+        runtime = nil
+
+        XCTAssertGreaterThanOrEqual(
+            signaler.enumerationCallCount,
+            4,
+            "Deinit must retry transient enumeration failures before signaling and validating absence"
+        )
+        XCTAssertTrue(waitForProcessToExit(pids.root), "runtime deinit left root PID \(pids.root) live or unreaped")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "runtime deinit left same-session child PID \(pids.child) live")
+    }
+
+    func testDeinitRetainsAuthorityAcrossHardEnumerationFailureBeforeRecovery() throws {
+        let signaler = SequencedProcessGroupSignaler(
+            failures: [],
+            enumerationFailures: [EIO]
+        )
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit-hard-enumeration")
+        let pids = try createSIGTERMResistantSession(runtime: try XCTUnwrap(runtime), id: id)
+        defer { signaler.forceCleanupAndReapLeader(pids.root) }
+        let startedAt = Date()
+
+        runtime = nil
+
+        XCTAssertGreaterThanOrEqual(
+            Date().timeIntervalSince(startedAt),
+            0.09,
+            "A hard error must end the authoritative pass and enter backed-off fail-closed recovery"
+        )
+        XCTAssertGreaterThanOrEqual(
+            signaler.enumerationCallCount,
+            3,
+            "A later bounded recovery pass must re-enumerate before releasing authority"
+        )
+        XCTAssertTrue(waitForProcessToExit(pids.root), "runtime deinit left root PID \(pids.root) live or unreaped")
+        XCTAssertTrue(waitForProcessToExit(pids.child), "runtime deinit left same-session child PID \(pids.child) live")
+    }
+
+    func testDeinitRetriesSignalFailureInjectedAfterRetainedLaunchFailure() throws {
+        let signaler = SequencedProcessGroupSignaler(failures: [EIO, EAGAIN])
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            inputDescriptorDuplicator: { _ in (-1, EMFILE) },
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-retained-launch-deinit-signal-retry")
+
+        XCTAssertThrowsError(
+            try runtime?.createSession(
+                id: id,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/cat",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+        ) { error in
+            guard case .launchCleanupPending = error as? NativePTYBrokerSessionRuntime.RuntimeError else {
+                return XCTFail("Expected retained launch cleanup authority, got \(error)")
+            }
+        }
+        let leaderPID = try XCTUnwrap(signaler.lastProcessGroupID)
+        defer { signaler.forceCleanupAndReapLeader(leaderPID) }
+        XCTAssertEqual(signaler.callCount, 1, "Launch setup must consume only the pre-deinit failure")
+
+        runtime = nil
+
+        XCTAssertGreaterThanOrEqual(
+            signaler.callCount,
+            3,
+            "The failure injected into deinit's first signal attempt must be retried"
+        )
+        XCTAssertTrue(
+            waitForProcessToExit(leaderPID),
+            "retained failed-launch leader \(leaderPID) survived runtime deinit"
+        )
+    }
+
+    func testDeinitRetriesTransientReapUntilSingleSuccessfulReap() throws {
+        let observer = FailFirstReapsObserver(failures: [EINTR, EAGAIN])
+        let signaler = SequencedProcessGroupSignaler(failures: [])
+        var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
+            installsOutputReadabilityHandler: false,
+            childProcessWaiter: observer.wait,
+            childProcessReaper: observer.reap,
+            processGroupEnumerator: signaler.enumerate,
+            processGroupValidator: signaler.validate,
+            processGroupSignal: signaler.signal
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-live-session-deinit-reap-retry")
+        try runtime?.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        let leaderPID = try XCTUnwrap(observer.waitForChildPID())
+        defer { observer.forceCleanup() }
+
+        runtime = nil
+
+        XCTAssertEqual(observer.reapAttemptCount, 3, "Deinit must retain sole reap authority across transients")
+        XCTAssertEqual(observer.successfulReapCount, 1, "The leader must be reaped exactly once")
+        XCTAssertTrue(waitForProcessToExit(leaderPID), "runtime deinit left leader \(leaderPID) live or unreaped")
+        XCTAssertTrue(observer.masterDescriptorIsClosed, "cleanup must close the retained PTY master")
     }
 
     func testExplicitTeardownConvergesPersistentTransientObservationAndSameSessionProcesses() throws {
@@ -3167,6 +3341,163 @@ private final class PersistentTransientExitObserver: @unchecked Sendable {
             if !condition.wait(until: deadline) { break }
         }
         return predicate()
+    }
+}
+
+private final class FailFirstReapsObserver: @unchecked Sendable {
+    private let lock = NSLock()
+    private let childObserved = DispatchSemaphore(value: 0)
+    private var failures: [Int32]
+    private var storedChildPID: pid_t?
+    private var storedMasterDescriptor: Int32?
+    private var storedReapAttemptCount = 0
+    private var storedSuccessfulReapCount = 0
+
+    init(failures: [Int32]) {
+        self.failures = failures
+    }
+
+    var childPID: pid_t? {
+        lock.withLock { storedChildPID }
+    }
+
+    var reapAttemptCount: Int {
+        lock.withLock { storedReapAttemptCount }
+    }
+
+    var successfulReapCount: Int {
+        lock.withLock { storedSuccessfulReapCount }
+    }
+
+    var masterDescriptorIsClosed: Bool {
+        guard let descriptor = lock.withLock({ storedMasterDescriptor }) else { return false }
+        return fcntl(descriptor, F_GETFD) == -1 && errno == EBADF
+    }
+
+    func wait(
+        _ processIdentifier: pid_t,
+        _ sessionID: pid_t,
+        _ masterDescriptor: Int32
+    ) -> NativePTYChildProcess.TerminationObservation {
+        let firstObservation = lock.withLock { () -> Bool in
+            let firstObservation = storedChildPID == nil
+            storedChildPID = processIdentifier
+            storedMasterDescriptor = masterDescriptor
+            return firstObservation
+        }
+        if firstObservation { childObserved.signal() }
+        var foregroundProcessGroupID: pid_t = 0
+        let waitError = holoscape_observe_pty_exit(
+            processIdentifier,
+            sessionID,
+            masterDescriptor,
+            &foregroundProcessGroupID
+        )
+        return NativePTYChildProcess.TerminationObservation(
+            status: nil,
+            waitError: waitError == 0 ? nil : waitError,
+            foregroundProcessGroupID: foregroundProcessGroupID > 0 ? foregroundProcessGroupID : nil
+        )
+    }
+
+    func waitForChildPID() -> pid_t? {
+        if let childPID { return childPID }
+        guard childObserved.wait(timeout: .now() + 1) == .success else { return nil }
+        return childPID
+    }
+
+    func reap(_ processIdentifier: pid_t) -> NativePTYChildProcess.TerminationObservation {
+        let failure = lock.withLock { () -> Int32? in
+            storedReapAttemptCount += 1
+            return failures.isEmpty ? nil : failures.removeFirst()
+        }
+        if let failure {
+            return NativePTYChildProcess.TerminationObservation(
+                status: nil,
+                waitError: failure,
+                foregroundProcessGroupID: nil
+            )
+        }
+        var observedStatus: Int32 = 0
+        let waitError = holoscape_reap_pid(processIdentifier, &observedStatus)
+        if waitError == 0 {
+            lock.withLock { storedSuccessfulReapCount += 1 }
+        }
+        return NativePTYChildProcess.TerminationObservation(
+            status: waitError == 0 ? observedStatus : nil,
+            waitError: waitError == 0 ? nil : waitError,
+            foregroundProcessGroupID: nil
+        )
+    }
+
+    func forceCleanup() {
+        guard let childPID else { return }
+        _ = Darwin.kill(-childPID, SIGKILL)
+        _ = Darwin.kill(childPID, SIGKILL)
+        var status: Int32 = 0
+        _ = waitpid(childPID, &status, WNOHANG)
+    }
+}
+
+private final class SequencedProcessGroupSignaler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [Int32]
+    private var enumerationFailures: [Int32]
+    private var storedCallCount = 0
+    private var storedEnumerationCallCount = 0
+    private var storedLastProcessGroupID: pid_t?
+    private var cleanupSignalDelivered = false
+
+    init(failures: [Int32], enumerationFailures: [Int32] = []) {
+        self.failures = failures
+        self.enumerationFailures = enumerationFailures
+    }
+
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    var lastProcessGroupID: pid_t? {
+        lock.withLock { storedLastProcessGroupID }
+    }
+
+    var enumerationCallCount: Int {
+        lock.withLock { storedEnumerationCallCount }
+    }
+
+    func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
+        let failure = lock.withLock { () -> Int32? in
+            storedCallCount += 1
+            storedLastProcessGroupID = processGroupID
+            return failures.isEmpty ? nil : failures.removeFirst()
+        }
+        if let failure { return failure }
+        let result = Darwin.kill(-processGroupID, signal) == 0 ? 0 : errno
+        if result == 0, signal == SIGKILL {
+            lock.withLock { cleanupSignalDelivered = true }
+        }
+        return result
+    }
+
+    func enumerate(_ sessionID: pid_t) -> (groups: [pid_t], error: Int32?) {
+        lock.withLock {
+            storedEnumerationCallCount += 1
+            if !enumerationFailures.isEmpty {
+                return ([], enumerationFailures.removeFirst())
+            }
+            return cleanupSignalDelivered ? ([], nil) : ([sessionID], nil)
+        }
+    }
+
+    func validate(_ processGroupID: pid_t, _ sessionID: pid_t) -> Int32 {
+        processGroupID == sessionID ? 1 : -EPROTO
+    }
+
+    func forceCleanupAndReapLeader(_ leaderPID: pid_t) {
+        _ = Darwin.kill(-leaderPID, SIGKILL)
+        _ = Darwin.kill(leaderPID, SIGKILL)
+        var status: Int32 = 0
+        _ = waitpid(leaderPID, &status, WNOHANG)
     }
 }
 

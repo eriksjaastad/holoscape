@@ -17,6 +17,8 @@ final class NativePTYChildProcess: @unchecked Sendable {
     typealias Reaper = @Sendable (pid_t) -> TerminationObservation
     typealias TerminationHandler = @Sendable (NativePTYChildProcess) -> Void
     typealias LifecycleWillPublish = @Sendable () -> Void
+    typealias ProcessGroupEnumerator = @Sendable (pid_t) -> (groups: [pid_t], error: Int32?)
+    typealias ProcessGroupValidator = @Sendable (pid_t, pid_t) -> Int32
 
     let processIdentifier: pid_t
     let processGroupID: pid_t
@@ -38,6 +40,8 @@ final class NativePTYChildProcess: @unchecked Sendable {
     private let waiter: Waiter
     private let reaper: Reaper
     private let lifecycleWillPublish: LifecycleWillPublish
+    private let processGroupEnumerator: ProcessGroupEnumerator
+    private let processGroupValidator: ProcessGroupValidator
     private static let exitObservationRetryDelayMicroseconds: useconds_t = 10_000
 
     var isRunning: Bool {
@@ -77,7 +81,9 @@ final class NativePTYChildProcess: @unchecked Sendable {
         masterDescriptor: Int32,
         waiter: @escaping Waiter,
         reaper: @escaping Reaper,
-        lifecycleWillPublish: @escaping LifecycleWillPublish
+        lifecycleWillPublish: @escaping LifecycleWillPublish,
+        processGroupEnumerator: @escaping ProcessGroupEnumerator,
+        processGroupValidator: @escaping ProcessGroupValidator
     ) {
         self.processIdentifier = processIdentifier
         self.processGroupID = processGroupID
@@ -85,6 +91,8 @@ final class NativePTYChildProcess: @unchecked Sendable {
         self.waiter = waiter
         self.reaper = reaper
         self.lifecycleWillPublish = lifecycleWillPublish
+        self.processGroupEnumerator = processGroupEnumerator
+        self.processGroupValidator = processGroupValidator
     }
 
     func startWaiting(
@@ -135,7 +143,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
             if observation.waitError == nil || shouldForceCleanup {
                 finalObservation = finishExitCleanup(
                     signalProcessGroup: signalProcessGroup,
-                    cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
+                    deadline: Self.cleanupDeadline(after: cleanupTimeoutMilliseconds)
                 )
             } else {
                 finalObservation = observation
@@ -189,30 +197,75 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     func retryExitCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-        cleanupTimeoutMilliseconds: Int
+        deadline: DispatchTime
     ) -> TerminationObservation {
         guard cleanupIsAuthorized, !lock.withLock({ cleanupComplete }) else {
             return terminationObservation
         }
         let observation = finishExitCleanup(
             signalProcessGroup: signalProcessGroup,
-            cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
+            deadline: deadline
         )
         return observation
     }
 
-    private func finishExitCleanup(
+    func forceCleanup(
         signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-        cleanupTimeoutMilliseconds: Int
+        deadline: DispatchTime
     ) -> TerminationObservation {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         if lock.withLock({ cleanupComplete }) { return terminationObservation }
 
+        var lastSignalError: Int32?
+        while DispatchTime.now() < deadline {
+            let signalError = signalLiveSessionProcessGroups(
+                SIGKILL,
+                signalProcessGroup: signalProcessGroup
+            )
+            if signalError == 0 {
+                requestForcedCleanup()
+                return finishExitCleanupLocked(
+                    signalProcessGroup: signalProcessGroup,
+                    deadline: deadline
+                )
+            }
+            lastSignalError = signalError
+            guard Self.isTransientCleanupError(signalError),
+                  Self.waitForCleanupRetry(until: deadline) else { break }
+        }
+
+        let observation = TerminationObservation(
+            status: nil,
+            waitError: lastSignalError ?? ETIMEDOUT,
+            foregroundProcessGroupID: lock.withLock { retainedForegroundProcessGroupID }
+        )
+        publishStoppedLifecycle(observation, cleanupCompleted: false)
+        return observation
+    }
+
+    private func finishExitCleanup(
+        signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
+        deadline: DispatchTime
+    ) -> TerminationObservation {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return finishExitCleanupLocked(
+            signalProcessGroup: signalProcessGroup,
+            deadline: deadline
+        )
+    }
+
+    private func finishExitCleanupLocked(
+        signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
+        deadline: DispatchTime
+    ) -> TerminationObservation {
+        if lock.withLock({ cleanupComplete }) { return terminationObservation }
+
         let foreground = lock.withLock { retainedForegroundProcessGroupID }
         if let barrierError = killLiveSessionProcessGroupsUntilExit(
             signalProcessGroup: signalProcessGroup,
-            timeoutMilliseconds: cleanupTimeoutMilliseconds
+            deadline: deadline
         ) {
             let observation = TerminationObservation(
                 status: nil,
@@ -223,15 +276,20 @@ final class NativePTYChildProcess: @unchecked Sendable {
             return observation
         }
 
-        let reaped = reaper(processIdentifier)
-        guard reaped.waitError == nil else {
-            let observation = TerminationObservation(
-                status: nil,
-                waitError: reaped.waitError,
-                foregroundProcessGroupID: foreground
-            )
-            publishStoppedLifecycle(observation, cleanupCompleted: false)
-            return observation
+        var reaped: TerminationObservation
+        while true {
+            reaped = reaper(processIdentifier)
+            guard let reapError = reaped.waitError else { break }
+            guard (reapError == EAGAIN || reapError == EINTR),
+                  Self.waitForCleanupRetry(until: deadline) else {
+                let observation = TerminationObservation(
+                    status: nil,
+                    waitError: reapError,
+                    foregroundProcessGroupID: foreground
+                )
+                publishStoppedLifecycle(observation, cleanupCompleted: false)
+                return observation
+            }
         }
         let shouldCloseMaster = lock.withLock { () -> Bool in
             guard ownsMasterDescriptor, !masterDescriptorClosed else { return false }
@@ -248,6 +306,22 @@ final class NativePTYChildProcess: @unchecked Sendable {
         )
         publishStoppedLifecycle(observation, cleanupCompleted: true)
         return observation
+    }
+
+    private static func cleanupDeadline(after timeoutMilliseconds: Int) -> DispatchTime {
+        .now() + .milliseconds(max(1, timeoutMilliseconds))
+    }
+
+    fileprivate static func waitForCleanupRetry(until deadline: DispatchTime) -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline.uptimeNanoseconds > now else { return false }
+        let remainingMicroseconds = (deadline.uptimeNanoseconds - now) / 1_000
+        usleep(useconds_t(min(UInt64(exitObservationRetryDelayMicroseconds), remainingMicroseconds)))
+        return DispatchTime.now() < deadline
+    }
+
+    private static func isTransientCleanupError(_ error: Int32) -> Bool {
+        error == EAGAIN || error == EINTR
     }
 
     private func publishStoppedLifecycle(
@@ -268,17 +342,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
     }
 
     private func copyLiveSessionProcessGroups() -> (groups: [pid_t], error: Int32?) {
-        var pointer: UnsafeMutablePointer<pid_t>?
-        var count = 0
-        let copyError = holoscape_copy_live_session_process_groups(
-            processIdentifier,
-            &pointer,
-            &count
-        )
-        defer { holoscape_free_process_group_ids(pointer) }
-        guard copyError == 0 else { return ([], copyError) }
-        guard let pointer, count > 0 else { return ([], nil) }
-        return (Array(UnsafeBufferPointer(start: pointer, count: count)), nil)
+        processGroupEnumerator(processIdentifier)
     }
 
     private func signalLiveSessionProcessGroups(
@@ -303,10 +367,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
             // The unreaped session leader keeps the session identifier from being
             // reused. Revalidate each enumerated group immediately before signaling
             // so a disappeared/reused PGID is never trusted from a stale snapshot.
-            let validation = holoscape_validate_process_group_session(
-                processGroupID,
-                processIdentifier
-            )
+            let validation = processGroupValidator(processGroupID, processIdentifier)
             if validation < 0 { return -validation }
             if validation == 0 { continue }
             let signalError = signalProcessGroup(processGroupID, signal)
@@ -317,23 +378,32 @@ final class NativePTYChildProcess: @unchecked Sendable {
 
     private func killLiveSessionProcessGroupsUntilExit(
         signalProcessGroup: @Sendable (pid_t, Int32) -> Int32,
-        timeoutMilliseconds: Int
+        deadline: DispatchTime
     ) -> Int32? {
-        let deadline = DispatchTime.now() + .milliseconds(timeoutMilliseconds)
+        var lastTransientError: Int32?
         while true {
             let snapshot = copyLiveSessionProcessGroups()
-            if let snapshotError = snapshot.error { return snapshotError }
-            if snapshot.groups.isEmpty { return nil }
-            let signalError = signalValidatedProcessGroups(
-                snapshot.groups,
-                signal: SIGKILL,
-                signalProcessGroup: signalProcessGroup
-            )
-            if signalError != 0 { return signalError }
-            if DispatchTime.now() >= deadline {
-                return ETIMEDOUT
+            if let snapshotError = snapshot.error {
+                guard Self.isTransientCleanupError(snapshotError) else { return snapshotError }
+                lastTransientError = snapshotError
+            } else if snapshot.groups.isEmpty {
+                return nil
+            } else {
+                let signalError = signalValidatedProcessGroups(
+                    snapshot.groups,
+                    signal: SIGKILL,
+                    signalProcessGroup: signalProcessGroup
+                )
+                if signalError == 0 {
+                    lastTransientError = nil
+                } else {
+                    guard Self.isTransientCleanupError(signalError) else { return signalError }
+                    lastTransientError = signalError
+                }
             }
-            usleep(10_000)
+            guard Self.waitForCleanupRetry(until: deadline) else {
+                return lastTransientError ?? ETIMEDOUT
+            }
         }
     }
 
@@ -345,7 +415,9 @@ final class NativePTYChildProcess: @unchecked Sendable {
         size: TerminalGridSize,
         waiter: @escaping Waiter,
         reaper: @escaping Reaper,
-        lifecycleWillPublish: @escaping LifecycleWillPublish
+        lifecycleWillPublish: @escaping LifecycleWillPublish,
+        processGroupEnumerator: @escaping ProcessGroupEnumerator,
+        processGroupValidator: @escaping ProcessGroupValidator
     ) throws -> (process: NativePTYChildProcess, processGroupID: pid_t, masterDescriptor: Int32) {
         let argumentPointers = ([executable] + arguments).map { strdup($0) } + [nil]
         let environmentPointers = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -385,7 +457,9 @@ final class NativePTYChildProcess: @unchecked Sendable {
                     masterDescriptor: masterDescriptor,
                     waiter: waiter,
                     reaper: reaper,
-                    lifecycleWillPublish: lifecycleWillPublish
+                    lifecycleWillPublish: lifecycleWillPublish,
+                    processGroupEnumerator: processGroupEnumerator,
+                    processGroupValidator: processGroupValidator
                 )
             } else {
                 retainedProcess = nil
@@ -403,7 +477,9 @@ final class NativePTYChildProcess: @unchecked Sendable {
                 masterDescriptor: masterDescriptor,
                 waiter: waiter,
                 reaper: reaper,
-                lifecycleWillPublish: lifecycleWillPublish
+                lifecycleWillPublish: lifecycleWillPublish,
+                processGroupEnumerator: processGroupEnumerator,
+                processGroupValidator: processGroupValidator
             ),
             processGroupID,
             masterDescriptor
@@ -417,7 +493,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionHostShutdownRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum InputDescriptorCloseResult: Equatable, Sendable {
         case closed
         case closedWithWarning(Int32)
@@ -1280,8 +1356,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         func cleanUpAfterRuntimeDeinit(
             signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Int32,
-            cleanupTimeoutMilliseconds: Int
-        ) {
+            deadline: DispatchTime
+        ) -> Bool {
             do {
                 try closeInput()
             } catch {
@@ -1295,24 +1371,22 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
             withTerminationLock {
                 if !process.cleanupIsComplete {
-                    let signalError = process.signalOwnedProcessGroups(
-                        SIGKILL,
-                        signalProcessGroup: signalProcessGroup
+                    let observation = process.forceCleanup(
+                        signalProcessGroup: signalProcessGroup,
+                        deadline: deadline
                     )
-                    if signalError != 0, signalError != ESRCH {
-                        NSLog(
-                            "Native PTY process cleanup signal failed for \(id.rawValue): "
-                                + String(cString: strerror(signalError))
-                        )
-                    }
-                    waitForProcessCleanup(timeoutMilliseconds: cleanupTimeoutMilliseconds)
-                    if !process.cleanupIsComplete, !process.isRunning {
-                        let observation = process.retryExitCleanup(
-                            signalProcessGroup: signalProcessGroup,
-                            cleanupTimeoutMilliseconds: cleanupTimeoutMilliseconds
-                        )
-                        updateProcessCleanupObservation(observation)
-                    }
+                    updateProcessCleanupObservation(observation)
+                }
+            }
+
+            guard process.cleanupIsComplete else { return false }
+
+            while inputDescriptorOwnershipIsRetained() {
+                guard NativePTYChildProcess.waitForCleanupRetry(until: deadline) else { return false }
+                do {
+                    try closeInput()
+                } catch {
+                    NSLog("Native PTY input descriptor cleanup retry failed for \(id.rawValue): \(error)")
                 }
             }
 
@@ -1324,17 +1398,13 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             }
             masterHandle.closeFile()
             setOutputAvailabilityHandler(nil)
-        }
-
-        private func waitForProcessCleanup(timeoutMilliseconds: Int) {
-            let deadline = DispatchTime.now() + .milliseconds(timeoutMilliseconds)
-            while !process.cleanupIsComplete, DispatchTime.now() < deadline {
-                usleep(10_000)
-            }
+            return true
         }
     }
 
     private let lock = NSLock()
+    private let shutdownLock = NSLock()
+    private var shutdownComplete = false
     private var sessions: [BrokerSessionID: Session] = [:]
     private final class RetainedLaunchCleanup {
         let process: NativePTYChildProcess
@@ -1351,6 +1421,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let childProcessWaiter: NativePTYChildProcess.Waiter
     private let childProcessReaper: NativePTYChildProcess.Reaper
     private let childProcessLifecycleWillPublish: NativePTYChildProcess.LifecycleWillPublish
+    private let processGroupEnumerator: NativePTYChildProcess.ProcessGroupEnumerator
+    private let processGroupValidator: NativePTYChildProcess.ProcessGroupValidator
     private let processGroupSignal: @Sendable (pid_t, Int32) -> Int32
     private let processGroupLookup: @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?)
     private let inputWriteTimeoutMilliseconds: Int32
@@ -1407,6 +1479,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
         },
         childProcessLifecycleWillPublish: @escaping NativePTYChildProcess.LifecycleWillPublish = {},
+        processGroupEnumerator: @escaping NativePTYChildProcess.ProcessGroupEnumerator = { sessionID in
+            var pointer: UnsafeMutablePointer<pid_t>?
+            var count = 0
+            let copyError = holoscape_copy_live_session_process_groups(sessionID, &pointer, &count)
+            defer { holoscape_free_process_group_ids(pointer) }
+            guard copyError == 0 else { return ([], copyError) }
+            guard let pointer, count > 0 else { return ([], nil) }
+            return (Array(UnsafeBufferPointer(start: pointer, count: count)), nil)
+        },
+        processGroupValidator: @escaping NativePTYChildProcess.ProcessGroupValidator = {
+            holoscape_validate_process_group_session($0, $1)
+        },
         processGroupLookup: @escaping @Sendable (pid_t) -> (processGroupID: pid_t, errno: Int32?) = {
             ($0, nil)
         },
@@ -1434,6 +1518,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.childProcessWaiter = childProcessWaiter
         self.childProcessReaper = childProcessReaper
         self.childProcessLifecycleWillPublish = childProcessLifecycleWillPublish
+        self.processGroupEnumerator = processGroupEnumerator
+        self.processGroupValidator = processGroupValidator
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.processGroupLookup = processGroupLookup
@@ -1441,47 +1527,98 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     }
 
     deinit {
-        retainedLaunchFailureInputDescriptors.forEach { _ = Darwin.close($0) }
+        shutDownOwnedProcesses(retryUntilComplete: false)
+    }
+
+    func shutDownBeforeHostExit() {
+        shutDownOwnedProcesses(retryUntilComplete: true)
+    }
+
+    private func shutDownOwnedProcesses(retryUntilComplete: Bool) {
+        shutdownLock.lock()
+        defer { shutdownLock.unlock() }
+        guard !shutdownComplete else { return }
+
         let ownedSessions = Array(sessions.values)
         let retainedProcesses = retainedLaunchCleanups.values.map(\.process)
         let signalProcessGroup = processGroupSignal
-        let cleanupGroup = DispatchGroup()
+        var reportedDeadlineFailure = false
+        var remainingRecoveryPasses = retryUntilComplete ? Int.max : 1
 
-        for session in ownedSessions {
-            cleanupGroup.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                defer { cleanupGroup.leave() }
-                session.cleanUpAfterRuntimeDeinit(
-                    signalProcessGroup: signalProcessGroup,
-                    cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
-                )
-            }
-        }
-        for process in retainedProcesses {
-            cleanupGroup.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                defer { cleanupGroup.leave() }
-                _ = process.signalOwnedProcessGroups(
-                    SIGKILL,
-                    signalProcessGroup: signalProcessGroup
-                )
-                Self.waitForCleanupCompletion(
-                    of: process,
-                    timeoutMilliseconds: Self.terminationGracePeriodMilliseconds
-                )
-                if !process.cleanupIsComplete, !process.isRunning {
-                    _ = process.retryExitCleanup(
+        while true {
+            retryRetainedLaunchFailureInputDescriptorClosures()
+            let cleanupGroup = DispatchGroup()
+            let deadline = DispatchTime.now() + .milliseconds(
+                Self.terminationGracePeriodMilliseconds + outputCleanupTimeoutMilliseconds * 2
+            )
+
+            for session in ownedSessions {
+                cleanupGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { cleanupGroup.leave() }
+                    _ = session.cleanUpAfterRuntimeDeinit(
                         signalProcessGroup: signalProcessGroup,
-                        cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
+                        deadline: deadline
                     )
                 }
             }
+            for process in retainedProcesses {
+                cleanupGroup.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { cleanupGroup.leave() }
+                    _ = process.forceCleanup(
+                        signalProcessGroup: signalProcessGroup,
+                        deadline: deadline
+                    )
+                }
+            }
+            cleanupGroup.wait()
+            let cleanupSucceeded = retainedLaunchFailureInputDescriptors.isEmpty
+                && ownedSessions.allSatisfy {
+                    $0.process.cleanupIsComplete && !$0.inputDescriptorOwnershipIsRetained()
+                }
+                && retainedProcesses.allSatisfy(\.cleanupIsComplete)
+            if cleanupSucceeded {
+                shutdownComplete = true
+                return
+            }
+
+            if !reportedDeadlineFailure {
+                let sessionFailures = ownedSessions.compactMap { session -> String? in
+                    guard !session.process.cleanupIsComplete
+                            || session.inputDescriptorOwnershipIsRetained() else { return nil }
+                    let error = session.process.terminationObservation.waitError
+                        .map { String(cString: strerror($0)) } ?? "descriptor ownership retained"
+                    return "\(session.id.rawValue): \(error)"
+                }
+                let retainedFailures = retainedProcesses.compactMap { process -> String? in
+                    guard !process.cleanupIsComplete else { return nil }
+                    let error = process.terminationObservation.waitError
+                        .map { String(cString: strerror($0)) } ?? "cleanup incomplete"
+                    return "pid \(process.processIdentifier): \(error)"
+                }
+                let failures = sessionFailures + retainedFailures
+                let mode = retryUntilComplete
+                    ? "retaining broker identity and cleanup authority until recovery succeeds"
+                    : "retrying one final bounded recovery pass before runtime release outside the broker-host boundary"
+                NSLog(
+                    "Native PTY runtime shutdown reached its cleanup deadline; \(mode). "
+                        + "Incomplete cleanup: \(failures.joined(separator: ", ")); "
+                        + "retained input descriptors: \(retainedLaunchFailureInputDescriptors.count)"
+                )
+                reportedDeadlineFailure = true
+            }
+
+            guard remainingRecoveryPasses > 0 else { return }
+            if remainingRecoveryPasses != Int.max {
+                remainingRecoveryPasses -= 1
+            }
+
+            // Back off before the next bounded pass. At the broker-host boundary
+            // the socket/lock remains authoritative and recovery continues until
+            // every owned resource is complete.
+            usleep(100_000)
         }
-        _ = cleanupGroup.wait(
-            timeout: .now() + .milliseconds(
-                Self.terminationGracePeriodMilliseconds + outputCleanupTimeoutMilliseconds * 2
-            )
-        )
     }
 
     func listSessions() throws -> [BrokerSessionID] {
@@ -1525,7 +1662,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 size: request.initialSize,
                 waiter: childProcessWaiter,
                 reaper: childProcessReaper,
-                lifecycleWillPublish: childProcessLifecycleWillPublish
+                lifecycleWillPublish: childProcessLifecycleWillPublish,
+                processGroupEnumerator: processGroupEnumerator,
+                processGroupValidator: processGroupValidator
             )
         } catch let failure as NativePTYChildProcess.LaunchFailure {
             if let process = failure.process {
@@ -2050,7 +2189,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if !process.cleanupIsComplete, !process.isRunning {
             _ = process.retryExitCleanup(
                 signalProcessGroup: processGroupSignal,
-                cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
+                deadline: .now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
             )
         }
         guard process.cleanupIsComplete else {
@@ -2080,7 +2219,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if !retained.process.cleanupIsComplete, !retained.process.isRunning {
             _ = retained.process.retryExitCleanup(
                 signalProcessGroup: processGroupSignal,
-                cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
+                deadline: .now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
             )
         }
         guard retained.process.cleanupIsComplete else {
@@ -2123,7 +2262,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             if !session.process.isRunning {
                 let retryObservation = session.process.retryExitCleanup(
                     signalProcessGroup: processGroupSignal,
-                    cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
+                    deadline: .now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
                 )
                 session.updateProcessCleanupObservation(retryObservation)
                 if session.process.cleanupIsComplete { return }
@@ -2139,7 +2278,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 if !session.process.isRunning {
                     let retryObservation = session.process.retryExitCleanup(
                         signalProcessGroup: processGroupSignal,
-                        cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
+                        deadline: .now() + .milliseconds(Self.terminationGracePeriodMilliseconds)
                     )
                     session.updateProcessCleanupObservation(retryObservation)
                 }
