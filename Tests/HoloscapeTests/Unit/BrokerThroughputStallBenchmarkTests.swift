@@ -9,6 +9,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
     private struct SocketBenchmarkChild {
         let process: Process
         let exited: DispatchSemaphore
+        let processGroupDirectory: URL
     }
 
     func testBrokerThroughputHarnessCapturesOutputAndInputLatencyBaseline() throws {
@@ -154,15 +155,18 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             try transport.sendFrame(frame)
         }
         try waitForSocketBenchmarkHost(client)
+        let processGroupMarker = child.processGroupDirectory.appendingPathComponent("cleanup-session")
         try client.createSession(
             id: BrokerSessionID(rawValue: "socket-benchmark-cleanup"),
             request: BrokerSessionLaunchRequest(
-                command: "/bin/cat",
+                command: "/bin/sh",
+                arguments: ["-c", "printf '%d\\n' $$ > \(shellQuoted(processGroupMarker.path)); exec /bin/cat"],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
                 initialSize: TerminalGridSize(columns: 80, rows: 24)
             )
         )
+        try waitForProcessGroupMarker(processGroupMarker)
 
         try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
 
@@ -180,14 +184,19 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         signal(SIGTERM, SIG_IGN)
         let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM)
         terminationSource.setEventHandler {
+            var cleanupFailed = false
             do {
                 for id in try runtime.listSessions() {
-                    try runtime.markSessionErrored(id: id)
+                    do {
+                        try runtime.markSessionErrored(id: id)
+                    } catch {
+                        cleanupFailed = true
+                    }
                 }
-                Darwin.exit(EXIT_SUCCESS)
             } catch {
-                Darwin.exit(EXIT_FAILURE)
+                cleanupFailed = true
             }
+            Darwin.exit(cleanupFailed ? EXIT_FAILURE : EXIT_SUCCESS)
         }
         terminationSource.resume()
 
@@ -195,12 +204,17 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             socketPath: socketPath,
             host: BrokerSessionHost(runtime: runtime)
         )
-        try server.run()
+        try withExtendedLifetime(terminationSource) {
+            try server.run()
+        }
     }
 
     private func launchSocketBenchmarkHost(at socketPath: String) throws -> SocketBenchmarkChild {
         let child = Process()
         let exited = DispatchSemaphore(value: 0)
+        let processGroupDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-socket-benchmark-pgroups-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: processGroupDirectory, withIntermediateDirectories: true)
         child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         child.arguments = [
             "-XCTest",
@@ -211,8 +225,17 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             Self.socketBenchmarkChildEnvironmentKey: socketPath,
         ]) { _, childValue in childValue }
         child.terminationHandler = { _ in exited.signal() }
-        try child.run()
-        return SocketBenchmarkChild(process: child, exited: exited)
+        do {
+            try child.run()
+        } catch {
+            try? FileManager.default.removeItem(at: processGroupDirectory)
+            throw error
+        }
+        return SocketBenchmarkChild(
+            process: child,
+            exited: exited,
+            processGroupDirectory: processGroupDirectory
+        )
     }
 
     private func waitForSocketBenchmarkHost(_ client: BrokerSessionHostClientRuntime) throws {
@@ -230,43 +253,106 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         throw lastError ?? BrokerSessionHostUnixSocketTransport.TransportError.timedOut("socket benchmark host did not start")
     }
 
+    private func waitForProcessGroupMarker(_ marker: URL) throws {
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if let value = try? String(contentsOf: marker, encoding: .utf8),
+               Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) != nil {
+                return
+            }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        throw NSError(
+            domain: "BrokerThroughputStallBenchmarkTests",
+            code: Int(ETIMEDOUT),
+            userInfo: [NSLocalizedDescriptionKey: "socket benchmark PTY did not publish its process group"]
+        )
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     private static func stopSocketBenchmarkHost(_ child: SocketBenchmarkChild, socketPath: String) throws {
+        var failures: [String] = []
+        var forcedBrokerExit = false
+
         if child.process.isRunning {
             child.process.terminate()
-            if child.exited.wait(timeout: .now() + 2) == .timedOut {
+            if child.exited.wait(timeout: .now() + 10) == .timedOut {
+                forcedBrokerExit = true
                 let result = Darwin.kill(child.process.processIdentifier, SIGKILL)
-                guard result == 0 || errno == ESRCH else {
-                    throw NSError(
-                        domain: NSPOSIXErrorDomain,
-                        code: Int(errno),
-                        userInfo: [NSLocalizedDescriptionKey: "could not kill socket benchmark host"]
-                    )
-                }
-                guard child.exited.wait(timeout: .now() + 1) == .success else {
-                    throw NSError(
-                        domain: NSPOSIXErrorDomain,
-                        code: Int(ETIMEDOUT),
-                        userInfo: [NSLocalizedDescriptionKey: "socket benchmark host did not exit after SIGKILL"]
-                    )
+                if result != 0, errno != ESRCH {
+                    failures.append("could not kill socket benchmark host: \(String(cString: strerror(errno)))")
+                } else if child.exited.wait(timeout: .now() + 1) == .timedOut {
+                    failures.append("socket benchmark host did not exit after SIGKILL")
                 }
             }
         }
-        guard child.process.terminationReason == .exit,
-              child.process.terminationStatus == EXIT_SUCCESS else {
+
+        if child.process.isRunning {
+            failures.append("socket benchmark host remained running after bounded teardown")
+        } else if child.process.terminationReason != .exit || child.process.terminationStatus != EXIT_SUCCESS {
+            failures.append("socket benchmark host did not confirm PTY cleanup")
+        }
+
+        if FileManager.default.fileExists(atPath: child.processGroupDirectory.path) {
+            do {
+                let markers = try FileManager.default.contentsOfDirectory(
+                    at: child.processGroupDirectory,
+                    includingPropertiesForKeys: nil
+                )
+                for marker in markers {
+                    guard let value = try? String(contentsOf: marker, encoding: .utf8),
+                          let processGroup = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        failures.append("invalid process-group marker at \(marker.path)")
+                        continue
+                    }
+                    errno = 0
+                    let groupExists = Darwin.kill(-processGroup, 0) == 0 || errno == EPERM
+                    if groupExists {
+                        if Darwin.kill(-processGroup, SIGKILL) != 0, errno != ESRCH {
+                            failures.append("could not kill leaked PTY process group \(processGroup)")
+                            continue
+                        }
+                        let deadline = Date().addingTimeInterval(1)
+                        while Date() < deadline {
+                            errno = 0
+                            if Darwin.kill(-processGroup, 0) != 0, errno == ESRCH { break }
+                            usleep(10_000)
+                        }
+                        errno = 0
+                        if Darwin.kill(-processGroup, 0) == 0 || errno == EPERM {
+                            failures.append("PTY process group \(processGroup) survived cleanup")
+                        } else if !forcedBrokerExit {
+                            failures.append("child reported successful cleanup while PTY process group \(processGroup) remained live")
+                        }
+                    }
+                }
+            } catch {
+                failures.append("could not inspect PTY process-group markers: \(error)")
+            }
+        }
+
+        for path in [socketPath, socketPath + ".lock"] {
+            if unlink(path) != 0, errno != ENOENT {
+                failures.append("could not remove socket benchmark artifact at \(path): \(String(cString: strerror(errno)))")
+            }
+        }
+        do {
+            if FileManager.default.fileExists(atPath: child.processGroupDirectory.path) {
+                try FileManager.default.removeItem(at: child.processGroupDirectory)
+            }
+        } catch {
+            failures.append("could not remove process-group marker directory: \(error)")
+        }
+
+        if !failures.isEmpty {
             throw NSError(
                 domain: "BrokerThroughputStallBenchmarkTests",
-                code: Int(child.process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: "socket benchmark host did not confirm PTY cleanup"]
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "; ")]
             )
-        }
-        for path in [socketPath, socketPath + ".lock"] {
-            guard unlink(path) == 0 || errno == ENOENT else {
-                throw NSError(
-                    domain: NSPOSIXErrorDomain,
-                    code: Int(errno),
-                    userInfo: [NSLocalizedDescriptionKey: "could not remove socket benchmark artifact at \(path)"]
-                )
-            }
         }
     }
 }
