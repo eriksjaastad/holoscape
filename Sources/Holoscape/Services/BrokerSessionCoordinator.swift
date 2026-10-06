@@ -179,7 +179,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     _ = try markErrored(record.id)
                     return nil
                 }
-                let reconciled = try reconcileExitingSession(record.id)
+                guard let reconciled = try reconcileExitingSessionForDiscovery(record.id) else {
+                    return nil
+                }
                 return reconciled.lifecycle == .exited || reconciled.lifecycle == .exiting
                     ? reconciled
                     : nil
@@ -1128,6 +1130,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Reconciliation retired the broken runtime and finalized durable
             // truth before returning the warning. Discovery has no interactive
             // caller to receive it, so omit only this dead identity and continue.
+            return nil
+        }
+    }
+
+    private func reconcileExitingSessionForDiscovery(_ id: BrokerSessionID) throws -> BrokerSessionRecord? {
+        do {
+            return try reconcileExitingSession(id)
+        } catch let error where isCompletedRetirementFailure(error) {
+            // Exit reconciliation retired the broken runtime and finalized
+            // durable truth before returning the warning. Discovery has no
+            // interactive caller to receive it, so omit the dead identity and
+            // continue restoring unrelated sessions.
             return nil
         }
     }

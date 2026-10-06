@@ -25,6 +25,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var markErroredError: Error?
         var onMarkErrored: (() throws -> Void)?
         var statusError: Error?
+        var statusErrorForID: ((BrokerSessionID) -> Error?)?
         var running = false
         var observedTerminationStatus: Int32? = 0
         var statusCalledOnMainActor = false
@@ -89,10 +90,12 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         func isRunning(id: BrokerSessionID) throws -> Bool {
             statusCalledOnMainActor = Thread.isMainThread
+            if let statusError = statusErrorForID?(id) { throw statusError }
             if let statusError { throw statusError }
             return running
         }
         func terminationStatus(id: BrokerSessionID) throws -> Int32? {
+            if let statusError = statusErrorForID?(id) { throw statusError }
             if let statusError { throw statusError }
             return observedTerminationStatus
         }
@@ -1078,6 +1081,49 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.reattachableSessions(), [])
         XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
         XCTAssertTrue(runtime.events.contains(.markErrored(record.id)))
+    }
+
+    func testRelaunchDiscoveryConsumesCompletedRetirementWarningForExitingSessionAndContinuesBatch() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.running = true
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 204.2) })
+        let exiting = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-exiting-output-warning"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+        XCTAssertThrowsError(try coordinator.exit(exiting.id, exitCode: 0))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .exiting)
+
+        runtime.terminateError = nil
+        runtime.statusError = nil
+        let healthy = try coordinator.start(
+            launchRequest(workingDirectory: "/tmp/relaunch-healthy-session"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.listedSessionIDs = [exiting.id, healthy.id]
+        runtime.statusErrorForID = { id in
+            guard id == exiting.id else { return nil }
+            return NativePTYBrokerSessionRuntime.RuntimeError.outputMonitoringFailed(
+                id,
+                reason: "PTY readability drain failed: Bad address"
+            )
+        }
+        runtime.markErroredError = NativePTYBrokerSessionRuntime.RuntimeError.retirementCompletedWithOutputFailure(
+            exiting.id,
+            reason: "final PTY output could not be persisted"
+        )
+
+        XCTAssertEqual(try coordinator.reattachableSessions().map(\.id), [healthy.id])
+        let durable = try coordinator.loadAll()
+        XCTAssertEqual(durable.first(where: { $0.id == exiting.id })?.lifecycle, .errored)
+        XCTAssertEqual(durable.first(where: { $0.id == healthy.id })?.lifecycle, .running)
+        XCTAssertTrue(runtime.events.contains(.markErrored(exiting.id)))
     }
 
     func testUpdatingMissingSessionFailsLoudly() throws {
