@@ -91,15 +91,23 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let childWait = childExited.wait(timeout: .now() + 6)
         if childWait == .timedOut {
-            let emergencyCleanupError = emergencyCleanupFromMarker(markerURL)
+            var cleanupFailures = emergencyCleanupFromMarker(markerURL)
             child.terminate()
             if childExited.wait(timeout: .now() + 1) == .timedOut {
-                _ = Darwin.kill(child.processIdentifier, SIGKILL)
-                _ = childExited.wait(timeout: .now() + 1)
+                let killResult = Darwin.kill(child.processIdentifier, SIGKILL)
+                if killResult != 0, errno != ESRCH {
+                    cleanupFailures.append("could not SIGKILL child xctest: \(String(cString: strerror(errno)))")
+                }
+                if childExited.wait(timeout: .now() + 1) == .timedOut {
+                    cleanupFailures.append("child xctest remained alive after SIGKILL")
+                }
+            }
+            if child.isRunning {
+                cleanupFailures.append("child xctest still reports running after bounded teardown")
             }
             XCTFail(
                 "Ctrl-Z regression exceeded its process-level deadline"
-                    + (emergencyCleanupError.map { "; emergency cleanup failed: \($0)" } ?? "")
+                    + (cleanupFailures.isEmpty ? "" : "; cleanup failures: \(cleanupFailures.joined(separator: "; "))")
             )
             return
         }
@@ -2992,29 +3000,50 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         return nil
     }
 
-    private func emergencyCleanupFromMarker(_ markerURL: URL) -> Error? {
+    private func emergencyCleanupFromMarker(_ markerURL: URL) -> [String] {
         let marker: String
         do {
             marker = try String(contentsOf: markerURL, encoding: .utf8)
         } catch {
-            return error
+            return ["could not read process-group marker: \(error)"]
         }
         let values = marker.split(separator: ",").compactMap { pid_t(String($0)) }
         guard values.count == 3 else {
-            return CocoaError(.fileReadCorruptFile)
+            return ["process-group marker was incomplete or corrupt: \(marker)"]
         }
         let sessionID = values[0]
+        var failures: [String] = []
         for processGroupID in values.dropFirst() {
             let validation = holoscape_validate_process_group_session(processGroupID, sessionID)
-            guard validation >= 0 else {
-                return NSError(domain: NSPOSIXErrorDomain, code: Int(-validation))
+            if validation < 0 {
+                failures.append(
+                    "could not validate process group \(processGroupID): \(String(cString: strerror(-validation)))"
+                )
+                continue
             }
             guard validation == 1 else { continue }
             if Darwin.kill(-processGroupID, SIGKILL) != 0, errno != ESRCH {
-                return NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                failures.append(
+                    "could not SIGKILL owned process group \(processGroupID): \(String(cString: strerror(errno)))"
+                )
             }
         }
-        return nil
+        for processGroupID in values.dropFirst() {
+            let deadline = Date().addingTimeInterval(1)
+            while Date() < deadline,
+                  holoscape_validate_process_group_session(processGroupID, sessionID) == 1 {
+                usleep(10_000)
+            }
+            let validation = holoscape_validate_process_group_session(processGroupID, sessionID)
+            if validation == 1 {
+                failures.append("owned process group \(processGroupID) remained alive after SIGKILL")
+            } else if validation < 0 {
+                failures.append(
+                    "could not confirm process group \(processGroupID) cleanup: \(String(cString: strerror(-validation)))"
+                )
+            }
+        }
+        return failures
     }
 
     private func processState(_ pid: pid_t) -> Int32? {
