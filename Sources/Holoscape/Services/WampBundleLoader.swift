@@ -26,6 +26,10 @@ final class WampBundleLoader {
     /// surface different banner text and distinct log lines per
     /// Requirement 13.5.
     enum LoadError: Error, Equatable {
+        /// Foundation could not resolve the user's caches directory.
+        /// Directory-layout skins remain usable, but `.wamp` bundles
+        /// cannot be extracted without an explicit cache authority.
+        case cacheDirectoryUnavailable
         /// Bundle bytes couldn't be read or hashed, or a partial
         /// extraction couldn't be cleaned up.
         case ioFailure(String)
@@ -53,10 +57,9 @@ final class WampBundleLoader {
     static let assetSizeCap = defaultAssetSizeCap
     static let bundleSizeCap = defaultBundleSizeCap
 
-    /// Root directory for the hash-keyed cache. Usually
-    /// `FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-    /// / Holoscape / Skins`. Injectable for tests.
-    let cacheRoot: URL
+    /// Root directory for the hash-keyed cache. Nil only when Foundation
+    /// cannot resolve the user's caches directory. Injectable for tests.
+    let cacheRoot: URL?
 
     /// Instance cap on a single asset's uncompressed size. Defaults
     /// to `Self.defaultAssetSizeCap`. Property tests override with a
@@ -73,7 +76,7 @@ final class WampBundleLoader {
     weak var sandbox: SkinEngine?
 
     init(
-        cacheRoot: URL,
+        cacheRoot: URL?,
         assetSizeCap: Int = WampBundleLoader.defaultAssetSizeCap,
         bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap
     ) {
@@ -90,6 +93,9 @@ final class WampBundleLoader {
     /// partial extraction is cleaned up so the cache never contains a
     /// half-unzipped subdirectory.
     func unzipIfNeeded(bundleURL: URL) throws -> URL {
+        guard let cacheRoot else {
+            throw LoadError.cacheDirectoryUnavailable
+        }
         let hash = try contentHash(bundleURL)
         let subdir = cacheRoot.appendingPathComponent(hash)
 
@@ -159,6 +165,9 @@ final class WampBundleLoader {
     /// with tiny (KB-scale) entries rather than real 50 MB data, keeping
     /// the test suite fast. Production always uses the default.
     func purgeLRU(preserving: String?, cap: Int? = nil) throws {
+        guard let cacheRoot else {
+            throw LoadError.cacheDirectoryUnavailable
+        }
         let effectiveCap = cap ?? self.bundleSizeCap
         guard FileManager.default.fileExists(atPath: cacheRoot.path) else { return }
 
