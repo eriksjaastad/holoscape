@@ -320,6 +320,38 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 42)
     }
 
+    func testLateExitObserverFailureCannotUndoForcedCleanupCompletion() throws {
+        let observer = LateFailureAfterReapObserver()
+        let runtime = NativePTYBrokerSessionRuntime(
+            installsOutputReadabilityHandler: false,
+            childProcessWaiter: observer.wait,
+            childProcessReaper: observer.reap
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-late-observer-failure")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { try? runtime.markSessionErrored(id: id) }
+
+        let shutdownFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            runtime.shutDownBeforeHostExit()
+            shutdownFinished.signal()
+        }
+        XCTAssertEqual(shutdownFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(observer.waitUntilLateFailureReturned(), .success)
+        XCTAssertNotNil(
+            try runtime.terminationStatus(id: id),
+            "A late ECHILD from the observer must not replace already-published cleanup truth"
+        )
+    }
+
     func testDeinitConvergesRetainedLaunchCleanupAfterPersistentTransientExitObservation() throws {
         let observer = PersistentTransientExitObserver()
         let signaler = SequencedProcessGroupSignaler(failures: [EPERM])
@@ -460,7 +492,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     func testDeinitRetainsAuthorityAcrossHardEnumerationFailureBeforeRecovery() throws {
         let signaler = SequencedProcessGroupSignaler(
             failures: [],
-            enumerationFailures: [EIO]
+            enumerationFailures: [EIO, EIO, EIO]
         )
         var runtime: NativePTYBrokerSessionRuntime? = NativePTYBrokerSessionRuntime(
             processGroupEnumerator: signaler.enumerate,
@@ -474,18 +506,51 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         runtime = nil
 
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertLessThan(
             Date().timeIntervalSince(startedAt),
-            0.09,
-            "A hard error must end the authoritative pass and enter backed-off fail-closed recovery"
+            0.5,
+            "Deinit should transfer incomplete cleanup to retained authority instead of abandoning or blocking forever"
         )
-        XCTAssertGreaterThanOrEqual(
-            signaler.enumerationCallCount,
-            3,
-            "A later bounded recovery pass must re-enumerate before releasing authority"
+        XCTAssertTrue(
+            signaler.waitForEnumerationCallCount(5),
+            "Retained cleanup authority must continue across more hard failures than fit in the initial pass"
         )
         XCTAssertTrue(waitForProcessToExit(pids.root), "runtime deinit left root PID \(pids.root) live or unreaped")
         XCTAssertTrue(waitForProcessToExit(pids.child), "runtime deinit left same-session child PID \(pids.child) live")
+    }
+
+    func testHostShutdownWaitsForPendingFinalOutputPersistence() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let runtime = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 1_000
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-host-shutdown-persistence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf host-shutdown-final-output; sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+
+        let shutdownFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            runtime.shutDownBeforeHostExit()
+            shutdownFinished.signal()
+        }
+
+        XCTAssertEqual(
+            shutdownFinished.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Host shutdown must retain broker authority while final output persistence is pending"
+        )
+        appender.release()
+        XCTAssertEqual(shutdownFinished.wait(timeout: .now() + 3), .success)
     }
 
     func testDeinitRetriesSignalFailureInjectedAfterRetainedLaunchFailure() throws {
@@ -3153,6 +3218,48 @@ private final class ProcessWaitOrderingProbe: @unchecked Sendable {
     }
 }
 
+private final class LateFailureAfterReapObserver: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let lateFailureReturned = DispatchSemaphore(value: 0)
+    private var reaped = false
+
+    func wait(
+        _ processIdentifier: pid_t,
+        _ sessionID: pid_t,
+        _ masterDescriptor: Int32
+    ) -> NativePTYChildProcess.TerminationObservation {
+        condition.lock()
+        while !reaped {
+            condition.wait()
+        }
+        condition.unlock()
+        lateFailureReturned.signal()
+        return NativePTYChildProcess.TerminationObservation(
+            status: nil,
+            waitError: ECHILD,
+            foregroundProcessGroupID: nil
+        )
+    }
+
+    func reap(_ processIdentifier: pid_t) -> NativePTYChildProcess.TerminationObservation {
+        var observedStatus: Int32 = 0
+        let waitError = holoscape_reap_pid(processIdentifier, &observedStatus)
+        condition.withLock {
+            reaped = true
+            condition.broadcast()
+        }
+        return NativePTYChildProcess.TerminationObservation(
+            status: waitError == 0 ? observedStatus : nil,
+            waitError: waitError == 0 ? nil : waitError,
+            foregroundProcessGroupID: nil
+        )
+    }
+
+    func waitUntilLateFailureReturned() -> DispatchTimeoutResult {
+        lateFailureReturned.wait(timeout: .now() + 2)
+    }
+}
+
 private final class TransientExitObserver: @unchecked Sendable {
     private let condition = NSCondition()
     private var storedAttemptCount = 0
@@ -3463,6 +3570,15 @@ private final class SequencedProcessGroupSignaler: @unchecked Sendable {
 
     var enumerationCallCount: Int {
         lock.withLock { storedEnumerationCallCount }
+    }
+
+    func waitForEnumerationCallCount(_ expected: Int, timeout: TimeInterval = 2) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if enumerationCallCount >= expected { return true }
+            usleep(10_000)
+        }
+        return enumerationCallCount >= expected
     }
 
     func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
