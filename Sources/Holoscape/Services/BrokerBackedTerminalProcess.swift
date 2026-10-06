@@ -1005,6 +1005,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let outputDeliveryTimeout = self.outputDeliveryTimeout
         let outputDeliveryGate = self.outputDeliveryGate
         return { [weak self] id, data in
+            // Empty polls carry no terminal work or transactional generation.
+            // Accept them on the output lane so an unavailable main actor cannot
+            // turn an otherwise healthy idle session into a delivery failure;
+            // the caller still proceeds to its termination-status check.
+            guard !data.isEmpty else { return true }
             // The serial lane does not perform liveness/exit RPCs until the main
             // actor has consumed this sample, preserving final-byte ordering
             // without making the main actor call the broker.
