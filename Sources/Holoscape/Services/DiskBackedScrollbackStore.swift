@@ -34,15 +34,18 @@ struct DiskBackedScrollbackStore: Sendable {
     private let maxRetainedBytes: Int
     private let operationLocks = ScrollbackSessionOperationLocks.shared
     private let compactionCheckpoint: (@Sendable (CompactionCheckpoint) throws -> Void)?
+    private let appendSynchronizer: @Sendable (Int32) throws -> Void
 
     init(
         directory: URL,
         maxRetainedBytes: Int = ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
-        compactionCheckpoint: (@Sendable (CompactionCheckpoint) throws -> Void)? = nil
+        compactionCheckpoint: (@Sendable (CompactionCheckpoint) throws -> Void)? = nil,
+        appendSynchronizer: (@Sendable (Int32) throws -> Void)? = nil
     ) {
         self.directory = directory
         self.maxRetainedBytes = maxRetainedBytes
         self.compactionCheckpoint = compactionCheckpoint
+        self.appendSynchronizer = appendSynchronizer ?? Self.fullSync
     }
 
     func append(_ data: Data, for id: BrokerSessionID) throws {
@@ -64,7 +67,10 @@ struct DiskBackedScrollbackStore: Sendable {
                 let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
-                try prune(descriptor: descriptor, at: url)
+                let pruneSynchronizedFile = try prune(descriptor: descriptor, at: url)
+                if !pruneSynchronizedFile {
+                    try appendSynchronizer(descriptor)
+                }
             }
         }
     }
@@ -239,23 +245,26 @@ struct DiskBackedScrollbackStore: Sendable {
             missingIsAbsent: false
         ) { descriptor in
             try recoverCompactionIfNeeded(mainDescriptor: descriptor, at: url)
-            try prune(descriptor: descriptor, at: url)
+            _ = try prune(descriptor: descriptor, at: url)
         }
     }
 
-    private func prune(descriptor: Int32, at url: URL) throws {
+    /// Returns whether pruning synchronized the main file as part of a
+    /// truncation or compaction. Callers that appended without pruning must
+    /// synchronize the descriptor before reporting success.
+    private func prune(descriptor: Int32, at url: URL) throws -> Bool {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         guard maxRetainedBytes > 0 else {
             try handle.truncate(atOffset: 0)
             try Self.fullSync(descriptor)
-            return
+            return true
         }
 
         var status = stat()
         guard fstat(descriptor, &status) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        guard status.st_size > off_t(maxRetainedBytes) else { return }
+        guard status.st_size > off_t(maxRetainedBytes) else { return false }
 
         try handle.seek(toOffset: UInt64(status.st_size - off_t(maxRetainedBytes)))
         let retained = try handle.read(upToCount: maxRetainedBytes) ?? Data()
@@ -288,6 +297,7 @@ struct DiskBackedScrollbackStore: Sendable {
             try compactionCheckpoint?(.mainSynced)
             try Self.clearCompactionJournal(journalDescriptor)
         }
+        return true
     }
 
     private func recoverCompactionIfNeeded(at url: URL) throws {
