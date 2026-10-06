@@ -65,34 +65,59 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         let runtime = NativePTYBrokerSessionRuntime()
         let id = BrokerSessionID(rawValue: "native-pty-suspend-test")
         let request = BrokerSessionLaunchRequest(
-            command: "/bin/zsh",
-            arguments: ["-f", "-i"],
+            command: "/bin/sh",
+            arguments: ["-c", "stty -echo; exec /bin/zsh -f -i"],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
             initialSize: TerminalGridSize(columns: 80, rows: 24)
         )
 
         try runtime.createSession(id: id, request: request)
-        defer { try? runtime.markSessionErrored(id: id) }
+        defer {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch let error as NativePTYBrokerSessionRuntime.RuntimeError where error == .missingSession(id) {
+                // Explicit bounded teardown already removed the session.
+            } catch {
+                XCTFail("Stopped-job fallback cleanup failed: \(error)")
+            }
+        }
 
         try runtime.sendInput(
             id: id,
             bytes: Array("echo SHELL:$$; sh -c 'echo CHILD:$$; exec /bin/cat'\n".utf8)
         )
-        let readyOutput = try waitForOutput(from: runtime, id: id, containing: "CHILD:")
+        let readyOutput = try waitForOutput(from: runtime, id: id, containing: "\r\nCHILD:")
         guard let shellProcessID = processID(after: "SHELL:", in: readyOutput),
               let childProcessID = processID(after: "CHILD:", in: readyOutput) else {
             return XCTFail("Could not parse interactive shell and foreground job PIDs from: \(readyOutput)")
         }
-        XCTAssertNotEqual(shellProcessID, childProcessID)
+        let shellProcessGroupID = getpgid(shellProcessID)
+        let childProcessGroupID = getpgid(childProcessID)
+        XCTAssertGreaterThan(shellProcessGroupID, 0)
+        XCTAssertGreaterThan(childProcessGroupID, 0)
+        XCTAssertNotEqual(shellProcessGroupID, childProcessGroupID)
 
         try runtime.sendInput(id: id, bytes: [0x1A])
 
         XCTAssertTrue(waitForProcessToStop(childProcessID), "Ctrl-Z did not stop foreground PID \(childProcessID)")
+        XCTAssertNotEqual(processState(shellProcessID), SSTOP, "Ctrl-Z also stopped the interactive shell")
         XCTAssertTrue(try runtime.isRunning(id: id), "A stopped foreground job must leave its interactive shell session live")
 
-        try runtime.markSessionErrored(id: id)
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        let cleanupError = LockedRuntimeErrorBox()
+        DispatchQueue.global().async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                cleanupError.store(error)
+            }
+            cleanupCompleted.signal()
+        }
 
+        let cleanupWait = cleanupCompleted.wait(timeout: .now() + 1.5)
+        XCTAssertEqual(cleanupWait, .success, "Stopped-job cleanup exceeded its bounded deadline")
+        XCTAssertNil(cleanupError.value)
         XCTAssertTrue(waitForProcessToExit(childProcessID), "Broker cleanup left stopped foreground PID \(childProcessID) running")
         XCTAssertTrue(waitForProcessToExit(shellProcessID), "Broker cleanup left interactive shell PID \(shellProcessID) running")
     }
@@ -2911,19 +2936,23 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         return nil
     }
 
+    private func processState(_ pid: pid_t) -> Int32? {
+        var process = kinfo_proc()
+        var byteCount = MemoryLayout<kinfo_proc>.size
+        var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = query.withUnsafeMutableBufferPointer { pointer in
+            sysctl(pointer.baseAddress, 4, &process, &byteCount, nil, 0)
+        }
+        guard result == 0, byteCount == MemoryLayout<kinfo_proc>.size else { return nil }
+        return Int32(process.kp_proc.p_stat)
+    }
+
     private func waitForProcessToStop(_ pid: pid_t) -> Bool {
         for _ in 0..<100 {
-            var process = kinfo_proc()
-            var byteCount = MemoryLayout<kinfo_proc>.size
-            var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-            let result = query.withUnsafeMutableBufferPointer { pointer in
-                sysctl(pointer.baseAddress, 4, &process, &byteCount, nil, 0)
-            }
-            if result == 0, byteCount == MemoryLayout<kinfo_proc>.size,
-               process.kp_proc.p_stat == SSTOP {
+            if processState(pid) == SSTOP {
                 return true
             }
-            if result != 0, errno == ESRCH {
+            if Darwin.kill(pid, 0) == -1, errno == ESRCH {
                 return false
             }
             usleep(10_000)
