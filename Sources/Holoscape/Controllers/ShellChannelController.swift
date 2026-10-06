@@ -236,6 +236,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private func finishActivation() {
+        if let sessionFailure = terminal.sessionFailure {
+            handleSessionFailure(sessionFailure)
+            return
+        }
         if let startFailure = terminal.startFailureDescription {
             NSLog("Shell terminal start failed: \(startFailure)")
             if brokerSessionCoordinator == nil, terminal.brokerOwnedSessionID == nil {

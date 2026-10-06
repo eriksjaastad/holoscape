@@ -32,6 +32,7 @@ class MockTerminalProcess: TerminalProcess {
     var workingDirectoryUpdateError: Error?
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
+        sessionFailure = nil
         startProcessCalled = true
         lastExecutable = executable
         lastArgs = args
