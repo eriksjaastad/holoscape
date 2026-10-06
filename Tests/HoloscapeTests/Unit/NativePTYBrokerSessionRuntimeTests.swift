@@ -73,13 +73,16 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
 
         try runtime.createSession(id: id, request: request)
+        var boundedCleanupStarted = false
         defer {
-            do {
-                try runtime.markSessionErrored(id: id)
-            } catch let error as NativePTYBrokerSessionRuntime.RuntimeError where error == .missingSession(id) {
-                // Explicit bounded teardown already removed the session.
-            } catch {
-                XCTFail("Stopped-job fallback cleanup failed: \(error)")
+            if !boundedCleanupStarted {
+                do {
+                    try runtime.markSessionErrored(id: id)
+                } catch let error as NativePTYBrokerSessionRuntime.RuntimeError where error == .missingSession(id) {
+                    // The session completed before fallback cleanup was needed.
+                } catch {
+                    XCTFail("Stopped-job setup fallback cleanup failed: \(error)")
+                }
             }
         }
 
@@ -94,18 +97,26 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         let shellProcessGroupID = getpgid(shellProcessID)
         let childProcessGroupID = getpgid(childProcessID)
-        XCTAssertGreaterThan(shellProcessGroupID, 0)
-        XCTAssertGreaterThan(childProcessGroupID, 0)
-        XCTAssertNotEqual(shellProcessGroupID, childProcessGroupID)
+        guard shellProcessGroupID > 0, childProcessGroupID > 0 else {
+            return XCTFail(
+                "Could not resolve shell/job process groups: shell=\(shellProcessGroupID), child=\(childProcessGroupID)"
+            )
+        }
+        guard shellProcessGroupID != childProcessGroupID else {
+            return XCTFail("Foreground job remained in interactive shell process group \(shellProcessGroupID)")
+        }
 
         try runtime.sendInput(id: id, bytes: [0x1A])
 
         XCTAssertTrue(waitForProcessToStop(childProcessID), "Ctrl-Z did not stop foreground PID \(childProcessID)")
-        XCTAssertNotEqual(processState(shellProcessID), SSTOP, "Ctrl-Z also stopped the interactive shell")
+        let shellState = try XCTUnwrap(processState(shellProcessID), "Interactive shell disappeared after Ctrl-Z")
+        XCTAssertNotEqual(shellState, SSTOP, "Ctrl-Z also stopped the interactive shell")
+        XCTAssertNotEqual(shellState, SZOMB, "Interactive shell became a zombie after Ctrl-Z")
         XCTAssertTrue(try runtime.isRunning(id: id), "A stopped foreground job must leave its interactive shell session live")
 
         let cleanupCompleted = DispatchSemaphore(value: 0)
         let cleanupError = LockedRuntimeErrorBox()
+        boundedCleanupStarted = true
         DispatchQueue.global().async {
             do {
                 try runtime.markSessionErrored(id: id)
@@ -116,6 +127,25 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
 
         let cleanupWait = cleanupCompleted.wait(timeout: .now() + 1.5)
+        if cleanupWait == .timedOut {
+            let childKillResult = Darwin.kill(-childProcessGroupID, SIGKILL)
+            let childKillError = childKillResult == 0 ? nil : errno
+            let shellKillResult = Darwin.kill(-shellProcessGroupID, SIGKILL)
+            let shellKillError = shellKillResult == 0 ? nil : errno
+            XCTAssertTrue(
+                childKillResult == 0 || childKillError == ESRCH,
+                "Emergency child process-group cleanup failed with errno \(childKillError ?? 0)"
+            )
+            XCTAssertTrue(
+                shellKillResult == 0 || shellKillError == ESRCH,
+                "Emergency shell process-group cleanup failed with errno \(shellKillError ?? 0)"
+            )
+            XCTAssertEqual(
+                cleanupCompleted.wait(timeout: .now() + 1),
+                .success,
+                "Broker cleanup remained blocked after emergency process-group cleanup"
+            )
+        }
         XCTAssertEqual(cleanupWait, .success, "Stopped-job cleanup exceeded its bounded deadline")
         XCTAssertNil(cleanupError.value)
         XCTAssertTrue(waitForProcessToExit(childProcessID), "Broker cleanup left stopped foreground PID \(childProcessID) running")
