@@ -942,7 +942,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func startOutputPump() {
         guard sessionIOReady, let brokerSessionID else { return }
         guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
-        let supportsOutputAvailabilityMonitoring = (try? coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)) == true
+        let supportsOutputAvailabilityMonitoring: Bool
+        do {
+            supportsOutputAvailabilityMonitoring = try coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)
+        } catch {
+            reportSessionFailure(error, for: brokerSessionID, deliveryGeneration: deliveryGeneration)
+            return
+        }
         outputReadLane.start(
             sessionID: brokerSessionID,
             mode: supportsOutputAvailabilityMonitoring ? .outputAvailabilitySignal : .periodicPolling,
