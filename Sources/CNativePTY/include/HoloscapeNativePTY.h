@@ -2,6 +2,7 @@
 #define HOLOSCAPE_NATIVE_PTY_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <sys/types.h>
 
 int holoscape_spawn_pty(
@@ -43,6 +44,14 @@ int holoscape_validate_process_group_session(
     pid_t session_id
 );
 
+int holoscape_copy_live_session_process_groups(
+    pid_t session_id,
+    pid_t **process_group_ids,
+    size_t *process_group_count
+);
+
+void holoscape_free_process_group_ids(pid_t *process_group_ids);
+
 int holoscape_get_foreground_process_group(
     int master_fd,
     pid_t session_id,
@@ -56,5 +65,6 @@ int holoscape_test_bounded_child_wait_with_eintr(
     int interruption_count,
     int interruption_delay_microseconds
 );
+int holoscape_test_exhausted_process_group_instability(void);
 
 #endif

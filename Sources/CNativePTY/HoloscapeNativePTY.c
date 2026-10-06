@@ -653,11 +653,51 @@ int holoscape_process_group_has_live_member(
     return -ENOMEM;
 }
 
-static int inspect_process_group_session(
+typedef pid_t (*session_lookup_function)(pid_t process_id);
+
+static int inspect_process_snapshot_session(
+    const struct kinfo_proc *processes,
+    size_t process_count,
+    pid_t session_id,
+    int *has_live_member,
+    int *has_live_session_member,
+    session_lookup_function session_lookup
+) {
+    int observed_live_member = 0;
+    int observed_live_session_member = 0;
+    int saw_disappearing_member = 0;
+    for (size_t index = 0; index < process_count; index++) {
+        pid_t member_pid = processes[index].kp_proc.p_pid;
+        if (processes[index].kp_proc.p_stat == SZOMB) {
+            continue;
+        }
+        pid_t observed_session = session_lookup(member_pid);
+        if (observed_session < 0) {
+            if (errno == ESRCH) {
+                saw_disappearing_member = 1;
+                continue;
+            }
+            return errno;
+        }
+        observed_live_member = 1;
+        if (observed_session == session_id) {
+            observed_live_session_member = 1;
+        }
+    }
+    if (saw_disappearing_member && !observed_live_session_member) {
+        return EAGAIN;
+    }
+    *has_live_member = observed_live_member;
+    *has_live_session_member = observed_live_session_member;
+    return 0;
+}
+
+static int inspect_process_group_session_with_lookup(
     pid_t process_group_id,
     pid_t session_id,
     int *has_live_member,
-    int *has_live_session_member
+    int *has_live_session_member,
+    session_lookup_function session_lookup
 ) {
     int query[] = {CTL_KERN, KERN_PROC, KERN_PROC_PGRP, process_group_id};
     for (int attempt = 0; attempt < 3; attempt++) {
@@ -683,40 +723,37 @@ static int inspect_process_group_session(
             }
             return query_error;
         }
-
         size_t process_count = populated_byte_count / sizeof(struct kinfo_proc);
-        int observed_live_member = 0;
-        int observed_live_session_member = 0;
-        int saw_disappearing_member = 0;
-        for (size_t index = 0; index < process_count; index++) {
-            pid_t member_pid = processes[index].kp_proc.p_pid;
-            if (processes[index].kp_proc.p_stat == SZOMB) {
-                continue;
-            }
-            pid_t observed_session = getsid(member_pid);
-            if (observed_session < 0) {
-                if (errno == ESRCH) {
-                    saw_disappearing_member = 1;
-                    continue;
-                }
-                int session_error = errno;
-                free(processes);
-                return session_error;
-            }
-            observed_live_member = 1;
-            if (observed_session == session_id) {
-                observed_live_session_member = 1;
-            }
-        }
+        int inspection_error = inspect_process_snapshot_session(
+            processes,
+            process_count,
+            session_id,
+            has_live_member,
+            has_live_session_member,
+            session_lookup
+        );
         free(processes);
-        if (saw_disappearing_member && !observed_live_member && attempt < 2) {
+        if (inspection_error == EAGAIN) {
             continue;
         }
-        *has_live_member = observed_live_member;
-        *has_live_session_member = observed_live_session_member;
-        return 0;
+        return inspection_error;
     }
     return EAGAIN;
+}
+
+static int inspect_process_group_session(
+    pid_t process_group_id,
+    pid_t session_id,
+    int *has_live_member,
+    int *has_live_session_member
+) {
+    return inspect_process_group_session_with_lookup(
+        process_group_id,
+        session_id,
+        has_live_member,
+        has_live_session_member,
+        getsid
+    );
 }
 
 int holoscape_process_group_has_live_session_member(
@@ -756,6 +793,119 @@ int holoscape_validate_process_group_session(
         return 1;
     }
     return has_live_member ? -EPROTO : 0;
+}
+
+int holoscape_copy_live_session_process_groups(
+    pid_t session_id,
+    pid_t **process_group_ids,
+    size_t *process_group_count
+) {
+    if (session_id <= 0 || process_group_ids == NULL || process_group_count == NULL) {
+        return EINVAL;
+    }
+    *process_group_ids = NULL;
+    *process_group_count = 0;
+
+    int query[] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    for (int attempt = 0; attempt < 3; attempt++) {
+        size_t byte_count = 0;
+        if (sysctl(query, 3, NULL, &byte_count, NULL, 0) != 0) {
+            return errno;
+        }
+        if (byte_count == 0) {
+            continue;
+        }
+        struct kinfo_proc *processes = malloc(byte_count);
+        if (processes == NULL) {
+            return ENOMEM;
+        }
+        size_t populated_byte_count = byte_count;
+        if (sysctl(query, 3, processes, &populated_byte_count, NULL, 0) != 0) {
+            int query_error = errno;
+            free(processes);
+            if (query_error == ENOMEM) {
+                continue;
+            }
+            return query_error;
+        }
+
+        size_t process_count = populated_byte_count / sizeof(struct kinfo_proc);
+        pid_t *groups = malloc(process_count * sizeof(pid_t));
+        if (groups == NULL && process_count > 0) {
+            free(processes);
+            return ENOMEM;
+        }
+        size_t group_count = 0;
+        int saw_session_leader = 0;
+        int saw_disappearing_process = 0;
+        int snapshot_error = 0;
+        for (size_t index = 0; index < process_count; index++) {
+            if (processes[index].kp_proc.p_pid == session_id) {
+                saw_session_leader = 1;
+                break;
+            }
+        }
+        if (!saw_session_leader) {
+            free(processes);
+            free(groups);
+            continue;
+        }
+        for (size_t index = 0; index < process_count; index++) {
+            pid_t member_pid = processes[index].kp_proc.p_pid;
+            if (processes[index].kp_proc.p_stat == SZOMB) {
+                continue;
+            }
+            pid_t observed_session = getsid(member_pid);
+            if (observed_session < 0) {
+                if (errno == ESRCH) {
+                    saw_disappearing_process = 1;
+                    continue;
+                }
+                snapshot_error = errno;
+                break;
+            }
+            if (observed_session != session_id) {
+                continue;
+            }
+            pid_t process_group_id = processes[index].kp_eproc.e_pgid;
+            if (process_group_id <= 0) {
+                snapshot_error = EPROTO;
+                break;
+            }
+            int already_recorded = 0;
+            for (size_t group_index = 0; group_index < group_count; group_index++) {
+                if (groups[group_index] == process_group_id) {
+                    already_recorded = 1;
+                    break;
+                }
+            }
+            if (!already_recorded) {
+                groups[group_count++] = process_group_id;
+            }
+        }
+        free(processes);
+
+        if (saw_disappearing_process && group_count == 0) {
+            free(groups);
+            continue;
+        }
+        if (snapshot_error != 0) {
+            free(groups);
+            return snapshot_error;
+        }
+        if (group_count == 0) {
+            free(groups);
+            return 0;
+        }
+        *process_group_ids = groups;
+        *process_group_count = group_count;
+        return 0;
+    }
+    return EAGAIN;
+}
+
+void holoscape_free_process_group_ids(pid_t *process_group_ids) {
+    free(process_group_ids);
 }
 
 int holoscape_test_sigpipe_safe_handshake_write(void) {
@@ -851,4 +1001,22 @@ int holoscape_test_bounded_child_wait_with_eintr(
     while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
     }
     return result;
+}
+
+static pid_t disappearing_test_session_lookup(pid_t process_id) {
+    (void)process_id;
+    errno = ESRCH;
+    return -1;
+}
+
+int holoscape_test_exhausted_process_group_instability(void) {
+    int has_live_member = 0;
+    int has_live_session_member = 0;
+    return inspect_process_group_session_with_lookup(
+        getpgrp(),
+        getsid(0),
+        &has_live_member,
+        &has_live_session_member,
+        disappearing_test_session_lookup
+    );
 }

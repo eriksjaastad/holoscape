@@ -238,6 +238,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
     }
 
+    func testExhaustedProcessGroupEnumerationInstabilityReturnsEAGAIN() {
+        XCTAssertEqual(holoscape_test_exhausted_process_group_instability(), EAGAIN)
+    }
+
     func testMissingSecondaryProcessGroupObservationStillCleansNativeValidatedLaunchGroup() throws {
         let signaler = RecordingProcessGroupSignaler()
         let runtime = NativePTYBrokerSessionRuntime(
@@ -1555,15 +1559,80 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
     }
 
-    func testNaturalLeaderCleanupFailureRetainsAuthorityForSafeRetry() throws {
-        let signaler = FailFirstProcessGroupSignaler(failureErrno: EIO)
-        let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
-        let id = BrokerSessionID(rawValue: "natural-exit-cleanup-failure-native-pty-runtime-test")
+    func testTerminationWaitsForDescriptorlessBackgroundProcessGroupToExit() throws {
+        let runtime = NativePTYBrokerSessionRuntime()
+        let id = BrokerSessionID(rawValue: "descriptorless-background-group-native-pty-runtime-test")
+        let python = "import os,signal,time; "
+            + "signal.signal(signal.SIGHUP,signal.SIG_IGN); "
+            + "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            + "os.setpgid(0,0); os.close(0); os.close(1); os.close(2); "
+            + "os.kill(os.getppid(),signal.SIGUSR1); time.sleep(30)"
         let request = BrokerSessionLaunchRequest(
             command: "/bin/sh",
             arguments: [
                 "-c",
-                "/bin/sh -c 'trap \"\" TERM HUP; sleep 5' & child=$!; printf 'ORPHAN_READY:%d\\n' \"$child\"; exit 0"
+                "ready=0; trap 'ready=1' USR1; /usr/bin/python3 -c \"\(python)\" & child=$!; "
+                    + "while [ \"$ready\" -eq 0 ]; do :; done; "
+                    + "printf 'BACKGROUND_READY:%d\\n' \"$child\"; /bin/sleep 30"
+            ],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
+
+        try runtime.createSession(id: id, request: request)
+        defer { try? runtime.markSessionErrored(id: id) }
+        let output = try waitForOutput(from: runtime, id: id, containing: "BACKGROUND_READY:")
+        guard let marker = output.range(of: "BACKGROUND_READY:"),
+              let backgroundPID = pid_t(output[marker.upperBound...].prefix(while: { $0.isNumber })) else {
+            return XCTFail("Could not parse descriptorless background PID from: \(output)")
+        }
+
+        XCTAssertEqual(getpgid(backgroundPID), backgroundPID)
+
+        let completed = DispatchSemaphore(value: 0)
+        let capturedError = LockedRuntimeErrorBox()
+        let backgroundGroupStateAtReturn = LockedInt32Box()
+        DispatchQueue.global().async {
+            do {
+                try runtime.terminateSession(id: id, exitCode: nil)
+                backgroundGroupStateAtReturn.store(
+                    holoscape_process_group_has_live_member(backgroundPID, -1)
+                )
+            } catch {
+                capturedError.store(error)
+            }
+            completed.signal()
+        }
+
+        XCTAssertEqual(completed.wait(timeout: .now() + 1.5), .success)
+        XCTAssertNil(capturedError.value)
+        XCTAssertEqual(
+            backgroundGroupStateAtReturn.value,
+            0,
+            "termination returned while a descriptorless same-session background group was live"
+        )
+        XCTAssertTrue(
+            waitForProcessToExit(backgroundPID),
+            "termination left descriptorless background PID \(backgroundPID) running"
+        )
+    }
+
+    func testNaturalLeaderCleanupFailureRetainsAuthorityForSafeRetry() throws {
+        let signaler = FailFirstProcessGroupSignaler(failureErrno: EIO)
+        let runtime = NativePTYBrokerSessionRuntime(processGroupSignal: signaler.signal)
+        let id = BrokerSessionID(rawValue: "natural-exit-cleanup-failure-native-pty-runtime-test")
+        let python = "import os,signal,time; "
+            + "signal.signal(signal.SIGHUP,signal.SIG_IGN); "
+            + "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            + "os.setpgid(0,0); os.kill(os.getppid(),signal.SIGUSR1); "
+            + "print(f'ORPHAN_READY:{os.getpid()}',flush=True); time.sleep(30)"
+        let request = BrokerSessionLaunchRequest(
+            command: "/bin/sh",
+            arguments: [
+                "-c",
+                "ready=0; trap 'ready=1' USR1; /usr/bin/python3 -c \"\(python)\" & "
+                    + "while [ \"$ready\" -eq 0 ]; do :; done; exit 0"
             ],
             workingDirectory: "/tmp",
             environmentProfile: .shell,
@@ -1585,7 +1654,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             if cleanupError == nil { usleep(10_000) }
         }
         guard case let .terminationFailed(failedID, reason) = cleanupError as? NativePTYBrokerSessionRuntime.RuntimeError else {
-            return XCTFail("Expected loud automatic cleanup failure, got \(String(describing: cleanupError))")
+            return XCTFail(
+                "Expected loud automatic cleanup failure, got \(String(describing: cleanupError)); "
+                    + "signal calls: \(signaler.callCount)"
+            )
         }
         XCTAssertEqual(failedID, id)
         XCTAssertTrue(reason.contains("Input/output error"), reason)
@@ -2683,6 +2755,7 @@ private final class ProcessWaitOrderingProbe: @unchecked Sendable {
 private final class FailFirstProcessGroupSignaler: @unchecked Sendable {
     private let lock = NSLock()
     private var shouldFail = true
+    private var storedCallCount = 0
     private var lastProcessGroupID: pid_t?
     private let failureErrno: Int32
 
@@ -2690,8 +2763,13 @@ private final class FailFirstProcessGroupSignaler: @unchecked Sendable {
         self.failureErrno = failureErrno
     }
 
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
     func signal(_ processGroupID: pid_t, _ signal: Int32) -> Int32 {
         lock.lock()
+        storedCallCount += 1
         lastProcessGroupID = processGroupID
         if shouldFail {
             shouldFail = false

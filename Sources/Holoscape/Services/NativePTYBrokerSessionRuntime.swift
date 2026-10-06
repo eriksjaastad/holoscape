@@ -126,46 +126,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         if lock.withLock({ cleanupComplete }) { return 0 }
-
-        var foreground: pid_t = 0
-        let foregroundError = holoscape_get_foreground_process_group(
-            masterDescriptor,
-            processIdentifier,
-            &foreground
-        )
-        if foregroundError == 0, foreground > 0 {
-            lock.withLock { retainedForegroundProcessGroupID = foreground }
-        } else if foregroundError != ESRCH {
-            return foregroundError
-        }
-
-        let retainedForegroundResult = validatedRetainedForegroundProcessGroup()
-        if let validationError = retainedForegroundResult.error { return validationError }
-        let retainedForeground = retainedForegroundResult.processGroupID
-        let leaderExitObserved = lock.withLock { exitObserved }
-        if let retainedForeground, retainedForeground != processGroupID {
-            let error = signalProcessGroup(retainedForeground, signal)
-            if error != 0, error != ESRCH {
-                return error
-            }
-        }
-        let launchError = signalProcessGroup(processGroupID, signal)
-        let leaderExitedDuringSignal = lock.withLock { exitObserved }
-        let kernelObservedExit = launchError == EPERM
-            && holoscape_process_exit_observed(processIdentifier) == 1
-        let launchGroupLiveMemberResult = launchError == EPERM
-            ? holoscape_process_group_has_live_member(processGroupID, processIdentifier)
-            : 0
-        if launchGroupLiveMemberResult < 0 {
-            return -launchGroupLiveMemberResult
-        }
-        if launchError == ESRCH
-            || ((leaderExitObserved || leaderExitedDuringSignal || kernelObservedExit)
-                && launchError == EPERM
-                && launchGroupLiveMemberResult == 0) {
-            return 0
-        }
-        return launchError
+        return signalLiveSessionProcessGroups(signal, signalProcessGroup: signalProcessGroup)
     }
 
     func retryObservedExitCleanup(
@@ -194,49 +155,9 @@ final class NativePTYChildProcess: @unchecked Sendable {
         defer { lifecycleLock.unlock() }
         if lock.withLock({ cleanupComplete }) { return terminationObservation }
 
-        let foregroundResult = validatedRetainedForegroundProcessGroup()
-        if let validationError = foregroundResult.error {
-            return TerminationObservation(
-                status: nil,
-                waitError: validationError,
-                foregroundProcessGroupID: foregroundResult.processGroupID
-            )
-        }
-        let foreground = foregroundResult.processGroupID
-        if let foreground, foreground != processGroupID {
-            let foregroundSignalError = signalProcessGroup(foreground, SIGKILL)
-            if foregroundSignalError != 0,
-               foregroundSignalError != ESRCH {
-                return TerminationObservation(
-                    status: nil,
-                    waitError: foregroundSignalError,
-                    foregroundProcessGroupID: foreground
-                )
-            }
-        }
-        let launchSignalError = signalProcessGroup(processGroupID, SIGKILL)
-        let launchGroupLiveMemberResult = launchSignalError == EPERM
-            ? holoscape_process_group_has_live_member(processGroupID, processIdentifier)
-            : 0
-        if launchGroupLiveMemberResult < 0 {
-            return TerminationObservation(
-                status: nil,
-                waitError: -launchGroupLiveMemberResult,
-                foregroundProcessGroupID: foreground
-            )
-        }
-        if launchSignalError != 0,
-           launchSignalError != ESRCH,
-           !(launchSignalError == EPERM && launchGroupLiveMemberResult == 0) {
-            return TerminationObservation(
-                status: nil,
-                waitError: launchSignalError,
-                foregroundProcessGroupID: foreground
-            )
-        }
-
-        if let barrierError = waitForOwnedProcessGroupsToExit(
-            foregroundProcessGroupID: foreground,
+        let foreground = lock.withLock { retainedForegroundProcessGroupID }
+        if let barrierError = killLiveSessionProcessGroupsUntilExit(
+            signalProcessGroup: signalProcessGroup,
             timeoutMilliseconds: cleanupTimeoutMilliseconds
         ) {
             return TerminationObservation(
@@ -273,49 +194,69 @@ final class NativePTYChildProcess: @unchecked Sendable {
         )
     }
 
-    private func validatedRetainedForegroundProcessGroup() -> (processGroupID: pid_t?, error: Int32?) {
-        guard let foreground = lock.withLock({ retainedForegroundProcessGroupID }) else {
-            return (nil, nil)
-        }
-        let validation = holoscape_validate_process_group_session(foreground, processIdentifier)
-        if validation < 0 {
-            return (foreground, -validation)
-        }
-        guard validation > 0 else {
-            return (nil, nil)
-        }
-        return (foreground, nil)
+    private func copyLiveSessionProcessGroups() -> (groups: [pid_t], error: Int32?) {
+        var pointer: UnsafeMutablePointer<pid_t>?
+        var count = 0
+        let copyError = holoscape_copy_live_session_process_groups(
+            processIdentifier,
+            &pointer,
+            &count
+        )
+        defer { holoscape_free_process_group_ids(pointer) }
+        guard copyError == 0 else { return ([], copyError) }
+        guard let pointer, count > 0 else { return ([], nil) }
+        return (Array(UnsafeBufferPointer(start: pointer, count: count)), nil)
     }
 
-    private func waitForOwnedProcessGroupsToExit(
-        foregroundProcessGroupID: pid_t?,
+    private func signalLiveSessionProcessGroups(
+        _ signal: Int32,
+        signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
+    ) -> Int32 {
+        let snapshot = copyLiveSessionProcessGroups()
+        if let snapshotError = snapshot.error { return snapshotError }
+        return signalValidatedProcessGroups(
+            snapshot.groups,
+            signal: signal,
+            signalProcessGroup: signalProcessGroup
+        )
+    }
+
+    private func signalValidatedProcessGroups(
+        _ processGroupIDs: [pid_t],
+        signal: Int32,
+        signalProcessGroup: @Sendable (pid_t, Int32) -> Int32
+    ) -> Int32 {
+        for processGroupID in processGroupIDs {
+            // The unreaped session leader keeps the session identifier from being
+            // reused. Revalidate each enumerated group immediately before signaling
+            // so a disappeared/reused PGID is never trusted from a stale snapshot.
+            let validation = holoscape_validate_process_group_session(
+                processGroupID,
+                processIdentifier
+            )
+            if validation < 0 { return -validation }
+            if validation == 0 { continue }
+            let signalError = signalProcessGroup(processGroupID, signal)
+            if signalError != 0, signalError != ESRCH { return signalError }
+        }
+        return 0
+    }
+
+    private func killLiveSessionProcessGroupsUntilExit(
+        signalProcessGroup: @Sendable (pid_t, Int32) -> Int32,
         timeoutMilliseconds: Int
     ) -> Int32? {
         let deadline = DispatchTime.now() + .milliseconds(timeoutMilliseconds)
         while true {
-            let launchGroupResult = holoscape_process_group_has_live_member(
-                processGroupID,
-                processIdentifier
+            let snapshot = copyLiveSessionProcessGroups()
+            if let snapshotError = snapshot.error { return snapshotError }
+            if snapshot.groups.isEmpty { return nil }
+            let signalError = signalValidatedProcessGroups(
+                snapshot.groups,
+                signal: SIGKILL,
+                signalProcessGroup: signalProcessGroup
             )
-            if launchGroupResult < 0 {
-                return -launchGroupResult
-            }
-
-            var foregroundGroupResult: Int32 = 0
-            if let foregroundProcessGroupID,
-               foregroundProcessGroupID != processGroupID {
-                foregroundGroupResult = holoscape_process_group_has_live_session_member(
-                    foregroundProcessGroupID,
-                    processIdentifier
-                )
-                if foregroundGroupResult < 0 {
-                    return -foregroundGroupResult
-                }
-            }
-
-            if launchGroupResult == 0, foregroundGroupResult == 0 {
-                return nil
-            }
+            if signalError != 0 { return signalError }
             if DispatchTime.now() >= deadline {
                 return ETIMEDOUT
             }
@@ -1539,9 +1480,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         if installsOutputReadabilityHandler {
             session.startOutputMonitoring()
         }
-        // forkpty creates a session leader with the slave PTY as its controlling
-        // terminal. Its process group and any same-session foreground group are
-        // retained as cleanup authority until the leader is safely reaped.
+        // forkpty creates the session leader. WNOWAIT keeps that PID reserved as
+        // session identity and cleanup authority until every same-session group
+        // has disappeared and the leader is safely reaped.
         process.startWaiting(
             signalProcessGroup: processGroupSignal,
             cleanupTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
