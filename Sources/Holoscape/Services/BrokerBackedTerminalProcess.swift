@@ -853,6 +853,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         guard brokerSessionID == pending.sessionID,
               pendingExitedOutputRetirement?.sessionID == pending.sessionID else { return }
         exitedOutputRetirementInFlight = false
+        // Teardown suppresses the ordinary activation completion while this
+        // cleanup owns the exited session. The controller still needs one final
+        // ownership publication before quit persists state: success clears the
+        // retired ID, while cleanup failure keeps the retryable ID authoritative.
+        let teardownSuppressedStartCompletion = !exitedOutputTeardownCompletions.isEmpty
+            && !startCompletionPending
 
         let completionWarning = retirementError.flatMap {
             isCompletedRetirementWarning($0) ? $0 : nil
@@ -875,6 +881,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
         completeReattachStartIfNeeded(notifyStartCompletion)
+        if teardownSuppressedStartCompletion {
+            startCompletionHandler?()
+        }
         finishExitedOutputResolution()
     }
 

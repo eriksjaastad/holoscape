@@ -3272,6 +3272,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             existingBrokerSessionID: coordinator.sessionID,
             coordinator: coordinator
         )
+        var startCompletionIdentities: [BrokerSessionID?] = []
+        var lifecycleEvents: [String] = []
+        terminal.setStartCompletionHandler {
+            startCompletionIdentities.append(terminal.brokerSessionID)
+            lifecycleEvents.append("ownership")
+        }
 
         terminal.startProcess(
             executable: "/bin/zsh",
@@ -3283,12 +3289,17 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.outputReadCount == 1 }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession {
+            teardownCompleted = true
+            lifecycleEvents.append("teardown")
+        }
         XCTAssertFalse(teardownCompleted)
         coordinator.finishOutputRead()
 
         try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(startCompletionIdentities, [nil])
+        XCTAssertEqual(lifecycleEvents, ["ownership", "teardown"])
         XCTAssertTrue(terminal.startFailureDescription?.contains("outputReadFailed") == true)
     }
 
@@ -3304,6 +3315,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             existingBrokerSessionID: coordinator.sessionID,
             coordinator: coordinator
         )
+        var startCompletionIdentities: [BrokerSessionID?] = []
+        var lifecycleEvents: [String] = []
+        terminal.setStartCompletionHandler {
+            startCompletionIdentities.append(terminal.brokerSessionID)
+            lifecycleEvents.append("ownership")
+        }
 
         terminal.startProcess(
             executable: "/bin/zsh",
@@ -3315,12 +3332,17 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.acknowledgedGenerations == [24] }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession {
+            teardownCompleted = true
+            lifecycleEvents.append("teardown")
+        }
         XCTAssertFalse(teardownCompleted)
         coordinator.finishAcknowledgement()
 
         try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(startCompletionIdentities, [nil])
+        XCTAssertEqual(lifecycleEvents, ["ownership", "teardown"])
         XCTAssertTrue(terminal.startFailureDescription?.contains("outputAcknowledgementFailed") == true)
     }
 
