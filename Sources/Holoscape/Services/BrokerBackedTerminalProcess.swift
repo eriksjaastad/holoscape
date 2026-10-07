@@ -95,7 +95,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// Teardown waits for this authority to resolve instead of revoking the
     /// presentation lease and allowing the outcome to disappear with the tab.
     private var exitedOutputResolutionInFlight = false
-    private var exitedOutputTeardownCompletions: [@MainActor () -> Void] = []
+    private var exitedOutputTeardownCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
     private var runningSessionTeardownProbeInFlight = false
     private var restartAfterRunningSessionTeardown: (@MainActor () -> Void)?
     /// A denied quit can re-enable reconnect while exited-output cleanup still
@@ -173,10 +173,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             restartAfterRunningSessionTeardown = { [weak self] in
                 guard let self else { return }
                 self.startCompletionPending = false
-                self.continueStartProcess(
+                // Re-enter the complete start gate after teardown. The probe may
+                // have discovered an exited session and published retryable
+                // retirement authority while this reconnect was queued.
+                self.startProcess(
                     executable: executable,
                     args: args,
                     environment: environment,
+                    execName: execName,
                     currentDirectory: currentDirectory
                 )
                 if !self.startCompletionPending {
@@ -1045,7 +1049,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         let completions = exitedOutputTeardownCompletions
         exitedOutputTeardownCompletions.removeAll()
-        completions.forEach { $0() }
+        let outcome = currentCleanupOutcome()
+        completions.forEach { $0(outcome) }
         if notifyStartAfterExitedOutputResolution {
             publishInterruptedExitedOutputRecoveryIfNeeded()
             notifyStartAfterExitedOutputResolution = false
@@ -1197,6 +1202,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
+        detachBrokerSessionInternal { _ in completion() }
+    }
+
+    func detachBrokerSessionForCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSessionInternal(completion: completion)
+    }
+
+    private func detachBrokerSessionInternal(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         // A host reattach may still be executing off-main. Invalidate its token
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
@@ -1208,7 +1225,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // denied) supersedes any reconnect queued while cleanup was live.
             // Never launch a replacement after termination authority completes.
             restartAfterCancelledFreshStart = nil
-            freshStartTeardownCompletions.append(completion)
+            freshStartTeardownCompletions.append { completion(.completed) }
             return
         }
         if runningSessionTeardownProbeInFlight {
@@ -1311,10 +1328,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     if let error {
                         NSLog("Broker-backed terminal detach failed: \(error)")
                     }
-                    DispatchQueue.main.async { completion() }
+                    DispatchQueue.main.async { [self] in
+                        if let error {
+                            completion(.retryableFailure(cleanupFailure(from: error)))
+                        } else {
+                            completion(.completed)
+                        }
+                    }
                 }
                 return
             }
+            var detachError: Error?
             do {
                 _ = try coordinator.detach(brokerSessionID)
             } catch {
@@ -1324,12 +1348,19 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // record from `ChannelManager.saveState` is what the next launch
                 // reads, so report loudly and leave it reattachable for reconcile.
                 NSLog("Broker-backed terminal detach failed: \(error)")
+                detachError = error
             }
+            if let detachError {
+                completion(.retryableFailure(cleanupFailure(from: detachError)))
+            } else {
+                completion(.completed)
+            }
+            return
         } else if let untrackedBrokerSessionID {
-            retireUntrackedForTeardown(untrackedBrokerSessionID, completion: completion)
+            retireUntrackedForTeardown(untrackedBrokerSessionID) { completion(.completed) }
             return
         }
-        completion()
+        completion(.completed)
     }
 
     private func finishRunningSessionTeardownProbe(error: Error?) {
@@ -1355,7 +1386,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 NSLog("Broker-backed terminal detach failed: \(error)")
             }
             DispatchQueue.main.async { [self] in
-                finishRunningSessionTeardown()
+                finishRunningSessionTeardown(detachError: error)
             }
         }
         if coordinator.requiresOffMainBrokerWork {
@@ -1370,11 +1401,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func finishRunningSessionTeardown() {
+    private func finishRunningSessionTeardown(detachError: Error? = nil) {
         let completions = exitedOutputTeardownCompletions
         exitedOutputTeardownCompletions.removeAll()
         runningSessionTeardownProbeInFlight = false
-        completions.forEach { $0() }
+        let outcome = detachError.map { TerminalCleanupOutcome.retryableFailure(cleanupFailure(from: $0)) }
+            ?? currentCleanupOutcome()
+        completions.forEach { $0(outcome) }
         if let restartAfterRunningSessionTeardown {
             self.restartAfterRunningSessionTeardown = nil
             restartAfterRunningSessionTeardown()
@@ -1382,6 +1415,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             startCompletionPending = false
             startCompletionHandler?()
         }
+    }
+
+    private func currentCleanupOutcome() -> TerminalCleanupOutcome {
+        guard pendingExitedOutputRetirement != nil else { return .completed }
+        return .retryableFailure(TerminalSessionFailure(
+            kind: startFailureKind ?? .failed,
+            description: startFailureDescription ?? "Completed broker session retirement remains pending"
+        ))
+    }
+
+    private func cleanupFailure(from error: Error) -> TerminalSessionFailure {
+        TerminalSessionFailure(
+            kind: classifyStartFailure(error),
+            description: String(describing: error)
+        )
     }
 
     func pollOutputOnce() {

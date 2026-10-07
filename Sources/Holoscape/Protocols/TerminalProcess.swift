@@ -42,6 +42,12 @@ protocol TerminalProcess: AnyObject {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
     func detachBrokerSession(completion: @escaping @MainActor () -> Void)
+    /// Detach for a presentation-hidden close and report whether cleanup is
+    /// durably complete. A retryable failure must keep the close tombstone and
+    /// broker identity persisted so a later launch can resume cleanup.
+    func detachBrokerSessionForCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Persist host-reported cwd truth with the process owner. Direct terminals
     /// do not own durable metadata and therefore use the default no-op.
     func updateWorkingDirectory(_ directory: String) throws
@@ -109,6 +115,11 @@ struct TerminalSessionFailure: Equatable, Sendable {
     let description: String
 }
 
+enum TerminalCleanupOutcome: Equatable, Sendable {
+    case completed
+    case retryableFailure(TerminalSessionFailure)
+}
+
 extension TerminalProcess {
     func resumeBrokerSessionForCleanup() {}
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
@@ -117,6 +128,11 @@ extension TerminalProcess {
     func setStartCompletionHandler(_ handler: (() -> Void)?) {}
     var completesStartAsynchronously: Bool { false }
     func detachBrokerSession(completion: @escaping @MainActor () -> Void) { completion() }
+    func detachBrokerSessionForCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSession { completion(.completed) }
+    }
     func detachBrokerSession() { detachBrokerSession(completion: {}) }
     func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}

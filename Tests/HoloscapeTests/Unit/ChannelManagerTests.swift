@@ -99,10 +99,12 @@ final class ChannelManagerTests: XCTestCase {
         private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
         var defersDetachCompletion = false
         var defersStartCompletion = false
+        var cleanupOutcome: TerminalCleanupOutcome = .completed
         private(set) var startCallCount = 0
         private(set) var detachCallCount = 0
         private var startCompletionHandler: (() -> Void)?
         private var detachCompletions: [@MainActor () -> Void] = []
+        private var cleanupDetachCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
         init(
@@ -145,6 +147,16 @@ final class ChannelManagerTests: XCTestCase {
                 completion()
             }
         }
+        func detachBrokerSessionForCleanup(
+            completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+        ) {
+            detachCallCount += 1
+            if defersDetachCompletion {
+                cleanupDetachCompletions.append(completion)
+            } else {
+                completion(cleanupOutcome)
+            }
+        }
         func finishStart() {
             defersStartCompletion = false
             startCompletionHandler?()
@@ -154,6 +166,9 @@ final class ChannelManagerTests: XCTestCase {
             let completions = detachCompletions
             detachCompletions.removeAll()
             completions.forEach { $0() }
+            let cleanupCompletions = cleanupDetachCompletions
+            cleanupDetachCompletions.removeAll()
+            cleanupCompletions.forEach { $0(cleanupOutcome) }
         }
     }
 
@@ -1393,6 +1408,122 @@ final class ChannelManagerTests: XCTestCase {
         restoredTerminal.finishDetach(with: nil)
 
         XCTAssertTrue(configService.load().channels.isEmpty)
+    }
+
+    func testRestoredCloseCleanupFailureKeepsTombstoneAndSuppressesRelaunchRecovery() throws {
+        let id = UUID()
+        let sessionID = BrokerSessionID(rawValue: "restored-close-cleanup-failure")
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: id,
+            type: .shell,
+            role: "Closed Shell",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )]
+        XCTAssertTrue(configService.save(config))
+        let terminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        terminal.cleanupOutcome = .retryableFailure(TerminalSessionFailure(
+            kind: .brokerHostUnavailable,
+            description: "cleanup detach failed"
+        ))
+        let restoredManager = ChannelManager(configService: configService)
+
+        restoredManager.restoreState { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                terminal: terminal
+            )
+        }
+
+        XCTAssertEqual(restoredManager.count, 0)
+        XCTAssertEqual(restoredManager.closePersistenceFailure, "cleanup detach failed")
+        let retained = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(retained.id, id)
+        XCTAssertEqual(retained.brokerSessionID, sessionID)
+        XCTAssertEqual(retained.closeTombstone, true)
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionRecords = [BrokerSessionRecord(
+            id: sessionID,
+            channelType: .shell,
+            label: "Closed Shell",
+            command: "/bin/zsh",
+            arguments: [],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: id
+        )]
+        let relaunchedManager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: coordinator,
+            brokerBackedShellCoordinator: coordinator
+        )
+        let relaunchedTerminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        relaunchedTerminal.cleanupOutcome = terminal.cleanupOutcome
+        relaunchedManager.restoreState { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                terminal: relaunchedTerminal
+            )
+        }
+
+        XCTAssertTrue(relaunchedManager.allChannels().isEmpty)
+        XCTAssertTrue(relaunchedManager.unmatchedBrokerBackedSessionsToRestore().isEmpty)
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).closeTombstone, true)
+    }
+
+    func testRestoredAgentCloseCleanupFailureKeepsCredentiallessTombstone() throws {
+        let id = UUID()
+        let sessionID = BrokerSessionID(rawValue: "restored-agent-cleanup-failure")
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: id,
+            type: .agentAPI,
+            role: "Closed API Agent",
+            command: "claude",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )]
+        XCTAssertTrue(configService.save(config))
+        let terminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        terminal.cleanupOutcome = .retryableFailure(TerminalSessionFailure(
+            kind: .failed,
+            description: "cleanup reattach failed"
+        ))
+        var credentialResolutionCount = 0
+        let restoredManager = ChannelManager(configService: configService)
+
+        restoredManager.restoreState { metadata in
+            AgentChannelController(
+                id: metadata.id,
+                authType: .deferredAPIKey,
+                workingDirectory: nil,
+                userLabel: metadata.role,
+                instanceNumber: metadata.instanceNumber,
+                command: metadata.command ?? "claude",
+                terminal: terminal,
+                apiAuthTypeResolver: {
+                    credentialResolutionCount += 1
+                    throw NSError(domain: "unexpected-credential-resolution", code: 1)
+                }
+            )
+        }
+
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(restoredManager.count, 0)
+        XCTAssertEqual(restoredManager.closePersistenceFailure, "cleanup reattach failed")
+        let retained = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(retained.brokerSessionID, sessionID)
+        XCTAssertEqual(retained.closeTombstone, true)
     }
 
     func testRestoredAgentAPICloseTombstoneNeverResolvesCredentials() throws {

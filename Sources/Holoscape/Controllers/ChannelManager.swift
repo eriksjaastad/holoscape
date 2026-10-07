@@ -403,8 +403,19 @@ class ChannelManager {
                     // waits for asynchronous reattach before teardown and cannot
                     // launch a replacement process.
                     closingChannelIDs.insert(controller.channelId)
-                    controller.resumeRestoredCloseCleanup { [weak self] in
-                        self?.finishClosingChannel(id: controller.channelId)
+                    controller.resumeRestoredCloseCleanup { [weak self] outcome in
+                        guard let self else { return }
+                        switch outcome {
+                        case .completed:
+                            self.finishClosingChannel(id: controller.channelId)
+                        case .retryableFailure(let failure):
+                            let didSave = self.saveState()
+                            self.closePersistenceFailure = didSave
+                                ? failure.description
+                                : self.configService.lastDiagnostic?.message
+                                    ?? "Channel state save failed while persisting retryable cleanup failure"
+                            NSLog("ChannelManager retained closed-channel cleanup authority: \(self.closePersistenceFailure!)")
+                        }
                     }
                 }
             }

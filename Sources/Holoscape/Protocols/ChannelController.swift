@@ -23,7 +23,9 @@ protocol ChannelController: AnyObject {
     /// Resume lifecycle cleanup for a persisted, presentation-hidden close.
     /// Implementations with asynchronous attach must not detach until attach has
     /// committed, and must never launch a replacement process.
-    func resumeRestoredCloseCleanup(completion: @escaping @MainActor () -> Void)
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     func retry()
     func lastLines(_ count: Int) -> [String]
     func applyPersistentState(_ state: PersistentChannelState)
@@ -57,8 +59,10 @@ extension ChannelController {
         deactivate()
         completion()
     }
-    func resumeRestoredCloseCleanup(completion: @escaping @MainActor () -> Void) {
-        deactivate(completion: completion)
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        deactivate { completion(.completed) }
     }
 }
 

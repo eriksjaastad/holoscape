@@ -11,7 +11,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
-    private var restoredCloseCleanupCompletion: (@MainActor () -> Void)?
+    private var restoredCloseCleanupCompletion: (@MainActor (TerminalCleanupOutcome) -> Void)?
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
     var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
@@ -249,9 +249,11 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
     }
 
-    func resumeRestoredCloseCleanup(completion: @escaping @MainActor () -> Void) {
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         guard terminal.brokerOwnedSessionID != nil || terminal.pendingExitedOutputRetirement != nil else {
-            completion()
+            completion(.completed)
             return
         }
         restoredCloseCleanupCompletion = completion
@@ -265,9 +267,9 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func finishRestoredCloseCleanupStart() {
         guard let completion = restoredCloseCleanupCompletion else { return }
         restoredCloseCleanupCompletion = nil
-        terminal.detachBrokerSession { [weak self] in
+        terminal.detachBrokerSessionForCleanup { [weak self] outcome in
             self?.recordBrokerDetach()
-            completion()
+            completion(outcome)
         }
     }
 
