@@ -92,6 +92,45 @@ final class HoloscapeClientTests: XCTestCase {
         }
     }
 
+    func testEveryRequestUsesBoundedLocalAPITimeout() async throws {
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertGreaterThan(request.timeoutInterval, 0)
+            XCTAssertLessThanOrEqual(request.timeoutInterval, 10)
+            let body = request.httpMethod == "GET" ? "[]" : "{}"
+            return Self.response(statusCode: 200, body: body)
+        }
+
+        _ = try await client.listChannels()
+        _ = try await client.createChannel(type: "shell", dir: nil, label: nil, cmd: nil)
+        _ = try await client.closeChannel(id: "channel-1")
+    }
+
+    func testTransportFailureUsesStableConnectionFailedError() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            throw URLError(.cannotConnectToHost)
+        }
+
+        do {
+            _ = try await client.listChannels()
+            XCTFail("Expected connection failure")
+        } catch {
+            XCTAssertEqual(error as? HoloscapeError, .connectionFailed)
+        }
+    }
+
+    func testTaskCancellationIsNotMisreportedAsConnectionFailure() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            throw URLError(.cancelled)
+        }
+
+        do {
+            _ = try await client.listChannels()
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Expected CancellationError, got \(error)")
+        }
+    }
+
     private func assertInvalidResponse<T>(
         body: String,
         operation: () async throws -> T,

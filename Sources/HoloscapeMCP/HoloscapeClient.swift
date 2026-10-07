@@ -70,17 +70,29 @@ struct HoloscapeClient: Sendable {
         try await perform(request(path: path, method: "DELETE"))
     }
 
+    private static let localAPIRequestTimeout: TimeInterval = 5
+
     private func request(path: String, method: String) throws -> URLRequest {
         guard let url = URL(string: baseURL + path) else {
             throw HoloscapeError.invalidResponse
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = Self.localAPIRequestTimeout
         return request
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
+            throw HoloscapeError.connectionFailed
+        }
         guard let response = response as? HTTPURLResponse else {
             throw HoloscapeError.invalidResponse
         }
