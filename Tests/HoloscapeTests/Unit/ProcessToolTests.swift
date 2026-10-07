@@ -227,6 +227,98 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testCancellationSignalRetainsCloseFailureForCaller() throws {
+        enum InjectedFailure: Error { case close }
+        let pipe = Pipe()
+        defer {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+        let signal = ProcessToolCancellationSignal(
+            writeHandle: pipe.fileHandleForWriting,
+            writeOperation: { _ in },
+            closeOperation: { _ in throw InjectedFailure.close }
+        )
+
+        signal.request()
+        let outcome = signal.finish()
+
+        XCTAssertTrue(outcome.wasRequested)
+        XCTAssertTrue(outcome.signalingFailure?.contains("close failed") == true)
+    }
+
+    func testCallerDisappearanceCleansProcessTreeWithoutLeavingStatus() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-caller-loss-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let parentPIDURL = directory.appendingPathComponent("parent.pid")
+        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let statusURL = directory.appendingPathComponent("controller.status")
+        let command = """
+        zmodload zsh/zselect
+        echo $$ > \(parentPIDURL.path)
+        trap '' TERM
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while true; do zselect -t 100; done
+        """
+
+        let controller = Process()
+        let lifetimePipe = Pipe()
+        controller.executableURL = launcherExecutableURL
+        controller.arguments = ["--holoscape-process-controller", command, "2", statusURL.path]
+        controller.standardInput = lifetimePipe
+        controller.standardOutput = Pipe()
+        controller.standardError = Pipe()
+        try controller.run()
+        try lifetimePipe.fileHandleForReading.close()
+        try await waitForFiles([parentPIDURL, childPIDURL])
+        let parentPID = try pid(from: parentPIDURL)
+        let childPID = try pid(from: childPIDURL)
+        defer {
+            _ = Darwin.kill(parentPID, SIGKILL)
+            _ = Darwin.kill(childPID, SIGKILL)
+        }
+
+        let startedAt = DispatchTime.now()
+        try lifetimePipe.fileHandleForWriting.close()
+        controller.waitUntilExit()
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000_000
+
+        XCTAssertLessThan(elapsed, 1.8, "Caller loss must not wait for the configured timeout")
+        assertProcessIsGone(parentPID, "Caller loss must retire the shell")
+        assertProcessIsGone(childPID, "Caller loss must retire descendants")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: statusURL.path))
+    }
+
+    func testCallerDisappearanceAfterStatusPublicationRemovesStatus() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-late-caller-loss-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let statusURL = directory.appendingPathComponent("controller.status")
+        let controller = Process()
+        let lifetimePipe = Pipe()
+        controller.executableURL = launcherExecutableURL
+        controller.arguments = ["--holoscape-process-controller", "exit 0", "2", statusURL.path]
+        controller.standardInput = lifetimePipe
+        controller.standardOutput = Pipe()
+        controller.standardError = Pipe()
+        try controller.run()
+        try lifetimePipe.fileHandleForReading.close()
+        try await waitForFiles([statusURL])
+
+        try lifetimePipe.fileHandleForWriting.close()
+        controller.waitUntilExit()
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: statusURL.path),
+            "Caller loss after status publication must remove the unconsumed artifact"
+        )
+    }
+
     func testCancellingRunProcessToolTerminatesResistantProcessTreeBeforeReturning() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-cancellation-\(UUID().uuidString)")
@@ -281,6 +373,93 @@ final class ProcessToolTests: XCTestCase {
             [],
             "Cancellation must remove its controller status file"
         )
+    }
+
+    func testCancellationSignalFailureIsSurfacedAfterProcessCleanup() async throws {
+        enum InjectedFailure: Error { case close }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-signal-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
+        let processRequest = request(
+            command: "echo $$ > \(shellPIDURL.path); while true; do sleep 1; done",
+            timeoutSeconds: 2
+        )
+        let launcherURL = launcherExecutableURL
+        let task = Task {
+            try await runProcessTool(
+                processRequest,
+                launcherExecutableURL: launcherURL,
+                cancellationSignalFactory: { handle in
+                    ProcessToolCancellationSignal(
+                        writeHandle: handle,
+                        closeOperation: { _ in throw InjectedFailure.close }
+                    )
+                }
+            )
+        }
+        try await waitForFiles([shellPIDURL])
+        let shellPID = try pid(from: shellPIDURL)
+        defer { _ = Darwin.kill(shellPID, SIGKILL) }
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Signal failure must not report successful cancellation")
+        } catch let error as ProcessToolError {
+            guard case .cancellationSignalFailed = error else {
+                return XCTFail("Expected cancellation signal failure, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected explicit cancellation signal failure, got \(error)")
+        }
+
+        assertProcessIsGone(shellPID, "Signal close failure must not skip delivered process cleanup")
+    }
+
+    func testCancellationStatusRemovalFailureIsSurfaced() async throws {
+        enum InjectedFailure: Error { case removal }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-status-removal-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
+        let processRequest = request(
+            command: "echo $$ > \(shellPIDURL.path); while true; do sleep 1; done",
+            timeoutSeconds: 2
+        )
+        let launcherURL = launcherExecutableURL
+        let task = Task {
+            try await runProcessTool(
+                processRequest,
+                launcherExecutableURL: launcherURL,
+                temporaryDirectoryURL: directory,
+                statusRemover: { _ in throw InjectedFailure.removal }
+            )
+        }
+        try await waitForFiles([shellPIDURL])
+        let shellPID = try pid(from: shellPIDURL)
+        defer { _ = Darwin.kill(shellPID, SIGKILL) }
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Status removal failure must not report successful cancellation")
+        } catch let error as ProcessToolError {
+            guard case .statusCleanupFailed = error else {
+                return XCTFail("Expected status cleanup failure, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected explicit status cleanup failure, got \(error)")
+        }
+
+        assertProcessIsGone(shellPID, "Status cleanup failure must not skip process cleanup")
+        let residue = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasSuffix(".status") }
+        XCTAssertEqual(residue.count, 1, "Injected removal failure must exercise a real status artifact")
     }
 
     func testCancellationRaceWithImmediateCompletionResolvesOnce() async throws {
