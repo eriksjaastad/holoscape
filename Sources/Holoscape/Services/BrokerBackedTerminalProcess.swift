@@ -1147,6 +1147,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // that already stopped is drained, acknowledged, finalized, and
             // retired before teardown releases its cleanup owner. This is required
             // for both signal-driven and production periodic polling.
+            //
+            // Ordinary run operations use the delivery lease too. Revoke it
+            // before the asynchronous probe so a delayed resize/input failure
+            // cannot publish after close or quit begins. Exit resolution keeps its
+            // independent claim and remains authorized to drain final bytes.
+            revokeOutputDeliveryOwnership()
             sessionIOReady = false
             stopOutputPump()
             exitedOutputResolutionInFlight = true

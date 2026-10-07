@@ -27,6 +27,10 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
     let staleBrokerSessionID: BrokerSessionID?
     /// Retry-only cleanup authority for already-presented final broker output.
     let pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
+    /// Durable presentation tombstone for a tab the user already closed while
+    /// completed-session cleanup still owns retryable broker authority. These
+    /// records restore only to finish cleanup and must never reappear as tabs.
+    let closeTombstone: Bool?
 
     init(id: UUID, type: ChannelType, role: String, context: String? = nil,
          instanceNumber: Int? = nil, useRawLabel: Bool? = nil, workingDirectory: String? = nil,
@@ -36,7 +40,8 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
          pinnedAt: Date? = nil, persistentState: PersistentChannelState? = nil,
          brokerSessionID: BrokerSessionID? = nil,
          staleBrokerSessionID: BrokerSessionID? = nil,
-         pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil) {
+         pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
+         closeTombstone: Bool? = nil) {
         self.id = id
         self.type = type
         self.role = role
@@ -56,5 +61,6 @@ struct ChannelMetadata: Codable, Equatable, Sendable {
         self.brokerSessionID = brokerSessionID
         self.staleBrokerSessionID = staleBrokerSessionID
         self.pendingExitedOutputRetirement = pendingExitedOutputRetirement
+        self.closeTombstone = closeTombstone
     }
 }

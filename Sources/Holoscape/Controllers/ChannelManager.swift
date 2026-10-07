@@ -176,7 +176,10 @@ class ChannelManager {
         // startup created the process but registry persistence and rollback both
         // failed. Give every controller its teardown opportunity; deactivate is
         // idempotent for ordinary disconnected channels.
-        let channels = allChannels()
+        // Closing channels are hidden presentation state, not released lifecycle
+        // authority. Include them so quit cannot save and reply before an
+        // in-flight close has published its final cleanup truth.
+        let channels = channelOrder.compactMap { self.channels[$0] }
         guard !channels.isEmpty else {
             completion()
             return
@@ -319,7 +322,8 @@ class ChannelManager {
                 persistentState: channel.persistentState,
                 brokerSessionID: brokerSessionID,
                 staleBrokerSessionID: staleBrokerSessionID,
-                pendingExitedOutputRetirement: pendingExitedOutputRetirement
+                pendingExitedOutputRetirement: pendingExitedOutputRetirement,
+                closeTombstone: closingChannelIDs.contains(id) ? true : nil
             )
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
@@ -337,6 +341,12 @@ class ChannelManager {
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         for metadata in config.channels {
+            // A close tombstone is valid only while it carries the retry-only
+            // authority that justified retaining the otherwise closed model.
+            guard metadata.closeTombstone != true || metadata.pendingExitedOutputRetirement != nil else {
+                NSLog("ChannelManager skipped malformed close tombstone without cleanup authority: \(metadata.id)")
+                continue
+            }
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
@@ -357,6 +367,16 @@ class ChannelManager {
                 if let pinnedAt = metadata.pinnedAt {
                     pinnedChannelIds.insert(controller.channelId)
                     pinnedTimestamps[controller.channelId] = pinnedAt
+                }
+                if metadata.closeTombstone == true {
+                    // Restore cleanup authority without restoring presentation.
+                    // AppDelegate leaves tombstones inactive so registration
+                    // precedes either synchronous or asynchronous cleanup truth.
+                    closingChannelIDs.insert(controller.channelId)
+                    controller.activate()
+                    controller.deactivate { [weak self] in
+                        self?.finishClosingChannel(id: controller.channelId)
+                    }
                 }
             }
         }

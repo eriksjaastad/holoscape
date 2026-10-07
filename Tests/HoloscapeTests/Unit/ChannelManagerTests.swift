@@ -90,7 +90,7 @@ final class ChannelManagerTests: XCTestCase {
         let brokerOwnedSessionID: BrokerSessionID?
         private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
         var defersDetachCompletion = false
-        private var detachCompletion: (@MainActor () -> Void)?
+        private var detachCompletions: [@MainActor () -> Void] = []
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
         init(
@@ -119,16 +119,16 @@ final class ChannelManagerTests: XCTestCase {
         func lastLines(_ count: Int) -> [String] { [] }
         func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
             if defersDetachCompletion {
-                detachCompletion = completion
+                detachCompletions.append(completion)
             } else {
                 completion()
             }
         }
         func finishDetach(with pending: BrokerExitedOutputRetirement?) {
             pendingExitedOutputRetirement = pending
-            let completion = detachCompletion
-            detachCompletion = nil
-            completion?()
+            let completions = detachCompletions
+            detachCompletions.removeAll()
+            completions.forEach { $0() }
         }
     }
 
@@ -1284,6 +1284,85 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(saved.id, channel.channelId)
         XCTAssertEqual(saved.brokerSessionID, sessionID)
         XCTAssertEqual(saved.pendingExitedOutputRetirement, pending)
+        XCTAssertEqual(saved.closeTombstone, true)
+    }
+
+    func testAppTerminationWaitsForClosingChannelTeardown() throws {
+        let sessionID = BrokerSessionID(rawValue: "closing-quit-barrier")
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: "retirement failed during close",
+            outputFailureKind: .failed,
+            observedExitCode: 4
+        )
+        let terminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        terminal.defersDetachCompletion = true
+        let channel = manager.createChannel(type: .shell, role: "Closing", workingDirectory: nil) {
+            id, _, label, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: label,
+                terminal: terminal
+            )
+        }
+        channel.activate()
+        manager.closeChannel(id: channel.channelId)
+        var quitBarrierCompleted = false
+
+        manager.detachAllChannelsForAppTermination {
+            quitBarrierCompleted = true
+        }
+
+        XCTAssertFalse(quitBarrierCompleted)
+        terminal.finishDetach(with: pending)
+        XCTAssertTrue(quitBarrierCompleted)
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).closeTombstone, true)
+    }
+
+    func testRestoredCloseTombstoneStaysHiddenAndRemovesItselfAfterCleanup() throws {
+        let id = UUID()
+        let sessionID = BrokerSessionID(rawValue: "restored-close-tombstone")
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: "retry retirement after relaunch",
+            outputFailureKind: .failed,
+            observedExitCode: 6
+        )
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: id,
+            type: .shell,
+            role: "Closed Shell",
+            brokerSessionID: sessionID,
+            pendingExitedOutputRetirement: pending,
+            closeTombstone: true
+        )]
+        XCTAssertTrue(configService.save(config))
+        let restoredTerminal = StubTerminalProcess(
+            brokerOwnedSessionID: sessionID,
+            pendingExitedOutputRetirement: pending
+        )
+        restoredTerminal.defersDetachCompletion = true
+        let restoredManager = ChannelManager(configService: configService)
+
+        restoredManager.restoreState { metadata in
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                terminal: restoredTerminal
+            )
+        }
+
+        XCTAssertEqual(restoredManager.count, 0)
+        XCTAssertTrue(restoredManager.allChannels().isEmpty)
+        XCTAssertNil(restoredManager.channel(for: id))
+        XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).closeTombstone, true)
+
+        restoredTerminal.finishDetach(with: nil)
+
+        XCTAssertTrue(configService.load().channels.isEmpty)
     }
 
     func testCloseChannelRemovesFromRegistry() {

@@ -460,6 +460,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         _ metadata: ChannelMetadata,
         hasResolvedBrokerSession: Bool = false
     ) -> Bool {
+        // ChannelManager owns cleanup-only restoration after registering the
+        // hidden tombstone, so synchronous cleanup cannot escape persistence.
+        if metadata.closeTombstone == true {
+            return false
+        }
         // Retirement-only authority performs broker cleanup, not an agent
         // launch, and must run even when an API credential is unavailable.
         if metadata.pendingExitedOutputRetirement != nil {

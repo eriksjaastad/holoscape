@@ -1490,16 +1490,25 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             coordinator: coordinator
         )
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
-        try waitUntil { terminal.brokerSessionID != nil }
+        try waitUntil { terminal.brokerSessionID != nil && !terminal.completesStartAsynchronously }
         let sessionID = try XCTUnwrap(terminal.brokerSessionID)
         var failures: [TerminalSessionFailure] = []
         terminal.setSessionFailureHandler { failures.append($0) }
 
         terminal.resizeToCurrentGrid()
         XCTAssertTrue(coordinator.waitForResize())
+        coordinator.blockOutputSnapshot()
+        terminal.setOutputHandler {}
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
         let detached = expectation(description: "resize owner detached")
         terminal.detachBrokerSession { detached.fulfill() }
         coordinator.finishResize()
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertNil(terminal.sessionFailure)
+        XCTAssertTrue(failures.isEmpty, "A delayed operation failure must lose ownership as soon as teardown begins")
+
+        coordinator.finishOutputSnapshot()
         wait(for: [detached], timeout: 1)
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
 
