@@ -3610,8 +3610,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         coordinator.finishOutputRead()
         try waitUntil { !terminal.completesStartAsynchronously }
 
-        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
-        XCTAssertTrue(coordinator.retiredSessionIDs.isEmpty)
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
         XCTAssertEqual(terminal.startFailureKind, .failed)
         XCTAssertTrue(terminal.startFailureDescription?.contains("interrupted by teardown") == true)
     }
@@ -4175,10 +4175,11 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             restoredTerminal.pendingExitedOutputRetirement?.sessionID,
             coordinator.sessionID
         )
+        XCTAssertEqual(restoredTerminal.pendingExitedOutputRetirement?.observedExitCode, 9)
         XCTAssertEqual(exits, [9], "Observed process exit must reach the controller even when retirement remains retryable")
     }
 
-    func testExitedFinalDrainDoesNotRetireAfterTeardownRevokesDelivery() throws {
+    func testExitedFinalDrainRetiresAfterTeardownRevokesPresentation() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.blockOutputRead()
         let restoredTerminal = BrokerBackedTerminalProcess(
@@ -4210,10 +4211,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         wait(for: [detached], timeout: 1)
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
 
-        XCTAssertEqual(coordinator.retiredSessionIDs, [])
-        XCTAssertEqual(events, [])
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(events, ["exit:9"])
         XCTAssertFalse(restoredTerminal.lastLines(20).joined(separator: "\n").contains("detached-final-overflow"))
-        XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 
     func testCorruptScrollbackReplayDoesNotFailSuccessfulReattach() throws {

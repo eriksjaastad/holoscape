@@ -628,8 +628,36 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // not be rendered after teardown. A failed read, however, owns
                 // completed-session retirement independently of that lease.
                 guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
-                    self.completeReattachStartIfNeeded(notifyStartCompletion)
-                    self.finishExitedOutputResolution()
+                    if let generation = snapshot.generation {
+                        self.startCompletionPending = true
+                        self.failureRecoveryCoordinator.acknowledgeOutput(record.id, through: generation) { error in
+                            DispatchQueue.main.async {
+                                guard self.brokerSessionID == record.id else { return }
+                                if let error {
+                                    self.retireExitedSessionAfterOutputFailure(
+                                        record.id,
+                                        error: error,
+                                        observedExitCode: exitCode,
+                                        notifyStartCompletion: false
+                                    )
+                                } else {
+                                    self.retireExitedSession(
+                                        record,
+                                        exitCode: exitCode,
+                                        deliveryGeneration: deliveryGeneration,
+                                        notifyStartCompletion: false
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        self.retireExitedSession(
+                            record,
+                            exitCode: exitCode,
+                            deliveryGeneration: deliveryGeneration,
+                            notifyStartCompletion: false
+                        )
+                    }
                     return
                 }
                 self.handleOutputPumpSample(snapshot.data, for: record.id)
@@ -731,7 +759,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.retainExitedOutputRetirement(
                             sessionID: record.id,
                             failureDescription: combined.description,
-                            failureKind: .failed
+                            failureKind: .failed,
+                            observedExitCode: exitCode
                         )
                         self.publishSessionFailure(
                             TerminalSessionFailure(kind: .failed, description: combined.description)
@@ -741,7 +770,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.retainExitedOutputRetirement(
                             sessionID: record.id,
                             failureDescription: String(describing: error),
-                            failureKind: self.classifyStartFailure(error)
+                            failureKind: self.classifyStartFailure(error),
+                            observedExitCode: exitCode
                         )
                         self.failExitedOutputDelivery(error, notifyStartCompletion: retirementNotifiesStart)
                     }

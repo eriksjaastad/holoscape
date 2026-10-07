@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class ChannelManagerTests: XCTestCase {
+    private final class ControllableConfigService: ConfigService {
+        var shouldFailSaves = false
+
+        override func save(_ config: HoloscapeConfig) -> Bool {
+            shouldFailSaves ? false : super.save(config)
+        }
+    }
+
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
         struct StartCall: Equatable {
             let request: BrokerSessionLaunchRequest
@@ -1363,6 +1371,70 @@ final class ChannelManagerTests: XCTestCase {
         restoredTerminal.finishDetach(with: nil)
 
         XCTAssertTrue(configService.load().channels.isEmpty)
+    }
+
+    func testClosePersistenceFailureRetainsHiddenRemovalUntilRetrySucceeds() throws {
+        let service = ControllableConfigService(configDir: temporaryConfigDirectory)
+        let closeManager = ChannelManager(configService: service)
+        let channel = closeManager.createChannel(type: .shell, role: "Close Save Retry", workingDirectory: nil) {
+            id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        }
+        XCTAssertTrue(closeManager.saveState())
+        service.shouldFailSaves = true
+
+        closeManager.closeChannel(id: channel.channelId)
+
+        XCTAssertEqual(closeManager.count, 0)
+        XCTAssertNil(closeManager.channel(for: channel.channelId))
+        XCTAssertNotNil(closeManager.closePersistenceFailure)
+        XCTAssertEqual(service.load().channels.map(\.id), [channel.channelId])
+
+        service.shouldFailSaves = false
+        XCTAssertTrue(closeManager.saveState())
+        XCTAssertNil(closeManager.closePersistenceFailure)
+        XCTAssertTrue(service.load().channels.isEmpty)
+    }
+
+    func testCloseTombstoneWithoutRetirementAuthoritySuppressesUnmatchedRecovery() throws {
+        let id = UUID()
+        let sessionID = BrokerSessionID(rawValue: "closing-before-teardown-resolution")
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: id,
+            type: .shell,
+            role: "Interrupted Close",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )]
+        XCTAssertTrue(configService.save(config))
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionRecords = [BrokerSessionRecord(
+            id: sessionID,
+            channelType: .shell,
+            label: "Interrupted Close",
+            command: "/bin/zsh",
+            arguments: [],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: id
+        )]
+        let restoredManager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: coordinator,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        restoredManager.restoreState { metadata in
+            MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertTrue(restoredManager.allChannels().isEmpty)
+        XCTAssertTrue(restoredManager.unmatchedBrokerBackedSessionsToRestore().isEmpty)
     }
 
     func testCloseChannelRemovesFromRegistry() {

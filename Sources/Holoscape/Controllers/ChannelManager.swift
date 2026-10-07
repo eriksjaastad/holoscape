@@ -8,6 +8,14 @@ class ChannelManager {
     /// persistence graph until asynchronous broker teardown publishes whether
     /// retryable retirement authority must survive relaunch.
     private var closingChannelIDs: Set<UUID> = []
+    /// Closures whose lifecycle work finished but whose removal has not yet been
+    /// durably saved. Keep their controllers hidden and retained until a later
+    /// successful save commits the deletion.
+    private var completedClosingChannelIDs: Set<UUID> = []
+    /// Broker identities represented by restored close tombstones remain claimed
+    /// for the whole restore pass even if synchronous cleanup removes the model.
+    private var suppressedRecoveredBrokerSessionIDs: Set<BrokerSessionID> = []
+    private(set) var closePersistenceFailure: String?
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
@@ -156,15 +164,33 @@ class ChannelManager {
             // A failed completed-session retirement is hidden but durable. The
             // next launch restores its cleanup-only authority instead of losing
             // the broker ID when the tab-close callback releases its controller.
-            _ = saveState()
+            persistClosingState(context: "retirement authority")
             return
         }
-        closingChannelIDs.remove(id)
-        channels.removeValue(forKey: id)
-        channelOrder.removeAll { $0 == id }
-        channelLabels.removeValue(forKey: id)
-        restoredBrokerSessionIDs.removeValue(forKey: id)
-        _ = saveState()
+        completedClosingChannelIDs.insert(id)
+        persistClosingState(context: "completed removal")
+    }
+
+    private func persistClosingState(context: String) {
+        guard saveState() else {
+            closePersistenceFailure = configService.lastDiagnostic?.message
+                ?? "Channel state save failed while persisting \(context)"
+            NSLog("ChannelManager could not persist closed-channel \(context): \(closePersistenceFailure!)")
+            return
+        }
+        closePersistenceFailure = nil
+    }
+
+    private func finalizePersistedClosures() {
+        guard !completedClosingChannelIDs.isEmpty else { return }
+        for id in completedClosingChannelIDs {
+            closingChannelIDs.remove(id)
+            channels.removeValue(forKey: id)
+            channelOrder.removeAll { $0 == id }
+            channelLabels.removeValue(forKey: id)
+            restoredBrokerSessionIDs.removeValue(forKey: id)
+        }
+        completedClosingChannelIDs.removeAll()
     }
 
     /// Detach live channel views during app termination without mutating the
@@ -248,6 +274,7 @@ class ChannelManager {
     func saveState() -> Bool {
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
+            guard !completedClosingChannelIDs.contains(id) else { return nil }
             guard let channel = channels[id] else { return nil }
 
             // Extract type-specific fields for persistence
@@ -327,7 +354,12 @@ class ChannelManager {
             )
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
-        return configService.save(config)
+        let didSave = configService.save(config)
+        if didSave {
+            closePersistenceFailure = nil
+            finalizePersistedClosures()
+        }
+        return didSave
     }
 
     /// Restore channels from saved config.
@@ -341,12 +373,6 @@ class ChannelManager {
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         for metadata in config.channels {
-            // A close tombstone is valid only while it carries the retry-only
-            // authority that justified retaining the otherwise closed model.
-            guard metadata.closeTombstone != true || metadata.pendingExitedOutputRetirement != nil else {
-                NSLog("ChannelManager skipped malformed close tombstone without cleanup authority: \(metadata.id)")
-                continue
-            }
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
@@ -363,6 +389,9 @@ class ChannelManager {
                 if let brokerSessionID = metadata.brokerSessionID {
                     claimedBrokerSessionIDs.insert(brokerSessionID)
                     restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
+                    if metadata.closeTombstone == true {
+                        suppressedRecoveredBrokerSessionIDs.insert(brokerSessionID)
+                    }
                 }
                 if let pinnedAt = metadata.pinnedAt {
                     pinnedChannelIds.insert(controller.channelId)
@@ -589,7 +618,9 @@ class ChannelManager {
                 return []
             }
         })
-        let knownBrokerSessionIDs = restoredBrokerSessionIdentities.union(liveBrokerSessionIDs)
+        let knownBrokerSessionIDs = restoredBrokerSessionIdentities
+            .union(liveBrokerSessionIDs)
+            .union(suppressedRecoveredBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {
