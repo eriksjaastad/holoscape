@@ -499,7 +499,9 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(running.lastAttachedChannelID, channelID)
         XCTAssertEqual(try registry.load().count, 1)
 
-        controller.deactivate()
+        let detachedExpectation = expectation(description: "broker shell detached")
+        controller.deactivate { detachedExpectation.fulfill() }
+        wait(for: [detachedExpectation], timeout: 1)
 
         let detached = try registry.load().single()
         XCTAssertEqual(detached.id, running.id)

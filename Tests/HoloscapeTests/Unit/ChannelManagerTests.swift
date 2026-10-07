@@ -1157,7 +1157,9 @@ final class ChannelManagerTests: XCTestCase {
         defer { _ = try? coordinator.markErrored(brokerSessionID) }
 
         firstManager.saveState()
-        firstManager.detachAllChannelsForAppTermination()
+        let detachedExpectation = expectation(description: "original manager detached broker channels")
+        firstManager.detachAllChannelsForAppTermination { detachedExpectation.fulfill() }
+        wait(for: [detachedExpectation], timeout: 1)
 
         let detachedRecords = try registry.load()
         XCTAssertEqual(detachedRecords.count, 1)

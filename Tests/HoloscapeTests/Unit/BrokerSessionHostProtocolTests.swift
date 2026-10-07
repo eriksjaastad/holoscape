@@ -2782,7 +2782,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 6)
+                try server.run(maxConnections: 64)
             } catch {
                 serverError.set(error)
             }
@@ -2817,7 +2817,9 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
         let brokerSessionID = try XCTUnwrap(firstTerminal.brokerSessionID)
-        firstTerminal.detachBrokerSession()
+        let detached = expectation(description: "first socket terminal detached")
+        firstTerminal.detachBrokerSession { detached.fulfill() }
+        wait(for: [detached], timeout: 1)
 
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
         let secondCoordinator = BrokerSessionCoordinator(
@@ -2857,6 +2859,15 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(records[0].lastAttachedChannelID, restoredChannelID)
 
         _ = try secondCoordinator.markErrored(brokerSessionID)
+        // Output polling and the teardown exit probe make the exact request
+        // count scheduling-dependent. Exhaust the bounded server through a raw
+        // runtime client instead of relying on the now-errored registry record.
+        let drainRuntime = BrokerSessionHostClientRuntime { frame in
+            try secondTransport.sendFrame(frame)
+        }
+        for _ in 0..<64 {
+            guard (try? drainRuntime.listSessions()) != nil else { break }
+        }
         wait(for: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
