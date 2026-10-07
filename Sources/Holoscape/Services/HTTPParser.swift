@@ -28,7 +28,15 @@ struct HTTPResponse {
     let body: Data
 
     static func json(_ object: Any, status: Int = 200) -> HTTPResponse {
-        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])) ?? Data()
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else {
+            let errorBody = Data(#"{"error":"Failed to encode JSON response"}"#.utf8)
+            return HTTPResponse(
+                status: 500,
+                statusText: statusText(for: 500),
+                body: errorBody
+            )
+        }
         return HTTPResponse(status: status, statusText: statusText(for: status), body: data)
     }
 
