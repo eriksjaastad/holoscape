@@ -67,6 +67,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let outputDeliveryGate = BrokerOutputDeliveryGate()
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
+    private let exitedOutputResolutionClaim = BrokerExitResolutionClaim()
     private(set) var brokerSessionID: BrokerSessionID?
     private(set) var agentStatusOwnerToken: String?
     /// Identity of the broker session this terminal failed to reattach because
@@ -1106,6 +1107,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             exitedOutputTeardownCompletions.append(completion)
             return
         }
+        if let brokerSessionID, exitedOutputResolutionClaim.joinOrStop(
+            brokerSessionID,
+            stop: { [outputReadLane] in outputReadLane.stop() }
+        ) {
+            // The output lane has observed an exit outcome and queued its main-
+            // actor publication. Join that claimed generation instead of racing
+            // it with a teardown probe during the queue handoff window.
+            revokeOutputDeliveryOwnership()
+            sessionIOReady = false
+            stopOutputPump()
+            startCompletionPending = false
+            notifyStartAfterExitedOutputResolution = false
+            exitedOutputResolutionInFlight = true
+            exitedOutputTeardownCompletions.append(completion)
+            return
+        }
         startCompletionPending = false
         if let brokerSessionID, !didNotifyTermination, sessionIOReady,
            activeOutputDeliveryGeneration != nil {
@@ -1239,6 +1256,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
+            exitResolutionClaim: exitedOutputResolutionClaim,
             onSample: outputSampleHandler(
                 deliveryGeneration: deliveryGeneration,
                 handoffGeneration: handoffGeneration
@@ -1306,6 +1324,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             finishTermination: { [outputCoordinator] id, exitCode in
                 try outputCoordinator.finishTermination(id, exitCode: exitCode)
             },
+            exitResolutionClaim: exitedOutputResolutionClaim,
             onSample: outputSampleHandler(
                 deliveryGeneration: deliveryGeneration,
                 handoffGeneration: handoffGeneration
@@ -1385,10 +1404,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         { [weak self] id, exitCode, exitWarning in
             Task { @MainActor [weak self] in
                 guard let self,
-                      self.brokerSessionID == id,
-                      self.activeOutputDeliveryGeneration == deliveryGeneration,
-                      !self.exitedOutputResolutionInFlight,
-                      !self.didNotifyTermination else { return }
+                      self.exitedOutputResolutionClaim.consume(for: id) else { return }
+                guard self.brokerSessionID == id, !self.didNotifyTermination else {
+                    if self.exitedOutputResolutionInFlight {
+                        self.finishExitedOutputResolution()
+                    }
+                    return
+                }
                 self.exitedOutputResolutionInFlight = true
                 self.outputReadLane.stop()
                 self.sessionIOReady = false
@@ -1542,6 +1564,31 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         { [weak self] id, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                if self.exitedOutputResolutionClaim.consume(for: id) {
+                    guard self.brokerSessionID == id, !self.didNotifyTermination else {
+                        if self.exitedOutputResolutionInFlight {
+                            self.finishExitedOutputResolution()
+                        }
+                        return
+                    }
+                    self.exitedOutputResolutionInFlight = true
+                    if let coordinatorError = error as? BrokerSessionCoordinator.CoordinatorError,
+                       case let .exitCodeMismatch(_, _, observedExitCode) = coordinatorError {
+                        self.retireMismatchedExitedSession(
+                            id,
+                            observedExitCode: observedExitCode,
+                            mismatchError: error,
+                            deliveryGeneration: deliveryGeneration
+                        )
+                    } else {
+                        self.retireExitedSessionAfterOutputFailure(
+                            id,
+                            error: error,
+                            notifyStartCompletion: false
+                        )
+                    }
+                    return
+                }
                 if self.isCompletedExitWarning(error) {
                     // Exit truth was durably finalized before this cleanup warning
                     // was returned. Keep termination delivery alive while still
@@ -2258,6 +2305,40 @@ private struct BrokerSessionCompositeFailure: Error, CustomStringConvertible, Se
     let description: String
 }
 
+/// Bridges the output lane's exit observation to main-actor publication without
+/// leaving a teardown window where both lanes can claim finalization authority.
+private final class BrokerExitResolutionClaim: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimedSessionID: BrokerSessionID?
+
+    func claimIfCurrent(
+        _ sessionID: BrokerSessionID,
+        closeCurrent: () -> Bool
+    ) -> Bool {
+        lock.withLock {
+            guard claimedSessionID == nil, closeCurrent() else { return false }
+            claimedSessionID = sessionID
+            return true
+        }
+    }
+
+    func joinOrStop(_ sessionID: BrokerSessionID, stop: () -> Void) -> Bool {
+        lock.withLock {
+            if claimedSessionID == sessionID { return true }
+            stop()
+            return false
+        }
+    }
+
+    func consume(for sessionID: BrokerSessionID) -> Bool {
+        lock.withLock {
+            guard claimedSessionID == sessionID else { return false }
+            claimedSessionID = nil
+            return true
+        }
+    }
+}
+
 private final class BrokerOutputReadLane: @unchecked Sendable {
     enum Mode {
         case outputAvailabilitySignal
@@ -2285,6 +2366,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
+        exitResolutionClaim: BrokerExitResolutionClaim,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -2310,6 +2392,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     _ = semaphore.wait(timeout: .now() + self.pollingInterval)
                 }
                 guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                var observedExitCode: Int32?
                 do {
                     let snapshot = try read(sessionID)
                     guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
@@ -2322,6 +2405,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     }
                     guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                     if let exitCode = try terminationStatus(sessionID) {
+                        observedExitCode = exitCode
                         // Termination observation and the PTY readability callback
                         // can race. Once termination is observable, monitoring is
                         // complete, so one final drain captures bytes appended
@@ -2336,13 +2420,29 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         // The final sample is synchronously consumed by the main
                         // actor before durable exit authority is published.
                         let completionWarning = try finishTermination(sessionID, exitCode)
-                        if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                        if exitResolutionClaim.claimIfCurrent(
+                            sessionID,
+                            closeCurrent: {
+                                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                            }
+                        ) {
                             onTermination(sessionID, exitCode, completionWarning)
                         }
                         return
                     }
                 } catch {
-                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    let ownsOutcome: Bool
+                    if observedExitCode != nil {
+                        ownsOutcome = exitResolutionClaim.claimIfCurrent(
+                            sessionID,
+                            closeCurrent: {
+                                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                            }
+                        )
+                    } else {
+                        ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                    }
+                    if ownsOutcome {
                         onFailure(sessionID, error)
                     }
                     return
@@ -2357,6 +2457,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
+        exitResolutionClaim: BrokerExitResolutionClaim,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
         onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
@@ -2373,6 +2474,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             return nextRunGeneration
         }
         queue.async {
+            var observedExitCode: Int32?
             do {
                 guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 let snapshot = try read(sessionID)
@@ -2386,6 +2488,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 }
                 guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
                 if let exitCode = try terminationStatus(sessionID) {
+                    observedExitCode = exitCode
                     guard try self.drainRemainingOutput(
                         sessionID: sessionID,
                         runGeneration: runGeneration,
@@ -2394,14 +2497,30 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         onSample: onSample
                     ) else { return }
                     let completionWarning = try finishTermination(sessionID, exitCode)
-                    if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                    if exitResolutionClaim.claimIfCurrent(
+                        sessionID,
+                        closeCurrent: {
+                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                        }
+                    ) {
                         onTermination(sessionID, exitCode, completionWarning)
                     }
                     return
                 }
                 self.closeIfCurrent(sessionID, runGeneration: runGeneration)
             } catch {
-                if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
+                let ownsOutcome: Bool
+                if observedExitCode != nil {
+                    ownsOutcome = exitResolutionClaim.claimIfCurrent(
+                        sessionID,
+                        closeCurrent: {
+                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                        }
+                    )
+                } else {
+                    ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                }
+                if ownsOutcome {
                     onFailure(sessionID, error)
                 }
             }
