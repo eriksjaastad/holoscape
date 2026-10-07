@@ -65,6 +65,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private var preservingOutputDetachInFlight = false
     private var preservingOutputDetachCompletions: [@MainActor () -> Void] = []
     private var restartAfterPreservingOutputDetach: (@MainActor () -> Void)?
+    /// Tab close owns terminal retirement through final output classification and
+    /// persistence-facing cleanup truth. App termination must join that owner
+    /// instead of independently stopping its output lane.
+    private var closeRetirementInFlight = false
+    private var closeRetirementCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
     /// Identifies the terminal-view ownership window allowed to consume broker
     /// output. A queued main-actor delivery must still hold this exact lease;
     /// matching the broker ID alone is insufficient because teardown deliberately
@@ -1253,6 +1258,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+        if closeRetirementInFlight {
+            closeRetirementCompletions.append { _ in completion() }
+            return
+        }
         if preservingOutputDetachInFlight {
             // A later quit supersedes any reconnect queued after an earlier quit
             // timed out. Both quit transactions still join the same detach owner.
@@ -1334,13 +1343,30 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func retireBrokerSessionForClose(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
+        if closeRetirementInFlight {
+            closeRetirementCompletions.append(completion)
+            return
+        }
+        closeRetirementInFlight = true
+        closeRetirementCompletions = [completion]
+        continueRetireBrokerSessionForClose { [self] outcome in
+            closeRetirementInFlight = false
+            let completions = closeRetirementCompletions
+            closeRetirementCompletions.removeAll()
+            completions.forEach { $0(outcome) }
+        }
+    }
+
+    private func continueRetireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         // User close supersedes reconnect intent from a denied/timed-out quit.
         // Join the preserving detach before retiring its now-detached identity.
         restartAfterPreservingOutputDetach = nil
         if preservingOutputDetachInFlight {
             startCompletionPending = false
             preservingOutputDetachCompletions.append { [self] in
-                retireBrokerSessionForClose(completion: completion)
+                continueRetireBrokerSessionForClose(completion: completion)
             }
             return
         }
@@ -1367,7 +1393,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         if reattachWorkInFlight {
             reattachWorkCompletionWaiters.append { [self] in
-                retireBrokerSessionForClose(completion: completion)
+                continueRetireBrokerSessionForClose(completion: completion)
             }
             return
         }
