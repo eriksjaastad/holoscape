@@ -1684,6 +1684,49 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(terminal.brokerSessionID, sessionID)
     }
 
+    func testCloseJoinsPreservingDetachAndRevokesQueuedReconnect() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockTeardown()
+        let sessionID = BrokerSessionID(rawValue: "close-during-quit-reattach")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "close-during-quit-reattach",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        var closeOutcome: TerminalCleanupOutcome?
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+        terminal.detachBrokerSessionPreservingOutput {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+        coordinator.finishReattach()
+        try waitUntil { coordinator.detachCalls == [sessionID] }
+        coordinator.finishTeardown()
+        try waitUntil { closeOutcome != nil }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+        XCTAssertEqual(coordinator.markErroredCalls, [sessionID])
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+    }
+
     func testAcknowledgementOutageRetryDoesNotRenderPresentedGenerationTwice() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(
@@ -2945,6 +2988,52 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(teardownCompleted)
         coordinator.finishStart()
         try waitUntil { teardownCompleted }
+        XCTAssertEqual(coordinator.markErroredCalls, [BrokerSessionID(rawValue: "started-off-main")])
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+    }
+
+    func testCloseWaitsForPendingFreshStartAndRetiresItsSession() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "close-pending-start",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForStart())
+        var closeOutcome: TerminalCleanupOutcome?
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+
+        XCTAssertNil(closeOutcome)
+        coordinator.finishStart()
+        try waitUntil { closeOutcome != nil }
+        XCTAssertEqual(coordinator.markErroredCalls, [BrokerSessionID(rawValue: "started-off-main")])
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+    }
+
+    func testAppTerminationWaitsForPendingFreshStartAndRetiresItsSession() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockStart()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "quit-pending-start",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForStart())
+        var detachCompleted = false
+
+        terminal.detachBrokerSessionPreservingOutput { detachCompleted = true }
+
+        XCTAssertFalse(detachCompleted)
+        coordinator.finishStart()
+        try waitUntil { detachCompleted }
         XCTAssertEqual(coordinator.markErroredCalls, [BrokerSessionID(rawValue: "started-off-main")])
         XCTAssertNil(terminal.brokerOwnedSessionID)
     }

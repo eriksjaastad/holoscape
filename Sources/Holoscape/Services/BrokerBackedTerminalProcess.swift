@@ -1263,6 +1263,14 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         preservingOutputDetachInFlight = true
         preservingOutputDetachCompletions = [completion]
+        if freshStartPending {
+            freshStartCancelled = true
+            restartAfterCancelledFreshStart = nil
+            freshStartTeardownCompletions.append { [self] in
+                completePreservingOutputDetach()
+            }
+            return
+        }
         // Cancel asynchronous reattach authority before waiting on either output
         // lane. Otherwise a late replay/final-drain callback can acknowledge and
         // retire bytes after Quit has promised to preserve them for relaunch.
@@ -1326,6 +1334,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func retireBrokerSessionForClose(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
+        // User close supersedes reconnect intent from a denied/timed-out quit.
+        // Join the preserving detach before retiring its now-detached identity.
+        restartAfterPreservingOutputDetach = nil
+        if preservingOutputDetachInFlight {
+            startCompletionPending = false
+            preservingOutputDetachCompletions.append { [self] in
+                retireBrokerSessionForClose(completion: completion)
+            }
+            return
+        }
+        if freshStartPending {
+            freshStartCancelled = true
+            restartAfterCancelledFreshStart = nil
+            freshStartTeardownCompletions.append { completion(.completed) }
+            return
+        }
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
         stopOutputPump()
