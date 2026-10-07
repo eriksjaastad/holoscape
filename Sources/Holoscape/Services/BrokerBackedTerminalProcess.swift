@@ -263,7 +263,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         sessionFailure = nil
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
-        reattachExistingSession(brokerSessionID, shouldReplayScrollback: false)
+        reattachExistingSession(
+            brokerSessionID,
+            shouldReplayScrollback: false,
+            cleanupOnly: true
+        )
     }
 
     private func continueStartProcess(
@@ -456,7 +460,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func reattachExistingSession(
         _ sessionID: BrokerSessionID,
-        shouldReplayScrollback explicitReplayPolicy: Bool? = nil
+        shouldReplayScrollback explicitReplayPolicy: Bool? = nil,
+        cleanupOnly: Bool = false
     ) {
         startFailureDescription = nil
         startFailureKind = nil
@@ -475,7 +480,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 replay: nil,
                 shouldReplayScrollback: shouldReplayScrollback,
                 notifyStartCompletion: false,
-                authorityGeneration: generation
+                authorityGeneration: generation,
+                cleanupOnly: cleanupOnly
             )
             return
         }
@@ -496,7 +502,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     replay: result.replay,
                     shouldReplayScrollback: shouldReplayScrollback,
                     notifyStartCompletion: true,
-                    authorityGeneration: generation
+                    authorityGeneration: generation,
+                    cleanupOnly: cleanupOnly
                 )
             }
         }
@@ -508,7 +515,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         replay: ScrollbackReplayResult?,
         shouldReplayScrollback: Bool,
         notifyStartCompletion: Bool,
-        authorityGeneration: UInt
+        authorityGeneration: UInt,
+        cleanupOnly: Bool
     ) {
         do {
             let record = try result.get()
@@ -519,6 +527,22 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // publish it through the same host-truth seam as OSC 7 so the owning
             // shell replaces any stale channel metadata before saving again.
             hostCurrentDirectoryHandler?(record.workingDirectory)
+            if cleanupOnly, record.lifecycle == .exited {
+                guard let exitCode = record.exitCode else {
+                    startFailureDescription = "Exited broker session \(record.id.rawValue) has no exit code"
+                    startFailureKind = .failed
+                    completeReattachStartIfNeeded(notifyStartCompletion)
+                    return
+                }
+                exitedOutputResolutionInFlight = true
+                retireExitedSession(
+                    record,
+                    exitCode: exitCode,
+                    deliveryGeneration: 0,
+                    notifyStartCompletion: notifyStartCompletion
+                )
+                return
+            }
             if shouldReplayScrollback {
                 if let replay {
                     applyScrollbackReplay(replay, for: record.id)

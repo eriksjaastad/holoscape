@@ -2841,6 +2841,32 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.lastScrollbackReplay)
     }
 
+    func testCleanupOnlyExitedReattachRetiresWithoutReadingOrAcknowledgingOutput() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exited
+        coordinator.replayGeneration = 91
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "cleanup-only-exited",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var startCompletionCount = 0
+        terminal.setStartCompletionHandler { startCompletionCount += 1 }
+
+        terminal.resumeBrokerSessionForCleanup()
+
+        try waitUntil { startCompletionCount == 1 }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(coordinator.outputReadCount, 0)
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [])
+        XCTAssertEqual(coordinator.startCallCount, 0)
+        XCTAssertNil(terminal.lastScrollbackReplay)
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+    }
+
     func testReconnectResumesWhenRunningSessionTeardownProbeDiscoversExit() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.restoredLifecycle = .running
