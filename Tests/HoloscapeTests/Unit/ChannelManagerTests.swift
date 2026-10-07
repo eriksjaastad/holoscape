@@ -1220,6 +1220,21 @@ final class ChannelManagerTests: XCTestCase {
 
     // MARK: - Close Channel
 
+    func testCloseChannelRetainsControllerUntilDeferredTeardownCompletes() {
+        var channel: MockChannelController? = createMockChannel(type: .shell, role: "Retained") as? MockChannelController
+        channel?.defersDeactivationCompletion = true
+        weak let retainedChannel = channel
+        let channelID = channel!.channelId
+
+        manager.closeChannel(id: channelID)
+        channel = nil
+
+        XCTAssertNil(manager.channel(for: channelID))
+        XCTAssertNotNil(retainedChannel)
+        retainedChannel?.finishDeactivation()
+        XCTAssertNil(retainedChannel)
+    }
+
     func testCloseChannelRemovesFromRegistry() {
         let channel = createMockChannel(type: .shell, role: "Shell")
         manager.closeChannel(id: channel.channelId)

@@ -1398,6 +1398,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         TerminalSessionFailure(kind: .failed, description: String(describing: exitWarning))
                     )
                 }
+                let exitWarningDescription = exitWarning.map(String.init(describing:))
 
                 let completion: @Sendable (Error?) -> Void = { [weak self] error in
                     DispatchQueue.main.async {
@@ -1409,13 +1410,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             self.isCompletedRetirementWarning($0) ? $0 : nil
                         }
                         if let error, completionWarning == nil {
+                            let failureDescription = exitWarningDescription.map {
+                                "\($0); failed to retire completed broker session: \(error)"
+                            } ?? String(describing: error)
                             self.retainExitedOutputRetirement(
                                 sessionID: id,
-                                failureDescription: String(describing: error),
+                                failureDescription: failureDescription,
                                 failureKind: self.classifyStartFailure(error)
                             )
                             self.reportSessionFailure(
-                                error,
+                                BrokerSessionCompositeFailure(description: failureDescription),
                                 for: id,
                                 deliveryGeneration: deliveryGeneration
                             )
@@ -1473,6 +1477,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         TerminalSessionFailure(kind: .failed, description: String(describing: exitWarning))
                     )
                 }
+                let exitWarningDescription = exitWarning.map(String.init(describing:))
 
                 let completion: @Sendable (Error?) -> Void = { [weak self] error in
                     DispatchQueue.main.async {
@@ -1484,15 +1489,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             self.isCompletedRetirementWarning($0) ? $0 : nil
                         }
                         if let error, completionWarning == nil {
+                            let failureDescription = exitWarningDescription.map {
+                                "\($0); failed to retire completed broker session: \(error)"
+                            } ?? String(describing: error)
                             self.retainExitedOutputRetirement(
                                 sessionID: id,
-                                failureDescription: String(describing: error),
+                                failureDescription: failureDescription,
                                 failureKind: self.classifyStartFailure(error)
                             )
                             self.publishSessionFailure(
                                 TerminalSessionFailure(
                                     kind: self.classifyStartFailure(error),
-                                    description: String(describing: error)
+                                    description: failureDescription
                                 )
                             )
                             self.finishExitedOutputResolution()
@@ -1601,12 +1609,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         mismatchError: Error,
         deliveryGeneration: UInt
     ) {
+        exitedOutputResolutionInFlight = true
+        exitedOutputRetirementInFlight = true
         let completion: @Sendable (Error?) -> Void = { [weak self] retirementError in
             DispatchQueue.main.async {
                 guard let self,
                       self.brokerSessionID == id,
-                      self.activeOutputDeliveryGeneration == deliveryGeneration,
+                      self.exitedOutputResolutionInFlight,
                       !self.didNotifyTermination else { return }
+                self.exitedOutputRetirementInFlight = false
                 let completionWarning = retirementError.flatMap {
                     self.isCompletedRetirementWarning($0) ? $0 : nil
                 }
@@ -1624,6 +1635,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         for: id,
                         deliveryGeneration: deliveryGeneration
                     )
+                    self.finishExitedOutputResolution()
                     return
                 }
                 self.didNotifyTermination = true
@@ -1640,6 +1652,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     TerminalSessionFailure(kind: .failed, description: failureDescription)
                 )
                 self.terminationHandler?(observedExitCode)
+                self.finishExitedOutputResolution()
             }
         }
 

@@ -134,7 +134,11 @@ class ChannelManager {
     /// Remove a channel from the registry.
     func closeChannel(id: UUID) {
         if let channel = channels[id] {
-            channel.deactivate()
+            // Removal hides the tab immediately, but broker teardown can finish
+            // asynchronously after serializing behind output delivery. Keep the
+            // controller (and therefore its terminal cleanup owner) alive until
+            // that teardown publishes its final broker identity/failure truth.
+            channel.deactivate { _ = channel }
         }
         channels.removeValue(forKey: id)
         channelOrder.removeAll { $0 == id }

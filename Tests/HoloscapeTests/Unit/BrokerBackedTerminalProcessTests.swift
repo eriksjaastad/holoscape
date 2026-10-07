@@ -3907,6 +3907,80 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(restoredTerminal.brokerSessionID)
     }
 
+    func testAmbiguousExitMismatchTeardownWaitsForSingleRetirement() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.requestedExitCode = 0
+        coordinator.finalizationError = BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(
+            coordinator.sessionID,
+            expected: 0,
+            observed: 9
+        )
+        coordinator.blockRetirement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "mismatched-exit-teardown",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
+        var teardownCompleted = false
+
+        terminal.detachBrokerSession { teardownCompleted = true }
+
+        XCTAssertFalse(teardownCompleted)
+        coordinator.finishRetirement()
+        try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+    }
+
+    func testFinalizationWarningAndRetirementFailureRemainDurableTogether() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exiting
+        coordinator.finalizationError = NativePTYBrokerSessionRuntime.RuntimeError
+            .exitCompletedWithInputCloseFailure(
+                coordinator.sessionID,
+                observedExitCode: 9,
+                inputCloseErrno: 5,
+                expectedExitCode: 9
+            )
+        coordinator.retirementError = RuntimeError.createFailed
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "warning-and-retirement-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { terminal.pendingExitedOutputRetirement != nil }
+        let durableFailure = terminal.pendingExitedOutputRetirement?.outputFailureDescription
+        XCTAssertTrue(durableFailure?.contains("exitCompletedWithInputCloseFailure") == true)
+        XCTAssertTrue(durableFailure?.contains("createFailed") == true)
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+    }
+
     func testAmbiguousExitMismatchClearsDeadIdentityAfterCompletedOutputWarning() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.restoredLifecycle = .exiting
