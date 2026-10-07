@@ -1531,6 +1531,35 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testTabCloseDrainsExitedSessionBeforeDetaching() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008024"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        var events: [String] = []
+        fixture.terminal.setOutputHandler { events.append("output") }
+        fixture.terminal.setTerminationHandler { _ in events.append("termination") }
+
+        runtime.triggerFinalOutput(
+            "close-race-final-output\n",
+            for: sessionID
+        )
+        let detached = expectation(description: "exited session teardown completed")
+        fixture.terminal.detachBrokerSession {
+            events.append("teardown")
+            detached.fulfill()
+        }
+
+        wait(for: [detached], timeout: 2)
+        XCTAssertEqual(events, ["output", "termination", "teardown"])
+        XCTAssertEqual(runtime.acknowledgedGenerations, [24])
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertTrue(try fixture.coordinator.reattachableSessions().isEmpty)
+    }
+
     func testLiveExitRetirementFailurePersistsRetirementOnlyAuthority() throws {
         let runtime = FinalOutputRuntime()
         let fixture = try makeMidSessionFixture(

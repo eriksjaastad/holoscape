@@ -1082,9 +1082,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         // before detaching so its late result cannot reopen I/O or publish the
         // owning controller as active after teardown.
         reattachGeneration &+= 1
-        revokeOutputDeliveryOwnership()
-        sessionIOReady = false
-        stopOutputPump()
         inputWriteLane.close()
         if freshStartPending {
             freshStartCancelled = true
@@ -1098,12 +1095,60 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         if exitedOutputResolutionInFlight {
             // Suppress a delayed activation callback while retaining the final
             // output/cleanup owner until its broker outcome has been published.
+            // An already-running restored replay keeps cleanup authority but loses
+            // presentation immediately; the teardown-only live-exit probe below is
+            // the sole path allowed to render after close begins.
+            revokeOutputDeliveryOwnership()
+            sessionIOReady = false
+            stopOutputPump()
             startCompletionPending = false
             notifyStartAfterExitedOutputResolution = false
             exitedOutputTeardownCompletions.append(completion)
             return
         }
         startCompletionPending = false
+        if let brokerSessionID, !didNotifyTermination, sessionIOReady,
+           let deliveryGeneration = activeOutputDeliveryGeneration,
+           outputReadLane.hasUnconsumedAvailability(for: brokerSessionID) {
+            // Closing a tab can race the broker's availability notification. Stop
+            // the ordinary pump, then perform one serialized exit probe before
+            // revoking presentation. If the child already exited, this drains and
+            // acknowledges its complete final generation and establishes durable
+            // retirement authority; a still-running child remains non-consuming
+            // and follows the ordinary detach path.
+            exitedOutputResolutionInFlight = true
+            exitedOutputTeardownCompletions.append(completion)
+            outputReadLane.finishForTeardown(
+                sessionID: brokerSessionID,
+                read: { [outputCoordinator] id in
+                    try outputCoordinator.snapshotAvailableOutput(id)
+                },
+                acknowledge: { [outputCoordinator] id, generation in
+                    try outputCoordinator.acknowledgeOutput(id, through: generation)
+                },
+                terminationStatus: { [outputCoordinator] id in
+                    try outputCoordinator.terminationStatusIfStopped(id)
+                },
+                finishTermination: { [outputCoordinator] id, exitCode in
+                    try outputCoordinator.finishTermination(id, exitCode: exitCode)
+                },
+                onSample: outputSampleHandler(
+                    deliveryGeneration: deliveryGeneration,
+                    handoffGeneration: activeOutputHandoffGeneration ?? beginOutputHandoff()
+                ),
+                onTermination: outputTerminationHandler(deliveryGeneration: deliveryGeneration),
+                onFailure: outputFailureHandler(deliveryGeneration: deliveryGeneration),
+                onStillRunningOrFailure: { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.finishRunningSessionTeardownProbe()
+                    }
+                }
+            )
+            return
+        }
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        stopOutputPump()
         if let brokerSessionID, !didNotifyTermination {
             if coordinator.requiresOffMainBrokerWork {
                 failureRecoveryCoordinator.detach(brokerSessionID) { error in
@@ -1129,6 +1174,38 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
         completion()
+    }
+
+    private func finishRunningSessionTeardownProbe() {
+        guard exitedOutputResolutionInFlight else { return }
+        exitedOutputResolutionInFlight = false
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        stopOutputPump()
+        let completions = exitedOutputTeardownCompletions
+        exitedOutputTeardownCompletions.removeAll()
+        guard let brokerSessionID, !didNotifyTermination else {
+            completions.forEach { $0() }
+            return
+        }
+        let finish: @Sendable (Error?) -> Void = { error in
+            if let error {
+                NSLog("Broker-backed terminal detach failed: \(error)")
+            }
+            DispatchQueue.main.async {
+                completions.forEach { $0() }
+            }
+        }
+        if coordinator.requiresOffMainBrokerWork {
+            failureRecoveryCoordinator.detach(brokerSessionID, completion: finish)
+        } else {
+            do {
+                _ = try coordinator.detach(brokerSessionID)
+                finish(nil)
+            } catch {
+                finish(error)
+            }
+        }
     }
 
     func pollOutputOnce() {
@@ -1328,6 +1405,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 for: id,
                                 deliveryGeneration: deliveryGeneration
                             )
+                            self.finishExitedOutputResolution()
                             return
                         }
                         self.didNotifyTermination = true
@@ -1344,6 +1422,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             )
                         }
                         self.terminationHandler?(exitCode)
+                        self.finishExitedOutputResolution()
                     }
                 }
 
@@ -2094,6 +2173,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     private var nextRunGeneration: UInt = 0
     private var openRunGeneration: UInt?
     private var semaphore: DispatchSemaphore?
+    private var outputAvailabilitySequence: UInt = 0
+    private var processedOutputAvailabilitySequence: UInt = 0
 
     init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
         self.signalTerminationCheckInterval = signalTerminationCheckInterval
@@ -2118,6 +2199,8 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             openSessionID = sessionID
             openRunGeneration = nextRunGeneration
             self.semaphore = semaphore
+            outputAvailabilitySequence = 0
+            processedOutputAvailabilitySequence = 0
             return nextRunGeneration
         }
 
@@ -2163,6 +2246,10 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         }
                         return
                     }
+                    self.markOutputAvailabilityProcessed(
+                        for: sessionID,
+                        runGeneration: runGeneration
+                    )
                 } catch {
                     if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
                         onFailure(sessionID, error)
@@ -2230,9 +2317,60 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         }
     }
 
+    /// Stop the ordinary pump and, on the same serial lane, determine whether
+    /// teardown raced an already-completed child. Running sessions are left
+    /// unread for later reattach; stopped sessions are fully drained and
+    /// finalized before teardown can release its owner.
+    func finishForTeardown(
+        sessionID: BrokerSessionID,
+        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
+        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
+        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
+        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void,
+        onStillRunningOrFailure: @escaping @Sendable () -> Void
+    ) {
+        stop()
+        queue.async {
+            do {
+                guard let exitCode = try terminationStatus(sessionID) else {
+                    onStillRunningOrFailure()
+                    return
+                }
+                while true {
+                    let snapshot = try read(sessionID)
+                    guard onSample(sessionID, snapshot.data) else {
+                        onStillRunningOrFailure()
+                        return
+                    }
+                    guard let generation = snapshot.generation else { break }
+                    try acknowledge(sessionID, generation)
+                }
+                let completionWarning = try finishTermination(sessionID, exitCode)
+                onTermination(sessionID, exitCode, completionWarning)
+            } catch {
+                onFailure(sessionID, error)
+                onStillRunningOrFailure()
+            }
+        }
+    }
+
     func wake(sessionID: BrokerSessionID) {
-        guard isOpen(for: sessionID) else { return }
-        lock.withLock { semaphore }?.signal()
+        let semaphore = lock.withLock { () -> DispatchSemaphore? in
+            guard openSessionID == sessionID else { return nil }
+            outputAvailabilitySequence &+= 1
+            return self.semaphore
+        }
+        semaphore?.signal()
+    }
+
+    func hasUnconsumedAvailability(for sessionID: BrokerSessionID) -> Bool {
+        lock.withLock {
+            openSessionID == sessionID
+                && outputAvailabilitySequence > processedOutputAvailabilitySequence
+        }
     }
 
     func stop() {
@@ -2272,6 +2410,16 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
 
     private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
         lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
+    }
+
+    private func markOutputAvailabilityProcessed(
+        for sessionID: BrokerSessionID,
+        runGeneration: UInt
+    ) {
+        lock.withLock {
+            guard openSessionID == sessionID, openRunGeneration == runGeneration else { return }
+            processedOutputAvailabilitySequence = outputAvailabilitySequence
+        }
     }
 
     @discardableResult
