@@ -62,6 +62,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// App termination preserves unread broker output instead of allowing an
     /// in-flight restored-session drain to acknowledge and retire it unseen.
     private var preservesUnreadOutputForTermination = false
+    private var preservingOutputDetachInFlight = false
+    private var preservingOutputDetachCompletions: [@MainActor () -> Void] = []
+    private var restartAfterPreservingOutputDetach: (@MainActor () -> Void)?
     /// Identifies the terminal-view ownership window allowed to consume broker
     /// output. A queued main-actor delivery must still hold this exact lease;
     /// matching the broker ID alone is insufficient because teardown deliberately
@@ -161,6 +164,24 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         execName: String?,
         currentDirectory: String?
     ) {
+        if preservingOutputDetachInFlight {
+            startCompletionPending = true
+            restartAfterPreservingOutputDetach = { [weak self] in
+                guard let self else { return }
+                self.startCompletionPending = false
+                self.startProcess(
+                    executable: executable,
+                    args: args,
+                    environment: environment,
+                    execName: execName,
+                    currentDirectory: currentDirectory
+                )
+                if !self.startCompletionPending {
+                    self.startCompletionHandler?()
+                }
+            }
+            return
+        }
         if freshStartPending, freshStartCancelled {
             restartAfterCancelledFreshStart = { [weak self] in
                 guard let self else { return }
@@ -1232,6 +1253,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+        if preservingOutputDetachInFlight {
+            // A later quit supersedes any reconnect queued after an earlier quit
+            // timed out. Both quit transactions still join the same detach owner.
+            restartAfterPreservingOutputDetach = nil
+            startCompletionPending = false
+            preservingOutputDetachCompletions.append(completion)
+            return
+        }
+        preservingOutputDetachInFlight = true
+        preservingOutputDetachCompletions = [completion]
         // Cancel asynchronous reattach authority before waiting on either output
         // lane. Otherwise a late replay/final-drain callback can acknowledge and
         // retire bytes after Quit has promised to preserve them for relaunch.
@@ -1241,51 +1272,55 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
         stopOutputPump()
-        outputReadLane.finishWithoutConsuming { [weak self] in
+        outputReadLane.finishWithoutConsuming { [self] in
             DispatchQueue.main.async {
-                guard let self else {
-                    completion()
-                    return
-                }
-                self.finishPreservingOutputDetach(completion: completion)
+                self.finishPreservingOutputDetach()
             }
         }
     }
 
-    private func finishPreservingOutputDetach(completion: @escaping @MainActor () -> Void) {
+    private func finishPreservingOutputDetach() {
         if reattachWorkInFlight {
             reattachWorkCompletionWaiters.append { [self] in
-                finishPreservingOutputDetach(completion: completion)
+                finishPreservingOutputDetach()
             }
             return
         }
         if exitedOutputResolutionInFlight || runningSessionTeardownProbeInFlight {
             exitedOutputTeardownCompletions.append { [self] _ in
-                finishPreservingOutputDetach(completion: completion)
+                finishPreservingOutputDetach()
             }
             return
         }
         if let brokerSessionID {
-            failureRecoveryCoordinator.detach(brokerSessionID) { [weak self] error in
+            failureRecoveryCoordinator.detach(brokerSessionID) { [self] error in
                 DispatchQueue.main.async {
                     if let error {
                         NSLog("Broker-backed terminal app-termination detach failed: \(error)")
                     }
-                    self?.preservesUnreadOutputForTermination = false
-                    completion()
+                    self.completePreservingOutputDetach()
                 }
             }
             return
         }
         if let untrackedBrokerSessionID {
-            retireUntrackedForTeardown(untrackedBrokerSessionID) { [weak self] in
-                self?.preservesUnreadOutputForTermination = false
-                completion()
+            retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
+                completePreservingOutputDetach()
             }
             return
         }
+        completePreservingOutputDetach()
+    }
+
+    private func completePreservingOutputDetach() {
         preservesUnreadOutputForTermination = false
-        completion()
+        preservingOutputDetachInFlight = false
+        let completions = preservingOutputDetachCompletions
+        preservingOutputDetachCompletions.removeAll()
+        completions.forEach { $0() }
+        let restart = restartAfterPreservingOutputDetach
+        restartAfterPreservingOutputDetach = nil
+        restart?()
     }
 
     func retireBrokerSessionForClose(

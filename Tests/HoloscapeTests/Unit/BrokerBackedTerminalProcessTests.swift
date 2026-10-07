@@ -1592,6 +1592,98 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(terminal.lastLines(10).joined(separator: "\n").contains("detached-final-chunk"))
     }
 
+    func testReconnectAfterTimedOutQuitWaitsForPreservingDetach() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockTeardown()
+        let sessionID = BrokerSessionID(rawValue: "quit-timeout-reattach")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "quit-timeout-reattach",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        var detachCompleted = false
+        var startCompletions = 0
+        terminal.setStartCompletionHandler { startCompletions += 1 }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+
+        terminal.detachBrokerSessionPreservingOutput { detachCompleted = true }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+
+        coordinator.finishReattach()
+        try waitUntil { coordinator.detachCalls == [sessionID] }
+        XCTAssertFalse(detachCompleted)
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+
+        coordinator.finishTeardown()
+        try waitUntil { detachCompleted }
+        try waitUntil { coordinator.reattachCallCount == 2 }
+        XCTAssertEqual(coordinator.detachCalls, [sessionID])
+        coordinator.finishReattach()
+        try waitUntil { startCompletions == 1 }
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertNil(terminal.startFailureDescription)
+    }
+
+    func testSecondQuitJoinsPreservingDetachAndRevokesQueuedReconnect() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockTeardown()
+        let sessionID = BrokerSessionID(rawValue: "second-quit-reattach")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "second-quit-reattach",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        var detachCompletions = 0
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+
+        terminal.detachBrokerSessionPreservingOutput { detachCompletions += 1 }
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        terminal.detachBrokerSessionPreservingOutput { detachCompletions += 1 }
+
+        coordinator.finishReattach()
+        try waitUntil { coordinator.detachCalls == [sessionID] }
+        coordinator.finishTeardown()
+        try waitUntil { detachCompletions == 2 }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+    }
+
     func testAcknowledgementOutageRetryDoesNotRenderPresentedGenerationTwice() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(
