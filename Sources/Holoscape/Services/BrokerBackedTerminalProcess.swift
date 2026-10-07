@@ -906,6 +906,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         exitedOutputTeardownCompletions.removeAll()
         completions.forEach { $0() }
         if notifyStartAfterExitedOutputResolution {
+            publishInterruptedExitedOutputRecoveryIfNeeded()
             notifyStartAfterExitedOutputResolution = false
             if startCompletionPending {
                 startCompletionPending = false
@@ -916,8 +917,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
         guard notifyStartCompletion, startCompletionPending else { return }
+        publishInterruptedExitedOutputRecoveryIfNeeded()
         startCompletionPending = false
         startCompletionHandler?()
+    }
+
+    private func publishInterruptedExitedOutputRecoveryIfNeeded() {
+        guard notifyStartAfterExitedOutputResolution,
+              startFailureDescription == nil,
+              sessionFailure == nil else { return }
+        startFailureDescription = "Exited session recovery was interrupted by teardown; reconnect to resume final output or start a replacement"
+        startFailureKind = .failed
     }
 
     private func restoreScrollbackReplay(for sessionID: BrokerSessionID) {

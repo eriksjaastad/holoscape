@@ -3347,6 +3347,84 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
     }
 
+    func testReconnectAfterDeniedQuitReportsSuccessfulRevokedReadAsDisconnected() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.blockOutputRead()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "reconnect-after-revoked-final-read",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+        terminal.detachBrokerSession {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+
+        coordinator.finishOutputRead()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertTrue(coordinator.retiredSessionIDs.isEmpty)
+        XCTAssertEqual(terminal.startFailureKind, .failed)
+        XCTAssertTrue(terminal.startFailureDescription?.contains("interrupted by teardown") == true)
+    }
+
+    func testReconnectAfterDeniedQuitReportsSuccessfulRevokedAcknowledgementAsDisconnected() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.blockAcknowledgement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "reconnect-after-revoked-final-acknowledgement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.acknowledgedGenerations == [24] }
+        terminal.detachBrokerSession {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+
+        coordinator.finishAcknowledgement()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        XCTAssertNil(terminal.brokerSessionID)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(terminal.startFailureKind, .failed)
+        XCTAssertTrue(terminal.startFailureDescription?.contains("interrupted by teardown") == true)
+    }
+
     func testTeardownDoesNotDiscardCompletedExitedOutputRetirement() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.outputSnapshotError = RuntimeError.outputReadFailed
