@@ -130,6 +130,78 @@ final class ProcessToolTests: XCTestCase {
         }
     }
 
+    func testAcknowledgementTimeoutWithoutObservedStatusIsExplicit() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-missed-status-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("missed-status-controller")
+        try Data("#!/bin/zsh\nexit 123\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+
+        do {
+            _ = try await runProcessTool(request(command: "exit 0"), launcherExecutableURL: launcher)
+            XCTFail("An acknowledgement timeout must not become a generic missing status")
+        } catch let error as ProcessToolError {
+            guard case .executionStatusUnavailable(let reason) = error else {
+                return XCTFail("Expected unavailable execution status, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("acknowledgement"), "Unexpected reason: \(reason)")
+        }
+    }
+
+    func testCleanupFailureExitCannotConfirmSuccessfulCancellation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-false-cleanup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("false-cleanup-controller")
+        try Data("#!/bin/zsh\nprint -n 'cancelled:groupSignaled' > \"$4\"\nexit 125\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+
+        do {
+            _ = try await runProcessTool(
+                request(command: "exit 0"),
+                launcherExecutableURL: launcher,
+                temporaryDirectoryURL: directory
+            )
+            XCTFail("Exit 125 must not confirm successful cancellation cleanup")
+        } catch let error as ProcessToolError {
+            guard case .executionStatusUnavailable = error else {
+                return XCTFail("Expected unavailable execution status, got \(error)")
+            }
+        } catch {
+            XCTFail("Cleanup failure must not become CancellationError, got \(error)")
+        }
+    }
+
+    func testStatusReadFailureIsNotSwallowed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-unreadable-status-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("unreadable-status-controller")
+        try Data("#!/bin/zsh\nmkdir \"$4\"\nsleep 0.1\nexit 0\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+
+        do {
+            _ = try await runProcessTool(
+                request(command: "exit 0"),
+                launcherExecutableURL: launcher,
+                temporaryDirectoryURL: directory
+            )
+            XCTFail("A status read failure must remain observable")
+        } catch let error as ProcessToolError {
+            guard case .executionStatusUnavailable(let reason) = error else {
+                return XCTFail("Expected unavailable execution status, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Could not read controller status"), "Unexpected reason: \(reason)")
+        }
+    }
+
     func testCancellationDoesNotMaskLauncherFailure() async throws {
         let missingLauncher = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-holoscape-launcher-\(UUID().uuidString)")

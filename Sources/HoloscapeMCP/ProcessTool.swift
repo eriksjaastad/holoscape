@@ -209,8 +209,9 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
 
 final class ProcessToolStatusExchange: @unchecked Sendable {
     struct Outcome: Sendable {
-        let status: String
+        let status: String?
         let cleanupFailure: String?
+        let observationFailure: String?
     }
 
     private let condition = NSCondition()
@@ -229,8 +230,21 @@ final class ProcessToolStatusExchange: @unchecked Sendable {
                 condition.unlock()
                 if shouldStop { return }
 
-                if FileManager.default.fileExists(atPath: statusURL.path),
-                   let status = try? String(contentsOf: statusURL, encoding: .utf8) {
+                if FileManager.default.fileExists(atPath: statusURL.path) {
+                    let status: String
+                    do {
+                        status = try String(contentsOf: statusURL, encoding: .utf8)
+                    } catch {
+                        condition.lock()
+                        storedOutcome = Outcome(
+                            status: nil,
+                            cleanupFailure: nil,
+                            observationFailure: error.localizedDescription
+                        )
+                        condition.broadcast()
+                        condition.unlock()
+                        return
+                    }
                     let cleanupFailure: String?
                     do {
                         try remover(statusURL)
@@ -240,7 +254,11 @@ final class ProcessToolStatusExchange: @unchecked Sendable {
                     }
                     acknowledge()
                     condition.lock()
-                    storedOutcome = Outcome(status: status, cleanupFailure: cleanupFailure)
+                    storedOutcome = Outcome(
+                        status: status,
+                        cleanupFailure: cleanupFailure,
+                        observationFailure: nil
+                    )
                     condition.broadcast()
                     condition.unlock()
                     return
@@ -750,9 +768,38 @@ private func processToolControllerExitFailure(
     terminationReason: Process.TerminationReason,
     terminationStatus: Int32
 ) -> ProcessToolError? {
+    if let protocolFailure = processToolControllerProtocolFailure(
+        terminationReason: terminationReason,
+        terminationStatus: terminationStatus
+    ) {
+        return protocolFailure
+    }
+
+    let expectedExitCodes: Set<Int32>
+    switch status {
+    case .completed, .completedCleanupFailed, .timedOut(groupCleanupSucceeded: true),
+         .cancelled(groupCleanupSucceeded: true):
+        expectedExitCodes = [0]
+    case .timedOut(groupCleanupSucceeded: false), .cancelled(groupCleanupSucceeded: false):
+        expectedExitCodes = [0, 125]
+    case .launchFailed:
+        expectedExitCodes = [125, 127]
+    }
+    guard expectedExitCodes.contains(terminationStatus) else {
+        return .executionStatusUnavailable(
+            "Controller exit \(terminationStatus) did not confirm its published status"
+        )
+    }
+    return nil
+}
+
+private func processToolControllerProtocolFailure(
+    terminationReason: Process.TerminationReason,
+    terminationStatus: Int32
+) -> ProcessToolError? {
     guard terminationReason == .exit else {
         return .executionStatusUnavailable(
-            "Controller terminated by signal \(terminationStatus) after publishing status"
+            "Controller terminated by signal \(terminationStatus) before its status could be confirmed"
         )
     }
 
@@ -770,24 +817,8 @@ private func processToolControllerExitFailure(
             "Controller cancellation channel failed after status publication"
         )
     default:
-        break
+        return nil
     }
-
-    let expectedExitCodes: Set<Int32>
-    switch status {
-    case .completed, .completedCleanupFailed:
-        expectedExitCodes = [0]
-    case .timedOut, .cancelled:
-        expectedExitCodes = [0, 125]
-    case .launchFailed:
-        expectedExitCodes = [125, 127]
-    }
-    guard expectedExitCodes.contains(terminationStatus) else {
-        return .executionStatusUnavailable(
-            "Controller exit \(terminationStatus) did not confirm its published status"
-        )
-    }
-    return nil
 }
 
 private func consumeProcessToolRunnerFailure(at statusPath: String) -> Result<String?, ProcessToolError> {
@@ -1048,15 +1079,30 @@ func runProcessTool(
                 let outputPipesClosed = stdoutOutcome.closedCleanly && stderrOutcome.closedCleanly
                 let standardOutput = stdoutOutcome.output
                 let standardError = stderrOutcome.output
+                if let protocolFailure = processToolControllerProtocolFailure(
+                    terminationReason: process.terminationReason,
+                    terminationStatus: process.terminationStatus
+                ) {
+                    statusExchange.stop()
+                    continuation.resume(throwing: protocolFailure)
+                    return
+                }
                 guard let statusOutcome = statusExchange.finish() else {
                     continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a status record"))
+                    return
+                }
+                if let observationFailure = statusOutcome.observationFailure {
+                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable(
+                        "Could not read controller status: \(observationFailure)"
+                    ))
                     return
                 }
                 if let cleanupFailure = statusOutcome.cleanupFailure {
                     continuation.resume(throwing: ProcessToolError.statusCleanupFailed(cleanupFailure))
                     return
                 }
-                guard let parsed = parseProcessToolControllerStatus(statusOutcome.status) else {
+                guard let status = statusOutcome.status,
+                      let parsed = parseProcessToolControllerStatus(status) else {
                     continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited with an invalid status record"))
                     return
                 }
