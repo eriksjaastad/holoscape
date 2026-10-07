@@ -29,6 +29,7 @@ enum ProcessToolError: LocalizedError {
     case invalidWorkingDirectory(String)
     case launchFailed(String)
     case executionStatusUnavailable(String)
+    case cancellationCleanupFailed
 
     var errorDescription: String? {
         switch self {
@@ -42,6 +43,8 @@ enum ProcessToolError: LocalizedError {
             return "Failed to launch process: \(reason)"
         case .executionStatusUnavailable(let reason):
             return "Process execution status is unavailable: \(reason). The command may have run; do not retry automatically"
+        case .cancellationCleanupFailed:
+            return "Process cancellation could not prove that the owned process group was terminated"
         }
     }
 }
@@ -105,10 +108,52 @@ final class ProcessToolCompletion: @unchecked Sendable {
     }
 }
 
+/// Arbitrates task cancellation against process completion and owns the write
+/// end of the controller's cancellation pipe. Whichever side claims the lock
+/// first determines whether an otherwise successful result is cancelled.
+final class ProcessToolCancellationSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writeHandle: FileHandle?
+    private var requested = false
+    private var completed = false
+
+    init(writeHandle: FileHandle) {
+        self.writeHandle = writeHandle
+    }
+
+    func request() {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        requested = true
+        let handle = writeHandle
+        writeHandle = nil
+        lock.unlock()
+
+        try? handle?.close()
+    }
+
+    /// Returns whether cancellation won the race with completion.
+    func finish() -> Bool {
+        lock.lock()
+        completed = true
+        let wasRequested = requested
+        let handle = writeHandle
+        writeHandle = nil
+        lock.unlock()
+
+        try? handle?.close()
+        return wasRequested
+    }
+}
+
 enum ProcessToolControllerStatus: Equatable {
     case completed(exitCode: Int32)
     case completedCleanupFailed(exitCode: Int32)
     case timedOut(groupCleanupSucceeded: Bool)
+    case cancelled(groupCleanupSucceeded: Bool)
     case launchFailed(String)
 }
 
@@ -127,6 +172,12 @@ func parseProcessToolControllerStatus(_ text: String) -> ProcessToolControllerSt
     }
     if status == "timedOut:groupSignalFailed" {
         return .timedOut(groupCleanupSucceeded: false)
+    }
+    if status == "cancelled:groupSignaled" {
+        return .cancelled(groupCleanupSucceeded: true)
+    }
+    if status == "cancelled:groupSignalFailed" {
+        return .cancelled(groupCleanupSucceeded: false)
     }
     if status.hasPrefix("launchFailed:") {
         return .launchFailed(String(status.dropFirst("launchFailed:".count)))
@@ -336,6 +387,29 @@ private func processToolChildHasExited(_ pid: pid_t) -> Result<Bool, ProcessTool
     }
 }
 
+private func configureProcessToolCancellationInput() throws {
+    let currentFlags = fcntl(STDIN_FILENO, F_GETFL)
+    guard currentFlags != -1,
+          fcntl(STDIN_FILENO, F_SETFL, currentFlags | O_NONBLOCK) != -1 else {
+        throw ProcessToolError.launchFailed(
+            "Could not configure cancellation channel: \(String(cString: strerror(errno)))"
+        )
+    }
+}
+
+/// The caller owns stdin's write end. EOF requests cancellation, including when
+/// the caller disappears and the OS closes its descriptors.
+private func processToolCancellationRequested() -> Bool {
+    var byte: UInt8 = 0
+    while true {
+        let count = Darwin.read(STDIN_FILENO, &byte, 1)
+        if count > 0 || count == 0 { return true }
+        if errno == EINTR { continue }
+        if errno == EAGAIN || errno == EWOULDBLOCK { return false }
+        return true
+    }
+}
+
 /// Returns true only when the owned, unreaped group leader is the group's sole
 /// remaining member. Enumeration failure or any descendant is uncertainty.
 private func processToolGroupContainsOnlyLeader(_ processGroupID: pid_t) -> Bool {
@@ -502,6 +576,13 @@ func runProcessToolController(
     timeoutSeconds: Double,
     statusPath: String
 ) -> Never {
+    do {
+        try configureProcessToolCancellationInput()
+    } catch {
+        writeProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath)
+        Darwin.exit(127)
+    }
+
     let groupLeaderPID: pid_t
     do {
         groupLeaderPID = try spawnProcessToolGroupLeader(command: command, statusPath: statusPath)
@@ -512,12 +593,17 @@ func runProcessToolController(
 
     let deadline = DispatchTime.now() + timeoutSeconds
     var timedOut = false
+    var cancelled = false
     var inspectionFailure: ProcessToolError?
     while true {
         switch processToolChildHasExited(groupLeaderPID) {
         case .success(true):
             break
         case .success(false):
+            if processToolCancellationRequested() {
+                cancelled = true
+                break
+            }
             if DispatchTime.now() >= deadline {
                 timedOut = true
                 break
@@ -541,10 +627,14 @@ func runProcessToolController(
         Darwin.exit(125)
     }
     guard let childResult else {
-        writeProcessToolStatus(
-            timedOut ? "timedOut:groupSignalFailed" : "launchFailed:Child process did not exit after cleanup signaling",
-            to: statusPath
-        )
+        let status = if cancelled {
+            "cancelled:groupSignalFailed"
+        } else if timedOut {
+            "timedOut:groupSignalFailed"
+        } else {
+            "launchFailed:Child process did not exit after cleanup signaling"
+        }
+        writeProcessToolStatus(status, to: statusPath)
         Darwin.exit(125)
     }
     guard case .success(let exitCode) = childResult else {
@@ -563,7 +653,12 @@ func runProcessToolController(
         Darwin.exit(125)
     }
 
-    if timedOut {
+    if cancelled {
+        writeProcessToolStatus(
+            groupCleanupSucceeded ? "cancelled:groupSignaled" : "cancelled:groupSignalFailed",
+            to: statusPath
+        )
+    } else if timedOut {
         writeProcessToolStatus(
             groupCleanupSucceeded ? "timedOut:groupSignaled" : "timedOut:groupSignalFailed",
             to: statusPath
@@ -609,10 +704,11 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
 func runProcessTool(
     _ request: ProcessToolRequest,
     maxOutputBytes: Int = 1_048_576,
-    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0])
+    launcherExecutableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]),
+    temporaryDirectoryURL: URL = FileManager.default.temporaryDirectory
 ) async throws -> ProcessToolResult {
     let process = Process()
-    let statusURL = FileManager.default.temporaryDirectory
+    let statusURL = temporaryDirectoryURL
         .appendingPathComponent("holoscape-process-tool-\(UUID().uuidString).status")
     process.executableURL = launcherExecutableURL
     process.arguments = [
@@ -638,81 +734,122 @@ func runProcessTool(
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    let cancellationPipe = Pipe()
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
+    process.standardInput = cancellationPipe
 
     let stdout = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let stderr = ProcessToolOutputBuffer(maxBytes: maxOutputBytes)
     let stdoutReader = ProcessToolPipeReader(handle: stdoutPipe.fileHandleForReading, buffer: stdout)
     let stderrReader = ProcessToolPipeReader(handle: stderrPipe.fileHandleForReading, buffer: stderr)
+    let cancellation = ProcessToolCancellationSignal(writeHandle: cancellationPipe.fileHandleForWriting)
     stdoutReader.start()
     stderrReader.start()
 
-    return try await withCheckedThrowingContinuation { continuation in
-        process.terminationHandler = { _ in
-            let stdoutOutcome = stdoutReader.finish()
-            let stderrOutcome = stderrReader.finish()
-            let outputPipesClosed = stdoutOutcome.closedCleanly && stderrOutcome.closedCleanly
-            let standardOutput = stdoutOutcome.output
-            let standardError = stderrOutcome.output
-            let status = try? String(contentsOf: statusURL, encoding: .utf8)
-            try? FileManager.default.removeItem(at: statusURL)
-            guard let status, let parsed = parseProcessToolControllerStatus(status) else {
-                continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a valid status record"))
-                return
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { _ in
+                let cancellationRequested = cancellation.finish()
+                let stdoutOutcome = stdoutReader.finish()
+                let stderrOutcome = stderrReader.finish()
+                let outputPipesClosed = stdoutOutcome.closedCleanly && stderrOutcome.closedCleanly
+                let standardOutput = stdoutOutcome.output
+                let standardError = stderrOutcome.output
+                let status = try? String(contentsOf: statusURL, encoding: .utf8)
+                try? FileManager.default.removeItem(at: statusURL)
+                guard let status, let parsed = parseProcessToolControllerStatus(status) else {
+                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a valid status record"))
+                    return
+                }
+
+                switch parsed {
+                case .completed(let exitCode):
+                    if cancellationRequested {
+                        continuation.resume(
+                            throwing: outputPipesClosed
+                                ? CancellationError()
+                                : ProcessToolError.cancellationCleanupFailed
+                        )
+                        return
+                    }
+                    continuation.resume(returning: ProcessToolResult(
+                        command: request.command,
+                        workingDirectory: request.workingDirectory,
+                        exitCode: exitCode,
+                        timedOut: false,
+                        stdout: standardOutput.string,
+                        stderr: standardError.string,
+                        stdoutTruncated: standardOutput.truncated,
+                        stderrTruncated: standardError.truncated,
+                        processGroupCleanupSucceeded: outputPipesClosed ? nil : false
+                    ))
+                case .completedCleanupFailed(let exitCode):
+                    if cancellationRequested {
+                        continuation.resume(throwing: ProcessToolError.cancellationCleanupFailed)
+                        return
+                    }
+                    continuation.resume(returning: ProcessToolResult(
+                        command: request.command,
+                        workingDirectory: request.workingDirectory,
+                        exitCode: exitCode,
+                        timedOut: false,
+                        stdout: standardOutput.string,
+                        stderr: standardError.string,
+                        stdoutTruncated: standardOutput.truncated,
+                        stderrTruncated: standardError.truncated,
+                        processGroupCleanupSucceeded: false
+                    ))
+                case .timedOut(let groupCleanupSucceeded):
+                    if cancellationRequested {
+                        if groupCleanupSucceeded && outputPipesClosed {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(throwing: ProcessToolError.cancellationCleanupFailed)
+                        }
+                        return
+                    }
+                    continuation.resume(returning: ProcessToolResult(
+                        command: request.command,
+                        workingDirectory: request.workingDirectory,
+                        exitCode: nil,
+                        timedOut: true,
+                        stdout: standardOutput.string,
+                        stderr: standardError.string,
+                        stdoutTruncated: standardOutput.truncated,
+                        stderrTruncated: standardError.truncated,
+                        processGroupCleanupSucceeded: groupCleanupSucceeded && outputPipesClosed
+                    ))
+                case .cancelled(let groupCleanupSucceeded):
+                    if groupCleanupSucceeded && outputPipesClosed {
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        continuation.resume(throwing: ProcessToolError.cancellationCleanupFailed)
+                    }
+                case .launchFailed(let reason):
+                    continuation.resume(throwing: ProcessToolError.launchFailed(reason))
+                }
             }
 
-            switch parsed {
-            case .completed(let exitCode):
-                continuation.resume(returning: ProcessToolResult(
-                    command: request.command,
-                    workingDirectory: request.workingDirectory,
-                    exitCode: exitCode,
-                    timedOut: false,
-                    stdout: standardOutput.string,
-                    stderr: standardError.string,
-                    stdoutTruncated: standardOutput.truncated,
-                    stderrTruncated: standardError.truncated,
-                    processGroupCleanupSucceeded: outputPipesClosed ? nil : false
-                ))
-            case .completedCleanupFailed(let exitCode):
-                continuation.resume(returning: ProcessToolResult(
-                    command: request.command,
-                    workingDirectory: request.workingDirectory,
-                    exitCode: exitCode,
-                    timedOut: false,
-                    stdout: standardOutput.string,
-                    stderr: standardError.string,
-                    stdoutTruncated: standardOutput.truncated,
-                    stderrTruncated: standardError.truncated,
-                    processGroupCleanupSucceeded: false
-                ))
-            case .timedOut(let groupCleanupSucceeded):
-                continuation.resume(returning: ProcessToolResult(
-                    command: request.command,
-                    workingDirectory: request.workingDirectory,
-                    exitCode: nil,
-                    timedOut: true,
-                    stdout: standardOutput.string,
-                    stderr: standardError.string,
-                    stdoutTruncated: standardOutput.truncated,
-                    stderrTruncated: standardError.truncated,
-                    processGroupCleanupSucceeded: groupCleanupSucceeded && outputPipesClosed
-                ))
-            case .launchFailed(let reason):
-                continuation.resume(throwing: ProcessToolError.launchFailed(reason))
+            do {
+                try process.run()
+                try? cancellationPipe.fileHandleForReading.close()
+            } catch {
+                process.terminationHandler = nil
+                let cancellationRequested = cancellation.finish()
+                stdoutReader.cancel()
+                stderrReader.cancel()
+                try? cancellationPipe.fileHandleForReading.close()
+                try? FileManager.default.removeItem(at: statusURL)
+                if cancellationRequested {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
+                }
             }
         }
-
-        do {
-            try process.run()
-        } catch {
-            process.terminationHandler = nil
-            stdoutReader.cancel()
-            stderrReader.cancel()
-            try? FileManager.default.removeItem(at: statusURL)
-            continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
-        }
+    } onCancel: {
+        cancellation.request()
     }
 }
 

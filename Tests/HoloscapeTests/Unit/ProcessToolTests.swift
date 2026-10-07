@@ -22,6 +22,14 @@ final class ProcessToolTests: XCTestCase {
             parseProcessToolControllerStatus("completedCleanupFailed:17"),
             .completedCleanupFailed(exitCode: 17)
         )
+        XCTAssertEqual(
+            parseProcessToolControllerStatus("cancelled:groupSignaled"),
+            .cancelled(groupCleanupSucceeded: true)
+        )
+        XCTAssertEqual(
+            parseProcessToolControllerStatus("cancelled:groupSignalFailed"),
+            .cancelled(groupCleanupSucceeded: false)
+        )
         XCTAssertNil(parseProcessToolControllerStatus("timedOut:maybe"))
     }
 
@@ -219,6 +227,115 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertFalse(result.timedOut)
     }
 
+    func testCancellingRunProcessToolTerminatesResistantProcessTreeBeforeReturning() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-cancellation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let parentPIDURL = directory.appendingPathComponent("parent.pid")
+        let childPIDURL = directory.appendingPathComponent("child.pid")
+        let statusDirectory = directory.appendingPathComponent("status")
+        try FileManager.default.createDirectory(at: statusDirectory, withIntermediateDirectories: true)
+        let command = """
+        zmodload zsh/zselect
+        echo $$ > \(parentPIDURL.path)
+        trap '' TERM
+        /bin/zsh -c 'zmodload zsh/zselect; echo $$ > \(childPIDURL.path); trap "" TERM; while true; do zselect -t 100; done' &
+        while true; do zselect -t 100; done
+        """
+
+        let processRequest = request(command: command, timeoutSeconds: 2)
+        let launcherURL = launcherExecutableURL
+        let task = Task {
+            try await runProcessTool(
+                processRequest,
+                maxOutputBytes: 32,
+                launcherExecutableURL: launcherURL,
+                temporaryDirectoryURL: statusDirectory
+            )
+        }
+        try await waitForFiles([parentPIDURL, childPIDURL])
+        let parentPID = try pid(from: parentPIDURL)
+        let childPID = try pid(from: childPIDURL)
+        defer {
+            _ = Darwin.kill(parentPID, SIGKILL)
+            _ = Darwin.kill(childPID, SIGKILL)
+        }
+
+        let startedAt = DispatchTime.now()
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation must not return a normal process result")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Expected CancellationError, got \(error)")
+        }
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000_000
+
+        XCTAssertLessThan(elapsed, 1.8, "Cancellation must not wait for the configured timeout")
+        assertProcessIsGone(parentPID, "Cancelled shell must be gone before returning")
+        assertProcessIsGone(childPID, "Cancelled descendants must be gone before returning")
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: statusDirectory.path),
+            [],
+            "Cancellation must remove its controller status file"
+        )
+    }
+
+    func testCancellationRaceWithImmediateCompletionResolvesOnce() async throws {
+        let launcherURL = launcherExecutableURL
+        for _ in 0..<10 {
+            let processRequest = request(command: "exit 0")
+            let task = Task {
+                try await runProcessTool(processRequest, launcherExecutableURL: launcherURL)
+            }
+            task.cancel()
+
+            do {
+                let result = try await task.value
+                XCTAssertEqual(result.exitCode, 0)
+            } catch {
+                XCTAssertTrue(error is CancellationError, "Expected completion or CancellationError, got \(error)")
+            }
+        }
+    }
+
+    func testCancellationCleanupFailureIsSurfacedInsteadOfClaimingCancellation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-cancellation-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
+        let processRequest = request(
+            command: "echo $$ > \(shellPIDURL.path); while true; do sleep 1; done",
+            environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_SIGNAL_FAILURE": "1"],
+            timeoutSeconds: 2
+        )
+        let launcherURL = launcherExecutableURL
+        let task = Task {
+            try await runProcessTool(processRequest, launcherExecutableURL: launcherURL)
+        }
+        try await waitForFiles([shellPIDURL])
+        let shellPID = try pid(from: shellPIDURL)
+        defer { _ = Darwin.kill(shellPID, SIGKILL) }
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Unproven cleanup must not return a normal result")
+        } catch let error as ProcessToolError {
+            guard case .cancellationCleanupFailed = error else {
+                return XCTFail("Expected cancellation cleanup failure, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected explicit cleanup failure, got \(error)")
+        }
+
+        assertProcessExists(shellPID, "Injected cleanup failure must not be reported as successful cancellation")
+    }
+
     func testRunProcessToolTimeoutTerminatesResistantProcessTreeBeforeReturning() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-\(UUID().uuidString)")
@@ -387,6 +504,17 @@ final class ProcessToolTests: XCTestCase {
             environment: environment,
             timeoutSeconds: timeoutSeconds
         )
+    }
+
+    private func waitForFiles(_ urls: [URL]) async throws {
+        for _ in 0..<200 {
+            if urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for process PID files")
+        throw NSError(domain: "ProcessToolTests", code: 1)
     }
 
     private func pid(from url: URL) throws -> pid_t {
