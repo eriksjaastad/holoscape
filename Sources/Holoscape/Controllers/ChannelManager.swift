@@ -4,6 +4,18 @@ import Foundation
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
     private var channelOrder: [UUID] = []
+    /// Closing tabs disappear from public lookup immediately but remain in the
+    /// persistence graph until asynchronous broker teardown publishes whether
+    /// retryable retirement authority must survive relaunch.
+    private var closingChannelIDs: Set<UUID> = []
+    /// Closures whose lifecycle work finished but whose removal has not yet been
+    /// durably saved. Keep their controllers hidden and retained until a later
+    /// successful save commits the deletion.
+    private var completedClosingChannelIDs: Set<UUID> = []
+    /// Broker identities represented by restored close tombstones remain claimed
+    /// for the whole restore pass even if synchronous cleanup removes the model.
+    private var suppressedRecoveredBrokerSessionIDs: Set<BrokerSessionID> = []
+    private(set) var closePersistenceFailure: String?
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
@@ -133,14 +145,66 @@ class ChannelManager {
 
     /// Remove a channel from the registry.
     func closeChannel(id: UUID) {
-        if let channel = channels[id] {
-            channel.deactivate()
+        guard let channel = channels[id], !closingChannelIDs.contains(id) else { return }
+        // Presentation removal and lifecycle ownership are separate. Keep this
+        // controller in the saved order until teardown has serialized behind the
+        // output lane and published any retirement-only broker authority.
+        closingChannelIDs.insert(id)
+        channel.deactivateForClose { [weak self] outcome in
+            self?.handleClosingOutcome(outcome, id: id)
         }
-        channels.removeValue(forKey: id)
-        channelOrder.removeAll { $0 == id }
-        channelLabels.removeValue(forKey: id)
-        restoredBrokerSessionIDs.removeValue(forKey: id)
         // Note: highWaterMarks are NOT decremented on close (no renumbering)
+    }
+
+    private func finishClosingChannel(id: UUID) {
+        guard closingChannelIDs.contains(id), let channel = channels[id] else { return }
+        let ownsPendingRetirement = (channel as? ShellChannelController)?.pendingExitedOutputRetirement != nil
+            || (channel as? AgentChannelController)?.pendingExitedOutputRetirement != nil
+        if ownsPendingRetirement {
+            // A failed completed-session retirement is hidden but durable. The
+            // next launch restores its cleanup-only authority instead of losing
+            // the broker ID when the tab-close callback releases its controller.
+            persistClosingState(context: "retirement authority")
+            return
+        }
+        completedClosingChannelIDs.insert(id)
+        persistClosingState(context: "completed removal")
+    }
+
+    private func handleClosingOutcome(_ outcome: TerminalCleanupOutcome, id: UUID) {
+        switch outcome {
+        case .completed:
+            finishClosingChannel(id: id)
+        case .retryableFailure(let failure):
+            let didSave = saveState()
+            closePersistenceFailure = didSave
+                ? failure.description
+                : configService.lastDiagnostic?.message
+                    ?? "Channel state save failed while persisting retryable cleanup failure"
+            NSLog("ChannelManager retained closed-channel cleanup authority: \(closePersistenceFailure!)")
+        }
+    }
+
+    private func persistClosingState(context: String) {
+        guard saveState() else {
+            closePersistenceFailure = configService.lastDiagnostic?.message
+                ?? "Channel state save failed while persisting \(context)"
+            NSLog("ChannelManager could not persist closed-channel \(context): \(closePersistenceFailure!)")
+            return
+        }
+        closePersistenceFailure = nil
+    }
+
+    private func finalizePersistedClosures() {
+        guard !completedClosingChannelIDs.isEmpty else { return }
+        for id in completedClosingChannelIDs {
+            closingChannelIDs.remove(id)
+            channels.removeValue(forKey: id)
+            channelOrder.removeAll { $0 == id }
+            channelLabels.removeValue(forKey: id)
+            restoredBrokerSessionIDs.removeValue(forKey: id)
+        }
+        completedClosingChannelIDs.removeAll()
     }
 
     /// Detach live channel views during app termination without mutating the
@@ -152,14 +216,17 @@ class ChannelManager {
         // startup created the process but registry persistence and rollback both
         // failed. Give every controller its teardown opportunity; deactivate is
         // idempotent for ordinary disconnected channels.
-        let channels = allChannels()
+        // Closing channels are hidden presentation state, not released lifecycle
+        // authority. Include them so quit cannot save and reply before an
+        // in-flight close has published its final cleanup truth.
+        let channels = channelOrder.compactMap { self.channels[$0] }
         guard !channels.isEmpty else {
             completion()
             return
         }
         var remaining = channels.count
         for channel in channels {
-            channel.deactivate {
+            channel.deactivateForAppTermination {
                 remaining -= 1
                 if remaining == 0 {
                     completion()
@@ -170,6 +237,7 @@ class ChannelManager {
 
     /// Get a channel by ID.
     func channel(for id: UUID) -> (any ChannelController)? {
+        guard !closingChannelIDs.contains(id) else { return nil }
         return channels[id]
     }
 
@@ -187,7 +255,9 @@ class ChannelManager {
 
     /// Return all channels in tab order.
     func allChannels() -> [any ChannelController] {
-        return channelOrder.compactMap { channels[$0] }
+        return channelOrder.compactMap { id in
+            closingChannelIDs.contains(id) ? nil : channels[id]
+        }
     }
 
     /// Apply a user-owned display label without changing launch or process identity.
@@ -214,9 +284,11 @@ class ChannelManager {
     }
 
     /// Save current channel state to config.
-    func saveState() {
+    @discardableResult
+    func saveState() -> Bool {
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
+            guard !completedClosingChannelIDs.contains(id) else { return nil }
             guard let channel = channels[id] else { return nil }
 
             // Extract type-specific fields for persistence
@@ -230,15 +302,18 @@ class ChannelManager {
 
             var workingDir: String?
             var staleBrokerSessionID: BrokerSessionID?
+            var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
 
             if let shellChannel = channel as? ShellChannelController {
                 workingDir = shellChannel.persistedWorkingDirectory
                 staleBrokerSessionID = shellChannel.staleBrokerSessionID
+                pendingExitedOutputRetirement = shellChannel.pendingExitedOutputRetirement
             } else if let agentChannel = channel as? AgentChannelController {
                 workingDir = agentChannel.persistedWorkingDirectory
                 command = agentChannel.persistedCommand
                 useRawLabel = agentChannel.persistedUseRawLabel
                 staleBrokerSessionID = agentChannel.staleBrokerSessionID
+                pendingExitedOutputRetirement = agentChannel.pendingExitedOutputRetirement
             } else if let sshChannel = channel as? SSHChannelController {
                 host = sshChannel.profile.host
                 user = sshChannel.profile.user
@@ -287,11 +362,18 @@ class ChannelManager {
                 pinnedAt: pinnedTimestamps[id],
                 persistentState: channel.persistentState,
                 brokerSessionID: brokerSessionID,
-                staleBrokerSessionID: staleBrokerSessionID
+                staleBrokerSessionID: staleBrokerSessionID,
+                pendingExitedOutputRetirement: pendingExitedOutputRetirement,
+                closeTombstone: closingChannelIDs.contains(id) ? true : nil
             )
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
-        configService.save(config)
+        let didSave = configService.save(config)
+        if didSave {
+            closePersistenceFailure = nil
+            finalizePersistedClosures()
+        }
+        return didSave
     }
 
     /// Restore channels from saved config.
@@ -300,6 +382,7 @@ class ChannelManager {
     ) {
         let config = configService.load()
         var claimedBrokerSessionIDs: Set<BrokerSessionID> = []
+        var restoredCloseCleanupControllers: [any ChannelController] = []
         for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
@@ -321,11 +404,27 @@ class ChannelManager {
                 if let brokerSessionID = metadata.brokerSessionID {
                     claimedBrokerSessionIDs.insert(brokerSessionID)
                     restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
+                    if metadata.closeTombstone == true {
+                        suppressedRecoveredBrokerSessionIDs.insert(brokerSessionID)
+                    }
                 }
                 if let pinnedAt = metadata.pinnedAt {
                     pinnedChannelIds.insert(controller.channelId)
                     pinnedTimestamps[controller.channelId] = pinnedAt
                 }
+                if metadata.closeTombstone == true {
+                    // Register the entire saved graph before cleanup can complete.
+                    // A synchronous missing-session result may save immediately;
+                    // deferring the callback prevents that save from dropping tabs
+                    // that appear later in the persisted order.
+                    closingChannelIDs.insert(controller.channelId)
+                    restoredCloseCleanupControllers.append(controller)
+                }
+            }
+        }
+        for controller in restoredCloseCleanupControllers {
+            controller.resumeRestoredCloseCleanup { [weak self] outcome in
+                self?.handleClosingOutcome(outcome, id: controller.channelId)
             }
         }
     }
@@ -341,7 +440,7 @@ class ChannelManager {
         }
     }
 
-    var count: Int { channels.count }
+    var count: Int { channels.count - closingChannelIDs.count }
 
     /// Reattachable broker sessions, or `nil` when the broker registry cannot be
     /// read during restore.
@@ -537,7 +636,9 @@ class ChannelManager {
                 return []
             }
         })
-        let knownBrokerSessionIDs = restoredBrokerSessionIdentities.union(liveBrokerSessionIDs)
+        let knownBrokerSessionIDs = restoredBrokerSessionIdentities
+            .union(liveBrokerSessionIDs)
+            .union(suppressedRecoveredBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {

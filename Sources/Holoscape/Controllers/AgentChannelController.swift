@@ -11,13 +11,18 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private var restoredCloseCleanupCompletion: (@MainActor (TerminalCleanupOutcome) -> Void)?
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
+        terminal.pendingExitedOutputRetirement
+    }
     /// Broker session this tab could not reattach because the broker no longer
     /// owns it. Retained (and persisted) while the tab is stale so the recreate
     /// guidance and the tab/session association survive relaunch/restore.
     private(set) var staleBrokerSessionID: BrokerSessionID?
     private let authType: AgentAuthType
+    private let apiAuthTypeResolver: () throws -> AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
     private(set) var customDisplayLabel: String?
@@ -161,8 +166,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         useRawLabel: Bool = false,
         command: String = "claude",
         existingBrokerSessionID: BrokerSessionID? = nil,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID? = nil,
-        coordinator: (any BrokerSessionCoordinating)? = nil
+        coordinator: (any BrokerSessionCoordinating)? = nil,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) -> AgentChannelController {
         let environmentProfile: BrokerEnvironmentProfile
         let channelType: ChannelType
@@ -170,7 +179,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         case .oauth:
             environmentProfile = .agentOAuth
             channelType = .agentDirect
-        case .apiKey:
+        case .apiKey, .deferredAPIKey:
             environmentProfile = .agentAPI
             channelType = .agentAPI
         }
@@ -180,6 +189,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: userLabel,
             environmentProfile: environmentProfile,
             existingBrokerSessionID: existingBrokerSessionID,
+            pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
         )
         return AgentChannelController(
@@ -192,7 +202,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             command: command,
             terminal: terminal,
             brokerSessionCoordinator: nil,
-            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
+            apiAuthTypeResolver: apiAuthTypeResolver
         )
     }
 
@@ -206,14 +217,18 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         command: String = "claude",
         terminal: TerminalProcess? = nil,
         brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
-        restoredStaleBrokerSessionID: BrokerSessionID? = nil
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) {
         self.channelId = id
         self.authType = authType
+        self.apiAuthTypeResolver = apiAuthTypeResolver
         self.channelType = {
             switch authType {
             case .oauth: return .agentDirect
-            case .apiKey: return .agentAPI
+            case .apiKey, .deferredAPIKey: return .agentAPI
             }
         }()
         self.workingDirectory = workingDirectory
@@ -236,7 +251,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             self?.handleSessionFailure(failure)
         }
         self.terminal.setStartCompletionHandler { [weak self] in
-            self?.finishActivation()
+            self?.finishTerminalStart()
         }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
@@ -279,13 +294,33 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)
 
-        // Build clean environment with auth isolation
-        var env = AuthEnvironmentBuilder.buildEnvironment(
-            for: authType,
-            workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
-        )
-        env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
-        let envPairs = env.map { "\($0.key)=\($0.value)" }
+        // Retirement-only restore must not depend on credentials, but any later
+        // replacement launch resolves the API key again and fails closed.
+        let envPairs: [String]?
+        if case .deferredAPIKey = authType,
+           terminal.pendingExitedOutputRetirement != nil {
+            envPairs = nil
+        } else {
+            let launchAuthType: AgentAuthType
+            do {
+                if case .deferredAPIKey = authType {
+                    launchAuthType = try apiAuthTypeResolver()
+                } else {
+                    launchAuthType = authType
+                }
+            } catch {
+                NSLog("Agent terminal start refused because API-key auth is unavailable: \(error)")
+                lastStartFailureKind = .failed
+                transitionToDisconnected()
+                return
+            }
+            var env = AuthEnvironmentBuilder.buildEnvironment(
+                for: launchAuthType,
+                workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
+            )
+            env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
+            envPairs = env.map { "\($0.key)=\($0.value)" }
+        }
 
         let launch = Self.launchInvocation(for: command)
 
@@ -315,6 +350,40 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if terminal.completesStartAsynchronously { return }
         finishActivation()
+    }
+
+    private func finishTerminalStart() {
+        if restoredCloseCleanupCompletion != nil {
+            finishRestoredCloseCleanupStart()
+        } else {
+            finishActivation()
+        }
+    }
+
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        guard terminal.brokerOwnedSessionID != nil || terminal.pendingExitedOutputRetirement != nil else {
+            completion(.completed)
+            return
+        }
+        restoredCloseCleanupCompletion = completion
+        terminal.setOutputHandler(nil)
+        // A close tombstone owns cleanup only. Never resolve credentials or
+        // construct an environment that could authorize a replacement launch.
+        terminal.resumeBrokerSessionForCleanup()
+        if !terminal.completesStartAsynchronously {
+            finishRestoredCloseCleanupStart()
+        }
+    }
+
+    private func finishRestoredCloseCleanupStart() {
+        guard let completion = restoredCloseCleanupCompletion else { return }
+        restoredCloseCleanupCompletion = nil
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.recordBrokerDetach()
+            completion(outcome)
+        }
     }
 
     private func finishActivation() {
@@ -390,6 +459,23 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()
+        transitionToDisconnected()
+    }
+
+    func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.terminal.setOutputHandler(nil)
+            self?.recordBrokerDetach()
+            completion(outcome)
+        }
+        transitionToDisconnected()
+    }
+
+    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
+        terminal.detachBrokerSessionPreservingOutput { [weak self] in
+            self?.recordBrokerDetach()
+            completion()
+        }
         transitionToDisconnected()
     }
 
@@ -599,7 +685,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private var brokerEnvironmentProfile: BrokerEnvironmentProfile {
         switch authType {
         case .oauth: return .agentOAuth
-        case .apiKey: return .agentAPI
+        case .apiKey, .deferredAPIKey: return .agentAPI
         }
     }
 

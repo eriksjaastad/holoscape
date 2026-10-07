@@ -13,6 +13,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
     var channelManagerRef: ChannelManager?
+    /// Test seam for credential-unavailable restore paths.
+    var agentAPIAuthTypeResolver: () throws -> AgentAuthType = {
+        try AgentAPIKeyResolver().authType()
+    }
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
@@ -255,13 +259,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem
 
-        channelManager.saveState()
+        guard channelManager.saveState() else {
+            terminationTeardownTimeoutWorkItem?.cancel()
+            terminationTeardownTimeoutWorkItem = nil
+            terminationTeardownStarted = false
+            terminationTeardownGeneration &+= 1
+            NSLog("Channel state could not be saved before broker cleanup; keeping Holoscape open")
+            apiServer?.start()
+            setLaunchRecoveryInteractionEnabled(true)
+            windowController?.setChannelMutationEnabled(true)
+            reply(false)
+            return
+        }
         channelManager.detachAllChannelsForAppTermination { [weak self] in
             guard let self,
                   self.terminationTeardownStarted,
                   self.terminationTeardownGeneration == generation else { return }
             self.terminationTeardownTimeoutWorkItem?.cancel()
             self.terminationTeardownTimeoutWorkItem = nil
+            // Final-output cleanup can create or clear durable retirement-only
+            // authority after the initial quit snapshot. Persist the resolved
+            // broker truth before allowing AppKit to terminate.
+            guard channelManager.saveState() else {
+                self.terminationTeardownStarted = false
+                self.terminationTeardownGeneration &+= 1
+                NSLog("Final broker cleanup state could not be saved; keeping Holoscape open")
+                self.apiServer?.start()
+                self.setLaunchRecoveryInteractionEnabled(true)
+                self.windowController?.setChannelMutationEnabled(true)
+                reply(false)
+                return
+            }
             self.terminationTeardownComplete = true
             reply(true)
         }
@@ -432,6 +460,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         _ metadata: ChannelMetadata,
         hasResolvedBrokerSession: Bool = false
     ) -> Bool {
+        // ChannelManager owns cleanup-only restoration after registering the
+        // hidden tombstone, so synchronous cleanup cannot escape persistence.
+        if metadata.closeTombstone == true {
+            return false
+        }
+        // Retirement-only authority performs broker cleanup, not an agent
+        // launch, and must run even when an API credential is unavailable.
+        if metadata.pendingExitedOutputRetirement != nil {
+            return true
+        }
         guard metadata.type != .agentAPI else { return false }
         // A live registry record matched by channel ownership is newer truth than
         // stale metadata left behind before the replacement identity was saved.
@@ -496,6 +534,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 label: restoredShell.label,
                 workingDirectory: brokerSession?.workingDirectory ?? restoredShell.workingDirectory,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
@@ -511,6 +550,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 from: metadata,
                 authType: .oauth,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
                 coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
             )
@@ -523,18 +563,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
             let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let authType: AgentAuthType
-            do {
-                authType = try AgentAPIKeyResolver().authType()
-            } catch {
-                NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
-                return nil
+            if metadata.closeTombstone == true || metadata.pendingExitedOutputRetirement != nil {
+                authType = .deferredAPIKey
+            } else {
+                do {
+                    authType = try agentAPIAuthTypeResolver()
+                } catch {
+                    NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
+                    return nil
+                }
             }
             let controller = Self.restoredAgentController(
                 from: metadata,
                 authType: authType,
                 existingBrokerSessionID: brokerIdentity.existing,
+                pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
-                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator,
+                apiAuthTypeResolver: agentAPIAuthTypeResolver
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.
@@ -581,8 +627,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         from metadata: ChannelMetadata,
         authType: AgentAuthType,
         existingBrokerSessionID: BrokerSessionID?,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID?,
-        coordinator: (any BrokerSessionCoordinating)?
+        coordinator: (any BrokerSessionCoordinating)?,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) -> AgentChannelController {
         AgentChannelController.brokerBacked(
             id: metadata.id,
@@ -593,8 +643,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             useRawLabel: metadata.useRawLabel ?? true,
             command: metadata.command ?? "claude",
             existingBrokerSessionID: existingBrokerSessionID,
+            pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
-            coordinator: coordinator
+            coordinator: coordinator,
+            apiAuthTypeResolver: apiAuthTypeResolver
         )
     }
 
@@ -606,6 +658,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         metadata: ChannelMetadata,
         resolvedSession: BrokerSessionRecord?
     ) -> (existing: BrokerSessionID?, stale: BrokerSessionID?) {
+        if let pending = metadata.pendingExitedOutputRetirement {
+            return (pending.sessionID, nil)
+        }
         if let resolvedSession {
             // A reattachable live record, including a replacement found by the
             // saved channel ID, supersedes stale identity from an older process

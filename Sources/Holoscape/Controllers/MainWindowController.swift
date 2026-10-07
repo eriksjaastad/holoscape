@@ -2250,7 +2250,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private func createAgentChannel(authType: AgentAuthType, prompt: AgentChannelPromptResult) {
         guard channelMutationEnabled else { return }
         let channel = channelManager.createChannel(
-            type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey: return ChannelType.agentAPI } }(),
+            type: { switch authType { case .oauth: return ChannelType.agentDirect; case .apiKey, .deferredAPIKey: return ChannelType.agentAPI } }(),
             role: prompt.label,
             workingDirectory: prompt.workingDirectory
         ) { id, type, _, instanceNum, workDir in

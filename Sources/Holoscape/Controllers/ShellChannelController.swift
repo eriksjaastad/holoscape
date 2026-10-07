@@ -11,8 +11,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private var restoredCloseCleanupCompletion: (@MainActor (TerminalCleanupOutcome) -> Void)?
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
+        terminal.pendingExitedOutputRetirement
+    }
     /// Broker session this tab could not reattach because the broker no longer
     /// owns it. Retained (and persisted) while the tab is stale so the recreate
     /// guidance and the tab/session association survive relaunch/restore.
@@ -102,6 +106,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         label: String? = nil,
         workingDirectory: String? = nil,
         existingBrokerSessionID: BrokerSessionID? = nil,
+        pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID? = nil,
         coordinator: (any BrokerSessionCoordinating)? = nil
     ) -> ShellChannelController {
@@ -111,6 +116,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             label: label,
             environmentProfile: .shell,
             existingBrokerSessionID: existingBrokerSessionID,
+            pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             coordinator: coordinator ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
         )
         return ShellChannelController(
@@ -156,7 +162,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             self?.handleSessionFailure(failure)
         }
         self.terminal.setStartCompletionHandler { [weak self] in
-            self?.finishActivation()
+            self?.finishTerminalStart()
         }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
@@ -235,6 +241,38 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         finishActivation()
     }
 
+    private func finishTerminalStart() {
+        if restoredCloseCleanupCompletion != nil {
+            finishRestoredCloseCleanupStart()
+        } else {
+            finishActivation()
+        }
+    }
+
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        guard terminal.brokerOwnedSessionID != nil || terminal.pendingExitedOutputRetirement != nil else {
+            completion(.completed)
+            return
+        }
+        restoredCloseCleanupCompletion = completion
+        terminal.setOutputHandler(nil)
+        terminal.resumeBrokerSessionForCleanup()
+        if !terminal.completesStartAsynchronously {
+            finishRestoredCloseCleanupStart()
+        }
+    }
+
+    private func finishRestoredCloseCleanupStart() {
+        guard let completion = restoredCloseCleanupCompletion else { return }
+        restoredCloseCleanupCompletion = nil
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.recordBrokerDetach()
+            completion(outcome)
+        }
+    }
+
     private func finishActivation() {
         if let sessionFailure = terminal.sessionFailure {
             handleSessionFailure(sessionFailure)
@@ -304,6 +342,25 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
+    }
+
+    func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.terminal.setOutputHandler(nil)
+            self?.recordBrokerDetach()
+            completion(outcome)
+        }
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
+    }
+
+    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
+        terminal.detachBrokerSessionPreservingOutput { [weak self] in
+            self?.recordBrokerDetach()
+            completion()
+        }
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)
     }

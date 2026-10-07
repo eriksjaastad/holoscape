@@ -163,6 +163,65 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(channel.deactivateCallCount, 1)
     }
 
+    func testTerminationTeardownDeniesQuitWhenFinalSnapshotCannotBePersisted() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationSaveFailureTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let appDelegate = AppDelegate()
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        XCTAssertTrue(replies.isEmpty)
+
+        try FileManager.default.removeItem(at: tempDirectory)
+        try "blocking file".write(to: tempDirectory, atomically: true, encoding: .utf8)
+        channel.finishDeactivation()
+
+        XCTAssertEqual(replies, [false])
+
+        try FileManager.default.removeItem(at: tempDirectory)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        channel.defersDeactivationCompletion = false
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+
+        XCTAssertEqual(replies, [false, true])
+    }
+
+    func testTerminationTeardownDoesNotDetachWhenInitialSnapshotCannotBePersisted() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateInitialSaveFailureTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "blocking file".write(to: tempDirectory, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Unsaved",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        let appDelegate = AppDelegate()
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+
+        XCTAssertEqual(replies, [false])
+        XCTAssertEqual(channel.deactivateCallCount, 0)
+    }
+
     func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
         let mainMenu = NSMenu(title: "Main")
         let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")
@@ -216,12 +275,26 @@ final class AppDelegateRestoredShellTests: XCTestCase {
     }
 
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
+        var requiresOffMainBrokerWork = false
         var reattachableSessionRecords: [BrokerSessionRecord] = []
         var nextStartRecord: BrokerSessionRecord?
         var reattachError: Error?
         var startCallCount = 0
         var reattachCalls: [(id: BrokerSessionID, attachedChannelID: UUID)] = []
         var readScrollbackTailCalls: [(id: BrokerSessionID, maxBytes: Int)] = []
+        var retiredSessionIDs: [BrokerSessionID] = []
+        var retirementHandler: (() -> Void)?
+        private var shouldBlockRetirement = false
+        private let retirementRelease = DispatchSemaphore(value: 0)
+
+        func blockRetirement() {
+            requiresOffMainBrokerWork = true
+            shouldBlockRetirement = true
+        }
+
+        func finishRetirement() {
+            retirementRelease.signal()
+        }
 
         func start(
             _ request: BrokerSessionLaunchRequest,
@@ -238,6 +311,13 @@ final class AppDelegateRestoredShellTests: XCTestCase {
 
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+        func retireCompletedSession(_ id: BrokerSessionID) throws {
+            retiredSessionIDs.append(id)
+            retirementHandler?()
+            if shouldBlockRetirement {
+                _ = retirementRelease.wait(timeout: .now() + 2)
+            }
+        }
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
             reattachCalls.append((id: id, attachedChannelID: attachedChannelID))
@@ -1025,6 +1105,170 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         let controller = try XCTUnwrap(appDelegate.createChannelFromMetadata(metadata) as? AgentChannelController)
 
         XCTAssertEqual(controller.displayLabel, "MIN")
+    }
+
+    func testAgentAPIRetirementAuthorityRestoresWithoutCredential() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegatePendingAPIRetirementRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let retired = expectation(description: "retirement-only authority completed")
+        coordinator.retirementHandler = { retired.fulfill() }
+        var credentialResolutionCount = 0
+        appDelegate.agentAPIAuthTypeResolver = {
+            credentialResolutionCount += 1
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+        let sessionID = BrokerSessionID(rawValue: "pending-agent-api-retirement")
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: "outputAcknowledgementFailed",
+            outputFailureKind: .failed
+        )
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "API Agent",
+            workingDirectory: "/tmp/pending-agent-api-retirement",
+            command: "claude",
+            brokerSessionID: sessionID,
+            pendingExitedOutputRetirement: pending
+        )
+
+        let controller = try XCTUnwrap(
+            appDelegate.restoreChannel(from: metadata) as? AgentChannelController
+        )
+
+        wait(for: [retired], timeout: 1)
+        let cleanupDeadline = Date().addingTimeInterval(1)
+        while controller.pendingExitedOutputRetirement != nil, Date() < cleanupDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [sessionID])
+        XCTAssertEqual(controller.channelType, .agentAPI)
+        XCTAssertNil(controller.pendingExitedOutputRetirement)
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
+    func testAgentAPICloseTombstoneRestoresWithoutCredential() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPICloseTombstoneRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        var credentialResolutionCount = 0
+        appDelegate.agentAPIAuthTypeResolver = {
+            credentialResolutionCount += 1
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+        let sessionID = BrokerSessionID(rawValue: "closed-agent-api-session")
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "Closed API Agent",
+            workingDirectory: "/tmp/closed-agent-api",
+            command: "claude",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )
+
+        let controller = try XCTUnwrap(
+            appDelegate.createChannelFromMetadata(metadata) as? AgentChannelController
+        )
+
+        XCTAssertEqual(controller.channelType, .agentAPI)
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
+    func testCredentiallessAgentReconnectAfterDeniedQuitWaitsForCleanupAndFailsClosed() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegatePendingAPIRetirementReconnectTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.blockRetirement()
+        let retirementStarted = expectation(description: "retirement-only cleanup started")
+        coordinator.retirementHandler = { retirementStarted.fulfill() }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        var credentialResolutionCount = 0
+        appDelegate.agentAPIAuthTypeResolver = {
+            credentialResolutionCount += 1
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+        let sessionID = BrokerSessionID(rawValue: "pending-agent-api-retirement-reconnect")
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "API Agent",
+            workingDirectory: "/tmp/pending-agent-api-retirement-reconnect",
+            command: "claude",
+            brokerSessionID: sessionID,
+            pendingExitedOutputRetirement: BrokerExitedOutputRetirement(
+                sessionID: sessionID,
+                outputFailureDescription: "outputAcknowledgementFailed",
+                outputFailureKind: .failed
+            )
+        )
+
+        let controller = try XCTUnwrap(
+            appDelegate.restoreChannel(from: metadata) as? AgentChannelController
+        )
+        wait(for: [retirementStarted], timeout: 1)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [sessionID])
+
+        var teardownCompleted = false
+        controller.deactivate { teardownCompleted = true }
+        XCTAssertFalse(teardownCompleted)
+
+        controller.retry()
+        XCTAssertEqual(controller.state, .connecting)
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+
+        coordinator.finishRetirement()
+        let cleanupDeadline = Date().addingTimeInterval(1)
+        while (!teardownCompleted
+            || controller.state != .disconnected
+            || controller.pendingExitedOutputRetirement != nil),
+            Date() < cleanupDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(teardownCompleted)
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertNil(controller.pendingExitedOutputRetirement)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+        XCTAssertEqual(credentialResolutionCount, 0)
+
+        controller.retry()
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(credentialResolutionCount, 1)
+        XCTAssertEqual(coordinator.startCallCount, 0)
     }
 
     func testRestoredAPIAgentPreservesRawProfileLabel() {

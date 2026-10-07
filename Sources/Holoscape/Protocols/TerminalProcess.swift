@@ -16,6 +16,10 @@ protocol TerminalProcess: AnyObject {
         execName: String?,
         currentDirectory: String?
     )
+    /// Reattach only to complete durable cleanup for a tab the user already
+    /// closed. Unlike a user-visible start, this must not replay or acknowledge
+    /// broker output and must never launch a replacement process.
+    func resumeBrokerSessionForCleanup()
 
     func send(_ bytes: [UInt8])
     func setOutputHandler(_ handler: (() -> Void)?)
@@ -38,6 +42,20 @@ protocol TerminalProcess: AnyObject {
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
     func detachBrokerSession(completion: @escaping @MainActor () -> Void)
+    /// Detach for a presentation-hidden close and report whether cleanup is
+    /// durably complete. A retryable failure must keep the close tombstone and
+    /// broker identity persisted so a later launch can resume cleanup.
+    func detachBrokerSessionForCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
+    /// Detach for app termination without consuming unread broker output. Any
+    /// final bytes remain broker-owned for replay on the next launch.
+    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void)
+    /// Retire a session for a user-requested tab close. Success means no durable
+    /// broker record can later resurrect the hidden tab.
+    func retireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Persist host-reported cwd truth with the process owner. Direct terminals
     /// do not own durable metadata and therefore use the default no-op.
     func updateWorkingDirectory(_ directory: String) throws
@@ -63,12 +81,37 @@ protocol TerminalProcess: AnyObject {
     var staleBrokerSessionID: BrokerSessionID? { get }
     var startFailureDescription: String? { get }
     var startFailureKind: TerminalStartFailureKind? { get }
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? { get }
 }
 
-enum TerminalStartFailureKind: Equatable, Sendable {
+enum TerminalStartFailureKind: String, Codable, Equatable, Sendable {
     case failed
     case brokerHostUnavailable
     case brokerSessionStale
+}
+
+/// Durable authority to retire an exited broker session without replaying its
+/// already-presented final bytes again after failed acknowledgement/cleanup.
+struct BrokerExitedOutputRetirement: Codable, Equatable, Sendable {
+    let sessionID: BrokerSessionID
+    let outputFailureDescription: String
+    let outputFailureKind: TerminalStartFailureKind
+    /// Known process exit truth, when final-output handling observed it before
+    /// cleanup failed. Persisting this lets a later retirement retry publish the
+    /// same terminal lifecycle outcome without replaying final bytes.
+    let observedExitCode: Int32?
+
+    init(
+        sessionID: BrokerSessionID,
+        outputFailureDescription: String,
+        outputFailureKind: TerminalStartFailureKind,
+        observedExitCode: Int32? = nil
+    ) {
+        self.sessionID = sessionID
+        self.outputFailureDescription = outputFailureDescription
+        self.outputFailureKind = outputFailureKind
+        self.observedExitCode = observedExitCode
+    }
 }
 
 /// A failure observed on an already-started terminal session.
@@ -80,13 +123,32 @@ struct TerminalSessionFailure: Equatable, Sendable {
     let description: String
 }
 
+enum TerminalCleanupOutcome: Equatable, Sendable {
+    case completed
+    case retryableFailure(TerminalSessionFailure)
+}
+
 extension TerminalProcess {
+    func resumeBrokerSessionForCleanup() {}
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func setStartCompletionHandler(_ handler: (() -> Void)?) {}
     var completesStartAsynchronously: Bool { false }
     func detachBrokerSession(completion: @escaping @MainActor () -> Void) { completion() }
+    func detachBrokerSessionForCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSession { completion(.completed) }
+    }
+    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+        detachBrokerSession(completion: completion)
+    }
+    func retireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSessionForCleanup(completion: completion)
+    }
     func detachBrokerSession() { detachBrokerSession(completion: {}) }
     func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}
@@ -96,4 +158,5 @@ extension TerminalProcess {
     var staleBrokerSessionID: BrokerSessionID? { nil }
     var startFailureDescription: String? { nil }
     var startFailureKind: TerminalStartFailureKind? { nil }
+    var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? { nil }
 }
