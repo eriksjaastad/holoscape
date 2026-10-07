@@ -123,6 +123,10 @@ final class ChannelManagerTests: XCTestCase {
             startCallCount += 1
         }
 
+        func resumeBrokerSessionForCleanup() {
+            startCallCount += 1
+        }
+
         func send(_ bytes: [UInt8]) {
             userInputHandler?(ArraySlice(bytes))
         }

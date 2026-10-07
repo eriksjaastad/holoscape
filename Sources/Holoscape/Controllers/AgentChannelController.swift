@@ -366,17 +366,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             return
         }
         restoredCloseCleanupCompletion = completion
-        let launch = Self.launchInvocation(for: command)
         terminal.setOutputHandler(nil)
         // A close tombstone owns cleanup only. Never resolve credentials or
         // construct an environment that could authorize a replacement launch.
-        terminal.startProcess(
-            executable: launch.executable,
-            args: launch.args,
-            environment: nil,
-            execName: launch.execName,
-            currentDirectory: workingDirectory?.path
-        )
+        terminal.resumeBrokerSessionForCleanup()
         if !terminal.completesStartAsynchronously {
             finishRestoredCloseCleanupStart()
         }

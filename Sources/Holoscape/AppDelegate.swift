@@ -563,7 +563,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
             let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let authType: AgentAuthType
-            if metadata.pendingExitedOutputRetirement != nil {
+            if metadata.closeTombstone == true || metadata.pendingExitedOutputRetirement != nil {
                 authType = .deferredAPIKey
             } else {
                 do {

@@ -16,6 +16,10 @@ protocol TerminalProcess: AnyObject {
         execName: String?,
         currentDirectory: String?
     )
+    /// Reattach only to complete durable cleanup for a tab the user already
+    /// closed. Unlike a user-visible start, this must not replay or acknowledge
+    /// broker output and must never launch a replacement process.
+    func resumeBrokerSessionForCleanup()
 
     func send(_ bytes: [UInt8])
     func setOutputHandler(_ handler: (() -> Void)?)
@@ -106,6 +110,7 @@ struct TerminalSessionFailure: Equatable, Sendable {
 }
 
 extension TerminalProcess {
+    func resumeBrokerSessionForCleanup() {}
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}

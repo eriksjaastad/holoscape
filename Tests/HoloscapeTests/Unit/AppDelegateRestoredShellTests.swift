@@ -1160,6 +1160,45 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.startCallCount, 0)
     }
 
+    func testAgentAPICloseTombstoneRestoresWithoutCredential() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPICloseTombstoneRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        var credentialResolutionCount = 0
+        appDelegate.agentAPIAuthTypeResolver = {
+            credentialResolutionCount += 1
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+        let sessionID = BrokerSessionID(rawValue: "closed-agent-api-session")
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "Closed API Agent",
+            workingDirectory: "/tmp/closed-agent-api",
+            command: "claude",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )
+
+        let controller = try XCTUnwrap(
+            appDelegate.createChannelFromMetadata(metadata) as? AgentChannelController
+        )
+
+        XCTAssertEqual(controller.channelType, .agentAPI)
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
     func testCredentiallessAgentReconnectAfterDeniedQuitWaitsForCleanupAndFailsClosed() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegatePendingAPIRetirementReconnectTests-")

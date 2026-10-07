@@ -256,13 +256,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         }
         restoredCloseCleanupCompletion = completion
         terminal.setOutputHandler(nil)
-        terminal.startProcess(
-            executable: "/bin/zsh",
-            args: ["-o", "nopromptsp", "--login"],
-            environment: nil,
-            execName: "zsh",
-            currentDirectory: persistedWorkingDirectory
-        )
+        terminal.resumeBrokerSessionForCleanup()
         if !terminal.completesStartAsynchronously {
             finishRestoredCloseCleanupStart()
         }

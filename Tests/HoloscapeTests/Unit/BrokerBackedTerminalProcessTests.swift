@@ -2785,6 +2785,92 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.reattachCallCount, 2)
     }
 
+    func testSecondTeardownDuringRunningSessionDetachJoinsSingleAuthority() throws {
+        let sessionID = BrokerSessionID(rawValue: "running-teardown-second-owner")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.returnEmptyOutputSnapshots()
+        coordinator.blockTeardown()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "running-teardown-second-owner",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        var teardownCompletionCount = 0
+        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        try waitUntil { coordinator.detachCalls == [sessionID] }
+        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(teardownCompletionCount, 0)
+        XCTAssertEqual(coordinator.detachCalls, [sessionID])
+
+        coordinator.finishTeardown()
+        try waitUntil { teardownCompletionCount == 2 }
+        XCTAssertEqual(coordinator.detachCalls, [sessionID])
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+    }
+
+    func testCleanupOnlyReattachDoesNotReplayOrAcknowledgeOutput() throws {
+        let sessionID = BrokerSessionID(rawValue: "cleanup-only-running")
+        let coordinator = BlockingReattachCoordinator()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "cleanup-only",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.resumeBrokerSessionForCleanup()
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+        XCTAssertEqual(coordinator.scrollbackSnapshotCount, 0)
+        XCTAssertEqual(coordinator.acknowledgedOutputGenerations, [])
+        XCTAssertNil(terminal.lastScrollbackReplay)
+    }
+
+    func testReconnectResumesWhenRunningSessionTeardownProbeDiscoversExit() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .running
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "probe-discovers-exit",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var startCompletionCount = 0
+        var teardownCompleted = false
+        terminal.setStartCompletionHandler { startCompletionCount += 1 }
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        try waitUntil { startCompletionCount == 1 }
+        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+
+        try waitUntil { teardownCompleted && startCompletionCount == 2 }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(coordinator.startCallCount, 1)
+        XCTAssertEqual(
+            terminal.brokerOwnedSessionID,
+            BrokerSessionID(rawValue: "replacement-after-exited-output-cleanup")
+        )
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+    }
+
     func testSecondTeardownRevokesReconnectQueuedBehindCancelledFreshStart() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockStart()
