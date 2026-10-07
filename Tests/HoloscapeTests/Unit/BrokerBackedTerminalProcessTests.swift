@@ -1531,6 +1531,35 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testLiveExitRetirementFailurePersistsRetirementOnlyAuthority() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008021"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.retirementError = NativePTYBrokerSessionRuntime.RuntimeError.retirementFailed(
+            sessionID,
+            inputCloseErrno: nil,
+            processFailure: "runtime cleanup failed"
+        )
+        fixture.terminal.setOutputHandler {}
+
+        runtime.triggerFinalOutput("live-retirement-failure-output\n", for: sessionID)
+
+        try waitUntil { fixture.terminal.sessionFailure != nil }
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(
+            fixture.terminal.pendingExitedOutputRetirement?.sessionID,
+            sessionID
+        )
+        XCTAssertTrue(
+            fixture.terminal.pendingExitedOutputRetirement?.outputFailureDescription
+                .contains("retirementFailed") == true
+        )
+    }
+
     func testLiveExitPublishesCompletedOutputRetirementWarningBeforeTermination() throws {
         let runtime = FinalOutputRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008022")
@@ -3240,6 +3269,65 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testSuccessfulFinalOutputRetirementFailureRestoresAsRetirementOnly() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.retirementError = RuntimeError.retirementFailed
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "failed-retirement-after-final-output",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var outputDeliveryCount = 0
+        terminal.setOutputHandler { outputDeliveryCount += 1 }
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil {
+            terminal.startFailureDescription?.contains("retirementFailed") == true
+        }
+        let pending = try XCTUnwrap(terminal.pendingExitedOutputRetirement)
+        let serializedPending = try JSONDecoder().decode(
+            BrokerExitedOutputRetirement.self,
+            from: JSONEncoder().encode(pending)
+        )
+        let readsAfterFailure = coordinator.outputReadCount
+        let deliveriesAfterFailure = outputDeliveryCount
+
+        coordinator.retirementError = nil
+        let restored = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "restored-failed-retirement-after-final-output",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            pendingExitedOutputRetirement: serializedPending,
+            coordinator: coordinator
+        )
+        var restoredDeliveries = 0
+        restored.setOutputHandler { restoredDeliveries += 1 }
+        restored.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { restored.brokerSessionID == nil }
+        XCTAssertEqual(coordinator.outputReadCount, readsAfterFailure)
+        XCTAssertEqual(outputDeliveryCount, deliveriesAfterFailure)
+        XCTAssertEqual(restoredDeliveries, 0)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID, coordinator.sessionID])
+    }
+
     func testTeardownPublishesNormalExitedRetirementBeforeCompletion() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.blockRetirement()
@@ -3763,6 +3851,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(failures[0].description.contains("exitCodeMismatch"))
         XCTAssertTrue(failures[0].description.contains("createFailed"))
         XCTAssertEqual(restoredTerminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertEqual(
+            restoredTerminal.pendingExitedOutputRetirement?.sessionID,
+            coordinator.sessionID
+        )
         XCTAssertTrue(exits.isEmpty)
     }
 

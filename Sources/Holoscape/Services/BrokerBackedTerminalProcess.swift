@@ -724,11 +724,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         let combined = BrokerSessionCompositeFailure(
                             description: "\(mismatchDescription); failed to retire completed broker session: \(error)"
                         )
+                        self.retainExitedOutputRetirement(
+                            sessionID: record.id,
+                            failureDescription: combined.description,
+                            failureKind: .failed
+                        )
                         self.publishSessionFailure(
                             TerminalSessionFailure(kind: .failed, description: combined.description)
                         )
                         self.failExitedOutputDelivery(combined, notifyStartCompletion: retirementNotifiesStart)
                     } else {
+                        self.retainExitedOutputRetirement(
+                            sessionID: record.id,
+                            failureDescription: String(describing: error),
+                            failureKind: self.classifyStartFailure(error)
+                        )
                         self.failExitedOutputDelivery(error, notifyStartCompletion: retirementNotifiesStart)
                     }
                     self.finishExitedOutputResolution()
@@ -800,6 +810,18 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startFailureDescription = String(describing: error)
         startFailureKind = classifyStartFailure(error)
         completeReattachStartIfNeeded(notifyStartCompletion)
+    }
+
+    private func retainExitedOutputRetirement(
+        sessionID: BrokerSessionID,
+        failureDescription: String,
+        failureKind: TerminalStartFailureKind
+    ) {
+        pendingExitedOutputRetirement = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: failureDescription,
+            outputFailureKind: failureKind
+        )
     }
 
     private func retireExitedSessionAfterOutputFailure(
@@ -1296,6 +1318,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             self.isCompletedRetirementWarning($0) ? $0 : nil
                         }
                         if let error, completionWarning == nil {
+                            self.retainExitedOutputRetirement(
+                                sessionID: id,
+                                failureDescription: String(describing: error),
+                                failureKind: self.classifyStartFailure(error)
+                            )
                             self.reportSessionFailure(
                                 error,
                                 for: id,
@@ -1421,6 +1448,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 if let retirementError, completionWarning == nil {
                     let combined = BrokerSessionCompositeFailure(
                         description: "\(mismatchError); failed to retire completed broker session: \(retirementError)"
+                    )
+                    self.retainExitedOutputRetirement(
+                        sessionID: id,
+                        failureDescription: combined.description,
+                        failureKind: .failed
                     )
                     self.reportSessionFailure(
                         combined,
