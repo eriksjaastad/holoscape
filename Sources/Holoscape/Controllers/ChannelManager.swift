@@ -150,8 +150,8 @@ class ChannelManager {
         // controller in the saved order until teardown has serialized behind the
         // output lane and published any retirement-only broker authority.
         closingChannelIDs.insert(id)
-        channel.deactivate { [weak self] in
-            self?.finishClosingChannel(id: id)
+        channel.deactivateForClose { [weak self] outcome in
+            self?.handleClosingOutcome(outcome, id: id)
         }
         // Note: highWaterMarks are NOT decremented on close (no renumbering)
     }
@@ -169,6 +169,20 @@ class ChannelManager {
         }
         completedClosingChannelIDs.insert(id)
         persistClosingState(context: "completed removal")
+    }
+
+    private func handleClosingOutcome(_ outcome: TerminalCleanupOutcome, id: UUID) {
+        switch outcome {
+        case .completed:
+            finishClosingChannel(id: id)
+        case .retryableFailure(let failure):
+            let didSave = saveState()
+            closePersistenceFailure = didSave
+                ? failure.description
+                : configService.lastDiagnostic?.message
+                    ?? "Channel state save failed while persisting retryable cleanup failure"
+            NSLog("ChannelManager retained closed-channel cleanup authority: \(closePersistenceFailure!)")
+        }
     }
 
     private func persistClosingState(context: String) {
@@ -212,7 +226,7 @@ class ChannelManager {
         }
         var remaining = channels.count
         for channel in channels {
-            channel.deactivate {
+            channel.deactivateForAppTermination {
                 remaining -= 1
                 if remaining == 0 {
                     completion()
@@ -404,18 +418,7 @@ class ChannelManager {
                     // launch a replacement process.
                     closingChannelIDs.insert(controller.channelId)
                     controller.resumeRestoredCloseCleanup { [weak self] outcome in
-                        guard let self else { return }
-                        switch outcome {
-                        case .completed:
-                            self.finishClosingChannel(id: controller.channelId)
-                        case .retryableFailure(let failure):
-                            let didSave = self.saveState()
-                            self.closePersistenceFailure = didSave
-                                ? failure.description
-                                : self.configService.lastDiagnostic?.message
-                                    ?? "Channel state save failed while persisting retryable cleanup failure"
-                            NSLog("ChannelManager retained closed-channel cleanup authority: \(self.closePersistenceFailure!)")
-                        }
+                        self?.handleClosingOutcome(outcome, id: controller.channelId)
                     }
                 }
             }

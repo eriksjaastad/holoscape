@@ -1646,6 +1646,8 @@ final class ChannelManagerTests: XCTestCase {
         manager.closeChannel(id: channel.channelId)
 
         XCTAssertEqual(channel.deactivateCallCount, 1)
+        XCTAssertEqual(channel.closeDeactivationCallCount, 1)
+        XCTAssertEqual(channel.appTerminationDeactivationCallCount, 0)
     }
 
     func testCloseChannelRemovesFromOrder() {
@@ -1677,6 +1679,10 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(first.deactivateCallCount, 1)
         XCTAssertEqual(second.deactivateCallCount, 1)
+        XCTAssertEqual(first.appTerminationDeactivationCallCount, 1)
+        XCTAssertEqual(second.appTerminationDeactivationCallCount, 1)
+        XCTAssertEqual(first.closeDeactivationCallCount, 0)
+        XCTAssertEqual(second.closeDeactivationCallCount, 0)
         XCTAssertEqual(manager.count, 2)
         XCTAssertEqual(manager.allChannels().map(\.channelId), [first.channelId, second.channelId])
     }

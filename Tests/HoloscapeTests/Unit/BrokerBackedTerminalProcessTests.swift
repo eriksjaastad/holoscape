@@ -1552,6 +1552,71 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testAppTerminationDetachPreservesUnreadExitedOutputForReplay() throws {
+        let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008028"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.triggerFinalOutput("quit-time-unread-output\n", for: sessionID)
+        let detached = expectation(description: "app termination detach completed")
+
+        fixture.terminal.detachBrokerSessionPreservingOutput { detached.fulfill() }
+
+        wait(for: [detached], timeout: 2)
+        XCTAssertEqual(runtime.acknowledgedGenerations, [])
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(try runtime.listSessions(), [sessionID])
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .detached)
+        let replay = try fixture.coordinator.snapshotAvailableOutput(sessionID)
+        XCTAssertEqual(String(decoding: replay.data, as: UTF8.self), "quit-time-unread-output\n")
+        XCTAssertEqual(runtime.acknowledgedGenerations, [])
+        XCTAssertEqual(try fixture.coordinator.reattachableSessions().map(\.id), [sessionID])
+    }
+
+    func testCloseRetirementFailureThenRetryCannotResurrectHiddenSession() throws {
+        let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008029"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.retirementError = RuntimeError.createFailed
+        let failed = expectation(description: "close retirement failure reported")
+        var firstOutcome: TerminalCleanupOutcome?
+
+        fixture.terminal.retireBrokerSessionForClose { outcome in
+            firstOutcome = outcome
+            failed.fulfill()
+        }
+
+        wait(for: [failed], timeout: 2)
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("Failed close retirement must retain retry authority")
+        }
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+
+        runtime.retirementError = nil
+        let retried = expectation(description: "close retirement retry completed")
+        var retryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.retireBrokerSessionForClose { outcome in
+            retryOutcome = outcome
+            retried.fulfill()
+        }
+
+        wait(for: [retried], timeout: 2)
+        guard case .completed = retryOutcome else {
+            return XCTFail("Successful close retry must complete cleanup")
+        }
+        XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(try runtime.listSessions(), [])
+        XCTAssertTrue(try fixture.coordinator.reattachableSessions().isEmpty)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
+    }
+
     func testTabCloseDrainsExitedSessionBeforeDetaching() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(

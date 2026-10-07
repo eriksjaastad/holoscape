@@ -48,6 +48,14 @@ protocol TerminalProcess: AnyObject {
     func detachBrokerSessionForCleanup(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     )
+    /// Detach for app termination without consuming unread broker output. Any
+    /// final bytes remain broker-owned for replay on the next launch.
+    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void)
+    /// Retire a session for a user-requested tab close. Success means no durable
+    /// broker record can later resurrect the hidden tab.
+    func retireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Persist host-reported cwd truth with the process owner. Direct terminals
     /// do not own durable metadata and therefore use the default no-op.
     func updateWorkingDirectory(_ directory: String) throws
@@ -132,6 +140,14 @@ extension TerminalProcess {
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
         detachBrokerSession { completion(.completed) }
+    }
+    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+        detachBrokerSession(completion: completion)
+    }
+    func retireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSessionForCleanup(completion: completion)
     }
     func detachBrokerSession() { detachBrokerSession(completion: {}) }
     func updateWorkingDirectory(_ directory: String) throws {}

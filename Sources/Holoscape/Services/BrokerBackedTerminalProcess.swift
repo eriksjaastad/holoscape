@@ -1211,6 +1211,68 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         detachBrokerSessionInternal(completion: completion)
     }
 
+    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        stopOutputPump()
+        outputReadLane.finishWithoutConsuming { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion()
+                    return
+                }
+                self.detachBrokerSessionInternal { _ in completion() }
+            }
+        }
+    }
+
+    func retireBrokerSessionForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        revokeOutputDeliveryOwnership()
+        sessionIOReady = false
+        stopOutputPump()
+        outputReadLane.finishWithoutConsuming { [self] in
+            DispatchQueue.main.async { [self] in
+                finishCloseRetirement(completion: completion)
+            }
+        }
+    }
+
+    private func finishCloseRetirement(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        if let brokerSessionID {
+            failureRecoveryCoordinator.markErrored(brokerSessionID) { [self] error in
+                DispatchQueue.main.async { [self] in
+                    if let error, !isCompletedRetirementWarning(error) {
+                        completion(.retryableFailure(cleanupFailure(from: error)))
+                        return
+                    }
+                    self.brokerSessionID = nil
+                    self.agentStatusOwnerToken = nil
+                    self.pendingExitedOutputRetirement = nil
+                    completion(.completed)
+                }
+            }
+            return
+        }
+        if let untrackedBrokerSessionID {
+            failureRecoveryCoordinator.retireUntrackedSession(untrackedBrokerSessionID) { [self] error in
+                DispatchQueue.main.async { [self] in
+                    if let error {
+                        completion(.retryableFailure(cleanupFailure(from: error)))
+                    } else {
+                        self.untrackedBrokerSessionID = nil
+                        completion(.completed)
+                    }
+                }
+            }
+            return
+        }
+        completion(.completed)
+    }
+
     private func detachBrokerSessionInternal(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
@@ -2855,6 +2917,14 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 onStoppedFailure(sessionID, exitCode, error)
             }
         }
+    }
+
+    /// Stop polling and run a barrier after any in-flight read/delivery has
+    /// returned. Because `stop()` revokes the lane generation first, unread
+    /// snapshots cannot be acknowledged while app termination detaches.
+    func finishWithoutConsuming(completion: @escaping @Sendable () -> Void) {
+        stop()
+        queue.async(execute: completion)
     }
 
     func wake(sessionID: BrokerSessionID) {

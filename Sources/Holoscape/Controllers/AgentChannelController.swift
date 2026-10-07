@@ -380,7 +380,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private func finishRestoredCloseCleanupStart() {
         guard let completion = restoredCloseCleanupCompletion else { return }
         restoredCloseCleanupCompletion = nil
-        terminal.detachBrokerSessionForCleanup { [weak self] outcome in
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
             self?.recordBrokerDetach()
             completion(outcome)
         }
@@ -459,6 +459,23 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()
+        transitionToDisconnected()
+    }
+
+    func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
+        terminal.setOutputHandler(nil)
+        terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.recordBrokerDetach()
+            completion(outcome)
+        }
+        transitionToDisconnected()
+    }
+
+    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
+        terminal.detachBrokerSessionPreservingOutput { [weak self] in
+            self?.recordBrokerDetach()
+            completion()
+        }
         transitionToDisconnected()
     }
 
