@@ -9,6 +9,17 @@ final class ProcessToolTests: XCTestCase {
             .appendingPathComponent("HoloscapeMCP")
     }
 
+    func testToolHandlerLetsCancellationEscapeToMCPServer() async throws {
+        do {
+            _ = try await executeToolHandler {
+                throw CancellationError()
+            }
+            XCTFail("Cancellation must escape the tool handler")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Expected CancellationError, got \(error)")
+        }
+    }
+
     func testControllerStatusParsesCleanupFailureOutsideProcessOutput() {
         XCTAssertEqual(
             parseProcessToolControllerStatus("timedOut:groupSignalFailed"),
@@ -184,7 +195,7 @@ final class ProcessToolTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let launcher = directory.appendingPathComponent("unreadable-status-controller")
-        try Data("#!/bin/zsh\nmkdir \"$4\"\nsleep 0.1\nexit 0\n".utf8).write(to: launcher)
+        try Data("#!/bin/zsh\nmkdir \"$4\"\nsleep 0.1\nexit 123\n".utf8).write(to: launcher)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
 
         do {
@@ -538,6 +549,32 @@ final class ProcessToolTests: XCTestCase {
         }
 
         assertProcessIsGone(shellPID, "Signal close failure must not skip delivered process cleanup")
+    }
+
+    func testSignalFailureDoesNotMaskRunnerLaunchFailure() async throws {
+        enum InjectedFailure: Error { case close }
+        do {
+            _ = try await runProcessTool(
+                request(
+                    command: "exit 0",
+                    environment: ["HOLOSCAPE_PROCESS_TOOL_TEST_RUNNER_FAILURE": "1"]
+                ),
+                launcherExecutableURL: launcherExecutableURL,
+                cancellationSignalFactory: { handle in
+                    ProcessToolCancellationSignal(
+                        writeHandle: handle,
+                        closeOperation: { _ in throw InjectedFailure.close }
+                    )
+                }
+            )
+            XCTFail("Concurrent runner and signaling failures must throw")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed(let reason) = error else {
+                return XCTFail("Expected launch failure with signaling context, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Injected shell-runner launch failure"))
+            XCTAssertTrue(reason.contains("cancellation signaling also failed"))
+        }
     }
 
     func testCancellationStatusRemovalFailureIsSurfaced() async throws {

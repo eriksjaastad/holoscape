@@ -1,6 +1,26 @@
 import Foundation
 import MCP
 
+func executeToolHandler(
+    _ operation: () async throws -> CallTool.Result
+) async throws -> CallTool.Result {
+    do {
+        return try await operation()
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch let error as ProcessToolError {
+        return CallTool.Result(
+            content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)],
+            isError: true
+        )
+    } catch {
+        return CallTool.Result(
+            content: [.text(text: "Error: \(error.localizedDescription). Is Holoscape running?", annotations: nil, _meta: nil)],
+            isError: true
+        )
+    }
+}
+
 func registerTools(on server: Server, client: HoloscapeClient) async {
     await server.withMethodHandler(ListTools.self) { _ in
         ListTools.Result(tools: [
@@ -163,7 +183,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
     await server.withMethodHandler(CallTool.self) { params in
         let args = params.arguments ?? [:]
 
-        do {
+        return try await executeToolHandler {
             switch params.name {
             case "holoscape_list_channels":
                 let channels = try await client.listChannels()
@@ -252,10 +272,6 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
             default:
                 return CallTool.Result(content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)], isError: true)
             }
-        } catch let error as ProcessToolError {
-            return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)], isError: true)
-        } catch {
-            return CallTool.Result(content: [.text(text: "Error: \(error.localizedDescription). Is Holoscape running?", annotations: nil, _meta: nil)], isError: true)
         }
     }
 }

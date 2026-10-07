@@ -821,6 +821,28 @@ private func processToolControllerProtocolFailure(
     }
 }
 
+private func processToolSignalingFailure(
+    _ signalingFailure: String,
+    alongside status: ProcessToolControllerStatus
+) -> ProcessToolError {
+    switch status {
+    case .launchFailed(let reason):
+        return .launchFailed(
+            "\(reason); cancellation signaling also failed: \(signalingFailure)"
+        )
+    case .completedCleanupFailed(let exitCode):
+        return .cancellationSignalFailed(
+            "\(signalingFailure); controller also reported process-group cleanup failure after exit \(exitCode)"
+        )
+    case .timedOut(groupCleanupSucceeded: false), .cancelled(groupCleanupSucceeded: false):
+        return .cancellationSignalFailed(
+            "\(signalingFailure); controller also reported process-group cleanup failure"
+        )
+    case .completed, .timedOut(groupCleanupSucceeded: true), .cancelled(groupCleanupSucceeded: true):
+        return .cancellationSignalFailed(signalingFailure)
+    }
+}
+
 private func consumeProcessToolRunnerFailure(at statusPath: String) -> Result<String?, ProcessToolError> {
     guard FileManager.default.fileExists(atPath: statusPath) else {
         return .success(nil)
@@ -1079,22 +1101,22 @@ func runProcessTool(
                 let outputPipesClosed = stdoutOutcome.closedCleanly && stderrOutcome.closedCleanly
                 let standardOutput = stdoutOutcome.output
                 let standardError = stderrOutcome.output
+                let statusOutcome = statusExchange.finish()
+                if let observationFailure = statusOutcome?.observationFailure {
+                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable(
+                        "Could not read controller status: \(observationFailure)"
+                    ))
+                    return
+                }
                 if let protocolFailure = processToolControllerProtocolFailure(
                     terminationReason: process.terminationReason,
                     terminationStatus: process.terminationStatus
                 ) {
-                    statusExchange.stop()
                     continuation.resume(throwing: protocolFailure)
                     return
                 }
-                guard let statusOutcome = statusExchange.finish() else {
+                guard let statusOutcome else {
                     continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a status record"))
-                    return
-                }
-                if let observationFailure = statusOutcome.observationFailure {
-                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable(
-                        "Could not read controller status: \(observationFailure)"
-                    ))
                     return
                 }
                 if let cleanupFailure = statusOutcome.cleanupFailure {
@@ -1115,7 +1137,10 @@ func runProcessTool(
                     return
                 }
                 if let signalingFailure = cancellationOutcome.signalingFailure {
-                    continuation.resume(throwing: ProcessToolError.cancellationSignalFailed(signalingFailure))
+                    continuation.resume(throwing: processToolSignalingFailure(
+                        signalingFailure,
+                        alongside: parsed
+                    ))
                     return
                 }
                 let cancellationRequested = cancellationOutcome.wasRequested
