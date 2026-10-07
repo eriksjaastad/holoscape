@@ -1804,6 +1804,87 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.brokerSessionID)
     }
 
+    func testClosePreservesLiveReadFailureThatObservesExitBeforeClaim() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .running
+        coordinator.outputSnapshotError = RuntimeError.outputReadFailed
+        coordinator.retirementError = RuntimeError.createFailed
+        coordinator.blockOutputRead()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "close-during-live-read-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+        var closeOutcome: TerminalCleanupOutcome?
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+        XCTAssertNil(closeOutcome)
+        coordinator.finishOutputRead()
+        try waitUntil { closeOutcome != nil }
+
+        guard case .retryableFailure(let failure) = closeOutcome else {
+            return XCTFail("Close must retain the read and retirement failures")
+        }
+        XCTAssertTrue(failure.description.contains("outputReadFailed"))
+        XCTAssertTrue(failure.description.contains("createFailed"))
+        XCTAssertTrue(terminal.pendingExitedOutputRetirement?.outputFailureDescription.contains("outputReadFailed") == true)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+    }
+
+    func testClosePreservesLiveAcknowledgementFailureThatObservesExitBeforeClaim() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .running
+        coordinator.acknowledgementError = RuntimeError.outputAcknowledgementFailed
+        coordinator.retirementError = RuntimeError.createFailed
+        coordinator.blockAcknowledgement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "close-during-live-acknowledgement-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.acknowledgedGenerations == [24] }
+        var closeOutcome: TerminalCleanupOutcome?
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+        XCTAssertNil(closeOutcome)
+        coordinator.finishAcknowledgement()
+        try waitUntil { closeOutcome != nil }
+
+        guard case .retryableFailure(let failure) = closeOutcome else {
+            return XCTFail("Close must retain the acknowledgement and retirement failures")
+        }
+        XCTAssertTrue(failure.description.contains("outputAcknowledgementFailed"))
+        XCTAssertTrue(failure.description.contains("createFailed"))
+        XCTAssertTrue(terminal.pendingExitedOutputRetirement?.outputFailureDescription.contains("outputAcknowledgementFailed") == true)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24])
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+    }
+
     func testAcknowledgementOutageRetryDoesNotRenderPresentedGenerationTwice() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(

@@ -1359,7 +1359,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
-        stopOutputPump()
+        // Revoke presentation immediately, but let the serial output operation
+        // already in flight classify an observed exit before the close barrier.
+        // `finishForClose` stops the lane once that operation returns.
+        if let brokerSessionID {
+            try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
+        }
         if reattachWorkInFlight {
             reattachWorkCompletionWaiters.append { [self] in
                 retireBrokerSessionForClose(completion: completion)
@@ -1372,24 +1377,35 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             return
         }
+        outputReadLane.finishForClose { [self] in
+            DispatchQueue.main.async { [self] in
+                finishCloseRetirementAfterOutputLane(completion: completion)
+            }
+        }
+    }
+
+    private func finishCloseRetirementAfterOutputLane(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        if exitedOutputResolutionInFlight || runningSessionTeardownProbeInFlight {
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                finishCloseRetirement(after: outcome, completion: completion)
+            }
+            return
+        }
         if let brokerSessionID, exitedOutputResolutionClaim.joinOrStop(
             brokerSessionID,
             stop: { [outputReadLane] in outputReadLane.stop() }
         ) {
-            // The output lane has already claimed exit resolution but has not yet
-            // published that ownership on the main actor. Join it rather than
-            // racing close retirement against its read/acknowledgement callbacks.
+            // The lane classified an exit and claimed the outcome before the
+            // main-actor callback published its cleanup owner. Join that claim.
             exitedOutputResolutionInFlight = true
             exitedOutputTeardownCompletions.append { [self] outcome in
                 finishCloseRetirement(after: outcome, completion: completion)
             }
             return
         }
-        outputReadLane.finishWithoutConsuming { [self] in
-            DispatchQueue.main.async { [self] in
-                finishCloseRetirement(completion: completion)
-            }
-        }
+        finishCloseRetirement(completion: completion)
     }
 
     private func finishCloseRetirement(
@@ -2794,6 +2810,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
     private var openSessionID: BrokerSessionID?
     private var nextRunGeneration: UInt = 0
     private var openRunGeneration: UInt?
+    private var closeAfterCurrentRunGeneration: UInt?
     private var semaphore: DispatchSemaphore?
 
     init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
@@ -2819,6 +2836,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             nextRunGeneration &+= 1
             openSessionID = sessionID
             openRunGeneration = nextRunGeneration
+            closeAfterCurrentRunGeneration = nil
             self.semaphore = semaphore
             return nextRunGeneration
         }
@@ -2834,6 +2852,10 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     _ = semaphore.wait(timeout: .now() + self.pollingInterval)
                 }
                 guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                if self.closeWasRequested(for: sessionID, runGeneration: runGeneration) {
+                    self.closeIfCurrent(sessionID, runGeneration: runGeneration)
+                    return
+                }
                 var observedExitCode: Int32?
                 var presentedUnacknowledgedData: Data?
                 do {
@@ -2873,6 +2895,10 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         ) {
                             onTermination(sessionID, exitCode, completionWarning)
                         }
+                        return
+                    }
+                    if self.closeWasRequested(for: sessionID, runGeneration: runGeneration) {
+                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                         return
                     }
                 } catch {
@@ -2923,6 +2949,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             nextRunGeneration &+= 1
             openSessionID = sessionID
             openRunGeneration = nextRunGeneration
+            closeAfterCurrentRunGeneration = nil
             semaphore = nil
             return nextRunGeneration
         }
@@ -3108,6 +3135,19 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         queue.async(execute: completion)
     }
 
+    /// Let the operation already executing on the lane classify and publish an
+    /// exit failure before closing. This differs from app-termination teardown,
+    /// which must revoke the generation immediately to preserve unread output.
+    func finishForClose(completion: @escaping @Sendable () -> Void) {
+        let semaphore = lock.withLock { () -> DispatchSemaphore? in
+            guard openSessionID != nil, let openRunGeneration else { return nil }
+            closeAfterCurrentRunGeneration = openRunGeneration
+            return self.semaphore
+        }
+        semaphore?.signal()
+        queue.async(execute: completion)
+    }
+
     func wake(sessionID: BrokerSessionID) {
         guard isOpen(for: sessionID) else { return }
         lock.withLock { semaphore }?.signal()
@@ -3117,6 +3157,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         let semaphore = lock.withLock { () -> DispatchSemaphore? in
             openSessionID = nil
             openRunGeneration = nil
+            closeAfterCurrentRunGeneration = nil
             let current = self.semaphore
             self.semaphore = nil
             return current
@@ -3152,6 +3193,14 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
     }
 
+    private func closeWasRequested(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
+        lock.withLock {
+            openSessionID == sessionID
+                && openRunGeneration == runGeneration
+                && closeAfterCurrentRunGeneration == runGeneration
+        }
+    }
+
 
     @discardableResult
     private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
@@ -3159,6 +3208,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
             if openSessionID == sessionID, openRunGeneration == runGeneration {
                 openSessionID = nil
                 openRunGeneration = nil
+                closeAfterCurrentRunGeneration = nil
                 semaphore?.signal()
                 semaphore = nil
                 return true
