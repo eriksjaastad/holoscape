@@ -1344,6 +1344,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
             return
         }
+
+        // Close is terminal ownership, not a temporary detach. Revoke every
+        // activation generation before waiting so a late reattach cannot publish
+        // the hidden controller active while retirement is still retryable.
+        reattachGeneration &+= 1
+        startCompletionPending = false
+        inputWriteLane.close()
         if freshStartPending {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
@@ -1353,11 +1360,47 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
         stopOutputPump()
+        if reattachWorkInFlight {
+            reattachWorkCompletionWaiters.append { [self] in
+                retireBrokerSessionForClose(completion: completion)
+            }
+            return
+        }
+        if exitedOutputResolutionInFlight || runningSessionTeardownProbeInFlight {
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                finishCloseRetirement(after: outcome, completion: completion)
+            }
+            return
+        }
+        if let brokerSessionID, exitedOutputResolutionClaim.joinOrStop(
+            brokerSessionID,
+            stop: { [outputReadLane] in outputReadLane.stop() }
+        ) {
+            // The output lane has already claimed exit resolution but has not yet
+            // published that ownership on the main actor. Join it rather than
+            // racing close retirement against its read/acknowledgement callbacks.
+            exitedOutputResolutionInFlight = true
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                finishCloseRetirement(after: outcome, completion: completion)
+            }
+            return
+        }
         outputReadLane.finishWithoutConsuming { [self] in
             DispatchQueue.main.async { [self] in
                 finishCloseRetirement(completion: completion)
             }
         }
+    }
+
+    private func finishCloseRetirement(
+        after sharedOutcome: TerminalCleanupOutcome,
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        guard case .completed = sharedOutcome else {
+            completion(sharedOutcome)
+            return
+        }
+        finishCloseRetirement(completion: completion)
     }
 
     private func finishCloseRetirement(

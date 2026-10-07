@@ -1727,6 +1727,83 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertFalse(terminal.completesStartAsynchronously)
     }
 
+    func testCloseInvalidatesPendingReattachBeforeRetirementFailurePublishes() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.failTrackedTeardown(attempts: 1)
+        let sessionID = BrokerSessionID(rawValue: "close-pending-reattach")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .agentDirect,
+            label: "close-pending-reattach",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        var startCompletionCount = 0
+        terminal.setStartCompletionHandler { startCompletionCount += 1 }
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp"
+        )
+        XCTAssertTrue(coordinator.waitForReattach())
+        var closeOutcome: TerminalCleanupOutcome?
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+        XCTAssertNil(closeOutcome)
+        coordinator.finishReattach()
+        try waitUntil { closeOutcome != nil }
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+
+        guard case .retryableFailure = closeOutcome else {
+            return XCTFail("Failed retirement must leave the hidden close retryable")
+        }
+        XCTAssertEqual(startCompletionCount, 0, "Late reattach must not reactivate a closed controller")
+        XCTAssertNil(terminal.agentStatusOwnerToken)
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(coordinator.reattachCallCount, 1)
+        XCTAssertEqual(coordinator.markErroredCalls, [sessionID])
+        XCTAssertFalse(terminal.completesStartAsynchronously)
+    }
+
+    func testCloseJoinsInFlightExitedOutputResolutionBeforeCompleting() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exited
+        coordinator.blockOutputRead()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "close-during-exited-output",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+        var closeOutcome: TerminalCleanupOutcome?
+
+        terminal.retireBrokerSessionForClose { closeOutcome = $0 }
+        XCTAssertNil(closeOutcome)
+        coordinator.finishOutputRead()
+        try waitUntil { closeOutcome != nil }
+
+        guard case .completed = closeOutcome else {
+            return XCTFail("Close must join successful final-output retirement")
+        }
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [24])
+        XCTAssertNil(terminal.brokerSessionID)
+    }
+
     func testAcknowledgementOutageRetryDoesNotRenderPresentedGenerationTwice() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(
