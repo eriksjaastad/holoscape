@@ -78,6 +78,22 @@ struct BrokerExitedOutputRetirement: Codable, Equatable, Sendable {
     let sessionID: BrokerSessionID
     let outputFailureDescription: String
     let outputFailureKind: TerminalStartFailureKind
+    /// Known process exit truth, when final-output handling observed it before
+    /// cleanup failed. Persisting this lets a later retirement retry publish the
+    /// same terminal lifecycle outcome without replaying final bytes.
+    let observedExitCode: Int32?
+
+    init(
+        sessionID: BrokerSessionID,
+        outputFailureDescription: String,
+        outputFailureKind: TerminalStartFailureKind,
+        observedExitCode: Int32? = nil
+    ) {
+        self.sessionID = sessionID
+        self.outputFailureDescription = outputFailureDescription
+        self.outputFailureKind = outputFailureKind
+        self.observedExitCode = observedExitCode
+    }
 }
 
 /// A failure observed on an already-started terminal session.

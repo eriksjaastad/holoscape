@@ -4,6 +4,10 @@ import Foundation
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
     private var channelOrder: [UUID] = []
+    /// Closing tabs disappear from public lookup immediately but remain in the
+    /// persistence graph until asynchronous broker teardown publishes whether
+    /// retryable retirement authority must survive relaunch.
+    private var closingChannelIDs: Set<UUID> = []
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
@@ -133,18 +137,34 @@ class ChannelManager {
 
     /// Remove a channel from the registry.
     func closeChannel(id: UUID) {
-        if let channel = channels[id] {
-            // Removal hides the tab immediately, but broker teardown can finish
-            // asynchronously after serializing behind output delivery. Keep the
-            // controller (and therefore its terminal cleanup owner) alive until
-            // that teardown publishes its final broker identity/failure truth.
-            channel.deactivate { _ = channel }
+        guard let channel = channels[id], !closingChannelIDs.contains(id) else { return }
+        // Presentation removal and lifecycle ownership are separate. Keep this
+        // controller in the saved order until teardown has serialized behind the
+        // output lane and published any retirement-only broker authority.
+        closingChannelIDs.insert(id)
+        channel.deactivate { [weak self] in
+            self?.finishClosingChannel(id: id)
         }
+        // Note: highWaterMarks are NOT decremented on close (no renumbering)
+    }
+
+    private func finishClosingChannel(id: UUID) {
+        guard closingChannelIDs.contains(id), let channel = channels[id] else { return }
+        let ownsPendingRetirement = (channel as? ShellChannelController)?.pendingExitedOutputRetirement != nil
+            || (channel as? AgentChannelController)?.pendingExitedOutputRetirement != nil
+        if ownsPendingRetirement {
+            // A failed completed-session retirement is hidden but durable. The
+            // next launch restores its cleanup-only authority instead of losing
+            // the broker ID when the tab-close callback releases its controller.
+            _ = saveState()
+            return
+        }
+        closingChannelIDs.remove(id)
         channels.removeValue(forKey: id)
         channelOrder.removeAll { $0 == id }
         channelLabels.removeValue(forKey: id)
         restoredBrokerSessionIDs.removeValue(forKey: id)
-        // Note: highWaterMarks are NOT decremented on close (no renumbering)
+        _ = saveState()
     }
 
     /// Detach live channel views during app termination without mutating the
@@ -174,6 +194,7 @@ class ChannelManager {
 
     /// Get a channel by ID.
     func channel(for id: UUID) -> (any ChannelController)? {
+        guard !closingChannelIDs.contains(id) else { return nil }
         return channels[id]
     }
 
@@ -191,7 +212,9 @@ class ChannelManager {
 
     /// Return all channels in tab order.
     func allChannels() -> [any ChannelController] {
-        return channelOrder.compactMap { channels[$0] }
+        return channelOrder.compactMap { id in
+            closingChannelIDs.contains(id) ? nil : channels[id]
+        }
     }
 
     /// Apply a user-owned display label without changing launch or process identity.
@@ -350,7 +373,7 @@ class ChannelManager {
         }
     }
 
-    var count: Int { channels.count }
+    var count: Int { channels.count - closingChannelIDs.count }
 
     /// Reattachable broker sessions, or `nil` when the broker registry cannot be
     /// read during restore.

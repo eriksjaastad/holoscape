@@ -504,6 +504,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 self.retireExitedSessionAfterOutputFailure(
                                     record.id,
                                     error: error,
+                                    observedExitCode: record.exitCode,
                                     notifyStartCompletion: notifyStartCompletion
                                 )
                             } else {
@@ -645,6 +646,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 self.retireExitedSessionAfterOutputFailure(
                                     record.id,
                                     error: error,
+                                    observedExitCode: exitCode,
                                     notifyStartCompletion: acknowledgementNotifiesStart
                                 )
                                 return
@@ -678,6 +680,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 self.retireExitedSessionAfterOutputFailure(
                     record.id,
                     error: error,
+                    observedExitCode: exitCode,
                     notifyStartCompletion: notifyStartCompletion
                 )
             }
@@ -816,24 +819,28 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func retainExitedOutputRetirement(
         sessionID: BrokerSessionID,
         failureDescription: String,
-        failureKind: TerminalStartFailureKind
+        failureKind: TerminalStartFailureKind,
+        observedExitCode: Int32? = nil
     ) {
         pendingExitedOutputRetirement = BrokerExitedOutputRetirement(
             sessionID: sessionID,
             outputFailureDescription: failureDescription,
-            outputFailureKind: failureKind
+            outputFailureKind: failureKind,
+            observedExitCode: observedExitCode
         )
     }
 
     private func retireExitedSessionAfterOutputFailure(
         _ id: BrokerSessionID,
         error outputError: Error,
+        observedExitCode: Int32? = nil,
         notifyStartCompletion: Bool
     ) {
         let pending = BrokerExitedOutputRetirement(
             sessionID: id,
             outputFailureDescription: String(describing: outputError),
-            outputFailureKind: classifyStartFailure(outputError)
+            outputFailureKind: classifyStartFailure(outputError),
+            observedExitCode: observedExitCode
         )
         pendingExitedOutputRetirement = pending
         exitedOutputRetirementInFlight = true
@@ -916,6 +923,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         revokeOutputDeliveryOwnership()
         sessionIOReady = false
+        let publishedFailure = TerminalSessionFailure(
+            kind: startFailureKind ?? pending.outputFailureKind,
+            description: startFailureDescription ?? pending.outputFailureDescription
+        )
+        publishSessionFailure(publishedFailure)
+        if let exitCode = pending.observedExitCode, !didNotifyTermination {
+            didNotifyTermination = true
+            terminationHandler?(exitCode)
+        }
         completeReattachStartIfNeeded(notifyStartCompletion)
         if teardownSuppressedStartCompletion {
             startCompletionHandler?()
@@ -1150,11 +1166,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     try outputCoordinator.finishTermination(id, exitCode: exitCode)
                 },
                 onTermination: teardownOutputTerminationHandler(),
-                onStoppedFailure: { [weak self] id, error in
+                onStoppedFailure: { [weak self] id, exitCode, error in
                     DispatchQueue.main.async {
                         self?.retireExitedSessionAfterOutputFailure(
                             id,
                             error: error,
+                            observedExitCode: exitCode,
                             notifyStartCompletion: false
                         )
                     }
@@ -1438,13 +1455,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             self.retainExitedOutputRetirement(
                                 sessionID: id,
                                 failureDescription: failureDescription,
-                                failureKind: self.classifyStartFailure(error)
+                                failureKind: self.classifyStartFailure(error),
+                                observedExitCode: exitCode
                             )
                             self.reportSessionFailure(
                                 BrokerSessionCompositeFailure(description: failureDescription),
                                 for: id,
                                 deliveryGeneration: deliveryGeneration
                             )
+                            self.didNotifyTermination = true
+                            self.terminationHandler?(exitCode)
                             self.finishExitedOutputResolution()
                             return
                         }
@@ -1517,7 +1537,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                             self.retainExitedOutputRetirement(
                                 sessionID: id,
                                 failureDescription: failureDescription,
-                                failureKind: self.classifyStartFailure(error)
+                                failureKind: self.classifyStartFailure(error),
+                                observedExitCode: exitCode
                             )
                             self.publishSessionFailure(
                                 TerminalSessionFailure(
@@ -1525,6 +1546,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                     description: failureDescription
                                 )
                             )
+                            self.didNotifyTermination = true
+                            self.terminationHandler?(exitCode)
                             self.finishExitedOutputResolution()
                             return
                         }
@@ -1560,8 +1583,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func outputFailureHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Error) -> Void {
-        { [weak self] id, error in
+    private func outputFailureHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32?, Error) -> Void {
+        { [weak self] id, observedExitCode, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.exitedOutputResolutionClaim.consume(for: id) {
@@ -1584,6 +1607,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                         self.retireExitedSessionAfterOutputFailure(
                             id,
                             error: error,
+                            observedExitCode: observedExitCode,
                             notifyStartCompletion: false
                         )
                     }
@@ -1675,13 +1699,16 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     self.retainExitedOutputRetirement(
                         sessionID: id,
                         failureDescription: combined.description,
-                        failureKind: .failed
+                        failureKind: .failed,
+                        observedExitCode: observedExitCode
                     )
                     self.reportSessionFailure(
                         combined,
                         for: id,
                         deliveryGeneration: deliveryGeneration
                     )
+                    self.didNotifyTermination = true
+                    self.terminationHandler?(observedExitCode)
                     self.finishExitedOutputResolution()
                     return
                 }
@@ -2369,7 +2396,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         exitResolutionClaim: BrokerExitResolutionClaim,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+        onFailure: @escaping @Sendable (BrokerSessionID, Int32?, Error) -> Void
     ) {
         stop()
         let semaphore = DispatchSemaphore(value: 0)
@@ -2431,6 +2458,14 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         return
                     }
                 } catch {
+                    let classified = self.classifyOutputFailure(
+                        error,
+                        observedExitCode: observedExitCode,
+                        sessionID: sessionID,
+                        terminationStatus: terminationStatus,
+                        finishTermination: finishTermination
+                    )
+                    observedExitCode = classified.exitCode
                     let ownsOutcome: Bool
                     if observedExitCode != nil {
                         ownsOutcome = exitResolutionClaim.claimIfCurrent(
@@ -2443,7 +2478,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                         ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                     }
                     if ownsOutcome {
-                        onFailure(sessionID, error)
+                        onFailure(sessionID, observedExitCode, classified.error)
                     }
                     return
                 }
@@ -2460,7 +2495,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         exitResolutionClaim: BrokerExitResolutionClaim,
         onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
+        onFailure: @escaping @Sendable (BrokerSessionID, Int32?, Error) -> Void
     ) {
         if isOpen(for: sessionID) {
             wake(sessionID: sessionID)
@@ -2509,6 +2544,14 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 }
                 self.closeIfCurrent(sessionID, runGeneration: runGeneration)
             } catch {
+                let classified = self.classifyOutputFailure(
+                    error,
+                    observedExitCode: observedExitCode,
+                    sessionID: sessionID,
+                    terminationStatus: terminationStatus,
+                    finishTermination: finishTermination
+                )
+                observedExitCode = classified.exitCode
                 let ownsOutcome: Bool
                 if observedExitCode != nil {
                     ownsOutcome = exitResolutionClaim.claimIfCurrent(
@@ -2521,9 +2564,48 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
                 }
                 if ownsOutcome {
-                    onFailure(sessionID, error)
+                    onFailure(sessionID, observedExitCode, classified.error)
                 }
             }
+        }
+    }
+
+    private func classifyOutputFailure(
+        _ originalError: Error,
+        observedExitCode: Int32?,
+        sessionID: BrokerSessionID,
+        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
+        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?
+    ) -> (exitCode: Int32?, error: Error) {
+        guard observedExitCode == nil else { return (observedExitCode, originalError) }
+        do {
+            guard let exitCode = try terminationStatus(sessionID) else {
+                return (nil, originalError)
+            }
+            do {
+                if let warning = try finishTermination(sessionID, exitCode) {
+                    return (
+                        exitCode,
+                        BrokerSessionCompositeFailure(
+                            description: "\(originalError); exit finalized with warning: \(warning)"
+                        )
+                    )
+                }
+                return (exitCode, originalError)
+            } catch {
+                return (
+                    exitCode,
+                    BrokerSessionCompositeFailure(
+                        description: "\(originalError); failed to finalize observed exit: \(error)"
+                    )
+                )
+            }
+        } catch {
+            // Status classification is best-effort when the broker itself is
+            // unavailable. Preserve the original typed failure so controller
+            // recovery guidance remains host-unavailable instead of degrading to
+            // an unclassified composite.
+            return (nil, originalError)
         }
     }
 
@@ -2538,7 +2620,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
         terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
         onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onStoppedFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void,
+        onStoppedFailure: @escaping @Sendable (BrokerSessionID, Int32, Error) -> Void,
         onStillRunningOrStatusFailure: @escaping @Sendable (Error?) -> Void
     ) {
         stop()
@@ -2568,16 +2650,18 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                     if let completionWarning {
                         onStoppedFailure(
                             sessionID,
+                            exitCode,
                             BrokerSessionCompositeFailure(
                                 description: "\(outputFailure); exit finalized with warning: \(completionWarning)"
                             )
                         )
                     } else {
-                        onStoppedFailure(sessionID, outputFailure)
+                        onStoppedFailure(sessionID, exitCode, outputFailure)
                     }
                 } catch {
                     onStoppedFailure(
                         sessionID,
+                        exitCode,
                         BrokerSessionCompositeFailure(
                             description: "\(outputFailure); failed to finalize observed exit: \(error)"
                         )
@@ -2590,7 +2674,7 @@ private final class BrokerOutputReadLane: @unchecked Sendable {
                 let completionWarning = try finishTermination(sessionID, exitCode)
                 onTermination(sessionID, exitCode, completionWarning)
             } catch {
-                onStoppedFailure(sessionID, error)
+                onStoppedFailure(sessionID, exitCode, error)
             }
         }
     }

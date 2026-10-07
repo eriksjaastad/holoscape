@@ -88,7 +88,9 @@ final class ChannelManagerTests: XCTestCase {
         let terminalContentView = NSView()
         let currentGridSize = TerminalGridSize(columns: 80, rows: 24)
         let brokerOwnedSessionID: BrokerSessionID?
-        let pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
+        private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
+        var defersDetachCompletion = false
+        private var detachCompletion: (@MainActor () -> Void)?
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
         init(
@@ -115,6 +117,19 @@ final class ChannelManagerTests: XCTestCase {
         func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) { userInputHandler = handler }
         func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
         func lastLines(_ count: Int) -> [String] { [] }
+        func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
+            if defersDetachCompletion {
+                detachCompletion = completion
+            } else {
+                completion()
+            }
+        }
+        func finishDetach(with pending: BrokerExitedOutputRetirement?) {
+            pendingExitedOutputRetirement = pending
+            let completion = detachCompletion
+            detachCompletion = nil
+            completion?()
+        }
     }
 
     private var temporaryConfigDirectory: URL!
@@ -1233,6 +1248,42 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNotNil(retainedChannel)
         retainedChannel?.finishDeactivation()
         XCTAssertNil(retainedChannel)
+    }
+
+    func testCloseChannelPersistsRetirementAuthorityPublishedByTeardown() throws {
+        let sessionID = BrokerSessionID(rawValue: "closing-pending-retirement")
+        let pending = BrokerExitedOutputRetirement(
+            sessionID: sessionID,
+            outputFailureDescription: "outputAcknowledgementFailed; retirementFailed",
+            outputFailureKind: .failed,
+            observedExitCode: 9
+        )
+        let terminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        terminal.defersDetachCompletion = true
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Closing",
+            workingDirectory: nil
+        ) { id, _, label, instanceNumber, _ in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: label,
+                terminal: terminal
+            )
+        }
+        channel.activate()
+
+        manager.closeChannel(id: channel.channelId)
+
+        XCTAssertNil(manager.channel(for: channel.channelId))
+        XCTAssertEqual(manager.count, 0)
+        XCTAssertEqual(configService.load().channels.count, 0)
+        terminal.finishDetach(with: pending)
+        let saved = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(saved.id, channel.channelId)
+        XCTAssertEqual(saved.brokerSessionID, sessionID)
+        XCTAssertEqual(saved.pendingExitedOutputRetirement, pending)
     }
 
     func testCloseChannelRemovesFromRegistry() {
