@@ -933,6 +933,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var retirementError: Error?
         var outputSnapshotError: Error?
         var acknowledgementError: Error?
+        var terminationStatusError: Error?
 
         init(
             transactionalChunkSize: Int = .max,
@@ -1018,7 +1019,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
         func isRunning(id: BrokerSessionID) throws -> Bool { lock.withLock { running } }
         func terminationStatus(id: BrokerSessionID) throws -> Int32? {
-            lock.withLock {
+            if let terminationStatusError { throw terminationStatusError }
+            return lock.withLock {
                 guard !running else { return nil }
                 output.append(outputAfterTerminationCheck)
                 outputAfterTerminationCheck.removeAll()
@@ -1550,6 +1552,82 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             try fixture.coordinator.reattachableSessions().isEmpty,
             "A naturally exited session must retire its runtime owner so closing the disconnected tab cannot resurrect it"
         )
+    }
+
+    func testQuitWaitsForInFlightExitedReattachDrainWithoutConsumingIt() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.restoredLifecycle = .exited
+        coordinator.blockOutputRead()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "quit-during-exited-reattach",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.outputReadCount == 1 }
+        let detached = expectation(description: "quit detach waits for reattach drain")
+        var didDetach = false
+
+        terminal.detachBrokerSessionPreservingOutput {
+            didDetach = true
+            detached.fulfill()
+        }
+        XCTAssertFalse(didDetach)
+        coordinator.finishOutputRead()
+
+        wait(for: [detached], timeout: 2)
+        XCTAssertEqual(coordinator.acknowledgedGenerations, [])
+        XCTAssertEqual(coordinator.retiredSessionIDs, [])
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+        XCTAssertFalse(terminal.lastLines(10).joined(separator: "\n").contains("detached-final-chunk"))
+    }
+
+    func testAcknowledgementOutageRetryDoesNotRenderPresentedGenerationTwice() throws {
+        let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008030"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        runtime.acknowledgementError = RuntimeError.outputAcknowledgementFailed
+        runtime.terminationStatusError = RuntimeError.createFailed
+        fixture.terminal.setOutputHandler {}
+        runtime.triggerFinalOutput("ack-outage-dedupe-output\n", for: sessionID)
+        try waitUntil { fixture.terminal.sessionFailure != nil }
+        XCTAssertEqual(
+            fixture.terminal.lastLines(20).joined(separator: "\n")
+                .components(separatedBy: "ack-outage-dedupe-output").count - 1,
+            1
+        )
+
+        runtime.acknowledgementError = nil
+        runtime.terminationStatusError = nil
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+
+        try waitUntil { fixture.terminal.brokerSessionID == nil }
+        XCTAssertEqual(
+            fixture.terminal.lastLines(20).joined(separator: "\n")
+                .components(separatedBy: "ack-outage-dedupe-output").count - 1,
+            1
+        )
+        XCTAssertEqual(runtime.acknowledgedGenerations.count, 1)
     }
 
     func testAppTerminationDetachPreservesUnreadExitedOutputForReplay() throws {

@@ -1360,6 +1360,34 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).closeTombstone, true)
     }
 
+    func testSynchronousRestoredTombstoneCleanupDoesNotDropLaterSavedTabs() throws {
+        let tombstoneID = UUID()
+        let visibleID = UUID()
+        var config = configService.load()
+        config.channels = [
+            ChannelMetadata(
+                id: tombstoneID,
+                type: .shell,
+                role: "Closed Shell",
+                closeTombstone: true
+            ),
+            ChannelMetadata(
+                id: visibleID,
+                type: .shell,
+                role: "Visible Shell"
+            )
+        ]
+        XCTAssertTrue(configService.save(config))
+        let restoredManager = ChannelManager(configService: configService)
+
+        restoredManager.restoreState { metadata in
+            MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(restoredManager.allChannels().map(\.channelId), [visibleID])
+        XCTAssertEqual(configService.load().channels.map(\.id), [visibleID])
+    }
+
     func testRestoredCloseTombstoneStaysHiddenAndRemovesItselfAfterCleanup() throws {
         let id = UUID()
         let sessionID = BrokerSessionID(rawValue: "restored-close-tombstone")

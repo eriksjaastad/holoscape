@@ -382,6 +382,7 @@ class ChannelManager {
     ) {
         let config = configService.load()
         var claimedBrokerSessionIDs: Set<BrokerSessionID> = []
+        var restoredCloseCleanupControllers: [any ChannelController] = []
         for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
@@ -412,15 +413,18 @@ class ChannelManager {
                     pinnedTimestamps[controller.channelId] = pinnedAt
                 }
                 if metadata.closeTombstone == true {
-                    // Restore cleanup authority without restoring presentation or
-                    // briefly activating a controller. The dedicated lifecycle
-                    // waits for asynchronous reattach before teardown and cannot
-                    // launch a replacement process.
+                    // Register the entire saved graph before cleanup can complete.
+                    // A synchronous missing-session result may save immediately;
+                    // deferring the callback prevents that save from dropping tabs
+                    // that appear later in the persisted order.
                     closingChannelIDs.insert(controller.channelId)
-                    controller.resumeRestoredCloseCleanup { [weak self] outcome in
-                        self?.handleClosingOutcome(outcome, id: controller.channelId)
-                    }
+                    restoredCloseCleanupControllers.append(controller)
                 }
+            }
+        }
+        for controller in restoredCloseCleanupControllers {
+            controller.resumeRestoredCloseCleanup { [weak self] outcome in
+                self?.handleClosingOutcome(outcome, id: controller.channelId)
             }
         }
     }
