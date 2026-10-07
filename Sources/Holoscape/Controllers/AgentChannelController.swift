@@ -21,6 +21,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     /// guidance and the tab/session association survive relaunch/restore.
     private(set) var staleBrokerSessionID: BrokerSessionID?
     private let authType: AgentAuthType
+    private let apiAuthTypeResolver: () throws -> AgentAuthType
     private let workingDirectory: URL?
     private let userLabel: String?
     private(set) var customDisplayLabel: String?
@@ -166,7 +167,10 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         existingBrokerSessionID: BrokerSessionID? = nil,
         pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID? = nil,
-        coordinator: (any BrokerSessionCoordinating)? = nil
+        coordinator: (any BrokerSessionCoordinating)? = nil,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) -> AgentChannelController {
         let environmentProfile: BrokerEnvironmentProfile
         let channelType: ChannelType
@@ -197,7 +201,8 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             command: command,
             terminal: terminal,
             brokerSessionCoordinator: nil,
-            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID
+            restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
+            apiAuthTypeResolver: apiAuthTypeResolver
         )
     }
 
@@ -211,10 +216,14 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         command: String = "claude",
         terminal: TerminalProcess? = nil,
         brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
-        restoredStaleBrokerSessionID: BrokerSessionID? = nil
+        restoredStaleBrokerSessionID: BrokerSessionID? = nil,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) {
         self.channelId = id
         self.authType = authType
+        self.apiAuthTypeResolver = apiAuthTypeResolver
         self.channelType = {
             switch authType {
             case .oauth: return .agentDirect
@@ -294,7 +303,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             let launchAuthType: AgentAuthType
             do {
                 if case .deferredAPIKey = authType {
-                    launchAuthType = try AgentAPIKeyResolver().authType()
+                    launchAuthType = try apiAuthTypeResolver()
                 } else {
                     launchAuthType = authType
                 }

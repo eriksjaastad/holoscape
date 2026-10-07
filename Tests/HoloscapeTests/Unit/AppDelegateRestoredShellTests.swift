@@ -216,6 +216,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
     }
 
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
+        var requiresOffMainBrokerWork = false
         var reattachableSessionRecords: [BrokerSessionRecord] = []
         var nextStartRecord: BrokerSessionRecord?
         var reattachError: Error?
@@ -224,6 +225,17 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         var readScrollbackTailCalls: [(id: BrokerSessionID, maxBytes: Int)] = []
         var retiredSessionIDs: [BrokerSessionID] = []
         var retirementHandler: (() -> Void)?
+        private var shouldBlockRetirement = false
+        private let retirementRelease = DispatchSemaphore(value: 0)
+
+        func blockRetirement() {
+            requiresOffMainBrokerWork = true
+            shouldBlockRetirement = true
+        }
+
+        func finishRetirement() {
+            retirementRelease.signal()
+        }
 
         func start(
             _ request: BrokerSessionLaunchRequest,
@@ -243,6 +255,9 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         func retireCompletedSession(_ id: BrokerSessionID) throws {
             retiredSessionIDs.append(id)
             retirementHandler?()
+            if shouldBlockRetirement {
+                _ = retirementRelease.wait(timeout: .now() + 2)
+            }
         }
 
         func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
@@ -1083,6 +1098,78 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.channelType, .agentAPI)
         XCTAssertNil(controller.pendingExitedOutputRetirement)
         XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+    }
+
+    func testCredentiallessAgentReconnectAfterDeniedQuitWaitsForCleanupAndFailsClosed() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegatePendingAPIRetirementReconnectTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.blockRetirement()
+        let retirementStarted = expectation(description: "retirement-only cleanup started")
+        coordinator.retirementHandler = { retirementStarted.fulfill() }
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        var credentialResolutionCount = 0
+        appDelegate.agentAPIAuthTypeResolver = {
+            credentialResolutionCount += 1
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+        let sessionID = BrokerSessionID(rawValue: "pending-agent-api-retirement-reconnect")
+        let metadata = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "API Agent",
+            workingDirectory: "/tmp/pending-agent-api-retirement-reconnect",
+            command: "claude",
+            brokerSessionID: sessionID,
+            pendingExitedOutputRetirement: BrokerExitedOutputRetirement(
+                sessionID: sessionID,
+                outputFailureDescription: "outputAcknowledgementFailed",
+                outputFailureKind: .failed
+            )
+        )
+
+        let controller = try XCTUnwrap(
+            appDelegate.restoreChannel(from: metadata) as? AgentChannelController
+        )
+        wait(for: [retirementStarted], timeout: 1)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [sessionID])
+
+        var teardownCompleted = false
+        controller.deactivate { teardownCompleted = true }
+        XCTAssertFalse(teardownCompleted)
+
+        controller.retry()
+        XCTAssertEqual(controller.state, .connecting)
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+
+        coordinator.finishRetirement()
+        let cleanupDeadline = Date().addingTimeInterval(1)
+        while (!teardownCompleted
+            || controller.state != .disconnected
+            || controller.pendingExitedOutputRetirement != nil),
+            Date() < cleanupDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(teardownCompleted)
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertNil(controller.pendingExitedOutputRetirement)
+        XCTAssertEqual(coordinator.startCallCount, 0)
+        XCTAssertEqual(credentialResolutionCount, 0)
+
+        controller.retry()
+        XCTAssertEqual(controller.state, .disconnected)
+        XCTAssertEqual(credentialResolutionCount, 1)
         XCTAssertEqual(coordinator.startCallCount, 0)
     }
 

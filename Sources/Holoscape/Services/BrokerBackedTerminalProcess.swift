@@ -95,6 +95,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// presentation lease and allowing the outcome to disappear with the tab.
     private var exitedOutputResolutionInFlight = false
     private var exitedOutputTeardownCompletions: [@MainActor () -> Void] = []
+    /// A denied quit can re-enable reconnect while exited-output cleanup still
+    /// owns the old generation. Keep that activation pending until cleanup
+    /// publishes its result rather than reporting the cleanup-only runtime active.
+    private var notifyStartAfterExitedOutputResolution = false
     private lazy var terminalViewDelegate = BrokerBackedTerminalViewDelegate(owner: self)
 
     var terminalContentView: NSView { terminalView }
@@ -159,6 +163,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     self.startCompletionHandler?()
                 }
             }
+            return
+        }
+        if exitedOutputResolutionInFlight || exitedOutputRetirementInFlight {
+            startCompletionPending = true
+            notifyStartAfterExitedOutputResolution = true
             return
         }
         guard recoveringBrokerSessionID == nil, !startCompletionPending,
@@ -896,6 +905,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let completions = exitedOutputTeardownCompletions
         exitedOutputTeardownCompletions.removeAll()
         completions.forEach { $0() }
+        if notifyStartAfterExitedOutputResolution {
+            notifyStartAfterExitedOutputResolution = false
+            if startCompletionPending {
+                startCompletionPending = false
+                startCompletionHandler?()
+            }
+        }
     }
 
     private func completeReattachStartIfNeeded(_ notifyStartCompletion: Bool) {
@@ -1051,6 +1067,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // Suppress a delayed activation callback while retaining the final
             // output/cleanup owner until its broker outcome has been published.
             startCompletionPending = false
+            notifyStartAfterExitedOutputResolution = false
             exitedOutputTeardownCompletions.append(completion)
             return
         }

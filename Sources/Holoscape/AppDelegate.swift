@@ -554,7 +554,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 existingBrokerSessionID: brokerIdentity.existing,
                 pendingExitedOutputRetirement: metadata.pendingExitedOutputRetirement,
                 restoredStaleBrokerSessionID: brokerIdentity.stale,
-                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator
+                coordinator: channelManagerRef?.brokerBackedTerminalCoordinator,
+                apiAuthTypeResolver: agentAPIAuthTypeResolver
             )
             // agentAPI intentionally does not auto-activate — the restore
             // callback in applicationDidFinishLaunching checks for this case.
@@ -603,7 +604,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         existingBrokerSessionID: BrokerSessionID?,
         pendingExitedOutputRetirement: BrokerExitedOutputRetirement? = nil,
         restoredStaleBrokerSessionID: BrokerSessionID?,
-        coordinator: (any BrokerSessionCoordinating)?
+        coordinator: (any BrokerSessionCoordinating)?,
+        apiAuthTypeResolver: @escaping () throws -> AgentAuthType = {
+            try AgentAPIKeyResolver().authType()
+        }
     ) -> AgentChannelController {
         AgentChannelController.brokerBacked(
             id: metadata.id,
@@ -616,7 +620,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             existingBrokerSessionID: existingBrokerSessionID,
             pendingExitedOutputRetirement: pendingExitedOutputRetirement,
             restoredStaleBrokerSessionID: restoredStaleBrokerSessionID,
-            coordinator: coordinator
+            coordinator: coordinator,
+            apiAuthTypeResolver: apiAuthTypeResolver
         )
     }
 
