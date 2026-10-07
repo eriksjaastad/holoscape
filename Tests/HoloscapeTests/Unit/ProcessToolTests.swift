@@ -105,6 +105,55 @@ final class ProcessToolTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: sideEffect, encoding: .utf8), "completed")
     }
 
+    func testUnacknowledgedPublishedStatusCannotBecomeSuccess() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-unacknowledged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("unacknowledged-controller")
+        try Data("#!/bin/zsh\nprint -n 'completed:0' > \"$4\"\nexit 123\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+
+        do {
+            _ = try await runProcessTool(
+                request(command: "exit 0"),
+                launcherExecutableURL: launcher,
+                temporaryDirectoryURL: directory
+            )
+            XCTFail("An unacknowledged status must not become a successful result")
+        } catch let error as ProcessToolError {
+            guard case .executionStatusUnavailable(let reason) = error else {
+                return XCTFail("Expected unavailable execution status, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("acknowledgement"), "Unexpected reason: \(reason)")
+        }
+    }
+
+    func testCancellationDoesNotMaskLauncherFailure() async throws {
+        let missingLauncher = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-holoscape-launcher-\(UUID().uuidString)")
+        let processRequest = request(command: "exit 0")
+        let task = Task {
+            try await runProcessTool(
+                processRequest,
+                launcherExecutableURL: missingLauncher
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("A launcher failure must remain a launch failure")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed = error else {
+                return XCTFail("Expected launch failure, got \(error)")
+            }
+        } catch {
+            XCTFail("Cancellation must not mask launch failure, got \(error)")
+        }
+    }
+
     func testCompletedCleanupSignalFailurePropagatesAsMCPError() async throws {
         let result = try await runProcessTool(
             request(

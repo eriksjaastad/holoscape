@@ -238,11 +238,11 @@ final class ProcessToolStatusExchange: @unchecked Sendable {
                     } catch {
                         cleanupFailure = error.localizedDescription
                     }
+                    acknowledge()
                     condition.lock()
                     storedOutcome = Outcome(status: status, cleanupFailure: cleanupFailure)
                     condition.broadcast()
                     condition.unlock()
-                    acknowledge()
                     return
                 }
                 usleep(5_000)
@@ -702,12 +702,22 @@ final class ProcessToolPipeReader: @unchecked Sendable {
 
 private func exitProcessToolControllerAfterCallerDisconnect(
     statusPath: String,
+    runnerStatusPath: String? = nil,
     groupCleanupSucceeded: Bool
 ) -> Never {
     if unlink(statusPath) == -1, errno != ENOENT {
         Darwin.exit(124)
     }
+    if let runnerStatusPath,
+       unlink(runnerStatusPath) == -1,
+       errno != ENOENT {
+        Darwin.exit(124)
+    }
     Darwin.exit(groupCleanupSucceeded ? 0 : 125)
+}
+
+private func removeUnacknowledgedProcessToolStatus(_ statusPath: String) -> Bool {
+    unlink(statusPath) == 0 || errno == ENOENT
 }
 
 private func publishProcessToolStatus(
@@ -727,14 +737,75 @@ private func publishProcessToolStatus(
                 groupCleanupSucceeded: exitCode == 0
             )
         case .failed:
-            _ = unlink(statusPath)
-            Darwin.exit(124)
+            Darwin.exit(removeUnacknowledgedProcessToolStatus(statusPath) ? 126 : 124)
         case .none, .requested:
             usleep(5_000)
         }
     }
-    _ = unlink(statusPath)
-    Darwin.exit(123)
+    Darwin.exit(removeUnacknowledgedProcessToolStatus(statusPath) ? 123 : 124)
+}
+
+private func processToolControllerExitFailure(
+    for status: ProcessToolControllerStatus,
+    terminationReason: Process.TerminationReason,
+    terminationStatus: Int32
+) -> ProcessToolError? {
+    guard terminationReason == .exit else {
+        return .executionStatusUnavailable(
+            "Controller terminated by signal \(terminationStatus) after publishing status"
+        )
+    }
+
+    switch terminationStatus {
+    case 123:
+        return .executionStatusUnavailable(
+            "Controller exited before status acknowledgement completed"
+        )
+    case 124:
+        return .statusCleanupFailed(
+            "Controller could not remove an unacknowledged status record"
+        )
+    case 126:
+        return .executionStatusUnavailable(
+            "Controller cancellation channel failed after status publication"
+        )
+    default:
+        break
+    }
+
+    let expectedExitCodes: Set<Int32>
+    switch status {
+    case .completed, .completedCleanupFailed:
+        expectedExitCodes = [0]
+    case .timedOut, .cancelled:
+        expectedExitCodes = [0, 125]
+    case .launchFailed:
+        expectedExitCodes = [125, 127]
+    }
+    guard expectedExitCodes.contains(terminationStatus) else {
+        return .executionStatusUnavailable(
+            "Controller exit \(terminationStatus) did not confirm its published status"
+        )
+    }
+    return nil
+}
+
+private func consumeProcessToolRunnerFailure(at statusPath: String) -> Result<String?, ProcessToolError> {
+    guard FileManager.default.fileExists(atPath: statusPath) else {
+        return .success(nil)
+    }
+    do {
+        let status = try String(contentsOfFile: statusPath, encoding: .utf8)
+        try FileManager.default.removeItem(atPath: statusPath)
+        guard case .launchFailed(let reason) = parseProcessToolControllerStatus(status) else {
+            return .failure(.launchFailed("Shell runner published an invalid status record"))
+        }
+        return .success(reason)
+    } catch {
+        return .failure(.launchFailed(
+            "Could not consume shell-runner status: \(error.localizedDescription)"
+        ))
+    }
 }
 
 /// Owns timeout arbitration outside the command's process group. The direct
@@ -745,6 +816,7 @@ func runProcessToolController(
     timeoutSeconds: Double,
     statusPath: String
 ) -> Never {
+    let runnerStatusPath = statusPath + ".runner"
     do {
         try configureProcessToolCancellationInput()
     } catch {
@@ -753,7 +825,7 @@ func runProcessToolController(
 
     let groupLeaderPID: pid_t
     do {
-        groupLeaderPID = try spawnProcessToolGroupLeader(command: command, statusPath: statusPath)
+        groupLeaderPID = try spawnProcessToolGroupLeader(command: command, statusPath: runnerStatusPath)
     } catch {
         publishProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath, exitCode: 127)
     }
@@ -804,6 +876,7 @@ func runProcessToolController(
     if callerDisconnected {
         exitProcessToolControllerAfterCallerDisconnect(
             statusPath: statusPath,
+            runnerStatusPath: runnerStatusPath,
             groupCleanupSucceeded: groupCleanupSucceeded && childResult != nil
         )
     }
@@ -841,6 +914,7 @@ func runProcessToolController(
         case .callerDisconnected:
             exitProcessToolControllerAfterCallerDisconnect(
                 statusPath: statusPath,
+                runnerStatusPath: runnerStatusPath,
                 groupCleanupSucceeded: groupCleanupSucceeded
             )
         case .failed(let error):
@@ -848,9 +922,13 @@ func runProcessToolController(
         }
     }
 
-    if let runnerStatus = try? String(contentsOfFile: statusPath, encoding: .utf8),
-       case .launchFailed = parseProcessToolControllerStatus(runnerStatus) {
-        publishProcessToolStatus(runnerStatus, to: statusPath, exitCode: 125)
+    switch consumeProcessToolRunnerFailure(at: runnerStatusPath) {
+    case .success(.some(let reason)):
+        publishProcessToolStatus("launchFailed:\(reason)", to: statusPath, exitCode: 125)
+    case .success(.none):
+        break
+    case .failure(let error):
+        publishProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath, exitCode: 125)
     }
 
     let finalStatus: String
@@ -982,6 +1060,14 @@ func runProcessTool(
                     continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited with an invalid status record"))
                     return
                 }
+                if let controllerFailure = processToolControllerExitFailure(
+                    for: parsed,
+                    terminationReason: process.terminationReason,
+                    terminationStatus: process.terminationStatus
+                ) {
+                    continuation.resume(throwing: controllerFailure)
+                    return
+                }
                 if let signalingFailure = cancellationOutcome.signalingFailure {
                     continuation.resume(throwing: ProcessToolError.cancellationSignalFailed(signalingFailure))
                     return
@@ -1069,13 +1155,11 @@ func runProcessTool(
                     cancellation.recordFailure("parent read close failed: \(error.localizedDescription)")
                 }
                 let cancellationOutcome = cancellation.finish()
+                var reason = error.localizedDescription
                 if let signalingFailure = cancellationOutcome.signalingFailure {
-                    continuation.resume(throwing: ProcessToolError.cancellationSignalFailed(signalingFailure))
-                } else if cancellationOutcome.wasRequested {
-                    continuation.resume(throwing: CancellationError())
-                } else {
-                    continuation.resume(throwing: ProcessToolError.launchFailed(error.localizedDescription))
+                    reason += "; cancellation channel cleanup also failed: \(signalingFailure)"
                 }
+                continuation.resume(throwing: ProcessToolError.launchFailed(reason))
                 return
             }
             do {
