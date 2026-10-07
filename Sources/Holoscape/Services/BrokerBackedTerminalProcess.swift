@@ -754,6 +754,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     self.terminationHandler?(exitCode)
                 }
                 if !presentationLeaseIsActive {
+                    // Teardown revoked presentation, not lifecycle truth. Publish
+                    // the cleared broker identity before releasing the quit
+                    // barrier so the controller cannot persist a retired ID.
+                    publishTermination()
                     self.finishExitedOutputResolution()
                 } else if retirementNotifiesStart {
                     publishTermination()

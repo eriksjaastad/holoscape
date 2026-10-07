@@ -174,7 +174,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         case .oauth:
             environmentProfile = .agentOAuth
             channelType = .agentDirect
-        case .apiKey:
+        case .apiKey, .deferredAPIKey:
             environmentProfile = .agentAPI
             channelType = .agentAPI
         }
@@ -218,7 +218,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         self.channelType = {
             switch authType {
             case .oauth: return .agentDirect
-            case .apiKey: return .agentAPI
+            case .apiKey, .deferredAPIKey: return .agentAPI
             }
         }()
         self.workingDirectory = workingDirectory
@@ -284,13 +284,33 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)
 
-        // Build clean environment with auth isolation
-        var env = AuthEnvironmentBuilder.buildEnvironment(
-            for: authType,
-            workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
-        )
-        env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
-        let envPairs = env.map { "\($0.key)=\($0.value)" }
+        // Retirement-only restore must not depend on credentials, but any later
+        // replacement launch resolves the API key again and fails closed.
+        let envPairs: [String]?
+        if case .deferredAPIKey = authType,
+           terminal.pendingExitedOutputRetirement != nil {
+            envPairs = nil
+        } else {
+            let launchAuthType: AgentAuthType
+            do {
+                if case .deferredAPIKey = authType {
+                    launchAuthType = try AgentAPIKeyResolver().authType()
+                } else {
+                    launchAuthType = authType
+                }
+            } catch {
+                NSLog("Agent terminal start refused because API-key auth is unavailable: \(error)")
+                lastStartFailureKind = .failed
+                transitionToDisconnected()
+                return
+            }
+            var env = AuthEnvironmentBuilder.buildEnvironment(
+                for: launchAuthType,
+                workingDirectory: workingDirectory ?? URL(fileURLWithPath: NSHomeDirectory())
+            )
+            env["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = adapterOwnerToken
+            envPairs = env.map { "\($0.key)=\($0.value)" }
+        }
 
         let launch = Self.launchInvocation(for: command)
 
@@ -604,7 +624,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     private var brokerEnvironmentProfile: BrokerEnvironmentProfile {
         switch authType {
         case .oauth: return .agentOAuth
-        case .apiKey: return .agentAPI
+        case .apiKey, .deferredAPIKey: return .agentAPI
         }
     }
 

@@ -13,6 +13,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private let bugReportService = BugReportService()
     private var notificationService: NotificationService?
     var channelManagerRef: ChannelManager?
+    /// Test seam for credential-unavailable restore paths.
+    var agentAPIAuthTypeResolver: () throws -> AgentAuthType = {
+        try AgentAPIKeyResolver().authType()
+    }
     private var settingsWindowController: AppearanceSettingsWindowController?
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
@@ -436,6 +440,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         _ metadata: ChannelMetadata,
         hasResolvedBrokerSession: Bool = false
     ) -> Bool {
+        // Retirement-only authority performs broker cleanup, not an agent
+        // launch, and must run even when an API credential is unavailable.
+        if metadata.pendingExitedOutputRetirement != nil {
+            return true
+        }
         guard metadata.type != .agentAPI else { return false }
         // A live registry record matched by channel ownership is newer truth than
         // stale metadata left behind before the replacement identity was saved.
@@ -529,11 +538,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
             let brokerIdentity = brokerRestoreIdentity(metadata: metadata, resolvedSession: brokerSession)
             let authType: AgentAuthType
-            do {
-                authType = try AgentAPIKeyResolver().authType()
-            } catch {
-                NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
-                return nil
+            if metadata.pendingExitedOutputRetirement != nil {
+                authType = .deferredAPIKey
+            } else {
+                do {
+                    authType = try agentAPIAuthTypeResolver()
+                } catch {
+                    NSLog("Skipping restored agent API channel because no Keychain API key is available: \(error)")
+                    return nil
+                }
             }
             let controller = Self.restoredAgentController(
                 from: metadata,

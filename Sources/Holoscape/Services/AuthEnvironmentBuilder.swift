@@ -18,6 +18,8 @@ struct AuthEnvironmentBuilder {
             break
         case .apiKey(let key):
             env["ANTHROPIC_API_KEY"] = key
+        case .deferredAPIKey:
+            preconditionFailure("Deferred API-key auth must resolve before building a launch environment")
         }
         return env
     }

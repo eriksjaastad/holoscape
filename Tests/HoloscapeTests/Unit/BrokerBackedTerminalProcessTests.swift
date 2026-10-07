@@ -3225,6 +3225,46 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testTeardownPublishesNormalExitedRetirementBeforeCompletion() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.blockRetirement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "teardown-during-normal-final-output-retirement",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        var lifecycleEvents: [String] = []
+        var terminationIdentities: [BrokerSessionID?] = []
+        terminal.setTerminationHandler { _ in
+            terminationIdentities.append(terminal.brokerSessionID)
+            lifecycleEvents.append("ownership")
+        }
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
+
+        var teardownCompleted = false
+        terminal.detachBrokerSession {
+            teardownCompleted = true
+            lifecycleEvents.append("teardown")
+        }
+        XCTAssertFalse(teardownCompleted)
+        coordinator.finishRetirement()
+
+        try waitUntil { teardownCompleted && terminal.brokerSessionID == nil }
+        XCTAssertEqual(terminationIdentities, [nil])
+        XCTAssertEqual(lifecycleEvents, ["ownership", "teardown"])
+    }
+
     func testTeardownDoesNotDiscardCompletedExitedOutputRetirement() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.outputSnapshotError = RuntimeError.outputReadFailed
