@@ -96,6 +96,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// presentation lease and allowing the outcome to disappear with the tab.
     private var exitedOutputResolutionInFlight = false
     private var exitedOutputTeardownCompletions: [@MainActor () -> Void] = []
+    private var runningSessionTeardownProbeInFlight = false
+    private var restartAfterRunningSessionTeardown: (@MainActor () -> Void)?
     /// A denied quit can re-enable reconnect while exited-output cleanup still
     /// owns the old generation. Keep that activation pending until cleanup
     /// publishes its result rather than reporting the cleanup-only runtime active.
@@ -152,6 +154,23 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     ) {
         if freshStartPending, freshStartCancelled {
             restartAfterCancelledFreshStart = { [weak self] in
+                guard let self else { return }
+                self.startCompletionPending = false
+                self.continueStartProcess(
+                    executable: executable,
+                    args: args,
+                    environment: environment,
+                    currentDirectory: currentDirectory
+                )
+                if !self.startCompletionPending {
+                    self.startCompletionHandler?()
+                }
+            }
+            return
+        }
+        if runningSessionTeardownProbeInFlight {
+            startCompletionPending = true
+            restartAfterRunningSessionTeardown = { [weak self] in
                 guard let self else { return }
                 self.startCompletionPending = false
                 self.continueStartProcess(
@@ -1140,6 +1159,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             return
         }
         if exitedOutputResolutionInFlight {
+            if runningSessionTeardownProbeInFlight {
+                // A later teardown owns final authority and cancels any reconnect
+                // queued after a denied quit.
+                restartAfterRunningSessionTeardown = nil
+                startCompletionPending = false
+            }
             // Suppress a delayed activation callback while retaining the final
             // output/cleanup owner until its broker outcome has been published.
             // An already-running restored replay keeps cleanup authority but loses
@@ -1186,6 +1211,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             sessionIOReady = false
             stopOutputPump()
             exitedOutputResolutionInFlight = true
+            runningSessionTeardownProbeInFlight = true
             exitedOutputTeardownCompletions.append(completion)
             outputReadLane.finishForTeardown(
                 sessionID: brokerSessionID,
@@ -1253,6 +1279,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private func finishRunningSessionTeardownProbe(error: Error?) {
         guard exitedOutputResolutionInFlight else { return }
         exitedOutputResolutionInFlight = false
+        runningSessionTeardownProbeInFlight = false
         if let error {
             publishSessionFailure(
                 TerminalSessionFailure(
@@ -1267,15 +1294,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let completions = exitedOutputTeardownCompletions
         exitedOutputTeardownCompletions.removeAll()
         guard let brokerSessionID, !didNotifyTermination else {
-            completions.forEach { $0() }
+            finishRunningSessionTeardown(completions: completions)
             return
         }
         let finish: @Sendable (Error?) -> Void = { error in
             if let error {
                 NSLog("Broker-backed terminal detach failed: \(error)")
             }
-            DispatchQueue.main.async {
-                completions.forEach { $0() }
+            DispatchQueue.main.async { [self] in
+                finishRunningSessionTeardown(completions: completions)
             }
         }
         if coordinator.requiresOffMainBrokerWork {
@@ -1287,6 +1314,17 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             } catch {
                 finish(error)
             }
+        }
+    }
+
+    private func finishRunningSessionTeardown(completions: [@MainActor () -> Void]) {
+        completions.forEach { $0() }
+        if let restartAfterRunningSessionTeardown {
+            self.restartAfterRunningSessionTeardown = nil
+            restartAfterRunningSessionTeardown()
+        } else if startCompletionPending {
+            startCompletionPending = false
+            startCompletionHandler?()
         }
     }
 

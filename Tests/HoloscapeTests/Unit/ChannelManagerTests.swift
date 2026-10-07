@@ -98,6 +98,10 @@ final class ChannelManagerTests: XCTestCase {
         let brokerOwnedSessionID: BrokerSessionID?
         private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
         var defersDetachCompletion = false
+        var defersStartCompletion = false
+        private(set) var startCallCount = 0
+        private(set) var detachCallCount = 0
+        private var startCompletionHandler: (() -> Void)?
         private var detachCompletions: [@MainActor () -> Void] = []
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
@@ -115,7 +119,9 @@ final class ChannelManagerTests: XCTestCase {
             environment: [String]?,
             execName: String?,
             currentDirectory: String?
-        ) {}
+        ) {
+            startCallCount += 1
+        }
 
         func send(_ bytes: [UInt8]) {
             userInputHandler?(ArraySlice(bytes))
@@ -124,13 +130,20 @@ final class ChannelManagerTests: XCTestCase {
         func setOutputHandler(_ handler: (() -> Void)?) {}
         func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?) { userInputHandler = handler }
         func setTerminationHandler(_ handler: ((Int32?) -> Void)?) {}
+        func setStartCompletionHandler(_ handler: (() -> Void)?) { startCompletionHandler = handler }
+        var completesStartAsynchronously: Bool { defersStartCompletion }
         func lastLines(_ count: Int) -> [String] { [] }
         func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
+            detachCallCount += 1
             if defersDetachCompletion {
                 detachCompletions.append(completion)
             } else {
                 completion()
             }
+        }
+        func finishStart() {
+            defersStartCompletion = false
+            startCompletionHandler?()
         }
         func finishDetach(with pending: BrokerExitedOutputRetirement?) {
             pendingExitedOutputRetirement = pending
@@ -1352,6 +1365,7 @@ final class ChannelManagerTests: XCTestCase {
             pendingExitedOutputRetirement: pending
         )
         restoredTerminal.defersDetachCompletion = true
+        restoredTerminal.defersStartCompletion = true
         let restoredManager = ChannelManager(configService: configService)
 
         restoredManager.restoreState { metadata in
@@ -1367,10 +1381,56 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertTrue(restoredManager.allChannels().isEmpty)
         XCTAssertNil(restoredManager.channel(for: id))
         XCTAssertEqual(try XCTUnwrap(configService.load().channels.first).closeTombstone, true)
+        XCTAssertEqual(restoredTerminal.startCallCount, 1)
+        XCTAssertEqual(restoredTerminal.detachCallCount, 0, "Cleanup must wait for asynchronous reattach to commit")
 
+        restoredTerminal.finishStart()
+        XCTAssertEqual(restoredTerminal.detachCallCount, 1)
         restoredTerminal.finishDetach(with: nil)
 
         XCTAssertTrue(configService.load().channels.isEmpty)
+    }
+
+    func testRestoredAgentAPICloseTombstoneNeverResolvesCredentials() throws {
+        let id = UUID()
+        let sessionID = BrokerSessionID(rawValue: "restored-agent-api-close")
+        var config = configService.load()
+        config.channels = [ChannelMetadata(
+            id: id,
+            type: .agentAPI,
+            role: "Closed API Agent",
+            command: "claude",
+            brokerSessionID: sessionID,
+            closeTombstone: true
+        )]
+        XCTAssertTrue(configService.save(config))
+        let terminal = StubTerminalProcess(brokerOwnedSessionID: sessionID)
+        terminal.defersStartCompletion = true
+        var credentialResolutionCount = 0
+        let restoredManager = ChannelManager(configService: configService)
+
+        restoredManager.restoreState { metadata in
+            AgentChannelController(
+                id: metadata.id,
+                authType: .deferredAPIKey,
+                workingDirectory: nil,
+                userLabel: metadata.role,
+                instanceNumber: nil,
+                command: metadata.command ?? "claude",
+                terminal: terminal,
+                apiAuthTypeResolver: {
+                    credentialResolutionCount += 1
+                    throw NSError(domain: "unexpected-credential-resolution", code: 1)
+                }
+            )
+        }
+
+        XCTAssertEqual(credentialResolutionCount, 0)
+        XCTAssertEqual(terminal.startCallCount, 1)
+        XCTAssertEqual(terminal.detachCallCount, 0)
+        terminal.finishStart()
+        XCTAssertEqual(terminal.detachCallCount, 1)
+        XCTAssertEqual(credentialResolutionCount, 0)
     }
 
     func testClosePersistenceFailureRetainsHiddenRemovalUntilRetrySucceeds() throws {

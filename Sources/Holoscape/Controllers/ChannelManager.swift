@@ -398,12 +398,12 @@ class ChannelManager {
                     pinnedTimestamps[controller.channelId] = pinnedAt
                 }
                 if metadata.closeTombstone == true {
-                    // Restore cleanup authority without restoring presentation.
-                    // AppDelegate leaves tombstones inactive so registration
-                    // precedes either synchronous or asynchronous cleanup truth.
+                    // Restore cleanup authority without restoring presentation or
+                    // briefly activating a controller. The dedicated lifecycle
+                    // waits for asynchronous reattach before teardown and cannot
+                    // launch a replacement process.
                     closingChannelIDs.insert(controller.channelId)
-                    controller.activate()
-                    controller.deactivate { [weak self] in
+                    controller.resumeRestoredCloseCleanup { [weak self] in
                         self?.finishClosingChannel(id: controller.channelId)
                     }
                 }

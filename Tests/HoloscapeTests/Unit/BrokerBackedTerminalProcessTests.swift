@@ -2747,6 +2747,44 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.startCallCount, 2)
     }
 
+    func testReconnectDuringRunningSessionTeardownResumesAfterDetach() throws {
+        let sessionID = BrokerSessionID(rawValue: "running-teardown-reconnect")
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.returnEmptyOutputSnapshots()
+        coordinator.blockOutputSnapshot()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "running-teardown",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        var completionCount = 0
+        terminal.setStartCompletionHandler { completionCount += 1 }
+
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(coordinator.waitForReattach())
+        coordinator.finishReattach()
+        try waitUntil { completionCount == 1 }
+        XCTAssertTrue(coordinator.waitForOutputSnapshot())
+
+        var teardownCompleted = false
+        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+        coordinator.finishOutputSnapshot()
+        coordinator.finishOutputSnapshot()
+
+        try waitUntil { teardownCompleted }
+        XCTAssertTrue(coordinator.waitForReattach(), "Reconnect was not resumed after running-session detach")
+        XCTAssertEqual(completionCount, 1)
+        coordinator.finishReattach()
+        try waitUntil { completionCount == 2 }
+        XCTAssertEqual(coordinator.reattachCallCount, 2)
+    }
+
     func testSecondTeardownRevokesReconnectQueuedBehindCancelledFreshStart() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockStart()

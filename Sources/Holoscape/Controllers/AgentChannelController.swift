@@ -11,6 +11,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private var restoredCloseCleanupCompletion: (@MainActor () -> Void)?
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
     var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
@@ -250,7 +251,7 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
             self?.handleSessionFailure(failure)
         }
         self.terminal.setStartCompletionHandler { [weak self] in
-            self?.finishActivation()
+            self?.finishTerminalStart()
         }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
@@ -349,6 +350,45 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if terminal.completesStartAsynchronously { return }
         finishActivation()
+    }
+
+    private func finishTerminalStart() {
+        if restoredCloseCleanupCompletion != nil {
+            finishRestoredCloseCleanupStart()
+        } else {
+            finishActivation()
+        }
+    }
+
+    func resumeRestoredCloseCleanup(completion: @escaping @MainActor () -> Void) {
+        guard terminal.brokerOwnedSessionID != nil || terminal.pendingExitedOutputRetirement != nil else {
+            completion()
+            return
+        }
+        restoredCloseCleanupCompletion = completion
+        let launch = Self.launchInvocation(for: command)
+        terminal.setOutputHandler(nil)
+        // A close tombstone owns cleanup only. Never resolve credentials or
+        // construct an environment that could authorize a replacement launch.
+        terminal.startProcess(
+            executable: launch.executable,
+            args: launch.args,
+            environment: nil,
+            execName: launch.execName,
+            currentDirectory: workingDirectory?.path
+        )
+        if !terminal.completesStartAsynchronously {
+            finishRestoredCloseCleanupStart()
+        }
+    }
+
+    private func finishRestoredCloseCleanupStart() {
+        guard let completion = restoredCloseCleanupCompletion else { return }
+        restoredCloseCleanupCompletion = nil
+        terminal.detachBrokerSession { [weak self] in
+            self?.recordBrokerDetach()
+            completion()
+        }
     }
 
     private func finishActivation() {

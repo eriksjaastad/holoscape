@@ -11,6 +11,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     weak var delegate: ChannelControllerDelegate?
 
     private let terminal: TerminalProcess
+    private var restoredCloseCleanupCompletion: (@MainActor () -> Void)?
     private let brokerSessionCoordinator: (any BrokerSessionCoordinating)?
     private(set) var brokerSessionID: BrokerSessionID?
     var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? {
@@ -161,7 +162,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
             self?.handleSessionFailure(failure)
         }
         self.terminal.setStartCompletionHandler { [weak self] in
-            self?.finishActivation()
+            self?.finishTerminalStart()
         }
         self.terminal.setTerminationHandler { [weak self] exitCode in
             guard let self else { return }
@@ -238,6 +239,42 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         )
         if terminal.completesStartAsynchronously { return }
         finishActivation()
+    }
+
+    private func finishTerminalStart() {
+        if restoredCloseCleanupCompletion != nil {
+            finishRestoredCloseCleanupStart()
+        } else {
+            finishActivation()
+        }
+    }
+
+    func resumeRestoredCloseCleanup(completion: @escaping @MainActor () -> Void) {
+        guard terminal.brokerOwnedSessionID != nil || terminal.pendingExitedOutputRetirement != nil else {
+            completion()
+            return
+        }
+        restoredCloseCleanupCompletion = completion
+        terminal.setOutputHandler(nil)
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["-o", "nopromptsp", "--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: persistedWorkingDirectory
+        )
+        if !terminal.completesStartAsynchronously {
+            finishRestoredCloseCleanupStart()
+        }
+    }
+
+    private func finishRestoredCloseCleanupStart() {
+        guard let completion = restoredCloseCleanupCompletion else { return }
+        restoredCloseCleanupCompletion = nil
+        terminal.detachBrokerSession { [weak self] in
+            self?.recordBrokerDetach()
+            completion()
+        }
     }
 
     private func finishActivation() {
