@@ -259,7 +259,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         }
         terminationTeardownTimeoutWorkItem = timeoutWorkItem
 
-        channelManager.saveState()
+        guard channelManager.saveState() else {
+            terminationTeardownTimeoutWorkItem?.cancel()
+            terminationTeardownTimeoutWorkItem = nil
+            terminationTeardownStarted = false
+            terminationTeardownGeneration &+= 1
+            NSLog("Channel state could not be saved before broker cleanup; keeping Holoscape open")
+            apiServer?.start()
+            setLaunchRecoveryInteractionEnabled(true)
+            windowController?.setChannelMutationEnabled(true)
+            reply(false)
+            return
+        }
         channelManager.detachAllChannelsForAppTermination { [weak self] in
             guard let self,
                   self.terminationTeardownStarted,
@@ -269,7 +280,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             // Final-output cleanup can create or clear durable retirement-only
             // authority after the initial quit snapshot. Persist the resolved
             // broker truth before allowing AppKit to terminate.
-            channelManager.saveState()
+            guard channelManager.saveState() else {
+                self.terminationTeardownStarted = false
+                self.terminationTeardownGeneration &+= 1
+                NSLog("Final broker cleanup state could not be saved; keeping Holoscape open")
+                self.apiServer?.start()
+                self.setLaunchRecoveryInteractionEnabled(true)
+                self.windowController?.setChannelMutationEnabled(true)
+                reply(false)
+                return
+            }
             self.terminationTeardownComplete = true
             reply(true)
         }

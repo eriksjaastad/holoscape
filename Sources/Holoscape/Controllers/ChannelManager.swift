@@ -214,7 +214,8 @@ class ChannelManager {
     }
 
     /// Save current channel state to config.
-    func saveState() {
+    @discardableResult
+    func saveState() -> Bool {
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
             guard let channel = channels[id] else { return nil }
@@ -295,7 +296,7 @@ class ChannelManager {
             )
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
-        configService.save(config)
+        return configService.save(config)
     }
 
     /// Restore channels from saved config.

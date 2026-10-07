@@ -163,6 +163,65 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(channel.deactivateCallCount, 1)
     }
 
+    func testTerminationTeardownDeniesQuitWhenFinalSnapshotCannotBePersisted() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationSaveFailureTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let appDelegate = AppDelegate()
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        XCTAssertTrue(replies.isEmpty)
+
+        try FileManager.default.removeItem(at: tempDirectory)
+        try "blocking file".write(to: tempDirectory, atomically: true, encoding: .utf8)
+        channel.finishDeactivation()
+
+        XCTAssertEqual(replies, [false])
+
+        try FileManager.default.removeItem(at: tempDirectory)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        channel.defersDeactivationCompletion = false
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+
+        XCTAssertEqual(replies, [false, true])
+    }
+
+    func testTerminationTeardownDoesNotDetachWhenInitialSnapshotCannotBePersisted() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateInitialSaveFailureTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "blocking file".write(to: tempDirectory, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Unsaved",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        let appDelegate = AppDelegate()
+        var replies: [Bool] = []
+
+        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+
+        XCTAssertEqual(replies, [false])
+        XCTAssertEqual(channel.deactivateCallCount, 0)
+    }
+
     func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
         let mainMenu = NSMenu(title: "Main")
         let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")

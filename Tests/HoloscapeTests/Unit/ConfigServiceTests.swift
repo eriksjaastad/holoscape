@@ -71,7 +71,7 @@ final class ConfigServiceTests: XCTestCase {
         var config = HoloscapeConfig.default
         config.appearance.fontFamily = "Unsaved Font"
 
-        service.save(config)
+        XCTAssertFalse(service.save(config))
         let loaded = service.load()
 
         XCTAssertEqual(service.lastDiagnostic?.operation, .load)

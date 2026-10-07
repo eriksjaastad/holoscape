@@ -67,7 +67,8 @@ class ConfigService {
         }
     }
 
-    func save(_ config: HoloscapeConfig) {
+    @discardableResult
+    func save(_ config: HoloscapeConfig) -> Bool {
         do {
             try ensureDirectoryExists()
             let encoder = JSONEncoder()
@@ -77,8 +78,10 @@ class ConfigService {
             try data.write(to: configURL, options: .atomic)
             cachedConfig = config
             lastDiagnostic = nil
+            return true
         } catch {
             recordDiagnostic(operation: .save, error: error)
+            return false
         }
     }
 
