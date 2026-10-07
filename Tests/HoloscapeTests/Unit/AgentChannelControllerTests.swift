@@ -71,6 +71,32 @@ final class AgentChannelControllerTests: XCTestCase {
         func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
     }
 
+    func testCloseKeepsOutputLaneInstalledUntilRetirementCompletes() {
+        let terminal = MockTerminalProcess()
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: URL(fileURLWithPath: "/tmp"),
+            userLabel: "Codex",
+            instanceNumber: nil,
+            command: "codex",
+            terminal: terminal
+        )
+        controller.activate()
+        var outcome: TerminalCleanupOutcome?
+
+        controller.deactivateForClose { outcome = $0 }
+
+        XCTAssertEqual(terminal.closeRetirementCallCount, 1)
+        XCTAssertNotNil(terminal.outputHandler)
+        XCTAssertNil(outcome)
+
+        terminal.finishCloseRetirement()
+
+        XCTAssertNil(terminal.outputHandler)
+        XCTAssertEqual(outcome, .completed)
+    }
+
     func testRecoveredExitMismatchPersistsDetailedControllerErrorAndRetiresIdentity() {
         let terminal = MockTerminalProcess()
         terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "recovered-mismatch-agent")

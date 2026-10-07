@@ -347,8 +347,8 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
-        terminal.setOutputHandler(nil)
         terminal.retireBrokerSessionForClose { [weak self] outcome in
+            self?.terminal.setOutputHandler(nil)
             self?.recordBrokerDetach()
             completion(outcome)
         }

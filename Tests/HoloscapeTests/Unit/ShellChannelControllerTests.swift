@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class ShellChannelControllerTests: XCTestCase {
+    func testCloseKeepsOutputLaneInstalledUntilRetirementCompletes() {
+        let terminal = MockTerminalProcess()
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+        controller.activate()
+        var outcome: TerminalCleanupOutcome?
+
+        controller.deactivateForClose { outcome = $0 }
+
+        XCTAssertEqual(terminal.closeRetirementCallCount, 1)
+        XCTAssertNotNil(terminal.outputHandler)
+        XCTAssertNil(outcome)
+
+        terminal.finishCloseRetirement()
+
+        XCTAssertNil(terminal.outputHandler)
+        XCTAssertEqual(outcome, .completed)
+    }
+
     func testRecoveredExitMismatchPersistsDetailedControllerErrorAndRetiresIdentity() {
         let terminal = MockTerminalProcess()
         terminal.brokerOwnedSessionID = BrokerSessionID(rawValue: "recovered-mismatch-shell")
