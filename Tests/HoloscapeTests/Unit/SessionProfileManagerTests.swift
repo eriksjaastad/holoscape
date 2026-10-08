@@ -101,7 +101,7 @@ final class SessionProfileManagerTests: XCTestCase {
 
     func testRemoteDirectoryListingCommandPreservesLeadingTildeHomeExpansion() async throws {
         let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holoscape-remote-home-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("holoscape remote home \(UUID().uuidString)", isDirectory: true)
         let root = home.appendingPathComponent("projects with spaces", isDirectory: true)
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent("holoscape", isDirectory: true),
@@ -115,8 +115,19 @@ final class SessionProfileManagerTests: XCTestCase {
             arguments: ["HOME=\(home.path)", "/bin/sh", "-c", command],
             timeout: 1
         )
+        let homeDirectories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [
+                "HOME=\(home.path)",
+                "/bin/sh",
+                "-c",
+                ProjectDiscoveryService.remoteDirectoryListingCommand(root: "~"),
+            ],
+            timeout: 1
+        )
 
         XCTAssertEqual(directories, ["holoscape"])
+        XCTAssertEqual(homeDirectories, ["projects with spaces"])
     }
 
     func testRemoteDirectoryListingDrainsHighVolumeStderr() async throws {

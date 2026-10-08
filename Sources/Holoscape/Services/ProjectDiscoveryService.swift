@@ -160,10 +160,10 @@ class ProjectDiscoveryService {
 
     private nonisolated static func remoteShellPathExpression(_ path: String) -> String {
         if path == "~" {
-            return "${HOME}"
+            return "\"${HOME}\""
         }
         if path.hasPrefix("~/") {
-            return "${HOME}\(singleQuotedShellWord(String(path.dropFirst())))"
+            return "\"${HOME}\"\(singleQuotedShellWord(String(path.dropFirst())))"
         }
         return singleQuotedShellWord(path)
     }
