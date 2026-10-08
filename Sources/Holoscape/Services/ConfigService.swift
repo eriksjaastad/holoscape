@@ -23,6 +23,9 @@ class ConfigService {
     /// Path equality is insufficient because deletion and recreation can occur
     /// entirely between two saves.
     private var durableDirectoryIdentity: DurableDirectoryIdentity?
+    /// Prevent fallback defaults from replacing unreadable user data. A later
+    /// successful disk load proves the file was repaired and releases writes.
+    private var unresolvedLoadFailure: ConfigServiceDiagnostic?
     private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
     init() {
@@ -91,16 +94,25 @@ class ConfigService {
             decoder.dateDecodingStrategy = .iso8601
             let config = try decoder.decode(HoloscapeConfig.self, from: data)
             cachedConfig = config
+            unresolvedLoadFailure = nil
             lastDiagnostic = nil
             return config
         } catch {
             recordDiagnostic(operation: .load, error: error)
+            unresolvedLoadFailure = lastDiagnostic
             return HoloscapeConfig.default
         }
     }
 
     @discardableResult
     func save(_ config: HoloscapeConfig) -> Bool {
+        if let unresolvedLoadFailure {
+            recordDiagnostic(
+                operation: .save,
+                message: "write blocked after unresolved load failure: \(unresolvedLoadFailure.message)"
+            )
+            return false
+        }
         do {
             try ensureDirectoryExists(initializeDurability: true)
             let encoder = JSONEncoder()
@@ -210,10 +222,14 @@ class ConfigService {
     }
 
     private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, error: Error) {
+        recordDiagnostic(operation: operation, message: error.localizedDescription)
+    }
+
+    private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, message: String) {
         let diagnostic = ConfigServiceDiagnostic(
             operation: operation,
             configPath: configURL.path,
-            message: error.localizedDescription
+            message: message
         )
         lastDiagnostic = diagnostic
         NSLog("ConfigService: \(operation.rawValue) failed for \(diagnostic.configPath): \(diagnostic.message)")
