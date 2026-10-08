@@ -34,6 +34,7 @@ struct BrokerSessionRegistry {
         let removeTemporaryFile: (URL) throws -> Void
         let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
         let closeDirectoryDescriptor: (Int32) -> Int32
+        let readDirectoryIdentity: (URL) throws -> DurableDirectoryIdentity
         let unlockFileLock: (Int32) -> Int32
         let closeFileLock: (Int32) -> Int32
 
@@ -45,6 +46,7 @@ struct BrokerSessionRegistry {
             removeTemporaryFile: @escaping (URL) throws -> Void,
             removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
             closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close,
+            readDirectoryIdentity: @escaping (URL) throws -> DurableDirectoryIdentity = DurableDirectoryIdentity.read,
             unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
             closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
         ) {
@@ -55,6 +57,7 @@ struct BrokerSessionRegistry {
             self.removeTemporaryFile = removeTemporaryFile
             self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
             self.closeDirectoryDescriptor = closeDirectoryDescriptor
+            self.readDirectoryIdentity = readDirectoryIdentity
             self.unlockFileLock = unlockFileLock
             self.closeFileLock = closeFileLock
         }
@@ -258,7 +261,8 @@ struct BrokerSessionRegistry {
                 synchronizeDirectory: persistence.synchronizeDirectory,
                 removeTemporaryFile: persistence.removeTemporaryFile,
                 removeTemporaryFileAtDescriptor: persistence.removeTemporaryFileAtDescriptor,
-                closeDirectoryDescriptor: persistence.closeDirectoryDescriptor
+                closeDirectoryDescriptor: persistence.closeDirectoryDescriptor,
+                readDirectoryIdentity: persistence.readDirectoryIdentity
             )
         )
         do {

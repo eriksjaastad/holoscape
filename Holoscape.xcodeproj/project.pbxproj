@@ -248,6 +248,7 @@
 		A3E296D3F6DAE85304260D50 /* AuthEnvironmentEdgeCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 847E5B4FF9E9BC053403DED5 /* AuthEnvironmentEdgeCaseTests.swift */; };
 		A44713E918F6998FFB8FEBDA /* GroupChatChannelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1AA52D7A2C19C3BF0AF1619 /* GroupChatChannelController.swift */; };
 		A516DFFD18B8A199947515A4 /* ConfigService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E460E46DE5065CF89E81619 /* ConfigService.swift */; };
+		DAF0C011A70C4F63B631E001 /* DurableAtomicFileCommitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAF0C011A70C4F63B631E002 /* DurableAtomicFileCommitter.swift */; };
 		A7F7292E50D000DD8FE4E277 /* V2UtilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BAE344862C20BBFA89D2EB1 /* V2UtilityTests.swift */; };
 		A81661D27831EB2173F233C8 /* spirv_cfg.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B88A363CF2DA6EFFF1A1CF04 /* spirv_cfg.cpp */; };
 		A89FAD2B54A46DDAE288FDD6 /* ChromeRegionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764D9CC96280107FD71D29C6 /* ChromeRegionManagerTests.swift */; };
@@ -582,6 +583,7 @@
 		4DB1B33ECCF4020FB1089BC3 /* SplitPaneAdvancedUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitPaneAdvancedUITests.swift; sourceTree = "<group>"; };
 		4DEF3166E868D9956D8CE661 /* EditMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditMenuUITests.swift; sourceTree = "<group>"; };
 		4E460E46DE5065CF89E81619 /* ConfigService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigService.swift; sourceTree = "<group>"; };
+		DAF0C011A70C4F63B631E002 /* DurableAtomicFileCommitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurableAtomicFileCommitter.swift; sourceTree = "<group>"; };
 		4E9AAE020C9868ADE280795B /* ChannelStateIndicatorUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelStateIndicatorUITests.swift; sourceTree = "<group>"; };
 		4EBFA13BBC9AC1C3DB2ADE93 /* URLSchemeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSchemeUITests.swift; sourceTree = "<group>"; };
 		4F988E7C2DE512B3615175B6 /* ChromeBakePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeBakePipeline.swift; sourceTree = "<group>"; };
@@ -1165,6 +1167,7 @@
 				4D1EF17248AE4657F9F91F79 /* ChromeManifestValidator.swift */,
 				4490271FB9BF0A0FD224DE8E /* ColorTheme.swift */,
 				4E460E46DE5065CF89E81619 /* ConfigService.swift */,
+				DAF0C011A70C4F63B631E002 /* DurableAtomicFileCommitter.swift */,
 				D214814304337F40BE536A1C /* CrashReportScanner.swift */,
 				A840607AD5038971D1C7DA17 /* DefaultWorkingDirectory.swift */,
 				2D02D80A9298FFF4899D981E /* DensityModeManager.swift */,
@@ -1903,6 +1906,7 @@
 				080D91F9D6625E975E108C71 /* ColorTheme.swift in Sources */,
 				AD814C838D7F73F3D41B3A47 /* CommandHistory.swift in Sources */,
 				A516DFFD18B8A199947515A4 /* ConfigService.swift in Sources */,
+				DAF0C011A70C4F63B631E001 /* DurableAtomicFileCommitter.swift in Sources */,
 				A9E542021928C756BF6E68AA /* CrashReport.swift in Sources */,
 				92AC9653D5410030C4AA237E /* CrashReportScanner.swift in Sources */,
 				1A09B4A11E6E515EDB2C2E77 /* DefaultWorkingDirectory.swift in Sources */,

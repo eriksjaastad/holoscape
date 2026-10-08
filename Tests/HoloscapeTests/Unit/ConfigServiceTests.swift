@@ -596,6 +596,35 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
     }
 
+    func testTransientFinalIdentityReadFailureRemainsCommitted() throws {
+        let configDir = temporaryConfigDir()
+        enum InjectedFailure: Error { case finalIdentityRead }
+        var replacementCommitted = false
+        var identityReadCount = 0
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+                replacementCommitted = true
+            },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
+            readDirectoryIdentity: { url in
+                identityReadCount += 1
+                if identityReadCount == 3 { throw InjectedFailure.finalIdentityRead }
+                return try DurableDirectoryIdentity.read(at: url)
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Committed Despite Identity Read Failure"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertTrue(replacementCommitted)
+        XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("replacement committed") == true)
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ConfigServiceTests")

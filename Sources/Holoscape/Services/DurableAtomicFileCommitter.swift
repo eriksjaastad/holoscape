@@ -91,6 +91,7 @@ struct DurableAtomicFileCommitter {
         let removeTemporaryFile: (URL) throws -> Void
         let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
         let closeDirectoryDescriptor: (Int32) -> Int32
+        let readDirectoryIdentity: (URL) throws -> DurableDirectoryIdentity
 
         init(
             writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
@@ -99,7 +100,8 @@ struct DurableAtomicFileCommitter {
             synchronizeDirectory: @escaping (URL) throws -> Void,
             removeTemporaryFile: @escaping (URL) throws -> Void,
             removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
-            closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close
+            closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close,
+            readDirectoryIdentity: @escaping (URL) throws -> DurableDirectoryIdentity = DurableDirectoryIdentity.read
         ) {
             self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
             self.writeAndSynchronizeTemporaryFileAtDescriptor = writeAndSynchronizeTemporaryFileAtDescriptor
@@ -108,6 +110,7 @@ struct DurableAtomicFileCommitter {
             self.removeTemporaryFile = removeTemporaryFile
             self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
             self.closeDirectoryDescriptor = closeDirectoryDescriptor
+            self.readDirectoryIdentity = readDirectoryIdentity
         }
 
         static let live = Persistence(
@@ -117,7 +120,8 @@ struct DurableAtomicFileCommitter {
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
             removeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.removeTemporaryFile,
-            closeDirectoryDescriptor: Darwin.close
+            closeDirectoryDescriptor: Darwin.close,
+            readDirectoryIdentity: DurableDirectoryIdentity.read
         )
     }
 
@@ -179,13 +183,9 @@ struct DurableAtomicFileCommitter {
             if replacementCommitted {
                 do {
                     try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
-                    if operationError is DurableDirectoryAuthorityError {
-                        operationResult = .failure(operationError)
-                    } else {
-                        operationResult = .failure(CommitError.replacementCommitted(
-                            durabilityFailure: String(describing: operationError)
-                        ))
-                    }
+                    operationResult = .failure(CommitError.replacementCommitted(
+                        durabilityFailure: String(describing: operationError)
+                    ))
                 } catch {
                     // The replacement remains authoritative only while it is
                     // visible through the directory pathname the caller owns.
@@ -260,7 +260,7 @@ struct DurableAtomicFileCommitter {
         guard let expectedIdentity else { return }
         let currentIdentity: DurableDirectoryIdentity
         do {
-            currentIdentity = try DurableDirectoryIdentity.read(at: directoryURL)
+            currentIdentity = try persistence.readDirectoryIdentity(directoryURL)
         } catch {
             throw DurableDirectoryAuthorityError.unavailable(
                 path: directoryURL.path,
