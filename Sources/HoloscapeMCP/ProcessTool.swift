@@ -126,13 +126,36 @@ private func closeProcessToolCancellationSignal(_ handle: FileHandle) throws {
     try handle.close()
 }
 
+private func isProcessToolBrokenPipe(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EPIPE) {
+        return true
+    }
+    if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+        return isProcessToolBrokenPipe(underlying)
+    }
+    return false
+}
+
 /// Arbitrates task cancellation against process completion and owns the write
 /// end of the controller's cancellation pipe. Whichever side claims the lock
 /// first determines whether an otherwise successful result is cancelled.
 final class ProcessToolCancellationSignal: @unchecked Sendable {
     struct Outcome: Sendable {
+        struct Failure: Sendable {
+            let message: String
+            let isBrokenPipeWrite: Bool
+        }
+
         let wasRequested: Bool
-        let signalingFailure: String?
+        let failures: [Failure]
+
+        func signalingFailure(ignoringBrokenPipeWrite: Bool = false) -> String? {
+            let messages = failures.compactMap { failure in
+                ignoringBrokenPipeWrite && failure.isBrokenPipeWrite ? nil : failure.message
+            }
+            return messages.isEmpty ? nil : messages.joined(separator: "; ")
+        }
     }
 
     typealias HandleOperation = @Sendable (FileHandle) throws -> Void
@@ -141,7 +164,7 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
     private var writeHandle: FileHandle?
     private var requested = false
     private var completed = false
-    private var signalingFailures: [String] = []
+    private var signalingFailures: [Outcome.Failure] = []
     private let writeOperation: HandleOperation
     private let closeOperation: HandleOperation
 
@@ -154,7 +177,10 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
         self.writeOperation = writeOperation
         self.closeOperation = closeOperation
         if fcntl(writeHandle.fileDescriptor, F_SETNOSIGPIPE, 1) == -1 {
-            signalingFailures.append("Could not configure cancellation signal: \(String(cString: strerror(errno)))")
+            signalingFailures.append(.init(
+                message: "Could not configure cancellation signal: \(String(cString: strerror(errno)))",
+                isBrokenPipeWrite: false
+            ))
         }
     }
 
@@ -167,7 +193,19 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
         do {
             try writeOperation(handle)
         } catch {
-            signalingFailures.append("write failed: \(error.localizedDescription)")
+            signalingFailures.append(.init(
+                message: "write failed: \(error.localizedDescription)",
+                isBrokenPipeWrite: isProcessToolBrokenPipe(error)
+            ))
+            do {
+                try closeOperation(handle)
+            } catch {
+                signalingFailures.append(.init(
+                    message: "close after write failure failed: \(error.localizedDescription)",
+                    isBrokenPipeWrite: false
+                ))
+            }
+            writeHandle = nil
         }
     }
 
@@ -178,13 +216,16 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
         do {
             try writeProcessToolStatusAcknowledgement(to: handle)
         } catch {
-            signalingFailures.append("status acknowledgement failed: \(error.localizedDescription)")
+            signalingFailures.append(.init(
+                message: "status acknowledgement failed: \(error.localizedDescription)",
+                isBrokenPipeWrite: isProcessToolBrokenPipe(error)
+            ))
         }
     }
 
     func recordFailure(_ failure: String) {
         lock.lock()
-        signalingFailures.append(failure)
+        signalingFailures.append(.init(message: failure, isBrokenPipeWrite: false))
         lock.unlock()
     }
 
@@ -196,14 +237,14 @@ final class ProcessToolCancellationSignal: @unchecked Sendable {
             do {
                 try closeOperation(handle)
             } catch {
-                signalingFailures.append("close failed: \(error.localizedDescription)")
+                signalingFailures.append(.init(
+                    message: "close failed: \(error.localizedDescription)",
+                    isBrokenPipeWrite: false
+                ))
             }
             writeHandle = nil
         }
-        return Outcome(
-            wasRequested: requested,
-            signalingFailure: signalingFailures.isEmpty ? nil : signalingFailures.joined(separator: "; ")
-        )
+        return Outcome(wasRequested: requested, failures: signalingFailures)
     }
 }
 
@@ -463,6 +504,11 @@ func waitForProcessToolChild(
     _ pid: pid_t,
     timeoutSeconds: Double
 ) -> Result<Int32, ProcessToolError>? {
+#if DEBUG
+    if ProcessInfo.processInfo.environment["HOLOSCAPE_PROCESS_TOOL_TEST_WAIT_FAILURE"] == "1" {
+        return .failure(.launchFailed("Injected child wait failure"))
+    }
+#endif
     let deadline = DispatchTime.now() + timeoutSeconds
     var waitStatus: Int32 = 0
     while true {
@@ -843,6 +889,49 @@ private func processToolSignalingFailure(
     }
 }
 
+private func processToolFailure(
+    _ primary: ProcessToolError,
+    addingSignalingFailure signalingFailure: String?
+) -> ProcessToolError {
+    guard let signalingFailure else { return primary }
+    let suffix = "; cancellation signaling also failed: \(signalingFailure)"
+    switch primary {
+    case .launchFailed(let reason):
+        return .launchFailed(reason + suffix)
+    case .executionStatusUnavailable(let reason):
+        return .executionStatusUnavailable(reason + suffix)
+    case .cancellationSignalFailed(let reason):
+        return .cancellationSignalFailed(reason + "; \(signalingFailure)")
+    case .statusCleanupFailed(let reason):
+        return .statusCleanupFailed(reason + suffix)
+    case .cancellationCleanupFailed:
+        return .cancellationSignalFailed(
+            "\(signalingFailure); controller also could not prove process-group cleanup"
+        )
+    case .missingCommand, .invalidTimeout, .invalidWorkingDirectory:
+        return primary
+    }
+}
+
+private func processToolCleanupFailureSuffix(
+    groupCleanupSucceeded: Bool,
+    childResult: Result<Int32, ProcessToolError>?
+) -> String {
+    var failures: [String] = []
+    if !groupCleanupSucceeded {
+        failures.append("process-group signaling did not prove cleanup")
+    }
+    switch childResult {
+    case .none:
+        failures.append("group leader did not exit before the cleanup deadline")
+    case .failure(let error):
+        failures.append("group leader wait failed: \(error.localizedDescription)")
+    case .success:
+        break
+    }
+    return failures.isEmpty ? "" : "; cleanup was not proven: " + failures.joined(separator: "; ")
+}
+
 private func consumeProcessToolRunnerFailure(at statusPath: String) -> Result<String?, ProcessToolError> {
     guard FileManager.default.fileExists(atPath: statusPath) else {
         return .success(nil)
@@ -927,14 +1016,28 @@ func runProcessToolController(
     )
 
     if callerDisconnected {
+        let childExitedCleanly: Bool
+        if case .success = childResult {
+            childExitedCleanly = true
+        } else {
+            childExitedCleanly = false
+        }
         exitProcessToolControllerAfterCallerDisconnect(
             statusPath: statusPath,
             runnerStatusPath: runnerStatusPath,
-            groupCleanupSucceeded: groupCleanupSucceeded && childResult != nil
+            groupCleanupSucceeded: groupCleanupSucceeded && childExitedCleanly
         )
     }
     if let inspectionFailure {
-        publishProcessToolStatus("launchFailed:\(inspectionFailure.localizedDescription)", to: statusPath, exitCode: 125)
+        let suffix = processToolCleanupFailureSuffix(
+            groupCleanupSucceeded: groupCleanupSucceeded,
+            childResult: childResult
+        )
+        publishProcessToolStatus(
+            "launchFailed:\(inspectionFailure.localizedDescription)\(suffix)",
+            to: statusPath,
+            exitCode: 125
+        )
     }
     guard let childResult else {
         let status = if cancelled {
@@ -953,7 +1056,11 @@ func runProcessToolController(
         } else {
             reason = "Unknown child wait failure"
         }
-        publishProcessToolStatus("launchFailed:\(reason)", to: statusPath, exitCode: 125)
+        let suffix = processToolCleanupFailureSuffix(
+            groupCleanupSucceeded: groupCleanupSucceeded,
+            childResult: childResult
+        )
+        publishProcessToolStatus("launchFailed:\(reason)\(suffix)", to: statusPath, exitCode: 125)
     }
 
     if !cancelled {
@@ -977,11 +1084,19 @@ func runProcessToolController(
 
     switch consumeProcessToolRunnerFailure(at: runnerStatusPath) {
     case .success(.some(let reason)):
-        publishProcessToolStatus("launchFailed:\(reason)", to: statusPath, exitCode: 125)
+        let suffix = processToolCleanupFailureSuffix(
+            groupCleanupSucceeded: groupCleanupSucceeded,
+            childResult: childResult
+        )
+        publishProcessToolStatus("launchFailed:\(reason)\(suffix)", to: statusPath, exitCode: 125)
     case .success(.none):
         break
     case .failure(let error):
-        publishProcessToolStatus("launchFailed:\(error.localizedDescription)", to: statusPath, exitCode: 125)
+        let suffix = processToolCleanupFailureSuffix(
+            groupCleanupSucceeded: groupCleanupSucceeded,
+            childResult: childResult
+        )
+        publishProcessToolStatus("launchFailed:\(error.localizedDescription)\(suffix)", to: statusPath, exitCode: 125)
     }
 
     let finalStatus: String
@@ -1102,9 +1217,11 @@ func runProcessTool(
                 let standardOutput = stdoutOutcome.output
                 let standardError = stderrOutcome.output
                 let statusOutcome = statusExchange.finish()
+                let unconfirmedSignalingFailure = cancellationOutcome.signalingFailure()
                 if let observationFailure = statusOutcome?.observationFailure {
-                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable(
-                        "Could not read controller status: \(observationFailure)"
+                    continuation.resume(throwing: processToolFailure(
+                        .executionStatusUnavailable("Could not read controller status: \(observationFailure)"),
+                        addingSignalingFailure: unconfirmedSignalingFailure
                     ))
                     return
                 }
@@ -1112,20 +1229,32 @@ func runProcessTool(
                     terminationReason: process.terminationReason,
                     terminationStatus: process.terminationStatus
                 ) {
-                    continuation.resume(throwing: protocolFailure)
+                    continuation.resume(throwing: processToolFailure(
+                        protocolFailure,
+                        addingSignalingFailure: unconfirmedSignalingFailure
+                    ))
                     return
                 }
                 guard let statusOutcome else {
-                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited without a status record"))
+                    continuation.resume(throwing: processToolFailure(
+                        .executionStatusUnavailable("Controller exited without a status record"),
+                        addingSignalingFailure: unconfirmedSignalingFailure
+                    ))
                     return
                 }
                 if let cleanupFailure = statusOutcome.cleanupFailure {
-                    continuation.resume(throwing: ProcessToolError.statusCleanupFailed(cleanupFailure))
+                    continuation.resume(throwing: processToolFailure(
+                        .statusCleanupFailed(cleanupFailure),
+                        addingSignalingFailure: unconfirmedSignalingFailure
+                    ))
                     return
                 }
                 guard let status = statusOutcome.status,
                       let parsed = parseProcessToolControllerStatus(status) else {
-                    continuation.resume(throwing: ProcessToolError.executionStatusUnavailable("Controller exited with an invalid status record"))
+                    continuation.resume(throwing: processToolFailure(
+                        .executionStatusUnavailable("Controller exited with an invalid status record"),
+                        addingSignalingFailure: unconfirmedSignalingFailure
+                    ))
                     return
                 }
                 if let controllerFailure = processToolControllerExitFailure(
@@ -1133,10 +1262,13 @@ func runProcessTool(
                     terminationReason: process.terminationReason,
                     terminationStatus: process.terminationStatus
                 ) {
-                    continuation.resume(throwing: controllerFailure)
+                    continuation.resume(throwing: processToolFailure(
+                        controllerFailure,
+                        addingSignalingFailure: unconfirmedSignalingFailure
+                    ))
                     return
                 }
-                if let signalingFailure = cancellationOutcome.signalingFailure {
+                if let signalingFailure = cancellationOutcome.signalingFailure(ignoringBrokenPipeWrite: true) {
                     continuation.resume(throwing: processToolSignalingFailure(
                         signalingFailure,
                         alongside: parsed
@@ -1227,7 +1359,7 @@ func runProcessTool(
                 }
                 let cancellationOutcome = cancellation.finish()
                 var reason = error.localizedDescription
-                if let signalingFailure = cancellationOutcome.signalingFailure {
+                if let signalingFailure = cancellationOutcome.signalingFailure() {
                     reason += "; cancellation channel cleanup also failed: \(signalingFailure)"
                 }
                 continuation.resume(throwing: ProcessToolError.launchFailed(reason))

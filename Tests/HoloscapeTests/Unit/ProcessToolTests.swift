@@ -376,7 +376,23 @@ final class ProcessToolTests: XCTestCase {
         let outcome = signal.finish()
 
         XCTAssertTrue(outcome.wasRequested)
-        XCTAssertTrue(outcome.signalingFailure?.contains("close failed") == true)
+        XCTAssertTrue(outcome.signalingFailure()?.contains("close failed") == true)
+    }
+
+    func testCancellationWriteFailureClosesLifetimePipe() throws {
+        enum InjectedFailure: Error { case write }
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close() }
+        let signal = ProcessToolCancellationSignal(
+            writeHandle: pipe.fileHandleForWriting,
+            writeOperation: { _ in throw InjectedFailure.write }
+        )
+
+        signal.request()
+
+        var byte: UInt8 = 0
+        XCTAssertEqual(Darwin.read(pipe.fileHandleForReading.fileDescriptor, &byte, 1), 0)
+        XCTAssertTrue(signal.finish().signalingFailure()?.contains("write failed") == true)
     }
 
     func testCallerDisappearanceCleansProcessTreeWithoutLeavingStatus() async throws {
@@ -449,6 +465,40 @@ final class ProcessToolTests: XCTestCase {
             FileManager.default.fileExists(atPath: statusURL.path),
             "Caller loss after status publication must remove the unconsumed artifact"
         )
+    }
+
+    func testCallerDisconnectDoesNotTreatChildWaitFailureAsCleanupSuccess() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-caller-wait-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let shellPIDURL = directory.appendingPathComponent("shell.pid")
+        let statusURL = directory.appendingPathComponent("controller.status")
+        let controller = Process()
+        let lifetimePipe = Pipe()
+        controller.executableURL = launcherExecutableURL
+        controller.arguments = [
+            "--holoscape-process-controller",
+            "echo $$ > \(shellPIDURL.path); while true; do sleep 1; done",
+            "2",
+            statusURL.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOLOSCAPE_PROCESS_TOOL_TEST_WAIT_FAILURE"] = "1"
+        controller.environment = environment
+        controller.standardInput = lifetimePipe
+        controller.standardOutput = Pipe()
+        controller.standardError = Pipe()
+        try controller.run()
+        try lifetimePipe.fileHandleForReading.close()
+        try await waitForFiles([shellPIDURL])
+
+        try lifetimePipe.fileHandleForWriting.close()
+        controller.waitUntilExit()
+
+        XCTAssertEqual(controller.terminationStatus, 125)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: statusURL.path))
     }
 
     func testCancellingRunProcessToolTerminatesResistantProcessTreeBeforeReturning() async throws {
@@ -578,7 +628,7 @@ final class ProcessToolTests: XCTestCase {
     }
 
     func testCancellationStatusRemovalFailureIsSurfaced() async throws {
-        enum InjectedFailure: Error { case removal }
+        enum InjectedFailure: Error { case removal, close }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-process-tool-status-removal-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -595,7 +645,13 @@ final class ProcessToolTests: XCTestCase {
                 processRequest,
                 launcherExecutableURL: launcherURL,
                 temporaryDirectoryURL: directory,
-                statusRemover: { _ in throw InjectedFailure.removal }
+                statusRemover: { _ in throw InjectedFailure.removal },
+                cancellationSignalFactory: { handle in
+                    ProcessToolCancellationSignal(
+                        writeHandle: handle,
+                        closeOperation: { _ in throw InjectedFailure.close }
+                    )
+                }
             )
         }
         try await waitForFiles([shellPIDURL])
@@ -607,9 +663,10 @@ final class ProcessToolTests: XCTestCase {
             _ = try await task.value
             XCTFail("Status removal failure must not report successful cancellation")
         } catch let error as ProcessToolError {
-            guard case .statusCleanupFailed = error else {
+            guard case .statusCleanupFailed(let reason) = error else {
                 return XCTFail("Expected status cleanup failure, got \(error)")
             }
+            XCTAssertTrue(reason.contains("cancellation signaling also failed"))
         } catch {
             XCTFail("Expected explicit status cleanup failure, got \(error)")
         }
@@ -618,6 +675,66 @@ final class ProcessToolTests: XCTestCase {
         let residue = try FileManager.default.contentsOfDirectory(atPath: directory.path)
             .filter { $0.hasSuffix(".status") }
         XCTAssertEqual(residue.count, 1, "Injected removal failure must exercise a real status artifact")
+    }
+
+    func testBrokenPipeCancellationDefersToValidatedControllerStatus() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-process-tool-epipe-race-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let launcher = directory.appendingPathComponent("completed-controller")
+        let marker = directory.appendingPathComponent("status-published")
+        try Data("#!/bin/zsh\nexec 0<&-\nprint -n 'completed:0' > \"$4\"\ntouch \"\(marker.path)\"\nsleep 0.1\nexit 0\n".utf8).write(to: launcher)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+
+        let processRequest = request(command: "exit 0")
+        let task = Task {
+            try await runProcessTool(
+                processRequest,
+                launcherExecutableURL: launcher,
+                temporaryDirectoryURL: directory,
+                cancellationSignalFactory: { handle in
+                    ProcessToolCancellationSignal(
+                        writeHandle: handle,
+                        writeOperation: { _ in
+                            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))
+                        }
+                    )
+                }
+            )
+        }
+        try await waitForFiles([marker])
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("A validated completed status after cancellation must still cancel")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "Expected CancellationError, got \(error)")
+        }
+    }
+
+    func testRunnerFailureRetainsConcurrentUnprovenGroupCleanup() async throws {
+        do {
+            _ = try await runProcessTool(
+                request(
+                    command: "exit 0",
+                    environment: [
+                        "HOLOSCAPE_PROCESS_TOOL_TEST_RUNNER_FAILURE": "1",
+                        "HOLOSCAPE_PROCESS_TOOL_TEST_SIGNAL_FAILURE": "1",
+                    ]
+                ),
+                launcherExecutableURL: launcherExecutableURL
+            )
+            XCTFail("Runner failure with unproven cleanup must throw")
+        } catch let error as ProcessToolError {
+            guard case .launchFailed(let reason) = error else {
+                return XCTFail("Expected launch failure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Injected shell-runner launch failure"))
+            XCTAssertTrue(reason.contains("cleanup was not proven"))
+        }
     }
 
     func testCancellationRaceWithImmediateCompletionResolvesOnce() async throws {
