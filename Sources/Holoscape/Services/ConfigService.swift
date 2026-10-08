@@ -15,6 +15,7 @@ class ConfigService {
     private let configDir: URL
     private let configURL: URL
     private let persistence: DurableAtomicFileCommitter.Persistence
+    private let createDirectory: (URL) throws -> Void
 
     /// In-memory cache — avoids disk reads on every load().
     private var cachedConfig: HoloscapeConfig?
@@ -39,6 +40,12 @@ class ConfigService {
         }
         self.configURL = configDir.appendingPathComponent("config.json")
         self.persistence = .live
+        self.createDirectory = { directory in
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false
+            )
+        }
     }
 
     /// Test-only init that injects the config directory directly. Avoids the
@@ -47,12 +54,19 @@ class ConfigService {
     init(
         configDir: URL,
         persistence: DurableAtomicFileCommitter.Persistence = .live,
+        createDirectory: @escaping (URL) throws -> Void = { directory in
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false
+            )
+        },
         assumeExistingDirectoryIsDurable: Bool = true
     ) {
         let canonicalConfigDir = configDir.standardizedFileURL.resolvingSymlinksInPath()
         self.configDir = canonicalConfigDir
         self.configURL = canonicalConfigDir.appendingPathComponent("config.json")
         self.persistence = persistence
+        self.createDirectory = createDirectory
         // Callers of this test-only initializer own fixture-directory setup.
         // Treat an already-present fixture root as established so the suite
         // does not issue real F_FULLFSYNC calls for every isolated test path.
@@ -66,7 +80,7 @@ class ConfigService {
             return cached
         }
         do {
-            try ensureDirectoryExists()
+            try ensureDirectoryExists(initializeDurability: false)
             guard FileManager.default.fileExists(atPath: configURL.path) else {
                 let defaultConfig = HoloscapeConfig.default
                 save(defaultConfig)
@@ -88,7 +102,7 @@ class ConfigService {
     @discardableResult
     func save(_ config: HoloscapeConfig) -> Bool {
         do {
-            try ensureDirectoryExists()
+            try ensureDirectoryExists(initializeDurability: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
@@ -125,12 +139,13 @@ class ConfigService {
         }
     }
 
-    private func ensureDirectoryExists() throws {
+    private func ensureDirectoryExists(initializeDurability: Bool) throws {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: configDir.path, isDirectory: &isDirectory) {
             guard isDirectory.boolValue else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
             }
+            guard initializeDurability else { return }
             let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
             if durableDirectoryIdentity?.hasSameAuthority(as: currentIdentity) == true {
                 durableDirectoryIdentity = currentIdentity
@@ -149,8 +164,22 @@ class ConfigService {
         }
 
         for directory in missingDirectories.reversed() {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            do {
+                try createDirectory(directory)
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(
+                    atPath: directory.path,
+                    isDirectory: &isDirectory
+                ), isDirectory.boolValue else {
+                    throw error
+                }
+                // Another process may create the same configuration ancestry
+                // after discovery but before this process reaches mkdir.
+            }
         }
+
+        guard initializeDurability else { return }
 
         let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
         let needsDurabilityInitialization = !missingDirectories.isEmpty

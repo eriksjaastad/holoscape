@@ -63,6 +63,64 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), malformed)
     }
 
+    func testExistingConfigLoadDoesNotRequireDirectoryDurabilityInitialization() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        var expected = HoloscapeConfig.default
+        expected.appearance.fontFamily = "Readable Without Directory Sync"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(expected).write(to: configURL)
+
+        enum InjectedFailure: Error { case directorySync }
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in XCTFail("load must not write") },
+            replaceFile: { _, _ in XCTFail("load must not replace") },
+            synchronizeDirectory: { _ in throw InjectedFailure.directorySync },
+            removeTemporaryFile: { _ in XCTFail("load must not clean temporary files") }
+        )
+        let service = ConfigService(
+            configDir: configDir,
+            persistence: persistence,
+            assumeExistingDirectoryIsDurable: false
+        )
+
+        XCTAssertEqual(service.load().appearance.fontFamily, expected.appearance.fontFamily)
+        XCTAssertNil(service.lastDiagnostic)
+    }
+
+    func testConcurrentDirectoryCreationIsAcceptedWhenAnotherProcessWinsRace() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("nested/config")
+        var simulatedRace = false
+        let service = ConfigService(
+            configDir: configDir,
+            createDirectory: { directory in
+                if !simulatedRace {
+                    simulatedRace = true
+                    try FileManager.default.createDirectory(
+                        at: directory,
+                        withIntermediateDirectories: false
+                    )
+                    throw CocoaError(
+                        .fileWriteFileExists,
+                        userInfo: [NSFilePathErrorKey: directory.path]
+                    )
+                }
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: false
+                )
+            },
+            assumeExistingDirectoryIsDurable: false
+        )
+
+        XCTAssertTrue(service.save(.default))
+        XCTAssertTrue(simulatedRace)
+        XCTAssertEqual(ConfigService(configDir: configDir).load(), .default)
+    }
+
     func testFailedSaveDoesNotPoisonLoadCacheWithUnsavedConfig() throws {
         let tempRoot = temporaryConfigDir()
         let configDir = tempRoot.appendingPathComponent("not-a-directory")
