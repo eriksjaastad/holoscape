@@ -628,6 +628,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         deinit {
+            guard !lock.withLock({ runtimeDeinitCleanupComplete }) else { return }
             do {
                 try closeInput()
             } catch {
@@ -846,7 +847,15 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             let deadline = DispatchTime.now() + .milliseconds(outputCleanupTimeoutMilliseconds)
             var drainedByteCount = 0
             while true {
-                if DispatchTime.now() >= deadline || drainedByteCount >= maxScrollbackBytes { return }
+                if DispatchTime.now() >= deadline || drainedByteCount >= maxScrollbackBytes {
+                    if hasPendingScrollbackPersistence() {
+                        try retainFinalOutputDrainFailure(
+                            reason: "final PTY output persistence remained pending at the bounded pre-termination drain limit",
+                            retryAfterPersistence: true
+                        )
+                    }
+                    return
+                }
                 let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
                 if readCapacity == 0 {
                     try retainFinalOutputDrainFailure(
@@ -914,9 +923,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             var drainedByteCount = 0
             while true {
                 if DispatchTime.now() >= deadline {
+                    if hasPendingScrollbackPersistence() {
+                        try retainFinalOutputDrainFailure(
+                            reason: "final PTY output persistence timed out",
+                            retryAfterPersistence: true
+                        )
+                    }
                     try retainFinalOutputDrainFailure(reason: "final PTY output drain timed out")
                 }
                 if drainedByteCount >= maxScrollbackBytes {
+                    if hasPendingScrollbackPersistence() {
+                        try retainFinalOutputDrainFailure(
+                            reason: "final PTY output persistence remained pending at the bounded drain limit",
+                            retryAfterPersistence: true
+                        )
+                    }
                     try retainFinalOutputDrainFailure(reason: "final PTY output exceeded the bounded drain limit")
                 }
                 let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
@@ -1438,6 +1459,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 try drainBufferedOutputBeforeTermination()
             } catch {
                 NSLog("Native PTY buffered output cleanup failed for \(id.rawValue): \(error)")
+                if finalOutputDrainState().retryAfterPersistence
+                    || hasPendingScrollbackPersistence() {
+                    return false
+                }
             }
 
             withTerminationLock {
