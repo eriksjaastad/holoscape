@@ -503,6 +503,50 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(synchronizedDescriptorIdentity?.hasSameAuthority(as: originalIdentity) == true)
     }
 
+    func testReplacementRemainsBoundToAuthorityDuringPathDisplacement() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        let displaced = root.appendingPathComponent("displaced")
+        var didDisplace = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in XCTFail("pathname writer must not be used") },
+            writeAndSynchronizeTemporaryFileAtDescriptor: { data, descriptor, leaf in
+                try DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile(
+                    data,
+                    at: descriptor,
+                    named: leaf
+                )
+            },
+            replaceFile: { _, _ in XCTFail("pathname replacement must not be used") },
+            replaceFileAtDescriptor: { descriptor, source, destination in
+                try FileManager.default.moveItem(at: configDir, to: displaced)
+                try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+                didDisplace = true
+                try DurableAtomicFileCommitter.replaceFile(
+                    at: descriptor,
+                    sourceName: source,
+                    destinationName: destination
+                )
+                try FileManager.default.removeItem(at: configDir)
+                try FileManager.default.moveItem(at: displaced, to: configDir)
+            },
+            synchronizeDirectory: { _ in },
+            synchronizeDirectoryAtDescriptor: DurableAtomicFileCommitter.synchronizeDirectory,
+            removeTemporaryFile: { _ in XCTFail("descriptor cleanup must be used") }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Descriptor Replacement"
+
+        XCTAssertTrue(service.save(replacement))
+        XCTAssertTrue(didDisplace)
+        XCTAssertEqual(
+            ConfigService(configDir: configDir).load().appearance.fontFamily,
+            replacement.appearance.fontFamily
+        )
+    }
+
     func testDirectorySwapAndSyncFailureAfterReplacementDoesNotPoisonCache() throws {
         let root = temporaryConfigDir()
         let configDir = root.appendingPathComponent("config")

@@ -25,21 +25,26 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        var metadata = stat()
-        let metadataError: Error? = Darwin.fstat(descriptor, &metadata) == 0
-            ? nil
-            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        let identityResult = Result { try read(at: descriptor) }
         let closeError: Error? = Darwin.close(descriptor) == 0
             ? nil
             : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if let metadataError, let closeError {
+        if case let .failure(identityError) = identityResult, let closeError {
             throw DurableAtomicFileCommitter.CommitError.persistenceAndCleanupFailed(
-                operation: String(describing: metadataError),
+                operation: String(describing: identityError),
                 cleanup: String(describing: closeError)
             )
         }
-        if let metadataError { throw metadataError }
+        if case let .failure(identityError) = identityResult { throw identityError }
         if let closeError { throw closeError }
+        return try identityResult.get()
+    }
+
+    static func read(at descriptor: Int32) throws -> DurableDirectoryIdentity {
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
         return DurableDirectoryIdentity(
             device: UInt64(metadata.st_dev),
             inode: UInt64(metadata.st_ino),
@@ -87,6 +92,7 @@ struct DurableAtomicFileCommitter {
         let writeAndSynchronizeTemporaryFile: (Data, URL) throws -> Void
         let writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)?
         let replaceFile: (URL, URL) throws -> Void
+        let replaceFileAtDescriptor: ((Int32, String, String) throws -> Void)?
         let synchronizeDirectory: (URL) throws -> Void
         let synchronizeDirectoryAtDescriptor: ((Int32) throws -> Void)?
         let removeTemporaryFile: (URL) throws -> Void
@@ -98,6 +104,7 @@ struct DurableAtomicFileCommitter {
             writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
             writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)? = nil,
             replaceFile: @escaping (URL, URL) throws -> Void,
+            replaceFileAtDescriptor: ((Int32, String, String) throws -> Void)? = nil,
             synchronizeDirectory: @escaping (URL) throws -> Void,
             synchronizeDirectoryAtDescriptor: ((Int32) throws -> Void)? = nil,
             removeTemporaryFile: @escaping (URL) throws -> Void,
@@ -108,6 +115,7 @@ struct DurableAtomicFileCommitter {
             self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
             self.writeAndSynchronizeTemporaryFileAtDescriptor = writeAndSynchronizeTemporaryFileAtDescriptor
             self.replaceFile = replaceFile
+            self.replaceFileAtDescriptor = replaceFileAtDescriptor
             self.synchronizeDirectory = synchronizeDirectory
             self.synchronizeDirectoryAtDescriptor = synchronizeDirectoryAtDescriptor
             self.removeTemporaryFile = removeTemporaryFile
@@ -120,6 +128,7 @@ struct DurableAtomicFileCommitter {
             writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             writeAndSynchronizeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             replaceFile: DurableAtomicFileCommitter.replaceFile,
+            replaceFileAtDescriptor: DurableAtomicFileCommitter.replaceFile,
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
             synchronizeDirectoryAtDescriptor: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
@@ -148,7 +157,7 @@ struct DurableAtomicFileCommitter {
             ".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp"
         )
         let authorityDescriptor: Int32?
-        if expectedDirectoryIdentity != nil {
+        if let expectedDirectoryIdentity {
             let descriptor = directoryURL.path.withCString {
                 Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             }
@@ -157,6 +166,21 @@ struct DurableAtomicFileCommitter {
                     path: directoryURL.path,
                     reason: String(cString: strerror(errno))
                 )
+            }
+            do {
+                let openedIdentity = try DurableDirectoryIdentity.read(at: descriptor)
+                guard openedIdentity.hasSameAuthority(as: expectedDirectoryIdentity) else {
+                    throw DurableDirectoryAuthorityError.replaced(path: directoryURL.path)
+                }
+            } catch {
+                let authorityError = error
+                guard persistence.closeDirectoryDescriptor(descriptor) == 0 else {
+                    throw CommitError.persistenceAndCleanupFailed(
+                        operation: String(describing: authorityError),
+                        cleanup: String(describing: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
+                    )
+                }
+                throw authorityError
             }
             authorityDescriptor = descriptor
         } else {
@@ -174,7 +198,16 @@ struct DurableAtomicFileCommitter {
                 try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
             }
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
-            try persistence.replaceFile(temporaryURL, destinationURL)
+            if let authorityDescriptor,
+               let replaceFileAtDescriptor = persistence.replaceFileAtDescriptor {
+                try replaceFileAtDescriptor(
+                    authorityDescriptor,
+                    temporaryURL.lastPathComponent,
+                    destinationURL.lastPathComponent
+                )
+            } else {
+                try persistence.replaceFile(temporaryURL, destinationURL)
+            }
             replacementCommitted = true
             if let authorityDescriptor,
                let synchronizeDirectoryAtDescriptor = persistence.synchronizeDirectoryAtDescriptor {
@@ -368,6 +401,21 @@ struct DurableAtomicFileCommitter {
         let result = sourceURL.path.withCString { sourcePath in
             destinationURL.path.withCString { destinationPath in
                 Darwin.rename(sourcePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    static func replaceFile(
+        at directoryDescriptor: Int32,
+        sourceName: String,
+        destinationName: String
+    ) throws {
+        let result = sourceName.withCString { source in
+            destinationName.withCString { destination in
+                Darwin.renameat(directoryDescriptor, source, directoryDescriptor, destination)
             }
         }
         guard result == 0 else {
