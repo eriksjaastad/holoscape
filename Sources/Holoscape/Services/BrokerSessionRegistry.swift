@@ -44,15 +44,15 @@ struct BrokerSessionRegistry {
     }
 
     func load() throws -> [BrokerSessionRecord] {
-        try operationLocks.withLock(for: fileURL) { try loadUnlocked() }
+        try withOperationLock { try loadUnlocked() }
     }
 
     func save(_ records: [BrokerSessionRecord]) throws {
-        try operationLocks.withLock(for: fileURL) { try saveUnlocked(records) }
+        try withOperationLock { try saveUnlocked(records) }
     }
 
     func upsert(_ record: BrokerSessionRecord) throws {
-        try operationLocks.withLock(for: fileURL) {
+        try withOperationLock {
             var records = try loadUnlocked().filter { $0.id != record.id }
             records.append(record)
             try saveUnlocked(records)
@@ -66,7 +66,7 @@ struct BrokerSessionRegistry {
         _ record: BrokerSessionRecord,
         ifUnchangedFrom expected: BrokerSessionRecord
     ) throws -> Bool {
-        try operationLocks.withLock(for: fileURL) {
+        try withOperationLock {
             var records = try loadUnlocked()
             let persistedExpected = try canonicalized(expected)
             guard let index = records.firstIndex(where: { $0.id == expected.id }),
@@ -81,7 +81,7 @@ struct BrokerSessionRegistry {
         _ id: BrokerSessionID,
         transform: (BrokerSessionRecord) -> BrokerSessionRecord
     ) throws -> BrokerSessionRecord? {
-        try operationLocks.withLock(for: fileURL) {
+        try withOperationLock {
             var records = try loadUnlocked()
             guard let index = records.firstIndex(where: { $0.id == id }) else { return nil }
             let updated = transform(records[index])
@@ -98,7 +98,7 @@ struct BrokerSessionRegistry {
     /// durable regardless of age so Holoscape never silently loses resumable sessions.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        try operationLocks.withLock(for: fileURL) {
+        try withOperationLock {
             let records = try loadUnlocked()
             let removed = records.filter { record in
                 record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
@@ -126,6 +126,14 @@ struct BrokerSessionRegistry {
         let records = try decoder.decode([BrokerSessionRecord].self, from: data)
         try validate(records)
         return records.sortedBySessionID()
+    }
+
+    private func withOperationLock<T>(_ operation: () throws -> T) throws -> T {
+        try operationLocks.withLock(
+            for: fileURL,
+            synchronizeCreatedDirectoryEntries: persistence.synchronizeDirectory,
+            operation
+        )
     }
 
     private func saveUnlocked(_ records: [BrokerSessionRecord]) throws {
@@ -275,10 +283,12 @@ struct BrokerSessionRegistry {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        let syncResult = Darwin.fsync(descriptor)
-        let syncError = syncResult == 0
-            ? nil
-            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        var syncError: Error?
+        do {
+            try fullSync(descriptor)
+        } catch {
+            syncError = error
+        }
         let closeResult = Darwin.close(descriptor)
         let closeError = closeResult == 0
             ? nil

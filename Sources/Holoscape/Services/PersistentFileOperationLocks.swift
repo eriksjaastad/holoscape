@@ -27,7 +27,11 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         var errorDescription: String? { message }
     }
 
-    func withLock<T>(for fileURL: URL, _ operation: () throws -> T) throws -> T {
+    func withLock<T>(
+        for fileURL: URL,
+        synchronizeCreatedDirectoryEntries: ((URL) throws -> Void)? = nil,
+        _ operation: () throws -> T
+    ) throws -> T {
         let standardizedURL = fileURL.standardizedFileURL
         // Canonicalize the containing directory so callers using equivalent
         // directory aliases share authority, but never resolve the data-file
@@ -49,14 +53,25 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         }
         return try lockBox.lock.withLock {
             let lockURL = canonicalURL.appendingPathExtension("lock")
+            let lockDirectoryURL = lockURL.deletingLastPathComponent()
+            let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
+            let establishesPersistentAuthority = !FileManager.default.fileExists(atPath: lockURL.path)
             do {
                 try FileManager.default.createDirectory(
-                    at: lockURL.deletingLastPathComponent(),
+                    at: lockDirectoryURL,
                     withIntermediateDirectories: true
                 )
+                if let synchronizeCreatedDirectoryEntries {
+                    let directoriesToSynchronize = establishesPersistentAuthority
+                        ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
+                        : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
+                    for directory in directoriesToSynchronize {
+                        try synchronizeCreatedDirectoryEntries(directory)
+                    }
+                }
             } catch {
                 throw LockError(
-                    message: "createDirectory failed for \(lockURL.deletingLastPathComponent().path): \(error)"
+                    message: "createDirectory failed or synchronization failed for \(lockDirectoryURL.path): \(error)"
                 )
             }
 
@@ -110,6 +125,34 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
+    }
+
+    private static func missingDirectories(endingAt directoryURL: URL) -> [URL] {
+        var result: [URL] = []
+        var candidate = directoryURL.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: candidate.path) {
+            result.append(candidate)
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { break }
+            candidate = parent
+        }
+        return result
+    }
+
+    /// Until the persistent lock authority exists, synchronize the full path
+    /// from root to leaf. This makes retries safe after a prior directory-sync
+    /// failure left an in-memory directory tree that was never durably linked.
+    private static func directoryEntryParents(endingAt directoryURL: URL) -> [URL] {
+        let components = directoryURL.standardizedFileURL.pathComponents
+        guard components.first == "/", components.count > 1 else { return [] }
+
+        var result = [URL(fileURLWithPath: "/", isDirectory: true)]
+        var parent = result[0]
+        for component in components.dropFirst().dropLast() {
+            parent.appendPathComponent(component, isDirectory: true)
+            result.append(parent)
+        }
+        return result
     }
 }
 
