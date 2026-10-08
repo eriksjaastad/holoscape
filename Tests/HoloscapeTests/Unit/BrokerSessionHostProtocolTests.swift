@@ -2171,10 +2171,20 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             }
         }
         let child = try XCTUnwrap(launchedChild)
+        defer { try? child.terminateAndReap(graceMilliseconds: 250) }
         XCTAssertFalse(child.isReaped, "Indeterminate ownership must not retire the launched child")
-        try child.terminateAndReap(graceMilliseconds: 250)
         wait(for: [serverFinished], timeout: 2)
         XCTAssertNil(serverError.value.map(String.init(describing:)))
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut = error else {
+                return XCTFail("Expected socketTimedOut after the ready broker disappeared, got \(error)")
+            }
+        }
+        XCTAssertFalse(
+            child.isReaped,
+            "A later readiness timeout must not retire a child whose ownership was indeterminate"
+        )
     }
 
     func testLazyUnixSocketTransportSendsRequestWithoutProbeWhenBrokerIsBusy() throws {

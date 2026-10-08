@@ -59,6 +59,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
             }
         }
 
+        func reapIfExited() throws -> Bool {
+            try !isRunning()
+        }
+
         private func sendSignal(_ signal: Int32) throws {
             guard try isRunning() else { return }
             if Darwin.kill(pid, signal) == 0 { return }
@@ -108,6 +112,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let brokerProcessIDProvider: (String) throws -> pid_t
     private let lock = NSLock()
     private var launchedChild: LaunchedChild?
+    private var launchedChildReachedSocket = false
 
     init(
         executableURL: URL,
@@ -179,6 +184,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
 
         launchedChild = child
+        launchedChildReachedSocket = false
         launchedChildObserver?(child)
         try waitForLaunchedChild(child)
     }
@@ -187,17 +193,31 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         do {
             try waitForSocket()
         } catch let readinessError {
+            if launchedChildReachedSocket {
+                do {
+                    if try child.reapIfExited() {
+                        launchedChild = nil
+                        launchedChildReachedSocket = false
+                    }
+                } catch let reapError {
+                    throw LaunchError.launchCleanupFailed(
+                        "Broker helper PID \(child.pid) previously reached socket \(socketPath), readiness later failed with \(readinessError), and non-signaling reap check failed with \(reapError.localizedDescription)"
+                    )
+                }
+                throw readinessError
+            }
             try retireFailedLaunch(child, readinessError: readinessError)
             throw readinessError
         }
+        launchedChildReachedSocket = true
 
         let activeBrokerPID: pid_t
         do {
             activeBrokerPID = try brokerProcessIDProvider(socketPath)
         } catch {
             // Readiness alone cannot prove whether this child or a concurrent
-            // broker owns the socket. Retain child authority for a later retry;
-            // never signal a process while ownership is indeterminate.
+            // broker owns the socket. Retain child authority and readiness truth
+            // for a later retry; never signal while ownership is indeterminate.
             throw LaunchError.brokerOwnershipIndeterminate(
                 "Broker helper PID \(child.pid) reached socket \(socketPath), but lock ownership could not be verified: \(error.localizedDescription)"
             )
@@ -211,6 +231,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                     graceMilliseconds: Self.failedLaunchTerminationGraceMilliseconds
                 )
                 launchedChild = nil
+                launchedChildReachedSocket = false
                 return
             } catch let cleanupError {
                 throw LaunchError.launchCleanupFailed(
@@ -223,6 +244,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         // the session-survival broker. A non-killing reaper remains responsible
         // for this direct child when the broker eventually exits.
         launchedChild = nil
+        launchedChildReachedSocket = false
         child.reapAfterOwnershipTransfer()
     }
 
@@ -232,6 +254,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                 graceMilliseconds: Self.failedLaunchTerminationGraceMilliseconds
             )
             launchedChild = nil
+            launchedChildReachedSocket = false
         } catch let cleanupError {
             throw LaunchError.launchCleanupFailed(
                 "Broker helper PID \(child.pid) readiness failed with \(readinessError); cleanup failed with \(cleanupError.localizedDescription)"
