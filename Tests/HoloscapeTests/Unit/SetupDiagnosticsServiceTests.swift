@@ -43,6 +43,42 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         })
     }
 
+    func testSnapshotSurfacesCommittedSaveDiagnosticWithoutClaimingDefaults() throws {
+        let configDir = temporaryConfigDir()
+        enum InjectedFailure: Error { case directorySync }
+        var replacementCommitted = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+                replacementCommitted = true
+            },
+            synchronizeDirectory: { _ in
+                if replacementCommitted { throw InjectedFailure.directorySync }
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let configService = ConfigService(configDir: configDir, persistence: persistence)
+        var config = HoloscapeConfig.default
+        config.appearance.fontFamily = "Visible Committed Font"
+        XCTAssertFalse(configService.save(config))
+        XCTAssertEqual(configService.load().appearance.fontFamily, config.appearance.fontFamily)
+        let service = SetupDiagnosticsService(
+            configService: configService,
+            accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { true },
+            brokerFailureProvider: { nil }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: .authorized)
+        let item = try XCTUnwrap(snapshot.items.first { $0.title == "Config file" })
+        XCTAssertEqual(item.severity, .failure)
+        XCTAssertTrue(item.detail.contains("Config save failed"))
+        XCTAssertTrue(item.recovery?.contains("current in-memory configuration remains active") == true)
+        XCTAssertFalse(item.recovery?.contains("safe defaults") == true)
+        XCTAssertFalse(item.recovery?.contains("repair the JSON") == true)
+    }
+
     func testSnapshotSurfacesBrokerHostLaunchFailure() {
         let configService = ConfigService(configDir: temporaryConfigDir())
         let brokerFailure = SetupDiagnosticItem(

@@ -165,11 +165,18 @@ final class SetupDiagnosticsService {
             )
         }
         let verb = diagnostic.operation.rawValue
+        let recovery: String
+        switch diagnostic.operation {
+        case .load:
+            recovery = "Fix permissions or repair the JSON file. Holoscape is using safe defaults and does not overwrite malformed config automatically."
+        case .save:
+            recovery = "The current in-memory configuration remains active. Retry saving; if this persists, check disk health and permissions for the config directory."
+        }
         return SetupDiagnosticItem(
             title: "Config file",
             severity: .failure,
             detail: "Config \(verb) failed at \(diagnostic.configPath): \(diagnostic.message)",
-            recovery: "Fix permissions or repair the JSON file. Holoscape is using safe defaults and does not overwrite malformed config automatically."
+            recovery: recovery
         )
     }
 
