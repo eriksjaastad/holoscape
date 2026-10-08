@@ -101,7 +101,10 @@ final class ConfigServiceTests: XCTestCase {
         config.appearance.fontFamily = "Durable Font"
 
         XCTAssertTrue(service.save(config))
-        XCTAssertEqual(Array(operations.suffix(3)), ["write", "replace", "sync-directory"])
+        XCTAssertEqual(
+            Array(operations.suffix(4)),
+            ["write", "replace", "sync-directory", "sync-directory"]
+        )
         XCTAssertEqual(ConfigService(configDir: configDir).load().appearance.fontFamily, "Durable Font")
     }
 
@@ -178,13 +181,14 @@ final class ConfigServiceTests: XCTestCase {
 
         XCTAssertTrue(ConfigService(configDir: configDir, persistence: persistence).save(.default))
         XCTAssertEqual(
-            Array(operations.suffix(5)),
+            Array(operations.suffix(6)),
             [
                 "sync:\(root.path)",
                 "sync:\(root.appendingPathComponent("nested").path)",
                 "write",
                 "replace",
                 "sync:\(configDir.path)",
+                "sync:\(configDir.deletingLastPathComponent().path)",
             ]
         )
     }
@@ -412,6 +416,8 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertFalse(service.save(HoloscapeConfig.default))
         XCTAssertFalse(didReplace)
         XCTAssertTrue(service.lastDiagnostic?.message.contains("Directory authority changed") == true)
+        let displacedEntries = try FileManager.default.contentsOfDirectory(atPath: displaced.path)
+        XCTAssertFalse(displacedEntries.contains { $0.hasSuffix(".tmp") })
     }
 
     func testDirectorySwapAfterReplacementDoesNotPoisonCache() throws {

@@ -100,7 +100,8 @@ class ConfigService {
                 try DurableAtomicFileCommitter(persistence: persistence).commit(
                     data,
                     to: configURL,
-                    directoryIdentity: durableDirectoryIdentity
+                    directoryIdentity: durableDirectoryIdentity,
+                    additionalDirectoriesToSynchronize: [configDir.deletingLastPathComponent()]
                 )
             } catch let error as DurableAtomicFileCommitter.CommitError {
                 if case .replacementCommitted = error {

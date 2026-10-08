@@ -42,11 +42,14 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
 
 enum DurableDirectoryAuthorityError: Error, LocalizedError {
     case replaced(path: String)
+    case unavailable(path: String, reason: String)
 
     var errorDescription: String? {
         switch self {
         case let .replaced(path):
             return "Directory authority changed during durable commit: \(path)"
+        case let .unavailable(path, reason):
+            return "Directory authority became unavailable during durable commit at \(path): \(reason)"
         }
     }
 }
@@ -107,14 +110,31 @@ struct DurableAtomicFileCommitter {
     func commit(
         _ data: Data,
         to destinationURL: URL,
-        directoryIdentity expectedDirectoryIdentity: DurableDirectoryIdentity? = nil
+        directoryIdentity expectedDirectoryIdentity: DurableDirectoryIdentity? = nil,
+        additionalDirectoriesToSynchronize: [URL] = []
     ) throws {
         let directoryURL = destinationURL.deletingLastPathComponent()
         let temporaryURL = directoryURL.appendingPathComponent(
             ".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp"
         )
+        let authorityDescriptor: Int32?
+        if expectedDirectoryIdentity != nil {
+            let descriptor = directoryURL.path.withCString {
+                Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            }
+            guard descriptor >= 0 else {
+                throw DurableDirectoryAuthorityError.unavailable(
+                    path: directoryURL.path,
+                    reason: String(cString: strerror(errno))
+                )
+            }
+            authorityDescriptor = descriptor
+        } else {
+            authorityDescriptor = nil
+        }
 
         var replacementCommitted = false
+        let operationResult: Result<Void, Error>
         do {
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
             try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
@@ -122,32 +142,68 @@ struct DurableAtomicFileCommitter {
             try persistence.replaceFile(temporaryURL, destinationURL)
             replacementCommitted = true
             try persistence.synchronizeDirectory(directoryURL)
+            for directory in additionalDirectoriesToSynchronize {
+                try persistence.synchronizeDirectory(directory)
+            }
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
+            operationResult = .success(())
         } catch {
             let operationError = error
             if replacementCommitted {
-                // A path replacement means the committed bytes are no longer
-                // proven visible at the requested destination. Do not map that
-                // uncertainty to the ordinary committed-but-unsynced contract.
                 if operationError is DurableDirectoryAuthorityError {
-                    throw operationError
+                    operationResult = .failure(operationError)
+                } else {
+                    operationResult = .failure(CommitError.replacementCommitted(
+                        durabilityFailure: String(describing: operationError)
+                    ))
                 }
-                throw CommitError.replacementCommitted(
-                    durabilityFailure: String(describing: operationError)
-                )
+            } else {
+                do {
+                    try removeTemporaryFileIfPresent(
+                        temporaryURL,
+                        authorityDescriptor: authorityDescriptor
+                    )
+                    operationResult = .failure(operationError)
+                } catch {
+                    operationResult = .failure(CommitError.persistenceAndCleanupFailed(
+                        operation: String(describing: operationError),
+                        cleanup: String(describing: error)
+                    ))
+                }
             }
-            guard FileManager.default.fileExists(atPath: temporaryURL.path) else {
-                throw operationError
-            }
-            do {
-                try persistence.removeTemporaryFile(temporaryURL)
-            } catch {
+        }
+
+        if let authorityDescriptor, Darwin.close(authorityDescriptor) != 0 {
+            let closeError = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            switch operationResult {
+            case .success where replacementCommitted:
+                throw CommitError.replacementCommitted(durabilityFailure: String(describing: closeError))
+            case .success:
+                throw closeError
+            case .failure(let operationError):
                 throw CommitError.persistenceAndCleanupFailed(
                     operation: String(describing: operationError),
-                    cleanup: String(describing: error)
+                    cleanup: String(describing: closeError)
                 )
             }
-            throw operationError
+        }
+        return try operationResult.get()
+    }
+
+    private func removeTemporaryFileIfPresent(
+        _ temporaryURL: URL,
+        authorityDescriptor: Int32?
+    ) throws {
+        if FileManager.default.fileExists(atPath: temporaryURL.path) {
+            try persistence.removeTemporaryFile(temporaryURL)
+            return
+        }
+        if let authorityDescriptor {
+            let result = temporaryURL.lastPathComponent.withCString {
+                Darwin.unlinkat(authorityDescriptor, $0, 0)
+            }
+            if result == 0 || errno == ENOENT { return }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 
@@ -156,7 +212,16 @@ struct DurableAtomicFileCommitter {
         at directoryURL: URL
     ) throws {
         guard let expectedIdentity else { return }
-        guard try DurableDirectoryIdentity.read(at: directoryURL) == expectedIdentity else {
+        let currentIdentity: DurableDirectoryIdentity
+        do {
+            currentIdentity = try DurableDirectoryIdentity.read(at: directoryURL)
+        } catch {
+            throw DurableDirectoryAuthorityError.unavailable(
+                path: directoryURL.path,
+                reason: String(describing: error)
+            )
+        }
+        guard currentIdentity == expectedIdentity else {
             throw DurableDirectoryAuthorityError.replaced(path: directoryURL.path)
         }
     }
