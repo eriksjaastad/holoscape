@@ -488,6 +488,66 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try runtime.listSessions(), [])
     }
 
+    func testShutdownWaitsForInFlightCreateBeforeSnapshottingSession() throws {
+        let creationGate = OneShotLifecyclePublicationGate()
+        let creationFinished = DispatchSemaphore(value: 0)
+        let shutdownSnapshotAttempted = DispatchSemaphore(value: 0)
+        let shutdownFinished = DispatchSemaphore(value: 0)
+        let creationError = LockedRuntimeErrorBox()
+        let runtime = NativePTYBrokerSessionRuntime(
+            inputDescriptorDuplicator: { descriptor in
+                let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+                let duplicationError = duplicate < 0 ? errno : nil
+                creationGate.pause()
+                return (duplicate, duplicationError)
+            },
+            shutdownSnapshotWillAcquireLock: { shutdownSnapshotAttempted.signal() }
+        )
+        let id = BrokerSessionID(rawValue: "native-pty-shutdown-create-snapshot")
+        defer {
+            creationGate.release()
+            try? runtime.markSessionErrored(id: id)
+        }
+
+        DispatchQueue.global().async {
+            do {
+                try runtime.createSession(
+                    id: id,
+                    request: BrokerSessionLaunchRequest(
+                        command: "/bin/cat",
+                        workingDirectory: "/tmp",
+                        environmentProfile: .shell,
+                        initialSize: TerminalGridSize(columns: 80, rows: 24)
+                    )
+                )
+            } catch {
+                creationError.store(error)
+            }
+            creationFinished.signal()
+        }
+
+        XCTAssertEqual(creationGate.waitUntilPaused(), .success)
+        DispatchQueue.global().async {
+            runtime.shutDownBeforeHostExit()
+            shutdownFinished.signal()
+        }
+
+        XCTAssertEqual(shutdownSnapshotAttempted.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(
+            shutdownFinished.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Shutdown must wait until an admitted session creation is represented in its cleanup snapshot"
+        )
+        creationGate.release()
+        XCTAssertEqual(creationFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(creationError.value)
+        XCTAssertEqual(shutdownFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertNotNil(
+            try runtime.terminationStatus(id: id),
+            "Shutdown must terminate the session admitted before its snapshot"
+        )
+    }
+
     func testLateExitObserverFailureCannotUndoForcedCleanupCompletion() throws {
         let observer = LateFailureAfterReapObserver()
         let runtime = NativePTYBrokerSessionRuntime(
