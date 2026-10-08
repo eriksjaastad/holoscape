@@ -104,10 +104,13 @@ class ConfigService {
                     additionalDirectoriesToSynchronize: [configDir.deletingLastPathComponent()]
                 )
             } catch let error as DurableAtomicFileCommitter.CommitError {
-                if case .replacementCommitted = error {
+                switch error {
+                case .replacementCommitted, .replacementCommittedWithCleanupFailure:
                     // The new file is already visible. Preserve that truth in
-                    // memory even though its crash durability is uncertain.
+                    // memory even though save did not complete cleanly.
                     cachedConfig = committedConfig
+                case .persistenceAndCleanupFailed:
+                    break
                 }
                 throw error
             }

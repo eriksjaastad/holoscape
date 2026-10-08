@@ -689,6 +689,53 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
     }
 
+    func testCloseOnlyFailureAfterDurableReplacementIsReportedAsCleanupFailure() throws {
+        let configDir = temporaryConfigDir()
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            writeAndSynchronizeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            replaceFile: DurableAtomicFileCommitter.replaceFile,
+            replaceFileAtDescriptor: DurableAtomicFileCommitter.replaceFile,
+            synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
+            synchronizeDirectoryAtDescriptor: DurableAtomicFileCommitter.synchronizeDirectory,
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
+            closeDirectoryDescriptor: { descriptor in
+                _ = Darwin.close(descriptor)
+                return -1
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Durable Before Close Failure"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("durability was confirmed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
+        XCTAssertFalse(service.lastDiagnostic?.message.contains("durability could not be confirmed") == true)
+    }
+
+    func testPreReplacementOperationAndDescriptorCloseFailureNamesGenericCleanup() throws {
+        let configDir = temporaryConfigDir()
+        enum InjectedFailure: Error { case write }
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in throw InjectedFailure.write },
+            replaceFile: { _, _ in XCTFail("replacement must not run") },
+            synchronizeDirectory: { _ in XCTFail("directory sync must not run") },
+            removeTemporaryFile: { _ in },
+            closeDirectoryDescriptor: { descriptor in
+                _ = Darwin.close(descriptor)
+                return -1
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+
+        XCTAssertFalse(service.save(.default))
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("Persistence operation failed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup also failed") == true)
+        XCTAssertFalse(service.lastDiagnostic?.message.contains("temporary-file cleanup") == true)
+    }
+
     func testTransientFinalIdentityReadFailureRemainsCommitted() throws {
         let configDir = temporaryConfigDir()
         enum InjectedFailure: Error { case finalIdentityRead }

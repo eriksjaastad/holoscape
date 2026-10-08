@@ -77,13 +77,16 @@ struct DurableAtomicFileCommitter {
     enum CommitError: Error, Equatable, LocalizedError {
         case persistenceAndCleanupFailed(operation: String, cleanup: String)
         case replacementCommitted(durabilityFailure: String)
+        case replacementCommittedWithCleanupFailure(cleanupFailure: String)
 
         var errorDescription: String? {
             switch self {
             case let .persistenceAndCleanupFailed(operation, cleanup):
-                return "Persistence failed (\(operation)); temporary-file cleanup also failed (\(cleanup))"
+                return "Persistence operation failed (\(operation)); cleanup also failed (\(cleanup))"
             case let .replacementCommitted(durabilityFailure):
                 return "Atomic replacement committed, but durability could not be confirmed: \(durabilityFailure)"
+            case let .replacementCommittedWithCleanupFailure(cleanupFailure):
+                return "Atomic replacement committed and durability was confirmed, but directory authority cleanup failed: \(cleanupFailure)"
             }
         }
     }
@@ -253,7 +256,9 @@ struct DurableAtomicFileCommitter {
             let closeError = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             switch operationResult {
             case .success where replacementCommitted:
-                throw CommitError.replacementCommitted(durabilityFailure: String(describing: closeError))
+                throw CommitError.replacementCommittedWithCleanupFailure(
+                    cleanupFailure: String(describing: closeError)
+                )
             case .success:
                 throw closeError
             case .failure(let operationError):
@@ -262,6 +267,11 @@ struct DurableAtomicFileCommitter {
                         durabilityFailure: durabilityFailure
                             + "; directory authority cleanup failed: "
                             + String(describing: closeError)
+                    )
+                }
+                if case let CommitError.replacementCommittedWithCleanupFailure(cleanupFailure) = operationError {
+                    throw CommitError.replacementCommittedWithCleanupFailure(
+                        cleanupFailure: cleanupFailure + "; " + String(describing: closeError)
                     )
                 }
                 throw CommitError.persistenceAndCleanupFailed(
