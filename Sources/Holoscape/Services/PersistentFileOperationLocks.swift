@@ -20,14 +20,33 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
+    private var durabilityInitializedPaths: Set<String> = []
 
     struct LockError: LocalizedError {
         let message: String
+        let operationError: Error?
+        let operationSucceeded: Bool
+
+        init(
+            message: String,
+            operationError: Error? = nil,
+            operationSucceeded: Bool = false
+        ) {
+            self.message = message
+            self.operationError = operationError
+            self.operationSucceeded = operationSucceeded
+        }
 
         var errorDescription: String? { message }
     }
 
-    func withLock<T>(for fileURL: URL, _ operation: () throws -> T) throws -> T {
+    func withLock<T>(
+        for fileURL: URL,
+        synchronizeCreatedDirectoryEntries: ((URL) throws -> Void)? = nil,
+        unlockDescriptor: (Int32) -> Int32 = { flock($0, LOCK_UN) },
+        closeDescriptor: (Int32) -> Int32 = Darwin.close,
+        _ operation: () throws -> T
+    ) throws -> T {
         let standardizedURL = fileURL.standardizedFileURL
         // Canonicalize the containing directory so callers using equivalent
         // directory aliases share authority, but never resolve the data-file
@@ -49,14 +68,30 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         }
         return try lockBox.lock.withLock {
             let lockURL = canonicalURL.appendingPathExtension("lock")
+            let lockDirectoryURL = lockURL.deletingLastPathComponent()
+            let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
+            let needsDurabilityInitialization = registryLock.withLock {
+                !durabilityInitializedPaths.contains(key)
+            }
             do {
                 try FileManager.default.createDirectory(
-                    at: lockURL.deletingLastPathComponent(),
+                    at: lockDirectoryURL,
                     withIntermediateDirectories: true
                 )
+                if let synchronizeCreatedDirectoryEntries {
+                    let directoriesToSynchronize = needsDurabilityInitialization
+                        ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
+                        : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
+                    for directory in directoriesToSynchronize {
+                        try synchronizeCreatedDirectoryEntries(directory)
+                    }
+                    _ = registryLock.withLock {
+                        durabilityInitializedPaths.insert(key)
+                    }
+                }
             } catch {
                 throw LockError(
-                    message: "createDirectory failed for \(lockURL.deletingLastPathComponent().path): \(error)"
+                    message: "createDirectory failed or synchronization failed for \(lockDirectoryURL.path): \(error)"
                 )
             }
 
@@ -73,7 +108,7 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             }
             guard flock(descriptor, LOCK_EX) == 0 else {
                 let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
-                if Darwin.close(descriptor) != 0 {
+                if closeDescriptor(descriptor) != 0 {
                     let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
                     throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
                 }
@@ -88,21 +123,25 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             }
 
             var cleanupFailures: [String] = []
-            if flock(descriptor, LOCK_UN) != 0 {
+            if unlockDescriptor(descriptor) != 0 {
                 cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
             }
-            if Darwin.close(descriptor) != 0 {
+            if closeDescriptor(descriptor) != 0 {
                 cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
             }
             if !cleanupFailures.isEmpty {
-                let operationFailure: String
                 switch result {
                 case .success:
-                    operationFailure = ""
+                    throw LockError(
+                        message: cleanupFailures.joined(separator: "; "),
+                        operationSucceeded: true
+                    )
                 case .failure(let error):
-                    operationFailure = "operation failed: \(error); "
+                    throw LockError(
+                        message: "operation failed: \(error); " + cleanupFailures.joined(separator: "; "),
+                        operationError: error
+                    )
                 }
-                throw LockError(message: operationFailure + cleanupFailures.joined(separator: "; "))
             }
             return try result.get()
         }
@@ -110,6 +149,34 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
+    }
+
+    private static func missingDirectories(endingAt directoryURL: URL) -> [URL] {
+        var result: [URL] = []
+        var candidate = directoryURL.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: candidate.path) {
+            result.append(candidate)
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { break }
+            candidate = parent
+        }
+        return result
+    }
+
+    /// Until the persistent lock authority exists, synchronize the full path
+    /// from root to leaf. This makes retries safe after a prior directory-sync
+    /// failure left an in-memory directory tree that was never durably linked.
+    private static func directoryEntryParents(endingAt directoryURL: URL) -> [URL] {
+        let components = directoryURL.standardizedFileURL.pathComponents
+        guard components.first == "/", components.count > 1 else { return [] }
+
+        var result = [URL(fileURLWithPath: "/", isDirectory: true)]
+        var parent = result[0]
+        for component in components.dropFirst().dropLast() {
+            parent.appendPathComponent(component, isDirectory: true)
+            result.append(parent)
+        }
+        return result
     }
 }
 

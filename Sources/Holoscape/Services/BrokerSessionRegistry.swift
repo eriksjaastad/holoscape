@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Durable JSON registry for broker-owned session metadata.
@@ -10,6 +11,51 @@ import Foundation
 struct BrokerSessionRegistry {
     enum RegistryError: Error, Equatable {
         case invalidRecord(BrokerSessionID, BrokerSessionRecord.ValidationError)
+        case persistenceAndCleanupFailed(operation: String, cleanup: String)
+        /// The atomic replacement is already visible, but synchronizing its
+        /// containing directory failed. Callers must preserve the committed
+        /// records instead of compensating as if the mutation never happened.
+        case replacementCommitted(records: [BrokerSessionRecord], durabilityFailure: String)
+        /// A prune replacement is already visible, but its durability or lock
+        /// cleanup failed. Preserve both sides of the mutation so callers do
+        /// not retry it as a falsely successful empty prune.
+        case pruneCommitted(
+            removedRecords: [BrokerSessionRecord],
+            retainedRecords: [BrokerSessionRecord],
+            durabilityFailure: String
+        )
+    }
+
+    struct Persistence: @unchecked Sendable {
+        let writeAndSynchronizeTemporaryFile: (Data, URL) throws -> Void
+        let replaceFile: (URL, URL) throws -> Void
+        let synchronizeDirectory: (URL) throws -> Void
+        let removeTemporaryFile: (URL) throws -> Void
+        let unlockFileLock: (Int32) -> Int32
+        let closeFileLock: (Int32) -> Int32
+
+        init(
+            writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
+            replaceFile: @escaping (URL, URL) throws -> Void,
+            synchronizeDirectory: @escaping (URL) throws -> Void,
+            removeTemporaryFile: @escaping (URL) throws -> Void,
+            unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
+            closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
+        ) {
+            self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
+            self.replaceFile = replaceFile
+            self.synchronizeDirectory = synchronizeDirectory
+            self.removeTemporaryFile = removeTemporaryFile
+            self.unlockFileLock = unlockFileLock
+            self.closeFileLock = closeFileLock
+        }
+
+        static let live = Persistence(
+            writeAndSynchronizeTemporaryFile: BrokerSessionRegistry.writeAndSynchronizeTemporaryFile,
+            replaceFile: BrokerSessionRegistry.replaceFile,
+            synchronizeDirectory: BrokerSessionRegistry.synchronizeDirectory,
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
     }
 
     let fileURL: URL
@@ -17,24 +63,33 @@ struct BrokerSessionRegistry {
     /// and broker host processes. Atomic replacement protects the file bytes;
     /// this persistent advisory authority protects whole transactions.
     private let operationLocks = PersistentFileOperationLocks.shared
+    private let persistence: Persistence
 
-    init(fileURL: URL = BrokerSessionRegistry.defaultFileURL()) {
+    init(
+        fileURL: URL = BrokerSessionRegistry.defaultFileURL(),
+        persistence: Persistence = .live
+    ) {
         self.fileURL = fileURL
+        self.persistence = persistence
     }
 
     func load() throws -> [BrokerSessionRecord] {
-        try operationLocks.withLock(for: fileURL) { try loadUnlocked() }
+        try withOperationLock { try loadUnlocked() }
     }
 
     func save(_ records: [BrokerSessionRecord]) throws {
-        try operationLocks.withLock(for: fileURL) { try saveUnlocked(records) }
+        try withMutationLock {
+            let committedRecords = try saveUnlocked(records)
+            return ((), committedRecords)
+        }
     }
 
     func upsert(_ record: BrokerSessionRecord) throws {
-        try operationLocks.withLock(for: fileURL) {
+        try withMutationLock {
             var records = try loadUnlocked().filter { $0.id != record.id }
             records.append(record)
-            try saveUnlocked(records)
+            let committedRecords = try saveUnlocked(records)
+            return ((), committedRecords)
         }
     }
 
@@ -45,14 +100,14 @@ struct BrokerSessionRegistry {
         _ record: BrokerSessionRecord,
         ifUnchangedFrom expected: BrokerSessionRecord
     ) throws -> Bool {
-        try operationLocks.withLock(for: fileURL) {
+        try withMutationLock {
             var records = try loadUnlocked()
             let persistedExpected = try canonicalized(expected)
             guard let index = records.firstIndex(where: { $0.id == expected.id }),
-                  records[index] == persistedExpected else { return false }
+                  records[index] == persistedExpected else { return (false, nil) }
             records[index] = record
-            try saveUnlocked(records)
-            return true
+            let committedRecords = try saveUnlocked(records)
+            return (true, committedRecords)
         }
     }
 
@@ -60,13 +115,13 @@ struct BrokerSessionRegistry {
         _ id: BrokerSessionID,
         transform: (BrokerSessionRecord) -> BrokerSessionRecord
     ) throws -> BrokerSessionRecord? {
-        try operationLocks.withLock(for: fileURL) {
+        try withMutationLock {
             var records = try loadUnlocked()
-            guard let index = records.firstIndex(where: { $0.id == id }) else { return nil }
+            guard let index = records.firstIndex(where: { $0.id == id }) else { return (nil, nil) }
             let updated = transform(records[index])
             records[index] = updated
-            try saveUnlocked(records)
-            return updated
+            let committedRecords = try saveUnlocked(records)
+            return (updated, committedRecords)
         }
     }
 
@@ -77,20 +132,31 @@ struct BrokerSessionRegistry {
     /// durable regardless of age so Holoscape never silently loses resumable sessions.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        try operationLocks.withLock(for: fileURL) {
-            let records = try loadUnlocked()
-            let removed = records.filter { record in
-                record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+        var intendedRemoval: [BrokerSessionRecord] = []
+        do {
+            return try withMutationLock {
+                let records = try loadUnlocked()
+                let removed = records.filter { record in
+                    record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+                }.sortedBySessionID()
+                guard !removed.isEmpty else {
+                    return ([], nil)
+                }
+                intendedRemoval = removed
+                let removedIDs = Set(removed.map(\.id))
+                let retained = records.filter { record in
+                    !removedIDs.contains(record.id)
+                }
+                let committedRecords = try saveUnlocked(retained)
+                return (removed, committedRecords)
             }
-            guard !removed.isEmpty else {
-                return []
-            }
-            let removedIDs = Set(removed.map(\.id))
-            let retained = records.filter { record in
-                !removedIDs.contains(record.id)
-            }
-            try saveUnlocked(retained)
-            return removed.sortedBySessionID()
+        } catch let RegistryError.replacementCommitted(retainedRecords, durabilityFailure)
+            where !intendedRemoval.isEmpty {
+            throw RegistryError.pruneCommitted(
+                removedRecords: intendedRemoval,
+                retainedRecords: retainedRecords,
+                durabilityFailure: durabilityFailure
+            )
         }
     }
 
@@ -107,19 +173,105 @@ struct BrokerSessionRegistry {
         return records.sortedBySessionID()
     }
 
-    private func saveUnlocked(_ records: [BrokerSessionRecord]) throws {
+    private func withOperationLock<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operationLocks.withLock(
+                for: fileURL,
+                synchronizeCreatedDirectoryEntries: persistence.synchronizeDirectory,
+                unlockDescriptor: persistence.unlockFileLock,
+                closeDescriptor: persistence.closeFileLock,
+                operation
+            )
+        } catch let lockError as PersistentFileOperationLocks.LockError {
+            if case let RegistryError.replacementCommitted(records, durabilityFailure)? = lockError.operationError {
+                throw RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure + "; lock cleanup failed: " + lockError.message
+                )
+            }
+            throw lockError
+        }
+    }
+
+    private func withMutationLock<T>(
+        _ operation: () throws -> (value: T, committedRecords: [BrokerSessionRecord]?)
+    ) throws -> T {
+        var committedRecords: [BrokerSessionRecord]?
+        do {
+            return try withOperationLock {
+                let result = try operation()
+                committedRecords = result.committedRecords
+                return result.value
+            }
+        } catch let lockError as PersistentFileOperationLocks.LockError {
+            guard lockError.operationSucceeded,
+                  let committedRecords else {
+                throw lockError
+            }
+            throw RegistryError.replacementCommitted(
+                records: committedRecords,
+                durabilityFailure: "lock cleanup failed after committed mutation: \(lockError.message)"
+            )
+        }
+    }
+
+    @discardableResult
+    private func saveUnlocked(_ records: [BrokerSessionRecord]) throws -> [BrokerSessionRecord] {
         try validate(records)
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(records.sortedBySessionID())
+        let sortedRecords = records.sortedBySessionID()
+        let data = try encoder.encode(sortedRecords)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let committedRecords = try decoder.decode([BrokerSessionRecord].self, from: data)
 
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: fileURL, options: [.atomic])
+        try persist(data, committedRecords: committedRecords)
+        return committedRecords
+    }
+
+    /// Commit registry bytes in crash-safe order: fully synchronize a sibling
+    /// temporary file, atomically rename it over the registry, then synchronize
+    /// the containing directory so the rename itself is durable.
+    private func persist(_ data: Data, committedRecords: [BrokerSessionRecord]) throws {
+        let directoryURL = fileURL.deletingLastPathComponent()
+        let temporaryURL = directoryURL.appendingPathComponent(
+            ".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+
+        var replacementCommitted = false
+        do {
+            try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
+            try persistence.replaceFile(temporaryURL, fileURL)
+            replacementCommitted = true
+            try persistence.synchronizeDirectory(directoryURL)
+        } catch {
+            let operationError = error
+            if replacementCommitted {
+                throw RegistryError.replacementCommitted(
+                    records: committedRecords,
+                    durabilityFailure: String(describing: operationError)
+                )
+            }
+            guard FileManager.default.fileExists(atPath: temporaryURL.path) else {
+                throw operationError
+            }
+            do {
+                try persistence.removeTemporaryFile(temporaryURL)
+            } catch {
+                throw RegistryError.persistenceAndCleanupFailed(
+                    operation: String(describing: operationError),
+                    cleanup: String(describing: error)
+                )
+            }
+            throw operationError
+        }
     }
 
     private func validate(_ records: [BrokerSessionRecord]) throws {
@@ -136,12 +288,112 @@ struct BrokerSessionRegistry {
     /// encoding rounds `Date` values to whole seconds, so comparing a freshly
     /// constructed in-memory record directly with its reload would reject the
     /// caller's own write whenever `Date.init` supplied subsecond precision.
-    private func canonicalized(_ record: BrokerSessionRecord) throws -> BrokerSessionRecord {
+    func canonicalized(_ record: BrokerSessionRecord) throws -> BrokerSessionRecord {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(BrokerSessionRecord.self, from: encoder.encode(record))
+    }
+
+    private static func writeAndSynchronizeTemporaryFile(_ data: Data, to url: URL) throws {
+        let descriptor = url.path.withCString {
+            Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var operationError: Error?
+        do {
+            try writeAll(data, to: descriptor)
+            try fullSync(descriptor)
+        } catch {
+            operationError = error
+        }
+
+        let closeResult = Darwin.close(descriptor)
+        let closeError = closeResult == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if let operationError, let closeError {
+            throw RegistryError.persistenceAndCleanupFailed(
+                operation: String(describing: operationError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if let operationError { throw operationError }
+        if let closeError { throw closeError }
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var written = 0
+            while written < bytes.count {
+                let result = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: written),
+                    bytes.count - written
+                )
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard result > 0 else { throw CocoaError(.fileWriteUnknown) }
+                written += result
+            }
+        }
+    }
+
+    private static func fullSync(_ descriptor: Int32) throws {
+        if Darwin.fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+        let fullSyncCode = errno
+        if fullSyncCode != EINVAL && fullSyncCode != ENOTSUP {
+            throw POSIXError(POSIXErrorCode(rawValue: fullSyncCode) ?? .EIO)
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func replaceFile(at sourceURL: URL, with destinationURL: URL) throws {
+        let result = sourceURL.path.withCString { sourcePath in
+            destinationURL.path.withCString { destinationPath in
+                Darwin.rename(sourcePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func synchronizeDirectory(_ directoryURL: URL) throws {
+        let descriptor = directoryURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var syncError: Error?
+        do {
+            try fullSync(descriptor)
+        } catch {
+            syncError = error
+        }
+        let closeResult = Darwin.close(descriptor)
+        let closeError = closeResult == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if let syncError, let closeError {
+            throw RegistryError.persistenceAndCleanupFailed(
+                operation: String(describing: syncError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if let syncError { throw syncError }
+        if let closeError { throw closeError }
     }
 
     private static func defaultFileURL() -> URL {

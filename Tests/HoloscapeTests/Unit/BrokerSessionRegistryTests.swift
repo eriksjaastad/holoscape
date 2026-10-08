@@ -41,6 +41,281 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertEqual(try reloaded.load(), [record])
     }
 
+    func testSaveSynchronizesTemporaryFileBeforeReplacementAndDirectoryAfterReplacement() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try Data().write(to: registryURL.appendingPathExtension("lock"))
+        var events: [String] = []
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in
+                events.append("write-and-sync-file")
+                try data.write(to: temporaryURL)
+            },
+            replaceFile: { temporaryURL, destinationURL in
+                events.append("replace")
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+            },
+            synchronizeDirectory: { directoryURL in
+                events.append("sync-directory:\(directoryURL.path)")
+            },
+            removeTemporaryFile: { temporaryURL in
+                events.append("remove-temporary")
+                try FileManager.default.removeItem(at: temporaryURL)
+            }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+        let record = makeRecord(id: "session-durable", lifecycle: .running, updatedAt: 2)
+
+        try registry.save([record])
+
+        XCTAssertEqual(Array(events.suffix(3)), [
+            "write-and-sync-file",
+            "replace",
+            "sync-directory:\(tempDirectory.path)",
+        ])
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load(), [record])
+    }
+
+    func testFirstSaveSynchronizesEveryCreatedDirectoryEntryBeforeWritingRegistry() throws {
+        let firstDirectory = tempDirectory.appendingPathComponent("first", isDirectory: true)
+        let registryDirectory = firstDirectory.appendingPathComponent("registry", isDirectory: true)
+        let registryURL = registryDirectory.appendingPathComponent("sessions.json")
+        var events: [String] = []
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in
+                events.append("write-and-sync-file")
+                try data.write(to: temporaryURL)
+            },
+            replaceFile: { temporaryURL, destinationURL in
+                events.append("replace")
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+            },
+            synchronizeDirectory: { directoryURL in
+                events.append("sync-directory:\(directoryURL.path)")
+            },
+            removeTemporaryFile: { temporaryURL in try FileManager.default.removeItem(at: temporaryURL) }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        try registry.save([makeRecord(id: "session-first-save", lifecycle: .running, updatedAt: 2)])
+
+        let firstDirectorySync = "sync-directory:\(tempDirectory.path)"
+        let registryDirectoryParentSync = "sync-directory:\(firstDirectory.path)"
+        let writeIndex = try XCTUnwrap(events.firstIndex(of: "write-and-sync-file"))
+        XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: firstDirectorySync)), writeIndex)
+        XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: registryDirectoryParentSync)), writeIndex)
+        XCTAssertEqual(Array(events.suffix(3)), [
+            "write-and-sync-file",
+            "replace",
+            "sync-directory:\(registryDirectory.path)",
+        ])
+    }
+
+    func testFirstSaveCreatedDirectorySynchronizationFailurePreventsRegistryWrite() throws {
+        let registryURL = tempDirectory
+            .appendingPathComponent("missing", isDirectory: true)
+            .appendingPathComponent("sessions.json")
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in
+                XCTFail("Registry bytes must not be written before the new directory entry is durable")
+            },
+            replaceFile: { _, _ in XCTFail("Registry must not be replaced after directory synchronization fails") },
+            synchronizeDirectory: { _ in throw RegistryPersistenceFailure.directorySync },
+            removeTemporaryFile: { _ in XCTFail("No registry temporary file should exist") }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([
+            makeRecord(id: "session-first-save", lifecycle: .running, updatedAt: 2),
+        ])) { error in
+            let lockError = error as? PersistentFileOperationLocks.LockError
+            XCTAssertTrue(lockError?.message.contains("directorySync") == true)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: registryURL.path))
+    }
+
+    func testLegacyLockFileDoesNotSkipAncestorDurabilityInitialization() throws {
+        let registryDirectory = tempDirectory.appendingPathComponent("legacy", isDirectory: true)
+        let registryURL = registryDirectory.appendingPathComponent("sessions.json")
+        try FileManager.default.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        try Data().write(to: registryURL.appendingPathExtension("lock"))
+        var events: [String] = []
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in
+                events.append("write")
+                try data.write(to: temporaryURL)
+            },
+            replaceFile: { temporaryURL, destinationURL in
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+            },
+            synchronizeDirectory: { events.append("sync:\($0.path)") },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+
+        try BrokerSessionRegistry(fileURL: registryURL, persistence: persistence).save([
+            makeRecord(id: "legacy-lock", lifecycle: .running, updatedAt: 2),
+        ])
+
+        let writeIndex = try XCTUnwrap(events.firstIndex(of: "write"))
+        XCTAssertLessThan(
+            try XCTUnwrap(events.firstIndex(of: "sync:\(tempDirectory.path)")),
+            writeIndex
+        )
+    }
+
+    func testFileSynchronizationFailurePreservesPriorRegistryAndRemovesTemporaryFile() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let original = makeRecord(id: "session-original", lifecycle: .running, updatedAt: 1)
+        try BrokerSessionRegistry(fileURL: registryURL).save([original])
+        var removedTemporaryURL: URL?
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in
+                try data.write(to: temporaryURL)
+                throw RegistryPersistenceFailure.fileSync
+            },
+            replaceFile: { _, _ in XCTFail("A failed file sync must not replace the registry") },
+            synchronizeDirectory: { _ in XCTFail("A failed file sync must not synchronize the directory") },
+            removeTemporaryFile: { temporaryURL in
+                removedTemporaryURL = temporaryURL
+                try FileManager.default.removeItem(at: temporaryURL)
+            }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([
+            makeRecord(id: "session-new", lifecycle: .detached, updatedAt: 2),
+        ])) { error in
+            XCTAssertEqual(error as? RegistryPersistenceFailure, .fileSync)
+        }
+        XCTAssertNotNil(removedTemporaryURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: removedTemporaryURL?.path ?? ""))
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load(), [original])
+    }
+
+    func testReplacementFailurePreservesPriorRegistryAndRemovesTemporaryFile() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let original = makeRecord(id: "session-original", lifecycle: .running, updatedAt: 1)
+        try BrokerSessionRegistry(fileURL: registryURL).save([original])
+        var removedTemporaryURL: URL?
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
+            replaceFile: { _, _ in throw RegistryPersistenceFailure.replace },
+            synchronizeDirectory: { _ in XCTFail("A failed replacement must not synchronize the directory") },
+            removeTemporaryFile: { temporaryURL in
+                removedTemporaryURL = temporaryURL
+                try FileManager.default.removeItem(at: temporaryURL)
+            }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([
+            makeRecord(id: "session-new", lifecycle: .detached, updatedAt: 2),
+        ])) { error in
+            XCTAssertEqual(error as? RegistryPersistenceFailure, .replace)
+        }
+        XCTAssertNotNil(removedTemporaryURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: removedTemporaryURL?.path ?? ""))
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load(), [original])
+    }
+
+    func testDirectorySynchronizationFailurePropagatesAfterValidAtomicReplacement() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let replacement = makeRecord(id: "session-new", lifecycle: .detached, updatedAt: 2.75)
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
+            replaceFile: { temporaryURL, destinationURL in
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            },
+            synchronizeDirectory: { _ in throw RegistryPersistenceFailure.directorySync },
+            removeTemporaryFile: { temporaryURL in try FileManager.default.removeItem(at: temporaryURL) }
+        )
+        try BrokerSessionRegistry(fileURL: registryURL).save([
+            makeRecord(id: "session-original", lifecycle: .running, updatedAt: 1),
+        ])
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([replacement])) { error in
+            guard case let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) = error else {
+                return XCTFail("Expected typed committed replacement, got \(error)")
+            }
+            XCTAssertTrue(durabilityFailure.contains("directorySync"), durabilityFailure)
+            XCTAssertEqual(records, try? BrokerSessionRegistry(fileURL: registryURL).load())
+        }
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load().map(\.id), [replacement.id])
+    }
+
+    func testLockCleanupFailureAfterSuccessfulSavePreservesCommittedRecordIdentity() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try BrokerSessionRegistry(fileURL: registryURL).save([])
+        let replacement = makeRecord(id: "lock-cleanup", lifecycle: .running, updatedAt: 3.75)
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
+            replaceFile: { temporaryURL, destinationURL in
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { temporaryURL in try FileManager.default.removeItem(at: temporaryURL) },
+            unlockFileLock: { _ in -1 }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([replacement])) { error in
+            guard case let BrokerSessionRegistry.RegistryError.replacementCommitted(records, cleanupFailure) = error else {
+                return XCTFail("Expected committed replacement with cleanup failure, got \(error)")
+            }
+            XCTAssertTrue(cleanupFailure.contains("LOCK_UN"), cleanupFailure)
+            XCTAssertEqual(records, try? BrokerSessionRegistry(fileURL: registryURL).load())
+        }
+    }
+
+    func testLockCleanupFailurePreservesCommittedDirectorySyncFailureIdentity() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try BrokerSessionRegistry(fileURL: registryURL).save([])
+        let replacement = makeRecord(id: "combined-cleanup", lifecycle: .running, updatedAt: 4.75)
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
+            replaceFile: { temporaryURL, destinationURL in
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            },
+            synchronizeDirectory: { _ in throw RegistryPersistenceFailure.directorySync },
+            removeTemporaryFile: { temporaryURL in try FileManager.default.removeItem(at: temporaryURL) },
+            unlockFileLock: { _ in -1 }
+        )
+
+        XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL, persistence: persistence).save([replacement])) { error in
+            guard case let BrokerSessionRegistry.RegistryError.replacementCommitted(records, failure) = error else {
+                return XCTFail("Expected committed replacement with combined failure, got \(error)")
+            }
+            XCTAssertTrue(failure.contains("directorySync"), failure)
+            XCTAssertTrue(failure.contains("LOCK_UN"), failure)
+            XCTAssertEqual(records, try? BrokerSessionRegistry(fileURL: registryURL).load())
+        }
+    }
+
+    func testSaveReportsBothPersistenceAndTemporaryCleanupFailures() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try Data().write(to: registryURL.appendingPathExtension("lock"))
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in
+                try data.write(to: temporaryURL)
+                throw RegistryPersistenceFailure.fileSync
+            },
+            replaceFile: { _, _ in XCTFail("A failed file sync must not replace the registry") },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { _ in throw RegistryPersistenceFailure.cleanup }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.save([
+            makeRecord(id: "session-new", lifecycle: .running, updatedAt: 1),
+        ])) { error in
+            guard case let BrokerSessionRegistry.RegistryError.persistenceAndCleanupFailed(operation, cleanup) = error else {
+                return XCTFail("Expected combined persistence and cleanup error, got \(error)")
+            }
+            XCTAssertTrue(operation.contains("fileSync"), operation)
+            XCTAssertTrue(cleanup.contains("cleanup"), cleanup)
+        }
+    }
+
     func testUpsertReplacesExistingRecordAndKeepsStableSortOrder() throws {
         let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
         let old = makeRecord(id: "session-b", lifecycle: .running, updatedAt: 1)
@@ -307,6 +582,39 @@ final class BrokerSessionRegistryTests: XCTestCase {
         )
     }
 
+    func testPruneFailurePreservesRemovedAndRetainedCommittedIdentity() throws {
+        let registryURL = tempDirectory.appendingPathComponent("prune-committed.json")
+        let oldExited = makeRecord(id: "old-exited", lifecycle: .exited, exitCode: 0, updatedAt: 10.75)
+        let retained = makeRecord(id: "retained", lifecycle: .running, updatedAt: 20.75)
+        try BrokerSessionRegistry(fileURL: registryURL).save([oldExited, retained])
+        let persistedOldExited = try XCTUnwrap(
+            BrokerSessionRegistry(fileURL: registryURL).load().first { $0.id == oldExited.id }
+        )
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
+            replaceFile: { temporaryURL, destinationURL in
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            },
+            synchronizeDirectory: { _ in throw RegistryPersistenceFailure.directorySync },
+            removeTemporaryFile: { temporaryURL in try FileManager.default.removeItem(at: temporaryURL) }
+        )
+        let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
+
+        XCTAssertThrowsError(try registry.pruneFinalRecords(updatedBefore: Date(timeIntervalSince1970: 15))) { error in
+            guard case let BrokerSessionRegistry.RegistryError.pruneCommitted(
+                removedRecords,
+                retainedRecords,
+                durabilityFailure
+            ) = error else {
+                return XCTFail("Expected typed committed prune, got \(error)")
+            }
+            XCTAssertEqual(removedRecords, [persistedOldExited])
+            XCTAssertEqual(retainedRecords, try? BrokerSessionRegistry(fileURL: registryURL).load())
+            XCTAssertTrue(durabilityFailure.contains("directorySync"), durabilityFailure)
+        }
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load().map(\.id), [retained.id])
+    }
+
     func testPruneFinalRecordsValidatesBeforeWriting() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         let invalid = makeRecord(id: "invalid-exited", lifecycle: .exited, exitCode: nil, updatedAt: 10)
@@ -339,4 +647,11 @@ final class BrokerSessionRegistryTests: XCTestCase {
             lastAttachedChannelID: nil
         )
     }
+}
+
+private enum RegistryPersistenceFailure: Error, Equatable {
+    case fileSync
+    case replace
+    case directorySync
+    case cleanup
 }

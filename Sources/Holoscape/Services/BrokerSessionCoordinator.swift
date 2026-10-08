@@ -150,6 +150,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case exitStillPending(BrokerSessionID)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
+        case registryTransitionCommitted(BrokerSessionRecord, durabilityFailure: String)
+        case registryPruneCommitted(
+            removedRecords: [BrokerSessionRecord],
+            retainedRecords: [BrokerSessionRecord],
+            durabilityFailure: String
+        )
     }
 
     private let registry: BrokerSessionRegistry
@@ -212,7 +218,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                             updatedAt: now(),
                             lastAttachedChannelID: nil
                         )
-                        if try registry.replace(detached, ifUnchangedFrom: current) {
+                        let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                            detached,
+                            ifUnchangedFrom: current
+                        )
+                        if wasReplaced {
+                            if let durabilityWarning {
+                                NSLog(
+                                    "Broker reattach-lease recovery committed for \(record.id.rawValue) "
+                                        + "with a directory durability warning: \(durabilityWarning)"
+                                )
+                            }
                             return detached
                         }
                         guard let next = try reconcileRuntimeStatusForDiscovery(record.id) else {
@@ -339,8 +355,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             updatedAt: timestamp,
             lastAttachedChannelID: attachedChannelID
         )
+        let durabilityWarning: String?
         do {
-            try registry.upsert(record)
+            durabilityWarning = try upsertRegistry(record)
         } catch let registryFailure {
             // The runtime session exists but Holoscape could not record it, so it
             // could never be reattached, exited, or recovered: roll it back before
@@ -357,6 +374,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 )
             }
             throw registryFailure
+        }
+        if let durabilityWarning {
+            throw CoordinatorError.registryTransitionCommitted(
+                record,
+                durabilityFailure: durabilityWarning
+            )
         }
         return record
     }
@@ -388,6 +411,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         // a no-op) or observes `.detached` and advances it to `.terminating`.
         // In neither ordering can teardown erase durable retirement intent.
         var transitionToRollback: (existing: BrokerSessionRecord, detached: BrokerSessionRecord)?
+        var committedDurabilityWarning: String?
         detachTransition: while true {
             let existing = try record(for: id)
             switch existing.lifecycle {
@@ -402,8 +426,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                if try registry.replace(candidate, ifUnchangedFrom: existing) {
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    candidate,
+                    ifUnchangedFrom: existing
+                )
+                if wasReplaced {
                     transitionToRollback = (existing, candidate)
+                    committedDurabilityWarning = durabilityWarning
                     break detachTransition
                 }
                 continue
@@ -418,10 +447,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // notably, a retirement that won the race remains authoritative.
             if let transitionToRollback {
                 do {
-                    _ = try registry.replace(
+                    let (_, durabilityWarning) = try replaceRegistry(
                         transitionToRollback.existing,
                         ifUnchangedFrom: transitionToRollback.detached
                     )
+                    if let durabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            transitionToRollback.existing,
+                            durabilityFailure: durabilityWarning
+                        )
+                    }
                 } catch let registryError {
                     throw CoordinatorError.detachRollbackFailed(
                         id,
@@ -431,6 +466,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 }
             }
             throw error
+        }
+        if let committedDurabilityWarning,
+           let committedRecord = transitionToRollback?.detached {
+            throw CoordinatorError.registryTransitionCommitted(
+                committedRecord,
+                durabilityFailure: committedDurabilityWarning
+            )
         }
         return try record(for: id)
     }
@@ -478,7 +520,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             updatedAt: now(),
             lastAttachedChannelID: nil
         )
-        guard try registry.replace(lease, ifUnchangedFrom: existing) else {
+        let leaseDurabilityWarning: String?
+        let leaseWasPublished: Bool
+        (leaseWasPublished, leaseDurabilityWarning) = try replaceRegistry(
+            lease,
+            ifUnchangedFrom: existing
+        )
+        guard leaseWasPublished else {
             throw CoordinatorError.concurrentSessionTransition(id)
         }
         do {
@@ -498,7 +546,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                if try registry.replace(stale, ifUnchangedFrom: current) { break }
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    stale,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
+                    if let durabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            stale,
+                            durabilityFailure: durabilityWarning
+                        )
+                    }
+                    break
+                }
             }
             throw CoordinatorError.staleSession(id)
         } catch {
@@ -526,7 +586,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: attachedChannelID
                 )
-                if try registry.replace(attached, ifUnchangedFrom: current) {
+                let (wasReplaced, attachedDurabilityWarning) = try replaceRegistry(
+                    attached,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
+                    if let durabilityFailure = attachedDurabilityWarning ?? leaseDurabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            attached,
+                            durabilityFailure: durabilityFailure
+                        )
+                    }
                     return attached
                 }
             }
@@ -572,7 +642,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                         updatedAt: current.updatedAt,
                         lastAttachedChannelID: previous.lastAttachedChannelID
                     )
-                if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    rolledBack,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
+                    if let durabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            rolledBack,
+                            durabilityFailure: durabilityWarning
+                        )
+                    }
+                    return
+                }
             }
         } catch let registryFailure {
             throw CoordinatorError.reattachRollbackFailed(
@@ -585,6 +667,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
         var previousRecord: BrokerSessionRecord?
+        var committedIntentWarning: (record: BrokerSessionRecord, failure: String)?
         while true {
             let current = try record(for: id)
             switch current.lifecycle {
@@ -628,8 +711,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                if try registry.replace(terminating, ifUnchangedFrom: current) {
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    terminating,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
                     previousRecord = current
+                    if let durabilityWarning {
+                        committedIntentWarning = (
+                            try registry.canonicalized(terminating),
+                            durabilityWarning
+                        )
+                    }
                     break
                 }
                 continue
@@ -693,6 +786,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                           let previousRecord {
                     do {
                         try rollbackExit(id, to: previousRecord)
+                        committedIntentWarning = nil
                     } catch let registryFailure {
                         throw CoordinatorError.exitRollbackFailed(
                             id,
@@ -729,6 +823,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 NSLog(
                     "Broker session exit outcome remains ambiguous for \(id.rawValue): "
                         + "termination failure: \(runtimeFailure); status failure: \(error)"
+                )
+            }
+            if let committedIntentWarning {
+                throw CoordinatorError.registryTransitionCommitted(
+                    committedIntentWarning.record,
+                    durabilityFailure: committedIntentWarning.failure
+                        + "; runtime outcome remains ambiguous: \(runtimeFailure)"
                 )
             }
             throw runtimeFailure
@@ -770,7 +871,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                if try registry.replace(candidate, ifUnchangedFrom: current) {
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    candidate,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
+                    if let durabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            candidate,
+                            durabilityFailure: durabilityWarning
+                        )
+                    }
                     return candidate
                 }
             }
@@ -788,7 +899,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 updatedAt: current.updatedAt,
                 lastAttachedChannelID: previous.lastAttachedChannelID
             )
-            if try registry.replace(rolledBack, ifUnchangedFrom: current) { return }
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                rolledBack,
+                ifUnchangedFrom: current
+            )
+            if wasReplaced {
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        rolledBack,
+                        durabilityFailure: durabilityWarning
+                    )
+                }
+                return
+            }
         }
     }
 
@@ -866,6 +989,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
         let retiring: BrokerSessionRecord
+        var committedIntentWarning: (record: BrokerSessionRecord, failure: String)?
         if existing.lifecycle == .terminating {
             retiring = existing
         } else {
@@ -878,8 +1002,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Persist intent before the irreversible runtime action. If the
             // final write or host response is lost, durable state never claims
             // that the retired child is still running.
-            guard try registry.replace(retiring, ifUnchangedFrom: existing) else {
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                retiring,
+                ifUnchangedFrom: existing
+            )
+            guard wasReplaced else {
                 return try markErrored(id)
+            }
+            if let durabilityWarning {
+                committedIntentWarning = (
+                    try registry.canonicalized(retiring),
+                    durabilityWarning
+                )
             }
         }
         var completedRetirementFailure: Error?
@@ -896,17 +1030,41 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Input interruption is irreversible even though process cleanup is
             // incomplete. Preserve `.terminating` so this generation can never
             // be advertised as running/reattachable again.
+            if let committedIntentWarning {
+                throw CoordinatorError.registryTransitionCommitted(
+                    committedIntentWarning.record,
+                    durabilityFailure: committedIntentWarning.failure
+                        + "; runtime retirement remains incomplete: \(error)"
+                )
+            }
             throw error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
             if case .transportFailed = error {
                 // The host may have retired the child before its response was
                 // lost. Preserve the durable intent so retry can finish the
                 // idempotent transition instead of reviving a dead session.
+                if let committedIntentWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        committedIntentWarning.record,
+                        durabilityFailure: committedIntentWarning.failure
+                            + "; runtime retirement outcome remains ambiguous: \(error)"
+                    )
+                }
                 throw error
             }
             do {
-                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    existing,
+                    ifUnchangedFrom: retiring
+                )
+                guard wasReplaced else {
                     throw CoordinatorError.concurrentSessionTransition(id)
+                }
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        existing,
+                        durabilityFailure: durabilityWarning
+                    )
                 }
             } catch let registryError {
                 throw CoordinatorError.retirementRollbackFailed(
@@ -920,8 +1078,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Runtime retirement did not complete. Restore the prior lifecycle
             // when possible so a live child remains reattachable.
             do {
-                guard try registry.replace(existing, ifUnchangedFrom: retiring) else {
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    existing,
+                    ifUnchangedFrom: retiring
+                )
+                guard wasReplaced else {
                     throw CoordinatorError.concurrentSessionTransition(id)
+                }
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        existing,
+                        durabilityFailure: durabilityWarning
+                    )
                 }
             } catch let registryError {
                 throw CoordinatorError.retirementRollbackFailed(
@@ -968,20 +1136,51 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 updatedAt: now(),
                 lastAttachedChannelID: nil
             )
-            if try registry.replace(candidate, ifUnchangedFrom: current) {
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                candidate,
+                ifUnchangedFrom: current
+            )
+            if wasReplaced {
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        candidate,
+                        durabilityFailure: durabilityWarning
+                    )
+                }
                 return candidate
             }
         }
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
-        guard let updated = try registry.update(id, transform: { existing in
-            guard existing.workingDirectory != directory else { return existing }
-            return existing.withWorkingDirectory(directory, updatedAt: now())
-        }) else {
-            throw CoordinatorError.missingSession(id)
+        let existing = try record(for: id)
+        guard existing.workingDirectory != directory else { return existing }
+
+        var intendedUpdate: BrokerSessionRecord?
+        do {
+            guard let updated = try registry.update(id, transform: { current in
+                let updated = current.withWorkingDirectory(directory, updatedAt: now())
+                intendedUpdate = updated
+                return updated
+            }) else {
+                throw CoordinatorError.missingSession(id)
+            }
+            return updated
+        } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
+            guard let intendedUpdate,
+                  let committed = records.first(where: {
+                      $0.id == id && $0 == (try? registry.canonicalized(intendedUpdate))
+                  }) else {
+                throw BrokerSessionRegistry.RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure
+                )
+            }
+            throw CoordinatorError.registryTransitionCommitted(
+                committed,
+                durabilityFailure: durabilityFailure
+            )
         }
-        return updated
     }
 
     /// Prune terminal lifecycle records after an explicit caller-owned retention decision.
@@ -991,7 +1190,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     /// final `.exited` / `.errored` metadata older than the supplied cutoff is removed.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        try registry.pruneFinalRecords(updatedBefore: cutoff)
+        do {
+            return try registry.pruneFinalRecords(updatedBefore: cutoff)
+        } catch let BrokerSessionRegistry.RegistryError.pruneCommitted(
+            removedRecords,
+            retainedRecords,
+            durabilityFailure
+        ) {
+            throw CoordinatorError.registryPruneCommitted(
+                removedRecords: removedRecords,
+                retainedRecords: retainedRecords,
+                durabilityFailure: durabilityFailure
+            )
+        }
     }
 
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
@@ -1141,6 +1352,38 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
     }
 
+    private func upsertRegistry(_ record: BrokerSessionRecord) throws -> String? {
+        do {
+            try registry.upsert(record)
+            return nil
+        } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
+            guard records.contains(try registry.canonicalized(record)) else {
+                throw BrokerSessionRegistry.RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure
+                )
+            }
+            return durabilityFailure
+        }
+    }
+
+    private func replaceRegistry(
+        _ record: BrokerSessionRecord,
+        ifUnchangedFrom expected: BrokerSessionRecord
+    ) throws -> (replaced: Bool, durabilityWarning: String?) {
+        do {
+            return (try registry.replace(record, ifUnchangedFrom: expected), nil)
+        } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
+            guard records.contains(try registry.canonicalized(record)) else {
+                throw BrokerSessionRegistry.RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure
+                )
+            }
+            return (true, durabilityFailure)
+        }
+    }
+
     private func update(
         _ id: BrokerSessionID,
         runtimeAction: () throws -> Void = {},
@@ -1152,8 +1395,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         }
         try runtimeAction()
         let updated = transform(existing)
-        guard try registry.replace(updated, ifUnchangedFrom: existing) else {
+        let (wasReplaced, durabilityWarning) = try replaceRegistry(
+            updated,
+            ifUnchangedFrom: existing
+        )
+        guard wasReplaced else {
             throw CoordinatorError.concurrentSessionTransition(id)
+        }
+        if let durabilityWarning {
+            throw CoordinatorError.registryTransitionCommitted(
+                updated,
+                durabilityFailure: durabilityWarning
+            )
         }
         return updated
     }
