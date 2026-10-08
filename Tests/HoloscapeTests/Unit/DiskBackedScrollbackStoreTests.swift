@@ -302,6 +302,54 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
+    func testRecreatedLockDirectorySyncFailureIsRetriedBeforeOperation() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lockDirectory = root.appendingPathComponent("recreated-locks")
+        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
+        let locks = PersistentFileOperationLocks()
+        var events: [String] = []
+
+        try locks.withLock(
+            for: fileURL,
+            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+        ) {
+            events.append("operation")
+        }
+
+        try FileManager.default.removeItem(at: lockDirectory)
+        events.removeAll()
+        var shouldFailSynchronization = true
+        XCTAssertThrowsError(
+            try locks.withLock(
+                for: fileURL,
+                synchronizeCreatedDirectoryEntries: { url in
+                    events.append("sync:\(url.path)")
+                    if shouldFailSynchronization {
+                        shouldFailSynchronization = false
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                }
+            ) {
+                events.append("operation")
+            }
+        )
+        XCTAssertFalse(events.contains("operation"))
+
+        events.removeAll()
+        try locks.withLock(
+            for: fileURL,
+            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+        ) {
+            events.append("operation")
+        }
+        let operationIndex = try XCTUnwrap(events.firstIndex(of: "operation"))
+        XCTAssertTrue(
+            events[..<operationIndex].contains("sync:\(root.path)"),
+            "retry must resynchronize the recreated lock-directory entry before opening the lock"
+        )
+    }
+
     func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -135,6 +135,14 @@ class ConfigService {
             candidate = parent
         }
 
+        // A previously initialized directory may have been removed and is now
+        // about to be recreated. Invalidate the cached durability authority
+        // before creating anything so a failed parent sync remains pending on
+        // the next save even though the directory is then visible.
+        if !missingDirectories.isEmpty {
+            directoryDurabilityInitialized = false
+        }
+
         for directory in missingDirectories.reversed() {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         }

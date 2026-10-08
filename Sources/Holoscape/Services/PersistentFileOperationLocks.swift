@@ -70,6 +70,14 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             let lockURL = canonicalURL.appendingPathExtension("lock")
             let lockDirectoryURL = lockURL.deletingLastPathComponent()
             let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
+            if !missingDirectories.isEmpty {
+                // Deletion invalidates the cached proof that this directory
+                // entry is durable. Clear it before recreation so a failed
+                // synchronization is retried before any later operation.
+                _ = registryLock.withLock {
+                    durabilityInitializedPaths.remove(key)
+                }
+            }
             let needsDurabilityInitialization = registryLock.withLock {
                 !durabilityInitializedPaths.contains(key)
             }

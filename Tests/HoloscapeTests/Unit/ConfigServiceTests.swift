@@ -252,6 +252,48 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertGreaterThan(events.firstIndex(of: "write") ?? 0, 1)
     }
 
+    func testRecreatedDirectorySyncFailureRetriesDurabilityInitializationBeforeWriting() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("recreated-config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        var events: [String] = []
+        var failRecreationSynchronization = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in
+                events.append("write")
+                try data.write(to: url)
+            },
+            replaceFile: { source, destination in
+                events.append("replace")
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            synchronizeDirectory: { url in
+                events.append("sync:\(url.path)")
+                if failRecreationSynchronization {
+                    failRecreationSynchronization = false
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        XCTAssertTrue(service.save(.default))
+
+        try FileManager.default.removeItem(at: configDir)
+        events.removeAll()
+        failRecreationSynchronization = true
+        XCTAssertFalse(service.save(.default))
+        XCTAssertFalse(events.contains("write"))
+
+        events.removeAll()
+        XCTAssertTrue(service.save(.default))
+        let firstWrite = try XCTUnwrap(events.firstIndex(of: "write"))
+        XCTAssertTrue(
+            events[..<firstWrite].contains("sync:\(root.path)"),
+            "retry must resynchronize the recreated directory entry before writing"
+        )
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ConfigServiceTests")
