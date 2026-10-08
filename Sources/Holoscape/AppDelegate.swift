@@ -753,10 +753,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         return contextLines
     }
 
+    nonisolated static func reportCrashScanFailures(
+        _ failures: [CrashReportScanFailure],
+        logger: (String) -> Void = { NSLog("%@", $0) }
+    ) {
+        for failure in failures {
+            logger(
+                "Crash report scan \(failure.operation.rawValue) failed for "
+                    + "\(failure.path): \(failure.message)"
+            )
+        }
+    }
+
     private func checkForCrashes(lastLaunch: Date?) {
         let since = lastLaunch ?? Date.distantPast
-        let crashes = crashScanner.scanForCrashes(since: since)
-        guard let crash = crashes.first else { return }
+        let result = crashScanner.scanForCrashes(since: since)
+        Self.reportCrashScanFailures(result.failures)
+        guard let crash = result.logs.first else { return }
 
         // Load persisted state for context. Missing history is expected; an
         // unreadable/corrupt snapshot remains visible while report submission
