@@ -24,6 +24,18 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     struct LockError: LocalizedError {
         let message: String
+        let operationError: Error?
+        let operationSucceeded: Bool
+
+        init(
+            message: String,
+            operationError: Error? = nil,
+            operationSucceeded: Bool = false
+        ) {
+            self.message = message
+            self.operationError = operationError
+            self.operationSucceeded = operationSucceeded
+        }
 
         var errorDescription: String? { message }
     }
@@ -31,6 +43,8 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
     func withLock<T>(
         for fileURL: URL,
         synchronizeCreatedDirectoryEntries: ((URL) throws -> Void)? = nil,
+        unlockDescriptor: (Int32) -> Int32 = { flock($0, LOCK_UN) },
+        closeDescriptor: (Int32) -> Int32 = Darwin.close,
         _ operation: () throws -> T
     ) throws -> T {
         let standardizedURL = fileURL.standardizedFileURL
@@ -94,7 +108,7 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             }
             guard flock(descriptor, LOCK_EX) == 0 else {
                 let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
-                if Darwin.close(descriptor) != 0 {
+                if closeDescriptor(descriptor) != 0 {
                     let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
                     throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
                 }
@@ -109,21 +123,25 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             }
 
             var cleanupFailures: [String] = []
-            if flock(descriptor, LOCK_UN) != 0 {
+            if unlockDescriptor(descriptor) != 0 {
                 cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
             }
-            if Darwin.close(descriptor) != 0 {
+            if closeDescriptor(descriptor) != 0 {
                 cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
             }
             if !cleanupFailures.isEmpty {
-                let operationFailure: String
                 switch result {
                 case .success:
-                    operationFailure = ""
+                    throw LockError(
+                        message: cleanupFailures.joined(separator: "; "),
+                        operationSucceeded: true
+                    )
                 case .failure(let error):
-                    operationFailure = "operation failed: \(error); "
+                    throw LockError(
+                        message: "operation failed: \(error); " + cleanupFailures.joined(separator: "; "),
+                        operationError: error
+                    )
                 }
-                throw LockError(message: operationFailure + cleanupFailures.joined(separator: "; "))
             }
             return try result.get()
         }

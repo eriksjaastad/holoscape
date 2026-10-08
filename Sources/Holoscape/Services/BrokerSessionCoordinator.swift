@@ -151,6 +151,11 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
         case registryTransitionCommitted(BrokerSessionRecord, durabilityFailure: String)
+        case registryPruneCommitted(
+            removedRecords: [BrokerSessionRecord],
+            retainedRecords: [BrokerSessionRecord],
+            durabilityFailure: String
+        )
     }
 
     private let registry: BrokerSessionRegistry
@@ -662,6 +667,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
 
     func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord {
         var previousRecord: BrokerSessionRecord?
+        var committedIntentWarning: (record: BrokerSessionRecord, failure: String)?
         while true {
             let current = try record(for: id)
             switch current.lifecycle {
@@ -705,12 +711,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                let (wasReplaced, _) = try replaceRegistry(
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
                     terminating,
                     ifUnchangedFrom: current
                 )
                 if wasReplaced {
                     previousRecord = current
+                    if let durabilityWarning {
+                        committedIntentWarning = (
+                            try registry.canonicalized(terminating),
+                            durabilityWarning
+                        )
+                    }
                     break
                 }
                 continue
@@ -774,6 +786,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                           let previousRecord {
                     do {
                         try rollbackExit(id, to: previousRecord)
+                        committedIntentWarning = nil
                     } catch let registryFailure {
                         throw CoordinatorError.exitRollbackFailed(
                             id,
@@ -810,6 +823,13 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 NSLog(
                     "Broker session exit outcome remains ambiguous for \(id.rawValue): "
                         + "termination failure: \(runtimeFailure); status failure: \(error)"
+                )
+            }
+            if let committedIntentWarning {
+                throw CoordinatorError.registryTransitionCommitted(
+                    committedIntentWarning.record,
+                    durabilityFailure: committedIntentWarning.failure
+                        + "; runtime outcome remains ambiguous: \(runtimeFailure)"
                 )
             }
             throw runtimeFailure
@@ -969,6 +989,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
         let existing = try record(for: id)
         let retiring: BrokerSessionRecord
+        var committedIntentWarning: (record: BrokerSessionRecord, failure: String)?
         if existing.lifecycle == .terminating {
             retiring = existing
         } else {
@@ -981,12 +1002,18 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Persist intent before the irreversible runtime action. If the
             // final write or host response is lost, durable state never claims
             // that the retired child is still running.
-            let (wasReplaced, _) = try replaceRegistry(
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
                 retiring,
                 ifUnchangedFrom: existing
             )
             guard wasReplaced else {
                 return try markErrored(id)
+            }
+            if let durabilityWarning {
+                committedIntentWarning = (
+                    try registry.canonicalized(retiring),
+                    durabilityWarning
+                )
             }
         }
         var completedRetirementFailure: Error?
@@ -1003,12 +1030,26 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             // Input interruption is irreversible even though process cleanup is
             // incomplete. Preserve `.terminating` so this generation can never
             // be advertised as running/reattachable again.
+            if let committedIntentWarning {
+                throw CoordinatorError.registryTransitionCommitted(
+                    committedIntentWarning.record,
+                    durabilityFailure: committedIntentWarning.failure
+                        + "; runtime retirement remains incomplete: \(error)"
+                )
+            }
             throw error
         } catch let error as BrokerSessionHostClientRuntime.ClientError {
             if case .transportFailed = error {
                 // The host may have retired the child before its response was
                 // lost. Preserve the durable intent so retry can finish the
                 // idempotent transition instead of reviving a dead session.
+                if let committedIntentWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        committedIntentWarning.record,
+                        durabilityFailure: committedIntentWarning.failure
+                            + "; runtime retirement outcome remains ambiguous: \(error)"
+                    )
+                }
                 throw error
             }
             do {
@@ -1112,13 +1153,34 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord {
-        guard let updated = try registry.update(id, transform: { existing in
-            guard existing.workingDirectory != directory else { return existing }
-            return existing.withWorkingDirectory(directory, updatedAt: now())
-        }) else {
-            throw CoordinatorError.missingSession(id)
+        let existing = try record(for: id)
+        guard existing.workingDirectory != directory else { return existing }
+
+        var intendedUpdate: BrokerSessionRecord?
+        do {
+            guard let updated = try registry.update(id, transform: { current in
+                let updated = current.withWorkingDirectory(directory, updatedAt: now())
+                intendedUpdate = updated
+                return updated
+            }) else {
+                throw CoordinatorError.missingSession(id)
+            }
+            return updated
+        } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
+            guard let intendedUpdate,
+                  let committed = records.first(where: {
+                      $0.id == id && $0 == (try? registry.canonicalized(intendedUpdate))
+                  }) else {
+                throw BrokerSessionRegistry.RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure
+                )
+            }
+            throw CoordinatorError.registryTransitionCommitted(
+                committed,
+                durabilityFailure: durabilityFailure
+            )
         }
-        return updated
     }
 
     /// Prune terminal lifecycle records after an explicit caller-owned retention decision.
@@ -1128,7 +1190,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     /// final `.exited` / `.errored` metadata older than the supplied cutoff is removed.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        try registry.pruneFinalRecords(updatedBefore: cutoff)
+        do {
+            return try registry.pruneFinalRecords(updatedBefore: cutoff)
+        } catch let BrokerSessionRegistry.RegistryError.pruneCommitted(
+            removedRecords,
+            retainedRecords,
+            durabilityFailure
+        ) {
+            throw CoordinatorError.registryPruneCommitted(
+                removedRecords: removedRecords,
+                retainedRecords: retainedRecords,
+                durabilityFailure: durabilityFailure
+            )
+        }
     }
 
     func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {
@@ -1283,7 +1357,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             try registry.upsert(record)
             return nil
         } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
-            guard records.contains(record) else {
+            guard records.contains(try registry.canonicalized(record)) else {
                 throw BrokerSessionRegistry.RegistryError.replacementCommitted(
                     records: records,
                     durabilityFailure: durabilityFailure
@@ -1300,7 +1374,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         do {
             return (try registry.replace(record, ifUnchangedFrom: expected), nil)
         } catch let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) {
-            guard records.contains(record) else {
+            guard records.contains(try registry.canonicalized(record)) else {
                 throw BrokerSessionRegistry.RegistryError.replacementCommitted(
                     records: records,
                     durabilityFailure: durabilityFailure

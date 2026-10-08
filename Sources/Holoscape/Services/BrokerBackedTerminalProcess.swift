@@ -2375,7 +2375,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .failed
             case .concurrentSessionTransition, .untrackedSession:
                 return .failed
-            case .registryTransitionCommitted:
+            case .registryTransitionCommitted, .registryPruneCommitted:
                 return .failed
             }
         }

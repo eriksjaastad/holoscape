@@ -16,6 +16,14 @@ struct BrokerSessionRegistry {
         /// containing directory failed. Callers must preserve the committed
         /// records instead of compensating as if the mutation never happened.
         case replacementCommitted(records: [BrokerSessionRecord], durabilityFailure: String)
+        /// A prune replacement is already visible, but its durability or lock
+        /// cleanup failed. Preserve both sides of the mutation so callers do
+        /// not retry it as a falsely successful empty prune.
+        case pruneCommitted(
+            removedRecords: [BrokerSessionRecord],
+            retainedRecords: [BrokerSessionRecord],
+            durabilityFailure: String
+        )
     }
 
     struct Persistence: @unchecked Sendable {
@@ -23,6 +31,24 @@ struct BrokerSessionRegistry {
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
+        let unlockFileLock: (Int32) -> Int32
+        let closeFileLock: (Int32) -> Int32
+
+        init(
+            writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
+            replaceFile: @escaping (URL, URL) throws -> Void,
+            synchronizeDirectory: @escaping (URL) throws -> Void,
+            removeTemporaryFile: @escaping (URL) throws -> Void,
+            unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
+            closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
+        ) {
+            self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
+            self.replaceFile = replaceFile
+            self.synchronizeDirectory = synchronizeDirectory
+            self.removeTemporaryFile = removeTemporaryFile
+            self.unlockFileLock = unlockFileLock
+            self.closeFileLock = closeFileLock
+        }
 
         static let live = Persistence(
             writeAndSynchronizeTemporaryFile: BrokerSessionRegistry.writeAndSynchronizeTemporaryFile,
@@ -52,14 +78,18 @@ struct BrokerSessionRegistry {
     }
 
     func save(_ records: [BrokerSessionRecord]) throws {
-        try withOperationLock { try saveUnlocked(records) }
+        try withMutationLock {
+            let committedRecords = try saveUnlocked(records)
+            return ((), committedRecords)
+        }
     }
 
     func upsert(_ record: BrokerSessionRecord) throws {
-        try withOperationLock {
+        try withMutationLock {
             var records = try loadUnlocked().filter { $0.id != record.id }
             records.append(record)
-            try saveUnlocked(records)
+            let committedRecords = try saveUnlocked(records)
+            return ((), committedRecords)
         }
     }
 
@@ -70,14 +100,14 @@ struct BrokerSessionRegistry {
         _ record: BrokerSessionRecord,
         ifUnchangedFrom expected: BrokerSessionRecord
     ) throws -> Bool {
-        try withOperationLock {
+        try withMutationLock {
             var records = try loadUnlocked()
             let persistedExpected = try canonicalized(expected)
             guard let index = records.firstIndex(where: { $0.id == expected.id }),
-                  records[index] == persistedExpected else { return false }
+                  records[index] == persistedExpected else { return (false, nil) }
             records[index] = record
-            try saveUnlocked(records)
-            return true
+            let committedRecords = try saveUnlocked(records)
+            return (true, committedRecords)
         }
     }
 
@@ -85,13 +115,13 @@ struct BrokerSessionRegistry {
         _ id: BrokerSessionID,
         transform: (BrokerSessionRecord) -> BrokerSessionRecord
     ) throws -> BrokerSessionRecord? {
-        try withOperationLock {
+        try withMutationLock {
             var records = try loadUnlocked()
-            guard let index = records.firstIndex(where: { $0.id == id }) else { return nil }
+            guard let index = records.firstIndex(where: { $0.id == id }) else { return (nil, nil) }
             let updated = transform(records[index])
             records[index] = updated
-            try saveUnlocked(records)
-            return updated
+            let committedRecords = try saveUnlocked(records)
+            return (updated, committedRecords)
         }
     }
 
@@ -102,20 +132,31 @@ struct BrokerSessionRegistry {
     /// durable regardless of age so Holoscape never silently loses resumable sessions.
     @discardableResult
     func pruneFinalRecords(updatedBefore cutoff: Date) throws -> [BrokerSessionRecord] {
-        try withOperationLock {
-            let records = try loadUnlocked()
-            let removed = records.filter { record in
-                record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+        var intendedRemoval: [BrokerSessionRecord] = []
+        do {
+            return try withMutationLock {
+                let records = try loadUnlocked()
+                let removed = records.filter { record in
+                    record.updatedAt < cutoff && record.lifecycle.isFinalForPruning
+                }.sortedBySessionID()
+                guard !removed.isEmpty else {
+                    return ([], nil)
+                }
+                intendedRemoval = removed
+                let removedIDs = Set(removed.map(\.id))
+                let retained = records.filter { record in
+                    !removedIDs.contains(record.id)
+                }
+                let committedRecords = try saveUnlocked(retained)
+                return (removed, committedRecords)
             }
-            guard !removed.isEmpty else {
-                return []
-            }
-            let removedIDs = Set(removed.map(\.id))
-            let retained = records.filter { record in
-                !removedIDs.contains(record.id)
-            }
-            try saveUnlocked(retained)
-            return removed.sortedBySessionID()
+        } catch let RegistryError.replacementCommitted(retainedRecords, durabilityFailure)
+            where !intendedRemoval.isEmpty {
+            throw RegistryError.pruneCommitted(
+                removedRecords: intendedRemoval,
+                retainedRecords: retainedRecords,
+                durabilityFailure: durabilityFailure
+            )
         }
     }
 
@@ -133,14 +174,49 @@ struct BrokerSessionRegistry {
     }
 
     private func withOperationLock<T>(_ operation: () throws -> T) throws -> T {
-        try operationLocks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: persistence.synchronizeDirectory,
-            operation
-        )
+        do {
+            return try operationLocks.withLock(
+                for: fileURL,
+                synchronizeCreatedDirectoryEntries: persistence.synchronizeDirectory,
+                unlockDescriptor: persistence.unlockFileLock,
+                closeDescriptor: persistence.closeFileLock,
+                operation
+            )
+        } catch let lockError as PersistentFileOperationLocks.LockError {
+            if case let RegistryError.replacementCommitted(records, durabilityFailure)? = lockError.operationError {
+                throw RegistryError.replacementCommitted(
+                    records: records,
+                    durabilityFailure: durabilityFailure + "; lock cleanup failed: " + lockError.message
+                )
+            }
+            throw lockError
+        }
     }
 
-    private func saveUnlocked(_ records: [BrokerSessionRecord]) throws {
+    private func withMutationLock<T>(
+        _ operation: () throws -> (value: T, committedRecords: [BrokerSessionRecord]?)
+    ) throws -> T {
+        var committedRecords: [BrokerSessionRecord]?
+        do {
+            return try withOperationLock {
+                let result = try operation()
+                committedRecords = result.committedRecords
+                return result.value
+            }
+        } catch let lockError as PersistentFileOperationLocks.LockError {
+            guard lockError.operationSucceeded,
+                  let committedRecords else {
+                throw lockError
+            }
+            throw RegistryError.replacementCommitted(
+                records: committedRecords,
+                durabilityFailure: "lock cleanup failed after committed mutation: \(lockError.message)"
+            )
+        }
+    }
+
+    @discardableResult
+    private func saveUnlocked(_ records: [BrokerSessionRecord]) throws -> [BrokerSessionRecord] {
         try validate(records)
 
         let encoder = JSONEncoder()
@@ -148,12 +224,16 @@ struct BrokerSessionRegistry {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let sortedRecords = records.sortedBySessionID()
         let data = try encoder.encode(sortedRecords)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let committedRecords = try decoder.decode([BrokerSessionRecord].self, from: data)
 
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try persist(data, committedRecords: sortedRecords)
+        try persist(data, committedRecords: committedRecords)
+        return committedRecords
     }
 
     /// Commit registry bytes in crash-safe order: fully synchronize a sibling
@@ -208,7 +288,7 @@ struct BrokerSessionRegistry {
     /// encoding rounds `Date` values to whole seconds, so comparing a freshly
     /// constructed in-memory record directly with its reload would reject the
     /// caller's own write whenever `Date.init` supplied subsecond precision.
-    private func canonicalized(_ record: BrokerSessionRecord) throws -> BrokerSessionRecord {
+    func canonicalized(_ record: BrokerSessionRecord) throws -> BrokerSessionRecord {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let decoder = JSONDecoder()

@@ -226,6 +226,39 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll(), [updated])
     }
 
+    func testWorkingDirectoryUpdateSurfacesCommittedDurabilityWarning() throws {
+        let registryURL = tempDirectory.appendingPathComponent("committed-cwd.json")
+        let runtime = RecordingBrokerSessionRuntime()
+        let liveCoordinator = makeCoordinator(
+            runtime: runtime,
+            registry: BrokerSessionRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 40) }
+        )
+        let started = try liveCoordinator.start(
+            launchRequest(workingDirectory: "/tmp/original"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: postReplacementDirectorySyncFailingRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 41.75) }
+        )
+
+        XCTAssertThrowsError(try coordinator.updateWorkingDirectory(started.id, to: "/tmp/committed")) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, failure) = error else {
+                return XCTFail("Expected committed working-directory transition, got \(error)")
+            }
+            XCTAssertEqual(record.workingDirectory, "/tmp/committed")
+            XCTAssertTrue(failure.contains("directorySync"), failure)
+        }
+        XCTAssertEqual(
+            try XCTUnwrap(BrokerSessionRegistry(fileURL: registryURL).load().first).workingDirectory,
+            "/tmp/committed"
+        )
+    }
+
     func testLegacyBrokerCreateResponseDoesNotPersistUnappliedOwnerToken() throws {
         let codec = BrokerSessionHostCodec()
         let runtime = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
@@ -632,6 +665,39 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recovered.exitCode, 0)
     }
 
+    func testExitSurfacesCommittedIntentWhenRuntimeOutcomeIsAmbiguous() throws {
+        let registryURL = tempDirectory.appendingPathComponent("committed-ambiguous-exit.json")
+        let runtime = RecordingBrokerSessionRuntime()
+        let liveCoordinator = makeCoordinator(
+            runtime: runtime,
+            registry: BrokerSessionRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 131) }
+        )
+        let started = try liveCoordinator.start(
+            launchRequest(workingDirectory: "/tmp/committed-ambiguous-exit"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.terminateError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: postReplacementDirectorySyncFailingRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 132.75) }
+        )
+
+        XCTAssertThrowsError(try coordinator.exit(started.id, exitCode: 0)) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, failure) = error else {
+                return XCTFail("Expected committed exit intent, got \(error)")
+            }
+            XCTAssertEqual(record.lifecycle, .exiting)
+            XCTAssertTrue(failure.contains("directorySync"), failure)
+            XCTAssertTrue(failure.contains("runtime outcome remains ambiguous"), failure)
+        }
+        XCTAssertEqual(try XCTUnwrap(BrokerSessionRegistry(fileURL: registryURL).load().first).lifecycle, .exiting)
+    }
+
     func testReattachRetriesAmbiguousExitButRefusesStillRunningGeneration() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 132) })
@@ -938,6 +1004,38 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
 
         runtime.markErroredError = nil
         XCTAssertEqual(try coordinator.markErrored(record.id).lifecycle, .errored)
+    }
+
+    func testMarkErroredSurfacesCommittedIntentWhenBrokerResponseIsLost() throws {
+        let registryURL = tempDirectory.appendingPathComponent("committed-ambiguous-retirement.json")
+        let runtime = RecordingBrokerSessionRuntime()
+        let liveCoordinator = makeCoordinator(
+            runtime: runtime,
+            registry: BrokerSessionRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 202) }
+        )
+        let started = try liveCoordinator.start(
+            launchRequest(workingDirectory: "/tmp/committed-retirement"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        runtime.markErroredError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: postReplacementDirectorySyncFailingRegistry(fileURL: registryURL),
+            now: { Date(timeIntervalSince1970: 203.75) }
+        )
+
+        XCTAssertThrowsError(try coordinator.markErrored(started.id)) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, failure) = error else {
+                return XCTFail("Expected committed retirement intent, got \(error)")
+            }
+            XCTAssertEqual(record.lifecycle, .terminating)
+            XCTAssertTrue(failure.contains("directorySync"), failure)
+            XCTAssertTrue(failure.contains("runtime retirement outcome remains ambiguous"), failure)
+        }
+        XCTAssertEqual(try XCTUnwrap(BrokerSessionRegistry(fileURL: registryURL).load().first).lifecycle, .terminating)
     }
 
     func testRelaunchDiscoveryIsDispatchedOffMainActor() async throws {
@@ -1991,6 +2089,51 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             try coordinator.loadAll().map(\.id).sorted { $0.rawValue < $1.rawValue },
             [oldDetached.id, oldStale.id, recentExited.id].sorted { $0.rawValue < $1.rawValue }
         )
+    }
+
+    func testPruneSurfacesCommittedRemovalInsteadOfEmptyRetrySuccess() throws {
+        let registryURL = tempDirectory.appendingPathComponent("committed-prune.json")
+        let runtime = RecordingBrokerSessionRuntime()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let liveCoordinator = makeCoordinator(
+            runtime: runtime,
+            registry: BrokerSessionRegistry(fileURL: registryURL),
+            now: { now }
+        )
+        let old = try liveCoordinator.start(
+            launchRequest(workingDirectory: "/tmp/prune-old"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        now = Date(timeIntervalSince1970: 1_010)
+        _ = try liveCoordinator.exit(old.id, exitCode: 0)
+        now = Date(timeIntervalSince1970: 1_200)
+        let retained = try liveCoordinator.start(
+            launchRequest(workingDirectory: "/tmp/prune-retained"),
+            channelType: .shell,
+            label: nil,
+            attachedChannelID: nil
+        )
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: postReplacementDirectorySyncFailingRegistry(fileURL: registryURL),
+            now: { now }
+        )
+
+        XCTAssertThrowsError(try coordinator.pruneFinalRecords(updatedBefore: Date(timeIntervalSince1970: 1_100))) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.registryPruneCommitted(
+                removedRecords,
+                retainedRecords,
+                durabilityFailure
+            ) = error else {
+                return XCTFail("Expected committed prune warning, got \(error)")
+            }
+            XCTAssertEqual(removedRecords.map(\.id), [old.id])
+            XCTAssertEqual(retainedRecords.map(\.id), [retained.id])
+            XCTAssertTrue(durabilityFailure.contains("directorySync"), durabilityFailure)
+        }
+        XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load().map(\.id), [retained.id])
     }
 
     func testLegacyOutputSnapshotRemainsPendingUntilAcknowledged() throws {
