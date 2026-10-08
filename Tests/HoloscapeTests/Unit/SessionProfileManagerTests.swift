@@ -72,6 +72,64 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(directories, ["alpha", "zeta"])
     }
 
+    func testRemoteDirectoryListingCommandTreatsMetacharactersAndQuotesAsPathData() async throws {
+        let workspace = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-remote-command-\(UUID().uuidString)", isDirectory: true)
+        let rootName = "-projects; touch escaped; printf 'ignored'"
+        let root = workspace.appendingPathComponent(rootName, isDirectory: true)
+        let sentinel = workspace.appendingPathComponent("escaped", isDirectory: false)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("zeta", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("alpha", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: workspace) }
+
+        let command = ProjectDiscoveryService.remoteDirectoryListingCommand(root: rootName)
+        let directories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "cd \"$1\" && \(command)", "holoscape-test", workspace.path],
+            timeout: 1
+        )
+
+        XCTAssertEqual(directories, ["alpha", "zeta"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
+    func testRemoteDirectoryListingCommandPreservesLeadingTildeHomeExpansion() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape remote home \(UUID().uuidString)", isDirectory: true)
+        let root = home.appendingPathComponent("projects with spaces", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("holoscape", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+
+        let command = ProjectDiscoveryService.remoteDirectoryListingCommand(root: "~/projects with spaces")
+        let directories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["HOME=\(home.path)", "/bin/sh", "-c", command],
+            timeout: 1
+        )
+        let homeDirectories = try await ProjectDiscoveryService.listDirectories(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [
+                "HOME=\(home.path)",
+                "/bin/sh",
+                "-c",
+                ProjectDiscoveryService.remoteDirectoryListingCommand(root: "~"),
+            ],
+            timeout: 1
+        )
+
+        XCTAssertEqual(directories, ["holoscape"])
+        XCTAssertEqual(homeDirectories, ["projects with spaces"])
+    }
+
     func testRemoteDirectoryListingDrainsHighVolumeStderr() async throws {
         let script = try makeDiscoveryScript("""
         i=0

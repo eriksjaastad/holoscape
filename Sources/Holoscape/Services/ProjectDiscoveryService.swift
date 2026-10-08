@@ -148,10 +148,28 @@ class ProjectDiscoveryService {
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=10",
                 "\(user)@\(host)",
-                "ls", "-1", root,
+                remoteDirectoryListingCommand(root: root),
             ],
             timeout: 15
         )
+    }
+
+    nonisolated static func remoteDirectoryListingCommand(root: String) -> String {
+        "ls -1 -- \(remoteShellPathExpression(root))"
+    }
+
+    private nonisolated static func remoteShellPathExpression(_ path: String) -> String {
+        if path == "~" {
+            return "\"${HOME}\""
+        }
+        if path.hasPrefix("~/") {
+            return "\"${HOME}\"\(singleQuotedShellWord(String(path.dropFirst())))"
+        }
+        return singleQuotedShellWord(path)
+    }
+
+    private nonisolated static func singleQuotedShellWord(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     typealias ProcessOutputReader = @Sendable (FileHandle, Int) throws -> Data?
