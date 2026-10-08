@@ -1996,6 +1996,54 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         wait(for: [existingServerFinished], timeout: 1)
     }
 
+    func testLazyUnixSocketTransportTerminatesHelperThatNeverBecomesReachable() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketFailedLaunchTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("unreachable-broker")
+        let helperReadyURL = temporaryDirectory.appendingPathComponent("helper-ready")
+        let socketPath = "/tmp/hs-lazy-failed-launch-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+        }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        : > "\(helperReadyURL.path)"
+        while :; do :; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        var launchedPID: pid_t?
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 100,
+            requestTimeoutMilliseconds: 100,
+            launchedProcessObserver: {
+                launchedPID = $0.processIdentifier
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: helperReadyURL.path) {
+                    usleep(10_000)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut = error else {
+                return XCTFail("Expected socketTimedOut, got \(error)")
+            }
+        }
+        let helperPID = try XCTUnwrap(launchedPID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: helperReadyURL.path), "Helper never installed its TERM handler")
+        defer {
+            if Darwin.kill(helperPID, 0) == 0 {
+                _ = Darwin.kill(helperPID, SIGKILL)
+            }
+        }
+        XCTAssertTrue(waitForProcessToExit(helperPID), "Timed-out broker helper PID \(helperPID) survived launch cleanup")
+    }
+
     func testLazyUnixSocketTransportSendsRequestWithoutProbeWhenBrokerIsBusy() throws {
         let runtime = DelayedBrokerSessionRuntime()
         runtime.isRunning = true

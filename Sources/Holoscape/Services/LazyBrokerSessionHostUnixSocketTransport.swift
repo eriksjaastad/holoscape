@@ -11,13 +11,17 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     enum LaunchError: Error, Equatable {
         case launchFailed(String)
         case socketTimedOut(String)
+        case launchCleanupFailed(String)
     }
+
+    private static let failedLaunchTerminationGraceMilliseconds = 250
 
     private let executableURL: URL
     private let socketPath: String
     private let environment: [String: String]?
     private let socketWaitTimeoutMilliseconds: Int
     private let requestTimeoutMilliseconds: Int
+    private let launchedProcessObserver: ((Process) -> Void)?
     private let lock = NSLock()
     private var launchedProcess: Process?
 
@@ -26,13 +30,15 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(),
         environment: [String: String]? = nil,
         socketWaitTimeoutMilliseconds: Int = 5_000,
-        requestTimeoutMilliseconds: Int = 10_000
+        requestTimeoutMilliseconds: Int = 10_000,
+        launchedProcessObserver: ((Process) -> Void)? = nil
     ) {
         self.executableURL = executableURL
         self.socketPath = socketPath
         self.environment = environment
         self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
+        self.launchedProcessObserver = launchedProcessObserver
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
@@ -69,7 +75,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
 
         if let launchedProcess, launchedProcess.isRunning {
-            try waitForSocket()
+            try waitForLaunchedProcess(launchedProcess)
             return
         }
 
@@ -88,7 +94,51 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
 
         launchedProcess = process
-        try waitForSocket()
+        launchedProcessObserver?(process)
+        try waitForLaunchedProcess(process)
+    }
+
+    private func waitForLaunchedProcess(_ process: Process) throws {
+        do {
+            try waitForSocket()
+            // Once reachable, ownership transfers to the session-survival broker.
+            // Dropping our Process handle must not terminate that successful host.
+            launchedProcess = nil
+        } catch let readinessError {
+            do {
+                try terminateFailedLaunch(process)
+                launchedProcess = nil
+            } catch let cleanupError {
+                throw LaunchError.launchCleanupFailed(
+                    "Broker helper PID \(process.processIdentifier) readiness failed with \(readinessError); cleanup failed with \(cleanupError.localizedDescription)"
+                )
+            }
+            throw readinessError
+        }
+    }
+
+    private func terminateFailedLaunch(_ process: Process) throws {
+        guard process.isRunning else { return }
+        guard Darwin.kill(process.processIdentifier, SIGTERM) == 0 || errno == ESRCH else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        if waitForProcessExit(process) { return }
+
+        guard Darwin.kill(process.processIdentifier, SIGKILL) == 0 || errno == ESRCH else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard waitForProcessExit(process) else {
+            throw POSIXError(.ETIMEDOUT)
+        }
+    }
+
+    private func waitForProcessExit(_ process: Process) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(Self.failedLaunchTerminationGraceMilliseconds) * 1_000_000
+        while process.isRunning, DispatchTime.now().uptimeNanoseconds < deadline {
+            usleep(10_000)
+        }
+        return !process.isRunning
     }
 
     private func waitForSocket() throws {
