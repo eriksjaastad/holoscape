@@ -18,6 +18,9 @@ class ConfigService {
 
     /// In-memory cache — avoids disk reads on every load().
     private var cachedConfig: HoloscapeConfig?
+    /// A failed synchronization can leave a visible directory whose parent
+    /// entry is not durable. Do not trust existence alone on a later attempt.
+    private var directoryDurabilityInitialized = false
     private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
     init() {
@@ -109,7 +112,13 @@ class ConfigService {
             guard isDirectory.boolValue else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
             }
-            return
+            // An existing config file could only have been linked through an
+            // already-existing directory. First-save initialization is needed
+            // only while the config leaf is absent.
+            if FileManager.default.fileExists(atPath: configURL.path) {
+                directoryDurabilityInitialized = true
+                return
+            }
         }
         var missingDirectories: [URL] = []
         var candidate = configDir
@@ -124,10 +133,31 @@ class ConfigService {
 
         for directory in missingDirectories.reversed() {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-            // Persist each new directory entry before using that directory as
-            // the parent of another entry or of config.json.
-            try persistence.synchronizeDirectory(directory.deletingLastPathComponent())
         }
+
+        let directoriesToSynchronize = directoryDurabilityInitialized
+            ? missingDirectories.reversed().map { $0.deletingLastPathComponent() }
+            : Self.directoryEntryParents(endingAt: configDir)
+        for directory in directoriesToSynchronize {
+            try persistence.synchronizeDirectory(directory)
+        }
+        directoryDurabilityInitialized = true
+    }
+
+    /// Synchronize the full ancestry until one complete pass succeeds. This
+    /// repairs a prior attempt that created directories but failed before their
+    /// entries became durable, including retries by a fresh ConfigService.
+    private static func directoryEntryParents(endingAt directoryURL: URL) -> [URL] {
+        let components = directoryURL.standardizedFileURL.pathComponents
+        guard components.first == "/", components.count > 1 else { return [] }
+
+        var result = [URL(fileURLWithPath: "/", isDirectory: true)]
+        var parent = result[0]
+        for component in components.dropFirst().dropLast() {
+            parent.appendPathComponent(component, isDirectory: true)
+            result.append(parent)
+        }
+        return result
     }
 
     private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, error: Error) {

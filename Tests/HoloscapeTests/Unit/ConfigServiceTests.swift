@@ -101,7 +101,7 @@ final class ConfigServiceTests: XCTestCase {
         config.appearance.fontFamily = "Durable Font"
 
         XCTAssertTrue(service.save(config))
-        XCTAssertEqual(operations, ["write", "replace", "sync-directory"])
+        XCTAssertEqual(Array(operations.suffix(3)), ["write", "replace", "sync-directory"])
         XCTAssertEqual(ConfigService(configDir: configDir).load().appearance.fontFamily, "Durable Font")
     }
 
@@ -133,12 +133,16 @@ final class ConfigServiceTests: XCTestCase {
     func testPostReplacementSyncFailureKeepsCommittedConfigAuthoritative() throws {
         let configDir = temporaryConfigDir()
         enum InjectedFailure: Error { case directorySync }
+        var replacementCommitted = false
         let persistence = DurableAtomicFileCommitter.Persistence(
             writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
             replaceFile: { source, destination in
                 try FileManager.default.moveItem(at: source, to: destination)
+                replacementCommitted = true
             },
-            synchronizeDirectory: { _ in throw InjectedFailure.directorySync },
+            synchronizeDirectory: { _ in
+                if replacementCommitted { throw InjectedFailure.directorySync }
+            },
             removeTemporaryFile: { _ in XCTFail("committed replacement must not be removed") }
         )
         let service = ConfigService(configDir: configDir, persistence: persistence)
@@ -174,7 +178,7 @@ final class ConfigServiceTests: XCTestCase {
 
         XCTAssertTrue(ConfigService(configDir: configDir, persistence: persistence).save(.default))
         XCTAssertEqual(
-            operations,
+            Array(operations.suffix(5)),
             [
                 "sync:\(root.path)",
                 "sync:\(root.appendingPathComponent("nested").path)",
@@ -212,14 +216,28 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertEqual(ConfigService(configDir: configDir).load().appearance.fontFamily, "Prior Font")
     }
 
-    func testCreatedDirectorySyncFailurePreventsConfigWrite() throws {
+    func testCreatedDirectorySyncFailureRetriesDurabilityInitializationBeforeWriting() throws {
         let configDir = temporaryConfigDir().appendingPathComponent("new-config")
         enum InjectedFailure: Error { case directorySync }
+        var events: [String] = []
+        var shouldFailSynchronization = true
         let persistence = DurableAtomicFileCommitter.Persistence(
-            writeAndSynchronizeTemporaryFile: { _, _ in XCTFail("write must not run") },
-            replaceFile: { _, _ in XCTFail("replacement must not run") },
-            synchronizeDirectory: { _ in throw InjectedFailure.directorySync },
-            removeTemporaryFile: { _ in XCTFail("cleanup must not run") }
+            writeAndSynchronizeTemporaryFile: { data, url in
+                events.append("write")
+                try data.write(to: url)
+            },
+            replaceFile: { source, destination in
+                events.append("replace")
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            synchronizeDirectory: { url in
+                events.append("sync:\(url.path)")
+                if shouldFailSynchronization {
+                    shouldFailSynchronization = false
+                    throw InjectedFailure.directorySync
+                }
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
         )
         let service = ConfigService(configDir: configDir, persistence: persistence)
 
@@ -228,6 +246,10 @@ final class ConfigServiceTests: XCTestCase {
             FileManager.default.fileExists(atPath: configDir.appendingPathComponent("config.json").path)
         )
         XCTAssertEqual(service.lastDiagnostic?.operation, .save)
+
+        XCTAssertTrue(service.save(.default))
+        XCTAssertTrue(events[1].hasPrefix("sync:"), "retry must resynchronize directory ancestry before write")
+        XCTAssertGreaterThan(events.firstIndex(of: "write") ?? 0, 1)
     }
 
     private func temporaryConfigDir() -> URL {
