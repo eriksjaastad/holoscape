@@ -1813,6 +1813,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         try waitForSocket(at: socketPath)
 
         XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
+        XCTAssertEqual(try BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath), getpid())
         XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath))
 
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
@@ -1994,6 +1995,196 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertLessThan(Double(elapsedNanoseconds) / 1_000_000_000, 0.2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: launchMarkerURL.path))
         wait(for: [existingServerFinished], timeout: 1)
+    }
+
+    func testLazyUnixSocketTransportTerminatesHelperThatNeverBecomesReachable() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketFailedLaunchTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("unreachable-broker")
+        let helperReadyURL = temporaryDirectory.appendingPathComponent("helper-ready")
+        let socketPath = "/tmp/hs-lazy-failed-launch-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+        }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        : > "\(helperReadyURL.path)"
+        while :; do :; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 100,
+            requestTimeoutMilliseconds: 100,
+            launchedChildObserver: {
+                launchedChild = $0
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: helperReadyURL.path) {
+                    usleep(10_000)
+                }
+            }
+        )
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut = error else {
+                return XCTFail("Expected socketTimedOut, got \(error)")
+            }
+        }
+        let elapsedSeconds = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000_000
+        XCTAssertLessThan(elapsedSeconds, 2, "Failed-launch cleanup exceeded its bounded timeout")
+        let child = try XCTUnwrap(launchedChild)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: helperReadyURL.path), "Helper never installed its TERM handler")
+        defer { try? child.terminateAndReap(graceMilliseconds: 250) }
+        XCTAssertTrue(child.isReaped, "Timed-out broker helper PID \(child.pid) was not reaped")
+    }
+
+    func testLazyUnixSocketTransportRetiresLosingLaunchWithoutKillingReachableBroker() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketOwnershipRaceTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("losing-broker")
+        let helperReadyURL = temporaryDirectory.appendingPathComponent("helper-ready")
+        let socketPath = "/tmp/hs-lazy-ownership-race-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+            unlink(socketPath + ".lock")
+        }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        : > "\(helperReadyURL.path)"
+        while :; do :; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime)
+        )
+        let serverFinished = expectation(description: "winning broker served probe and request")
+        let serverError = LockedErrorBox()
+        var losingChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 1_000,
+            requestTimeoutMilliseconds: 1_000,
+            launchedChildObserver: { child in
+                losingChild = child
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: helperReadyURL.path) {
+                    usleep(10_000)
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try server.run(maxConnections: 2)
+                    } catch {
+                        serverError.set(error)
+                    }
+                    serverFinished.fulfill()
+                }
+                try? self.waitForSocket(at: socketPath)
+            }
+        )
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "ownership-race-session")
+
+        let response = try transport.sendFrame(codec.encodeRequest(.isRunning(id: sessionID)))
+
+        XCTAssertEqual(try codec.decodeResponse(response), .running(true))
+        let child = try XCTUnwrap(losingChild)
+        defer { try? child.terminateAndReap(graceMilliseconds: 250) }
+        XCTAssertTrue(child.isReaped, "Losing helper PID \(child.pid) was not reaped")
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertEqual(runtime.events, [
+            "listSessions",
+            "isRunning ownership-race-session",
+        ])
+    }
+
+    func testLazyUnixSocketTransportDoesNotRetireChildWhenBrokerOwnershipIsUnreadable() throws {
+        struct OwnershipReadFailure: Error {}
+
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketOwnershipReadTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("unverified-broker")
+        let helperReadyURL = temporaryDirectory.appendingPathComponent("helper-ready")
+        let socketPath = "/tmp/hs-lazy-ownership-read-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+            unlink(socketPath + ".lock")
+        }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        : > "\(helperReadyURL.path)"
+        while :; do :; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime)
+        )
+        let serverFinished = expectation(description: "reachable broker served readiness probe")
+        let serverError = LockedErrorBox()
+        var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 1_000,
+            requestTimeoutMilliseconds: 1_000,
+            launchedChildObserver: { child in
+                launchedChild = child
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: helperReadyURL.path) {
+                    usleep(10_000)
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try server.run(maxConnections: 1)
+                    } catch {
+                        serverError.set(error)
+                    }
+                    serverFinished.fulfill()
+                }
+                try? self.waitForSocket(at: socketPath)
+            },
+            brokerProcessIDProvider: { _ in throw OwnershipReadFailure() }
+        )
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.brokerOwnershipIndeterminate = error else {
+                return XCTFail("Expected brokerOwnershipIndeterminate, got \(error)")
+            }
+        }
+        let child = try XCTUnwrap(launchedChild)
+        defer { try? child.terminateAndReap(graceMilliseconds: 250) }
+        XCTAssertFalse(child.isReaped, "Indeterminate ownership must not retire the launched child")
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut = error else {
+                return XCTFail("Expected socketTimedOut after the ready broker disappeared, got \(error)")
+            }
+        }
+        XCTAssertFalse(
+            child.isReaped,
+            "A later readiness timeout must not retire a child whose ownership was indeterminate"
+        )
     }
 
     func testLazyUnixSocketTransportSendsRequestWithoutProbeWhenBrokerIsBusy() throws {
