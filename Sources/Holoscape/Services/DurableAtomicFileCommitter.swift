@@ -1,0 +1,190 @@
+import Darwin
+import Foundation
+
+/// Commits one file through a synchronized sibling temporary file and atomic
+/// replacement. A post-replacement failure is distinct because the new bytes
+/// are already visible and callers must not pretend the old value remains
+/// authoritative.
+struct DurableAtomicFileCommitter {
+    enum CommitError: Error, Equatable, LocalizedError {
+        case persistenceAndCleanupFailed(operation: String, cleanup: String)
+        case replacementCommitted(durabilityFailure: String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .persistenceAndCleanupFailed(operation, cleanup):
+                return "Persistence failed (\(operation)); temporary-file cleanup also failed (\(cleanup))"
+            case let .replacementCommitted(durabilityFailure):
+                return "Atomic replacement committed, but durability could not be confirmed: \(durabilityFailure)"
+            }
+        }
+    }
+
+    struct Persistence: @unchecked Sendable {
+        let writeAndSynchronizeTemporaryFile: (Data, URL) throws -> Void
+        let replaceFile: (URL, URL) throws -> Void
+        let synchronizeDirectory: (URL) throws -> Void
+        let removeTemporaryFile: (URL) throws -> Void
+
+        init(
+            writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
+            replaceFile: @escaping (URL, URL) throws -> Void,
+            synchronizeDirectory: @escaping (URL) throws -> Void,
+            removeTemporaryFile: @escaping (URL) throws -> Void
+        ) {
+            self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
+            self.replaceFile = replaceFile
+            self.synchronizeDirectory = synchronizeDirectory
+            self.removeTemporaryFile = removeTemporaryFile
+        }
+
+        static let live = Persistence(
+            writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            replaceFile: DurableAtomicFileCommitter.replaceFile,
+            synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+    }
+
+    let persistence: Persistence
+
+    init(persistence: Persistence = .live) {
+        self.persistence = persistence
+    }
+
+    /// Returns only after both file contents and the containing-directory
+    /// replacement entry have been synchronized.
+    func commit(_ data: Data, to destinationURL: URL) throws {
+        let directoryURL = destinationURL.deletingLastPathComponent()
+        let temporaryURL = directoryURL.appendingPathComponent(
+            ".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+
+        var replacementCommitted = false
+        do {
+            try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
+            try persistence.replaceFile(temporaryURL, destinationURL)
+            replacementCommitted = true
+            try persistence.synchronizeDirectory(directoryURL)
+        } catch {
+            let operationError = error
+            if replacementCommitted {
+                throw CommitError.replacementCommitted(
+                    durabilityFailure: String(describing: operationError)
+                )
+            }
+            guard FileManager.default.fileExists(atPath: temporaryURL.path) else {
+                throw operationError
+            }
+            do {
+                try persistence.removeTemporaryFile(temporaryURL)
+            } catch {
+                throw CommitError.persistenceAndCleanupFailed(
+                    operation: String(describing: operationError),
+                    cleanup: String(describing: error)
+                )
+            }
+            throw operationError
+        }
+    }
+
+    static func writeAndSynchronizeTemporaryFile(_ data: Data, to url: URL) throws {
+        let descriptor = url.path.withCString {
+            Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var operationError: Error?
+        do {
+            try writeAll(data, to: descriptor)
+            try fullSync(descriptor)
+        } catch {
+            operationError = error
+        }
+
+        let closeResult = Darwin.close(descriptor)
+        let closeError = closeResult == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if let operationError, let closeError {
+            throw CommitError.persistenceAndCleanupFailed(
+                operation: String(describing: operationError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if let operationError { throw operationError }
+        if let closeError { throw closeError }
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var written = 0
+            while written < bytes.count {
+                let result = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: written),
+                    bytes.count - written
+                )
+                if result < 0 {
+                    if errno == EINTR { continue }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                guard result > 0 else { throw CocoaError(.fileWriteUnknown) }
+                written += result
+            }
+        }
+    }
+
+    private static func fullSync(_ descriptor: Int32) throws {
+        if Darwin.fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+        let fullSyncCode = errno
+        if fullSyncCode != EINVAL && fullSyncCode != ENOTSUP {
+            throw POSIXError(POSIXErrorCode(rawValue: fullSyncCode) ?? .EIO)
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    static func replaceFile(at sourceURL: URL, with destinationURL: URL) throws {
+        let result = sourceURL.path.withCString { sourcePath in
+            destinationURL.path.withCString { destinationPath in
+                Darwin.rename(sourcePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    static func synchronizeDirectory(_ directoryURL: URL) throws {
+        let descriptor = directoryURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var syncError: Error?
+        do {
+            try fullSync(descriptor)
+        } catch {
+            syncError = error
+        }
+        let closeResult = Darwin.close(descriptor)
+        let closeError = closeResult == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if let syncError, let closeError {
+            throw CommitError.persistenceAndCleanupFailed(
+                operation: String(describing: syncError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if let syncError { throw syncError }
+        if let closeError { throw closeError }
+    }
+}

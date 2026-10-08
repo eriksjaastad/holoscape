@@ -51,9 +51,9 @@ struct BrokerSessionRegistry {
         }
 
         static let live = Persistence(
-            writeAndSynchronizeTemporaryFile: BrokerSessionRegistry.writeAndSynchronizeTemporaryFile,
-            replaceFile: BrokerSessionRegistry.replaceFile,
-            synchronizeDirectory: BrokerSessionRegistry.synchronizeDirectory,
+            writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            replaceFile: DurableAtomicFileCommitter.replaceFile,
+            synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
         )
     }
@@ -240,37 +240,31 @@ struct BrokerSessionRegistry {
     /// temporary file, atomically rename it over the registry, then synchronize
     /// the containing directory so the rename itself is durable.
     private func persist(_ data: Data, committedRecords: [BrokerSessionRecord]) throws {
-        let directoryURL = fileURL.deletingLastPathComponent()
-        let temporaryURL = directoryURL.appendingPathComponent(
-            ".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp"
+        let committer = DurableAtomicFileCommitter(
+            persistence: .init(
+                writeAndSynchronizeTemporaryFile: persistence.writeAndSynchronizeTemporaryFile,
+                replaceFile: persistence.replaceFile,
+                synchronizeDirectory: persistence.synchronizeDirectory,
+                removeTemporaryFile: persistence.removeTemporaryFile
+            )
         )
-
-        var replacementCommitted = false
         do {
-            try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
-            try persistence.replaceFile(temporaryURL, fileURL)
-            replacementCommitted = true
-            try persistence.synchronizeDirectory(directoryURL)
-        } catch {
-            let operationError = error
-            if replacementCommitted {
+            try committer.commit(data, to: fileURL)
+        } catch let error as DurableAtomicFileCommitter.CommitError {
+            switch error {
+            case let .replacementCommitted(durabilityFailure):
                 throw RegistryError.replacementCommitted(
                     records: committedRecords,
-                    durabilityFailure: String(describing: operationError)
+                    durabilityFailure: durabilityFailure
                 )
-            }
-            guard FileManager.default.fileExists(atPath: temporaryURL.path) else {
-                throw operationError
-            }
-            do {
-                try persistence.removeTemporaryFile(temporaryURL)
-            } catch {
+            case let .persistenceAndCleanupFailed(operation, cleanup):
                 throw RegistryError.persistenceAndCleanupFailed(
-                    operation: String(describing: operationError),
-                    cleanup: String(describing: error)
+                    operation: operation,
+                    cleanup: cleanup
                 )
             }
-            throw operationError
+        } catch {
+            throw error
         }
     }
 
@@ -296,105 +290,6 @@ struct BrokerSessionRegistry {
         return try decoder.decode(BrokerSessionRecord.self, from: encoder.encode(record))
     }
 
-    private static func writeAndSynchronizeTemporaryFile(_ data: Data, to url: URL) throws {
-        let descriptor = url.path.withCString {
-            Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR)
-        }
-        guard descriptor >= 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-
-        var operationError: Error?
-        do {
-            try writeAll(data, to: descriptor)
-            try fullSync(descriptor)
-        } catch {
-            operationError = error
-        }
-
-        let closeResult = Darwin.close(descriptor)
-        let closeError = closeResult == 0
-            ? nil
-            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if let operationError, let closeError {
-            throw RegistryError.persistenceAndCleanupFailed(
-                operation: String(describing: operationError),
-                cleanup: String(describing: closeError)
-            )
-        }
-        if let operationError { throw operationError }
-        if let closeError { throw closeError }
-    }
-
-    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
-        try data.withUnsafeBytes { bytes in
-            guard let baseAddress = bytes.baseAddress else { return }
-            var written = 0
-            while written < bytes.count {
-                let result = Darwin.write(
-                    descriptor,
-                    baseAddress.advanced(by: written),
-                    bytes.count - written
-                )
-                if result < 0 {
-                    if errno == EINTR { continue }
-                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-                }
-                guard result > 0 else { throw CocoaError(.fileWriteUnknown) }
-                written += result
-            }
-        }
-    }
-
-    private static func fullSync(_ descriptor: Int32) throws {
-        if Darwin.fcntl(descriptor, F_FULLFSYNC) == 0 { return }
-        let fullSyncCode = errno
-        if fullSyncCode != EINVAL && fullSyncCode != ENOTSUP {
-            throw POSIXError(POSIXErrorCode(rawValue: fullSyncCode) ?? .EIO)
-        }
-        guard Darwin.fsync(descriptor) == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-    }
-
-    private static func replaceFile(at sourceURL: URL, with destinationURL: URL) throws {
-        let result = sourceURL.path.withCString { sourcePath in
-            destinationURL.path.withCString { destinationPath in
-                Darwin.rename(sourcePath, destinationPath)
-            }
-        }
-        guard result == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-    }
-
-    private static func synchronizeDirectory(_ directoryURL: URL) throws {
-        let descriptor = directoryURL.path.withCString {
-            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        }
-        guard descriptor >= 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-
-        var syncError: Error?
-        do {
-            try fullSync(descriptor)
-        } catch {
-            syncError = error
-        }
-        let closeResult = Darwin.close(descriptor)
-        let closeError = closeResult == 0
-            ? nil
-            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if let syncError, let closeError {
-            throw RegistryError.persistenceAndCleanupFailed(
-                operation: String(describing: syncError),
-                cleanup: String(describing: closeError)
-            )
-        }
-        if let syncError { throw syncError }
-        if let closeError { throw closeError }
-    }
 
     private static func defaultFileURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first

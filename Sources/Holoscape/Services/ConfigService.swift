@@ -14,6 +14,7 @@ struct ConfigServiceDiagnostic: Equatable, Sendable {
 class ConfigService {
     private let configDir: URL
     private let configURL: URL
+    private let persistence: DurableAtomicFileCommitter.Persistence
 
     /// In-memory cache — avoids disk reads on every load().
     private var cachedConfig: HoloscapeConfig?
@@ -33,14 +34,19 @@ class ConfigService {
             self.configDir = home.appendingPathComponent(".holoscape")
         }
         self.configURL = configDir.appendingPathComponent("config.json")
+        self.persistence = .live
     }
 
     /// Test-only init that injects the config directory directly. Avoids the
     /// setenv/unsetenv pattern, which is a process-global mutation unsafe
     /// under parallel XCTest execution.
-    init(configDir: URL) {
+    init(
+        configDir: URL,
+        persistence: DurableAtomicFileCommitter.Persistence = .live
+    ) {
         self.configDir = configDir
         self.configURL = configDir.appendingPathComponent("config.json")
+        self.persistence = persistence
     }
 
     func load() -> HoloscapeConfig {
@@ -75,8 +81,20 @@ class ConfigService {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(config)
-            try data.write(to: configURL, options: .atomic)
-            cachedConfig = config
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let committedConfig = try decoder.decode(HoloscapeConfig.self, from: data)
+            do {
+                try DurableAtomicFileCommitter(persistence: persistence).commit(data, to: configURL)
+            } catch let error as DurableAtomicFileCommitter.CommitError {
+                if case .replacementCommitted = error {
+                    // The new file is already visible. Preserve that truth in
+                    // memory even though its crash durability is uncertain.
+                    cachedConfig = committedConfig
+                }
+                throw error
+            }
+            cachedConfig = committedConfig
             lastDiagnostic = nil
             return true
         } catch {
@@ -93,10 +111,23 @@ class ConfigService {
             }
             return
         }
-        try FileManager.default.createDirectory(
-            at: configDir,
-            withIntermediateDirectories: true
-        )
+        var missingDirectories: [URL] = []
+        var candidate = configDir
+        while !FileManager.default.fileExists(atPath: candidate.path) {
+            missingDirectories.append(candidate)
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: candidate.path])
+            }
+            candidate = parent
+        }
+
+        for directory in missingDirectories.reversed() {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            // Persist each new directory entry before using that directory as
+            // the parent of another entry or of config.json.
+            try persistence.synchronizeDirectory(directory.deletingLastPathComponent())
+        }
     }
 
     private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, error: Error) {
