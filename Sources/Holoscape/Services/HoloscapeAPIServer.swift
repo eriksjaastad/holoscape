@@ -56,12 +56,18 @@ class HoloscapeAPIServer {
         return Date().addingTimeInterval(10)
     }()
 
+    nonisolated static func listenerParameters() -> NWParameters {
+        let parameters = NWParameters.tcp
+        parameters.requiredInterfaceType = .loopback
+        return parameters
+    }
+
     func start() {
-        let params = NWParameters.tcp
+        let parameters = Self.listenerParameters()
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
 
         do {
-            listener = try NWListener(using: params, on: nwPort)
+            listener = try NWListener(using: parameters, on: nwPort)
         } catch {
             acceptsRequests = false
             NSLog("HoloscapeAPI: Failed to create listener: \(error)")
