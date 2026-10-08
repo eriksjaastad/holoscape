@@ -23,6 +23,9 @@ class ConfigService {
     /// Path equality is insufficient because deletion and recreation can occur
     /// entirely between two saves.
     private var durableDirectoryIdentity: DurableDirectoryIdentity?
+    /// Prevent fallback defaults from replacing unreadable user data. A later
+    /// successful disk load proves the file was repaired and releases writes.
+    private var unresolvedLoadFailure: ConfigServiceDiagnostic?
     private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
     init() {
@@ -82,6 +85,9 @@ class ConfigService {
         do {
             try ensureDirectoryExists(initializeDurability: false)
             guard FileManager.default.fileExists(atPath: configURL.path) else {
+                // Moving an unreadable file aside is an explicit repair. Restore
+                // normal first-launch behavior and recreate a valid default.
+                unresolvedLoadFailure = nil
                 let defaultConfig = HoloscapeConfig.default
                 save(defaultConfig)
                 return defaultConfig
@@ -91,16 +97,25 @@ class ConfigService {
             decoder.dateDecodingStrategy = .iso8601
             let config = try decoder.decode(HoloscapeConfig.self, from: data)
             cachedConfig = config
+            unresolvedLoadFailure = nil
             lastDiagnostic = nil
             return config
         } catch {
             recordDiagnostic(operation: .load, error: error)
+            unresolvedLoadFailure = lastDiagnostic
             return HoloscapeConfig.default
         }
     }
 
     @discardableResult
     func save(_ config: HoloscapeConfig) -> Bool {
+        if let unresolvedLoadFailure {
+            NSLog(
+                "ConfigService: save blocked for \(unresolvedLoadFailure.configPath) "
+                    + "after unresolved load failure: \(unresolvedLoadFailure.message)"
+            )
+            return false
+        }
         do {
             try ensureDirectoryExists(initializeDurability: true)
             let encoder = JSONEncoder()

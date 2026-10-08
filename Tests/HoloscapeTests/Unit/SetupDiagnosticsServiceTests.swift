@@ -10,6 +10,7 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         try "{ broken json".write(to: configURL, atomically: true, encoding: .utf8)
         let configService = ConfigService(configDir: configDir)
         _ = configService.load()
+        XCTAssertFalse(configService.save(.default))
 
         let service = SetupDiagnosticsService(
             configService: configService,

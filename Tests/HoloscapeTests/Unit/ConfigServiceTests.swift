@@ -63,6 +63,67 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), malformed)
     }
 
+    func testSaveAfterMalformedLoadPreservesOriginalFile() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        let malformed = "{ preserve this malformed config !!!"
+        try malformed.write(to: configURL, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertFalse(service.save(.default))
+
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), malformed)
+        XCTAssertEqual(service.lastDiagnostic?.operation, .load)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("correct format") == true)
+    }
+
+    func testSuccessfulLoadAfterRepairAllowsSavingAgain() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        try "{ malformed".write(to: configURL, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertFalse(service.save(.default))
+
+        var repaired = HoloscapeConfig.default
+        repaired.appearance.fontFamily = "Repaired Font"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(repaired).write(to: configURL)
+
+        XCTAssertEqual(service.load().appearance.fontFamily, "Repaired Font")
+        var updated = repaired
+        updated.appearance.fontFamily = "Saved After Repair"
+        XCTAssertTrue(service.save(updated))
+        XCTAssertEqual(
+            ConfigService(configDir: configDir).load().appearance.fontFamily,
+            "Saved After Repair"
+        )
+    }
+
+    func testRemovingMalformedConfigAllowsDefaultRecreationAndSaving() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        try "{ malformed".write(to: configURL, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertFalse(service.save(.default))
+
+        try FileManager.default.removeItem(at: configURL)
+
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertNil(service.lastDiagnostic)
+        var updated = HoloscapeConfig.default
+        updated.appearance.fontFamily = "Saved After Removal"
+        XCTAssertTrue(service.save(updated))
+        XCTAssertEqual(
+            ConfigService(configDir: configDir).load().appearance.fontFamily,
+            "Saved After Removal"
+        )
+    }
+
     func testExistingConfigLoadDoesNotRequireDirectoryDurabilityInitialization() throws {
         let configDir = temporaryConfigDir()
         let configURL = configDir.appendingPathComponent("config.json")
