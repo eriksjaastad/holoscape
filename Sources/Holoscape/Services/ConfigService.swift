@@ -50,6 +50,10 @@ class ConfigService {
         self.configDir = configDir
         self.configURL = configDir.appendingPathComponent("config.json")
         self.persistence = persistence
+        // Callers of this test-only initializer own fixture-directory setup.
+        // Treat an already-present fixture root as established so the suite
+        // does not issue real F_FULLFSYNC calls for every isolated test path.
+        self.directoryDurabilityInitialized = FileManager.default.fileExists(atPath: configDir.path)
     }
 
     func load() -> HoloscapeConfig {
