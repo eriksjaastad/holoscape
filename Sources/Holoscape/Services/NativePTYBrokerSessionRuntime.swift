@@ -819,9 +819,24 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func drainBufferedOutputBeforeTermination() throws {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
-            let drainState = finalOutputDrainState()
+            var drainState = finalOutputDrainState()
             if let reason = drainState.failureReason {
-                throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+                guard drainState.retryAfterPersistence else {
+                    throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+                }
+                let persistenceDeadline = DispatchTime.now()
+                    + .milliseconds(outputCleanupTimeoutMilliseconds)
+                guard outputPersistenceGroup.wait(timeout: persistenceDeadline) == .success else {
+                    try retainFinalOutputDrainFailure(
+                        reason: "final PTY output persistence timed out",
+                        retryAfterPersistence: true
+                    )
+                }
+                lock.lock()
+                finalOutputDrainFailureReason = nil
+                finalOutputDrainRetryAfterPersistence = false
+                lock.unlock()
+                drainState = finalOutputDrainState()
             }
             guard !drainState.complete else {
                 try throwScrollbackPersistenceErrorAsRetirementWarning()
@@ -979,6 +994,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 finalOutputDrainFailureReason,
                 finalOutputDrainRetryAfterPersistence
             )
+        }
+
+        func finalOutputDrainRequiresPersistenceRetry() -> Bool {
+            finalOutputDrainState().retryAfterPersistence
         }
 
         func throwOutputMonitoringErrorIfPresent() throws {
@@ -2196,6 +2215,21 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         } catch {
             outputDrainError = error
         }
+        if let outputDrainError,
+           session.finalOutputDrainRequiresPersistenceRetry()
+            || session.hasPendingScrollbackPersistence() {
+            let closeErrno: Int32?
+            if case let RuntimeError.inputCloseFailed(_, errno)? = inputCloseError {
+                closeErrno = errno
+            } else {
+                closeErrno = nil
+            }
+            throw RuntimeError.retirementFailed(
+                session.id,
+                inputCloseErrno: closeErrno,
+                processFailure: "process cleanup deferred; scrollback persistence remains pending: \(outputDrainError)"
+            )
+        }
         do {
             try terminateBoundedly(session)
         } catch {
@@ -2221,18 +2255,20 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         session.shutDownOutputMonitoring()
         do {
             try session.drainFinalOutput()
+            // A bounded backlog warning from the pre-termination drain is no
+            // longer actionable once the quiescent final drain succeeds.
+            outputDrainError = nil
         } catch {
             if outputDrainError == nil {
                 outputDrainError = error
             }
         }
-        session.masterHandle.closeFile()
-        session.setOutputAvailabilityHandler(nil)
         if let outputDrainError {
             let inputWarning = inputCloseError.map {
                 "; input cleanup also reported: \(String(describing: $0))"
             } ?? ""
-            if session.hasPendingScrollbackPersistence() {
+            if session.finalOutputDrainRequiresPersistenceRetry()
+                || session.hasPendingScrollbackPersistence() {
                 let closeErrno: Int32?
                 if case let RuntimeError.inputCloseFailed(_, errno)? = inputCloseError {
                     closeErrno = errno
@@ -2245,6 +2281,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                     processFailure: "process cleanup completed; scrollback persistence remains pending: \(outputDrainError)"
                 )
             }
+            session.masterHandle.closeFile()
+            session.setOutputAvailabilityHandler(nil)
             if session.inputDescriptorOwnershipIsRetained(),
                case let RuntimeError.inputCloseFailed(_, closeErrno)? = inputCloseError {
                 throw RuntimeError.retirementFailed(
@@ -2258,6 +2296,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 reason: "\(String(describing: outputDrainError))\(inputWarning)"
             )
         }
+        session.masterHandle.closeFile()
+        session.setOutputAvailabilityHandler(nil)
         if let inputCloseError { throw inputCloseError }
     }
 

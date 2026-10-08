@@ -1766,37 +1766,37 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             usleep(10_000)
         }
         XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
-        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
-            guard case let .retirementCompletedWithOutputFailure(retryID, retryReason) =
-                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
-                return XCTFail("Expected completed warning after persistence settled, got \(retryError)")
-            }
-            XCTAssertEqual(retryID, id)
-            XCTAssertTrue(retryReason.contains("persistence timed out"), retryReason)
-        }
+        XCTAssertNoThrow(try runtime.markSessionErrored(id: id))
         XCTAssertTrue(try runtime.listSessions().isEmpty)
     }
 
     func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
-        let finalOutputMarker = Data("post-backlog-final-output".utf8)
-        let outputReader = PostReleaseFinalOutputReader(
-            releaseObserved: { appender.released },
-            finalOutput: finalOutputMarker
-        )
+        let markerReleaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-final-output-release-\(UUID().uuidString)")
+        let markerWrittenURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-final-output-written-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: markerReleaseURL)
+            try? FileManager.default.removeItem(at: markerWrittenURL)
+        }
         let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
         let cleanupCompleted = DispatchSemaphore(value: 0)
         var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
             scrollbackAppender: appender.append,
             outputCleanupTimeoutMilliseconds: 100,
-            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() },
-            outputReader: outputReader.read
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
         )
         try runtime.createSession(
             id: id,
             request: BrokerSessionLaunchRequest(
-                command: "/usr/bin/yes",
-                arguments: ["0123456789abcdef"],
+                command: "/usr/bin/perl",
+                arguments: [
+                    "-e",
+                    "$|=1; print \"0123456789abcdef\" x 65536; while (!-e $ARGV[0]) {} print \"post-backlog-final-output\"; open(my $fh, \">\", $ARGV[1]) or die $!; close($fh); while (1) { print \"tail-output\\n\"; }",
+                    markerReleaseURL.path,
+                    markerWrittenURL.path
+                ],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
                 initialSize: TerminalGridSize(columns: 80, rows: 24)
@@ -1818,6 +1818,21 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             try runtime.outputPersistenceBacklogByteCount(id: id),
             ScrollbackPersistencePolicy.maxRetainedBytesPerSession
         )
+        XCTAssertTrue(FileManager.default.createFile(atPath: markerReleaseURL.path, contents: Data()))
+        let markerDeadline = Date().addingTimeInterval(1)
+        while !FileManager.default.fileExists(atPath: markerWrittenURL.path),
+              Date() < markerDeadline {
+            usleep(10_000)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerWrittenURL.path),
+            "The child must write final PTY bytes after the persistence backlog is full"
+        )
+        let monitoringPauseDeadline = Date().addingTimeInterval(1)
+        while try runtime.isOutputMonitoring(id: id),
+              Date() < monitoringPauseDeadline {
+            usleep(10_000)
+        }
         XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
 
         let retirementFinished = DispatchSemaphore(value: 0)
@@ -1848,7 +1863,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
                 return XCTFail("Expected retry to retain pending persistence authority, got \(retryError)")
             }
             XCTAssertEqual(retryID, id)
-            XCTAssertTrue(retryReason.contains("bounded retention limit"), retryReason)
+            XCTAssertTrue(retryReason.contains("persistence"), retryReason)
         }
         XCTAssertEqual(appender.attemptCount, 1)
         XCTAssertEqual(try runtime.listSessions(), [id])
@@ -1872,9 +1887,13 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
             "Cleanup must persist kernel-buffered PTY bytes after the bounded backlog settles"
         )
+        let postBacklogData = appender.persistedData.dropFirst(
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        )
+        XCTAssertFalse(postBacklogData.isEmpty)
         XCTAssertNotNil(
-            appender.persistedData.range(of: finalOutputMarker),
-            "Cleanup must persist the final PTY bytes exposed after backlog capacity returns"
+            postBacklogData.range(of: Data("post-backlog-final-output".utf8)),
+            "Cleanup must preserve the real PTY marker written after backlog capacity was exhausted"
         )
     }
 
@@ -3453,44 +3472,6 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         isReleased = true
         releaseCondition.broadcast()
         releaseCondition.unlock()
-    }
-}
-
-private final class PostReleaseFinalOutputReader: @unchecked Sendable {
-    private let releaseObserved: @Sendable () -> Bool
-    private let finalOutput: Data
-    private let lock = NSLock()
-    private var emittedFinalOutput = false
-
-    init(
-        releaseObserved: @escaping @Sendable () -> Bool,
-        finalOutput: Data
-    ) {
-        self.releaseObserved = releaseObserved
-        self.finalOutput = finalOutput
-    }
-
-    func read(
-        descriptor: Int32,
-        buffer: UnsafeMutableRawPointer?,
-        count: Int
-    ) -> (count: Int, errno: Int32) {
-        guard releaseObserved() else {
-            let readCount = Darwin.read(descriptor, buffer, count)
-            return (readCount, readCount < 0 ? errno : 0)
-        }
-        let shouldEmit = lock.withLock { () -> Bool in
-            guard !emittedFinalOutput else { return false }
-            emittedFinalOutput = true
-            return true
-        }
-        guard shouldEmit, let buffer else { return (0, 0) }
-        let emittedCount = min(count, finalOutput.count)
-        finalOutput.copyBytes(
-            to: buffer.assumingMemoryBound(to: UInt8.self),
-            count: emittedCount
-        )
-        return (emittedCount, 0)
     }
 }
 
