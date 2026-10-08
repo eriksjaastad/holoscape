@@ -85,6 +85,9 @@ class ConfigService {
         do {
             try ensureDirectoryExists(initializeDurability: false)
             guard FileManager.default.fileExists(atPath: configURL.path) else {
+                // Moving an unreadable file aside is an explicit repair. Restore
+                // normal first-launch behavior and recreate a valid default.
+                unresolvedLoadFailure = nil
                 let defaultConfig = HoloscapeConfig.default
                 save(defaultConfig)
                 return defaultConfig
@@ -107,9 +110,9 @@ class ConfigService {
     @discardableResult
     func save(_ config: HoloscapeConfig) -> Bool {
         if let unresolvedLoadFailure {
-            recordDiagnostic(
-                operation: .save,
-                message: "write blocked after unresolved load failure: \(unresolvedLoadFailure.message)"
+            NSLog(
+                "ConfigService: save blocked for \(unresolvedLoadFailure.configPath) "
+                    + "after unresolved load failure: \(unresolvedLoadFailure.message)"
             )
             return false
         }
@@ -222,14 +225,10 @@ class ConfigService {
     }
 
     private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, error: Error) {
-        recordDiagnostic(operation: operation, message: error.localizedDescription)
-    }
-
-    private func recordDiagnostic(operation: ConfigServiceDiagnostic.Operation, message: String) {
         let diagnostic = ConfigServiceDiagnostic(
             operation: operation,
             configPath: configURL.path,
-            message: message
+            message: error.localizedDescription
         )
         lastDiagnostic = diagnostic
         NSLog("ConfigService: \(operation.rawValue) failed for \(diagnostic.configPath): \(diagnostic.message)")

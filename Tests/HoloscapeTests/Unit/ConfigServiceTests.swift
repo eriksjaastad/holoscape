@@ -74,8 +74,8 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertFalse(service.save(.default))
 
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), malformed)
-        XCTAssertEqual(service.lastDiagnostic?.operation, .save)
-        XCTAssertTrue(service.lastDiagnostic?.message.contains("unresolved load failure") == true)
+        XCTAssertEqual(service.lastDiagnostic?.operation, .load)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("correct format") == true)
     }
 
     func testSuccessfulLoadAfterRepairAllowsSavingAgain() throws {
@@ -100,6 +100,27 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertEqual(
             ConfigService(configDir: configDir).load().appearance.fontFamily,
             "Saved After Repair"
+        )
+    }
+
+    func testRemovingMalformedConfigAllowsDefaultRecreationAndSaving() throws {
+        let configDir = temporaryConfigDir()
+        let configURL = configDir.appendingPathComponent("config.json")
+        try "{ malformed".write(to: configURL, atomically: true, encoding: .utf8)
+        let service = ConfigService(configDir: configDir)
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertFalse(service.save(.default))
+
+        try FileManager.default.removeItem(at: configURL)
+
+        XCTAssertEqual(service.load(), .default)
+        XCTAssertNil(service.lastDiagnostic)
+        var updated = HoloscapeConfig.default
+        updated.appearance.fontFamily = "Saved After Removal"
+        XCTAssertTrue(service.save(updated))
+        XCTAssertEqual(
+            ConfigService(configDir: configDir).load().appearance.fontFamily,
+            "Saved After Removal"
         )
     }
 
