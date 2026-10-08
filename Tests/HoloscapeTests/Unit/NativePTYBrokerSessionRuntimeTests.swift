@@ -444,6 +444,50 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 42)
     }
 
+    func testForcedRetirementWaitsForProcessTerminationHandlerBeforeRemovingSession() throws {
+        let terminationHandlerGate = OneShotLifecyclePublicationGate()
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        let runtime = NativePTYBrokerSessionRuntime(
+            processTerminationHandlerWillRun: { _ in terminationHandlerGate.pause() }
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-termination-handler-quiescence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer {
+            terminationHandlerGate.release()
+            try? runtime.markSessionErrored(id: id)
+        }
+
+        DispatchQueue.global().async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+
+        XCTAssertEqual(terminationHandlerGate.waitUntilPaused(), .success)
+        XCTAssertEqual(
+            retirementFinished.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Forced retirement must not remove the session while its termination callback can still publish"
+        )
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        terminationHandlerGate.release()
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(retirementError.value)
+        XCTAssertEqual(try runtime.listSessions(), [])
+    }
+
     func testLateExitObserverFailureCannotUndoForcedCleanupCompletion() throws {
         let observer = LateFailureAfterReapObserver()
         let runtime = NativePTYBrokerSessionRuntime(
@@ -1766,29 +1810,37 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             usleep(10_000)
         }
         XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
-        XCTAssertThrowsError(try runtime.markSessionErrored(id: id)) { retryError in
-            guard case let .retirementCompletedWithOutputFailure(retryID, retryReason) =
-                retryError as? NativePTYBrokerSessionRuntime.RuntimeError else {
-                return XCTFail("Expected completed warning after persistence settled, got \(retryError)")
-            }
-            XCTAssertEqual(retryID, id)
-            XCTAssertTrue(retryReason.contains("persistence timed out"), retryReason)
-        }
+        XCTAssertNoThrow(try runtime.markSessionErrored(id: id))
         XCTAssertTrue(try runtime.listSessions().isEmpty)
     }
 
     func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
-        let runtime = NativePTYBrokerSessionRuntime(
-            scrollbackAppender: appender.append,
-            outputCleanupTimeoutMilliseconds: 100
-        )
+        let markerReleaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-final-output-release-\(UUID().uuidString)")
+        let markerWrittenURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-final-output-written-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: markerReleaseURL)
+            try? FileManager.default.removeItem(at: markerWrittenURL)
+        }
         let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
+        )
         try runtime.createSession(
             id: id,
             request: BrokerSessionLaunchRequest(
-                command: "/usr/bin/yes",
-                arguments: ["0123456789abcdef"],
+                command: "/usr/bin/perl",
+                arguments: [
+                    "-e",
+                    "$|=1; print \"0123456789abcdef\" x 65536; while (!-e $ARGV[0]) {} print \"post-backlog-final-output\"; open(my $fh, \">\", $ARGV[1]) or die $!; close($fh); while (1) { print \"tail-output\\n\"; }",
+                    markerReleaseURL.path,
+                    markerWrittenURL.path
+                ],
                 workingDirectory: "/tmp",
                 environmentProfile: .shell,
                 initialSize: TerminalGridSize(columns: 80, rows: 24)
@@ -1810,13 +1862,28 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             try runtime.outputPersistenceBacklogByteCount(id: id),
             ScrollbackPersistencePolicy.maxRetainedBytesPerSession
         )
+        XCTAssertTrue(FileManager.default.createFile(atPath: markerReleaseURL.path, contents: Data()))
+        let markerDeadline = Date().addingTimeInterval(1)
+        while !FileManager.default.fileExists(atPath: markerWrittenURL.path),
+              Date() < markerDeadline {
+            usleep(10_000)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: markerWrittenURL.path),
+            "The child must write final PTY bytes after the persistence backlog is full"
+        )
+        let monitoringPauseDeadline = Date().addingTimeInterval(1)
+        while try runtime.isOutputMonitoring(id: id),
+              Date() < monitoringPauseDeadline {
+            usleep(10_000)
+        }
         XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
 
         let retirementFinished = DispatchSemaphore(value: 0)
         let retirementError = LockedRuntimeErrorBox()
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [runtime] in
             do {
-                try runtime.markSessionErrored(id: id)
+                try runtime!.markSessionErrored(id: id)
             } catch {
                 retirementError.store(error)
             }
@@ -1840,7 +1907,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
                 return XCTFail("Expected retry to retain pending persistence authority, got \(retryError)")
             }
             XCTAssertEqual(retryID, id)
-            XCTAssertTrue(retryReason.contains("bounded retention limit"), retryReason)
+            XCTAssertTrue(retryReason.contains("persistence"), retryReason)
         }
         XCTAssertEqual(appender.attemptCount, 1)
         XCTAssertEqual(try runtime.listSessions(), [id])
@@ -1852,6 +1919,182 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
         XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Settled persistence must let runtime deinit finish cleanup"
+        )
+        XCTAssertGreaterThan(
+            appender.persistedByteCount,
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
+            "Cleanup must persist kernel-buffered PTY bytes after the bounded backlog settles"
+        )
+        let postBacklogData = appender.persistedData.dropFirst(
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession
+        )
+        XCTAssertFalse(postBacklogData.isEmpty)
+        XCTAssertNotNil(
+            postBacklogData.range(of: Data("post-backlog-final-output".utf8)),
+            "Cleanup must preserve the real PTY marker written after backlog capacity was exhausted"
+        )
+    }
+
+    func testRuntimeDeinitCleanupDrainsBytesWhenRetirementFillsPersistenceBacklog() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let marker = Data("retirement-filled-backlog-final-output".utf8)
+        let outputReader = RetirementFillingOutputReader(finalOutput: marker)
+        let id = BrokerSessionID(rawValue: "retirement-fills-persistence-backlog")
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            installsOutputReadabilityHandler: false,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() },
+            outputReader: outputReader.read
+        )
+        defer { appender.release() }
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/usr/bin/yes",
+                arguments: ["retirement-backpressure"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        usleep(50_000)
+
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async { [runtime] in
+            do {
+                try runtime!.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+        guard case let .retirementFailed(warningID, _, reason)? =
+            retirementError.value as? NativePTYBrokerSessionRuntime.RuntimeError else {
+            return XCTFail("Expected pending-persistence retirement failure, got \(String(describing: retirementError.value))")
+        }
+        XCTAssertEqual(warningID, id)
+        XCTAssertTrue(reason.contains("persistence"), reason)
+        XCTAssertEqual(try runtime.listSessions(), [id])
+
+        appender.release()
+        outputReader.release()
+        XCTAssertTrue(outputReader.released)
+        let persistenceDeadline = Date().addingTimeInterval(2)
+        while try runtime.outputPersistenceBacklogByteCount(id: id) > 0,
+              Date() < persistenceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
+
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Deinit cleanup must drain the PTY after retirement-created persistence backpressure settles"
+        )
+        let persistedText = String(decoding: appender.persistedData, as: UTF8.self)
+        XCTAssertEqual(outputReader.finalOutputEmissionCount, 1)
+        XCTAssertEqual(
+            persistedText.components(separatedBy: String(decoding: marker, as: UTF8.self)).count - 1,
+            1,
+            "The final PTY marker must be persisted exactly once"
+        )
+    }
+
+    func testRuntimeDeinitCompletionWaitsForProcessTerminationHandler() throws {
+        let terminationHandlerGate = OneShotLifecyclePublicationGate()
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        let id = BrokerSessionID(rawValue: "runtime-deinit-termination-handler-quiescence")
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            inputDescriptorCloser: { descriptor in
+                _ = Darwin.close(descriptor)
+                return .closedWithWarning(EIO)
+            },
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() },
+            processTerminationHandlerWillRun: { _ in terminationHandlerGate.pause() }
+        )
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exit 0"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { terminationHandlerGate.release() }
+
+        XCTAssertEqual(terminationHandlerGate.waitUntilPaused(), .success)
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Runtime cleanup must not complete while its termination handler can still emit cleanup diagnostics"
+        )
+        terminationHandlerGate.release()
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Runtime cleanup must complete after the process termination handler becomes quiescent"
+        )
+    }
+
+    func testRuntimeDeinitCleanupWaitsForCapturedOutputAvailabilityCallback() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let availabilityGate = OneShotLifecyclePublicationGate()
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        let id = BrokerSessionID(rawValue: "runtime-deinit-callback-quiescence")
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
+        )
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf callback-quiescence; sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        defer {
+            appender.release()
+            availabilityGate.release()
+        }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            availabilityGate.pause()
+        }
+        appender.release()
+        XCTAssertEqual(availabilityGate.waitUntilPaused(), .success)
+
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Runtime cleanup must not complete while a captured availability callback is running"
+        )
+        availabilityGate.release()
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Runtime cleanup must complete after persistence callbacks become quiescent"
+        )
     }
 
     func testTerminatePreservesExitCodeMismatchFailure() throws {
@@ -3315,12 +3558,62 @@ private final class OneShotLifecyclePublicationGate: @unchecked Sendable {
     }
 }
 
+private final class RetirementFillingOutputReader: @unchecked Sendable {
+    private let finalOutput: Data
+    private let lock = NSLock()
+    private var isReleased = false
+    private var emittedFinalOutput = false
+
+    init(finalOutput: Data) {
+        self.finalOutput = finalOutput
+    }
+
+    func release() {
+        lock.withLock { isReleased = true }
+    }
+
+    var released: Bool {
+        lock.withLock { isReleased }
+    }
+
+    var finalOutputEmissionCount: Int {
+        lock.withLock { emittedFinalOutput ? 1 : 0 }
+    }
+
+    func read(
+        descriptor: Int32,
+        buffer: UnsafeMutableRawPointer?,
+        count: Int
+    ) -> (count: Int, errno: Int32) {
+        guard let buffer, count > 0 else { return (0, 0) }
+        let released = lock.withLock { isReleased }
+        if !released {
+            buffer.initializeMemory(as: UInt8.self, repeating: 0x78, count: count)
+            return (count, 0)
+        }
+        let shouldEmit = lock.withLock { () -> Bool in
+            guard !emittedFinalOutput else { return false }
+            emittedFinalOutput = true
+            return true
+        }
+        guard shouldEmit else { return (0, 0) }
+        let emittedCount = min(count, finalOutput.count)
+        finalOutput.copyBytes(
+            to: buffer.assumingMemoryBound(to: UInt8.self),
+            count: emittedCount
+        )
+        return (emittedCount, 0)
+    }
+}
+
 private final class BlockingScrollbackAppender: @unchecked Sendable {
     private let shouldFail: Bool
     private let entered = DispatchSemaphore(value: 0)
     private let releaseCondition = NSCondition()
     private var isReleased = false
     private var storedAttemptCount = 0
+    private var storedPersistedByteCount = 0
+    private var storedPersistedData = Data()
 
     init(shouldFail: Bool) {
         self.shouldFail = shouldFail
@@ -3343,6 +3636,10 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         if shouldFail {
             throw CocoaError(.fileWriteNoPermission)
         }
+        releaseCondition.lock()
+        storedPersistedByteCount += data.count
+        storedPersistedData.append(data)
+        releaseCondition.unlock()
     }
 
     func waitUntilEntered() -> DispatchTimeoutResult {
@@ -3353,6 +3650,24 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         releaseCondition.lock()
         defer { releaseCondition.unlock() }
         return storedAttemptCount
+    }
+
+    var persistedByteCount: Int {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedPersistedByteCount
+    }
+
+    var persistedData: Data {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedPersistedData
+    }
+
+    var released: Bool {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return isReleased
     }
 
     func release() {
