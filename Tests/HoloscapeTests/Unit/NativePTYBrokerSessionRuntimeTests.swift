@@ -1779,12 +1779,18 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
     func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
+        let finalOutputMarker = Data("post-backlog-final-output".utf8)
+        let outputReader = PostReleaseFinalOutputReader(
+            releaseObserved: { appender.released },
+            finalOutput: finalOutputMarker
+        )
         let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
         let cleanupCompleted = DispatchSemaphore(value: 0)
         var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
             scrollbackAppender: appender.append,
             outputCleanupTimeoutMilliseconds: 100,
-            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() },
+            outputReader: outputReader.read
         )
         try runtime.createSession(
             id: id,
@@ -1857,9 +1863,63 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         runtime = nil
         XCTAssertEqual(
-            cleanupCompleted.wait(timeout: .now()),
+            cleanupCompleted.wait(timeout: .now() + 2),
             .success,
-            "Settled persistence must let runtime deinit finish cleanup synchronously"
+            "Settled persistence must let runtime deinit finish cleanup"
+        )
+        XCTAssertGreaterThan(
+            appender.persistedByteCount,
+            ScrollbackPersistencePolicy.maxRetainedBytesPerSession,
+            "Cleanup must persist kernel-buffered PTY bytes after the bounded backlog settles"
+        )
+        XCTAssertNotNil(
+            appender.persistedData.range(of: finalOutputMarker),
+            "Cleanup must persist the final PTY bytes exposed after backlog capacity returns"
+        )
+    }
+
+    func testRuntimeDeinitCleanupWaitsForCapturedOutputAvailabilityCallback() throws {
+        let appender = BlockingScrollbackAppender(shouldFail: false)
+        let availabilityGate = OneShotLifecyclePublicationGate()
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        let id = BrokerSessionID(rawValue: "runtime-deinit-callback-quiescence")
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
+        )
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "printf callback-quiescence; sleep 30"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        XCTAssertEqual(appender.waitUntilEntered(), .success)
+        defer {
+            appender.release()
+            availabilityGate.release()
+        }
+        try runtime.setOutputAvailabilityHandler(id: id) { _ in
+            availabilityGate.pause()
+        }
+        appender.release()
+        XCTAssertEqual(availabilityGate.waitUntilPaused(), .success)
+
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Runtime cleanup must not complete while a captured availability callback is running"
+        )
+        availabilityGate.release()
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Runtime cleanup must complete after persistence callbacks become quiescent"
         )
     }
 
@@ -3330,6 +3390,8 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
     private let releaseCondition = NSCondition()
     private var isReleased = false
     private var storedAttemptCount = 0
+    private var storedPersistedByteCount = 0
+    private var storedPersistedData = Data()
 
     init(shouldFail: Bool) {
         self.shouldFail = shouldFail
@@ -3352,6 +3414,10 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         if shouldFail {
             throw CocoaError(.fileWriteNoPermission)
         }
+        releaseCondition.lock()
+        storedPersistedByteCount += data.count
+        storedPersistedData.append(data)
+        releaseCondition.unlock()
     }
 
     func waitUntilEntered() -> DispatchTimeoutResult {
@@ -3364,11 +3430,67 @@ private final class BlockingScrollbackAppender: @unchecked Sendable {
         return storedAttemptCount
     }
 
+    var persistedByteCount: Int {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedPersistedByteCount
+    }
+
+    var persistedData: Data {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return storedPersistedData
+    }
+
+    var released: Bool {
+        releaseCondition.lock()
+        defer { releaseCondition.unlock() }
+        return isReleased
+    }
+
     func release() {
         releaseCondition.lock()
         isReleased = true
         releaseCondition.broadcast()
         releaseCondition.unlock()
+    }
+}
+
+private final class PostReleaseFinalOutputReader: @unchecked Sendable {
+    private let releaseObserved: @Sendable () -> Bool
+    private let finalOutput: Data
+    private let lock = NSLock()
+    private var emittedFinalOutput = false
+
+    init(
+        releaseObserved: @escaping @Sendable () -> Bool,
+        finalOutput: Data
+    ) {
+        self.releaseObserved = releaseObserved
+        self.finalOutput = finalOutput
+    }
+
+    func read(
+        descriptor: Int32,
+        buffer: UnsafeMutableRawPointer?,
+        count: Int
+    ) -> (count: Int, errno: Int32) {
+        guard releaseObserved() else {
+            let readCount = Darwin.read(descriptor, buffer, count)
+            return (readCount, readCount < 0 ? errno : 0)
+        }
+        let shouldEmit = lock.withLock { () -> Bool in
+            guard !emittedFinalOutput else { return false }
+            emittedFinalOutput = true
+            return true
+        }
+        guard shouldEmit, let buffer else { return (0, 0) }
+        let emittedCount = min(count, finalOutput.count)
+        finalOutput.copyBytes(
+            to: buffer.assumingMemoryBound(to: UInt8.self),
+            count: emittedCount
+        )
+        return (emittedCount, 0)
     }
 }
 

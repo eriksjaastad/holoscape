@@ -586,6 +586,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private var outputMonitoringComplete = false
         private var outputMonitoringFailureReason: String?
         private var finalOutputDrainFailureReason: String?
+        private var finalOutputDrainRetryAfterPersistence = false
         private var finalOutputDrainComplete = false
         private var runtimeDeinitCleanupComplete = false
         var terminationStatus: Int32?
@@ -834,7 +835,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
                 if readCapacity == 0 {
                     try retainFinalOutputDrainFailure(
-                        reason: "final PTY output persistence backlog reached the bounded retention limit"
+                        reason: "final PTY output persistence backlog reached the bounded retention limit",
+                        retryAfterPersistence: true
                     )
                 }
                 var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
@@ -868,9 +870,24 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         func drainFinalOutput() throws {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
-            let drainState = finalOutputDrainState()
+            var drainState = finalOutputDrainState()
             if let reason = drainState.failureReason {
-                throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+                guard drainState.retryAfterPersistence else {
+                    throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
+                }
+                let persistenceDeadline = DispatchTime.now()
+                    + .milliseconds(outputCleanupTimeoutMilliseconds)
+                guard outputPersistenceGroup.wait(timeout: persistenceDeadline) == .success else {
+                    try retainFinalOutputDrainFailure(
+                        reason: "final PTY output persistence timed out",
+                        retryAfterPersistence: true
+                    )
+                }
+                lock.lock()
+                finalOutputDrainFailureReason = nil
+                finalOutputDrainRetryAfterPersistence = false
+                lock.unlock()
+                drainState = finalOutputDrainState()
             }
             guard !drainState.complete else {
                 try throwScrollbackPersistenceErrorAsRetirementWarning()
@@ -890,7 +907,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
                 if readCapacity == 0 {
                     try retainFinalOutputDrainFailure(
-                        reason: "final PTY output persistence backlog reached the bounded retention limit"
+                        reason: "final PTY output persistence backlog reached the bounded retention limit",
+                        retryAfterPersistence: true
                     )
                 }
                 var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
@@ -924,7 +942,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             lock.unlock()
             markOutputMonitoringComplete()
             guard outputPersistenceGroup.wait(timeout: deadline) == .success else {
-                try retainFinalOutputDrainFailure(reason: "final PTY output persistence timed out")
+                try retainFinalOutputDrainFailure(
+                    reason: "final PTY output persistence timed out",
+                    retryAfterPersistence: true
+                )
             }
             try throwScrollbackPersistenceErrorAsRetirementWarning()
         }
@@ -935,17 +956,29 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             )
         }
 
-        private func retainFinalOutputDrainFailure(reason: String) throws -> Never {
+        private func retainFinalOutputDrainFailure(
+            reason: String,
+            retryAfterPersistence: Bool = false
+        ) throws -> Never {
             lock.lock()
             finalOutputDrainFailureReason = reason
+            finalOutputDrainRetryAfterPersistence = retryAfterPersistence
             lock.unlock()
             throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
         }
 
-        private func finalOutputDrainState() -> (complete: Bool, failureReason: String?) {
+        private func finalOutputDrainState() -> (
+            complete: Bool,
+            failureReason: String?,
+            retryAfterPersistence: Bool
+        ) {
             lock.lock()
             defer { lock.unlock() }
-            return (finalOutputDrainComplete, finalOutputDrainFailureReason)
+            return (
+                finalOutputDrainComplete,
+                finalOutputDrainFailureReason,
+                finalOutputDrainRetryAfterPersistence
+            )
         }
 
         func throwOutputMonitoringErrorIfPresent() throws {
@@ -964,6 +997,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 let reason = String(describing: error)
                 lock.lock()
                 finalOutputDrainFailureReason = reason
+                finalOutputDrainRetryAfterPersistence = false
                 lock.unlock()
                 throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
             }
@@ -1413,18 +1447,17 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 try drainFinalOutput()
             } catch {
                 NSLog("Native PTY final output cleanup failed for \(id.rawValue): \(error)")
-                // A retained persistence write is recoverable, so keep the session
-                // alive until that authority settles. A terminal drain warning
-                // with no pending write cannot recover by retrying: retaining the
-                // closed process forever only leaks its runtime and callbacks.
-                guard hasPendingScrollbackPersistence() else {
-                    masterHandle.closeFile()
-                    setOutputAvailabilityHandler(nil)
-                    lock.withLock { runtimeDeinitCleanupComplete = true }
-                    runtimeDeinitCleanupDidComplete(id)
-                    return true
-                }
-                return false
+                // Persistence backpressure and in-flight callbacks are recoverable,
+                // so retain the session until the persistence group is quiescent
+                // and final PTY bytes can be drained. Terminal drain failures with
+                // no pending work cannot recover by retrying forever.
+                guard !finalOutputDrainState().retryAfterPersistence else { return false }
+                guard !hasPendingScrollbackPersistence() else { return false }
+                masterHandle.closeFile()
+                setOutputAvailabilityHandler(nil)
+                lock.withLock { runtimeDeinitCleanupComplete = true }
+                runtimeDeinitCleanupDidComplete(id)
+                return true
             }
             masterHandle.closeFile()
             setOutputAvailabilityHandler(nil)
