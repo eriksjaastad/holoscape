@@ -143,7 +143,53 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
             Darwin.close(fd)
             throw ServerError.bindFailed(message)
         }
+        do {
+            try Self.publishBrokerProcessID(getpid(), to: fd)
+        } catch {
+            flock(fd, LOCK_UN)
+            Darwin.close(fd)
+            throw error
+        }
         return fd
+    }
+
+    private static func publishBrokerProcessID(_ pid: pid_t, to descriptor: Int32) throws {
+        guard ftruncate(descriptor, 0) == 0, lseek(descriptor, 0, SEEK_SET) == 0 else {
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
+        }
+        let bytes = Array("\(pid)\n".utf8)
+        var written = 0
+        while written < bytes.count {
+            let count = bytes.withUnsafeBytes { buffer in
+                Darwin.write(
+                    descriptor,
+                    buffer.baseAddress!.advanced(by: written),
+                    bytes.count - written
+                )
+            }
+            if count > 0 {
+                written += count
+                continue
+            }
+            if count == -1, errno == EINTR { continue }
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
+        }
+    }
+
+    static func activeBrokerProcessID(_ socketPath: String) -> pid_t? {
+        let descriptor = open(socketPath + ".lock", O_RDONLY)
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let count = pread(descriptor, &bytes, bytes.count, 0)
+        guard count > 0,
+              let text = String(bytes: bytes.prefix(count), encoding: .utf8),
+              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 0 else {
+            return nil
+        }
+        return pid
     }
 
     static func socketPathHasActiveBrokerLock(_ socketPath: String) -> Bool {
