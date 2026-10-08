@@ -1,5 +1,4 @@
 import Darwin
-import CryptoKit
 import Foundation
 
 /// Coordinates file transactions both within this process and with other
@@ -19,52 +18,9 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         }
     }
 
-    private struct DirectoryLinkIdentity: Equatable {
-        let directory: DurableDirectoryIdentity
-        let parent: DurableDirectoryIdentity
-
-        static func read(at directoryURL: URL) throws -> DirectoryLinkIdentity {
-            DirectoryLinkIdentity(
-                directory: try DurableDirectoryIdentity.read(at: directoryURL),
-                parent: try DurableDirectoryIdentity.read(at: directoryURL.deletingLastPathComponent())
-            )
-        }
-
-        static func == (lhs: DirectoryLinkIdentity, rhs: DirectoryLinkIdentity) -> Bool {
-            lhs.directory.hasSameAuthority(as: rhs.directory) && lhs.parent == rhs.parent
-        }
-    }
-
-    private struct StableAuthorityRecord: Codable, Equatable {
-        let directoryDevice: UInt64
-        let directoryInode: UInt64
-        let directoryGeneration: UInt32
-        let parentDevice: UInt64
-        let parentInode: UInt64
-        let parentGeneration: UInt32
-
-        init(_ identity: DirectoryLinkIdentity) {
-            directoryDevice = identity.directory.device
-            directoryInode = identity.directory.inode
-            directoryGeneration = identity.directory.generation
-            parentDevice = identity.parent.device
-            parentInode = identity.parent.inode
-            parentGeneration = identity.parent.generation
-        }
-
-        func matches(_ identity: DirectoryLinkIdentity) -> Bool {
-            directoryDevice == identity.directory.device
-                && directoryInode == identity.directory.inode
-                && directoryGeneration == identity.directory.generation
-                && parentDevice == identity.parent.device
-                && parentInode == identity.parent.inode
-                && parentGeneration == identity.parent.generation
-        }
-    }
-
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
-    private var durableDirectoryIdentities: [String: DirectoryLinkIdentity] = [:]
+    private var durabilityInitializedPaths: Set<String> = []
 
     struct LockError: LocalizedError {
         let message: String
@@ -111,114 +67,52 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             return created
         }
         return try lockBox.lock.withLock {
-            let targetDirectoryURL = canonicalURL.deletingLastPathComponent()
-            let missingDirectories = Self.missingDirectories(endingAt: targetDirectoryURL)
+            let lockURL = canonicalURL.appendingPathExtension("lock")
+            let lockDirectoryURL = lockURL.deletingLastPathComponent()
+            let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
+            let needsDurabilityInitialization = registryLock.withLock {
+                !durabilityInitializedPaths.contains(key)
+            }
             do {
                 try FileManager.default.createDirectory(
-                    at: targetDirectoryURL,
+                    at: lockDirectoryURL,
                     withIntermediateDirectories: true
                 )
                 if let synchronizeCreatedDirectoryEntries {
-                    let currentIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
-                    let needsDurabilityInitialization = registryLock.withLock {
-                        !missingDirectories.isEmpty || durableDirectoryIdentities[key] != currentIdentity
-                    }
                     let directoriesToSynchronize = needsDurabilityInitialization
-                        ? Self.directoryEntryParents(endingAt: targetDirectoryURL)
+                        ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
                         : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
                     for directory in directoriesToSynchronize {
                         try synchronizeCreatedDirectoryEntries(directory)
                     }
-                }
-            } catch {
-                throw LockError(
-                    message: "createDirectory failed or synchronization failed for \(targetDirectoryURL.path): \(error)"
-                )
-            }
-
-            // Acquire the deletion-stable authority first, then the legacy
-            // sibling lock so a surviving pre-migration broker remains
-            // serialized with the current GUI during a rolling relaunch.
-            let lockURL = Self.lockURL(forCanonicalFileURL: canonicalURL)
-            let legacyLockURL = canonicalURL.appendingPathExtension("lock")
-            var heldDescriptors: [(descriptor: Int32, url: URL)] = []
-
-            func acquire(_ url: URL) throws {
-                let descriptor = Darwin.open(
-                    url.path,
-                    O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
-                    S_IRUSR | S_IWUSR
-                )
-                guard descriptor >= 0 else {
-                    throw LockError(message: Self.posixFailure("open", path: url.path, code: errno))
-                }
-                guard flock(descriptor, LOCK_EX) == 0 else {
-                    let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: url.path, code: errno)
-                    if closeDescriptor(descriptor) != 0 {
-                        let closeFailure = Self.posixFailure("close", path: url.path, code: errno)
-                        throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
+                    _ = registryLock.withLock {
+                        durabilityInitializedPaths.insert(key)
                     }
-                    throw LockError(message: lockFailure)
-                }
-                heldDescriptors.append((descriptor, url))
-            }
-
-            do {
-                try acquire(lockURL)
-                guard let stableDescriptor = heldDescriptors.first?.descriptor else {
-                    throw LockError(message: "stable lock acquisition produced no authority descriptor")
-                }
-                let initialIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
-                // The stable lock persists the directory authority observed
-                // before compatibility locking. Once initialized, replacement
-                // of that directory fails closed instead of opening a different
-                // legacy sibling inode from a surviving older broker.
-                let stableAuthority = try Self.readOrInitializeStableAuthority(
-                    descriptor: stableDescriptor,
-                    identity: initialIdentity,
-                    path: lockURL.path
-                )
-                guard stableAuthority.matches(initialIdentity) else {
-                    throw LockError(
-                        message: "directory authority changed for \(targetDirectoryURL.path); refusing split legacy lock authority"
-                    )
-                }
-                try acquire(legacyLockURL)
-                let lockedIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
-                guard stableAuthority.matches(lockedIdentity) else {
-                    throw LockError(
-                        message: "directory authority changed for \(targetDirectoryURL.path); refusing split legacy lock authority"
-                    )
                 }
             } catch {
-                let cleanupFailures = Self.release(
-                    heldDescriptors,
-                    unlockDescriptor: unlockDescriptor,
-                    closeDescriptor: closeDescriptor
-                )
-                let cleanupSuffix = cleanupFailures.isEmpty
-                    ? ""
-                    : "; cleanup also failed: " + cleanupFailures.joined(separator: "; ")
-                throw LockError(message: "lock acquisition failed: \(error)\(cleanupSuffix)")
-            }
-
-            do {
-                let currentIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
-                registryLock.withLock {
-                    durableDirectoryIdentities[key] = currentIdentity
-                }
-            } catch {
-                let cleanupFailures = Self.release(
-                    heldDescriptors,
-                    unlockDescriptor: unlockDescriptor,
-                    closeDescriptor: closeDescriptor
-                )
-                let cleanupSuffix = cleanupFailures.isEmpty
-                    ? ""
-                    : "; cleanup also failed: " + cleanupFailures.joined(separator: "; ")
                 throw LockError(
-                    message: "directory authority read failed for \(targetDirectoryURL.path): \(error)\(cleanupSuffix)"
+                    message: "createDirectory failed or synchronization failed for \(lockDirectoryURL.path): \(error)"
                 )
+            }
+
+            // The lock leaf is persistent authority, not an aliasable path.
+            // Refuse symlinks atomically at open so a concurrent replacement
+            // cannot redirect flock outside the intended directory.
+            let descriptor = Darwin.open(
+                lockURL.path,
+                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
+            guard descriptor >= 0 else {
+                throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
+            }
+            guard flock(descriptor, LOCK_EX) == 0 else {
+                let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
+                if closeDescriptor(descriptor) != 0 {
+                    let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
+                    throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
+                }
+                throw LockError(message: lockFailure)
             }
 
             let result: Result<T, Error>
@@ -228,11 +122,13 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
                 result = .failure(error)
             }
 
-            let cleanupFailures = Self.release(
-                heldDescriptors,
-                unlockDescriptor: unlockDescriptor,
-                closeDescriptor: closeDescriptor
-            )
+            var cleanupFailures: [String] = []
+            if unlockDescriptor(descriptor) != 0 {
+                cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
+            }
+            if closeDescriptor(descriptor) != 0 {
+                cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
+            }
             if !cleanupFailures.isEmpty {
                 switch result {
                 case .success:
@@ -253,96 +149,6 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
-    }
-
-    private static func readOrInitializeStableAuthority(
-        descriptor: Int32,
-        identity: DirectoryLinkIdentity,
-        path: String
-    ) throws -> StableAuthorityRecord {
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0 else {
-            throw LockError(message: posixFailure("fstat", path: path, code: errno))
-        }
-        if metadata.st_size == 0 {
-            let record = StableAuthorityRecord(identity)
-            let data = try JSONEncoder().encode(record)
-            var writeOffset = 0
-            while writeOffset < data.count {
-                let written = data.withUnsafeBytes { buffer in
-                    Darwin.pwrite(
-                        descriptor,
-                        buffer.baseAddress?.advanced(by: writeOffset),
-                        buffer.count - writeOffset,
-                        off_t(writeOffset)
-                    )
-                }
-                guard written > 0 else {
-                    let code = written < 0 ? errno : EIO
-                    throw LockError(message: posixFailure("pwrite", path: path, code: code))
-                }
-                writeOffset += written
-            }
-            guard ftruncate(descriptor, off_t(data.count)) == 0 else {
-                throw LockError(message: posixFailure("ftruncate", path: path, code: errno))
-            }
-            guard fsync(descriptor) == 0 else {
-                throw LockError(message: posixFailure("fsync", path: path, code: errno))
-            }
-            return record
-        }
-        guard metadata.st_size > 0, metadata.st_size <= 4_096 else {
-            throw LockError(message: "invalid stable lock authority record at \(path)")
-        }
-        var data = Data(count: Int(metadata.st_size))
-        let bytesRead = data.withUnsafeMutableBytes { buffer in
-            Darwin.pread(descriptor, buffer.baseAddress, buffer.count, 0)
-        }
-        guard bytesRead == data.count else {
-            let code = bytesRead < 0 ? errno : EIO
-            throw LockError(message: posixFailure("pread", path: path, code: code))
-        }
-        do {
-            return try JSONDecoder().decode(StableAuthorityRecord.self, from: data)
-        } catch {
-            throw LockError(message: "invalid stable lock authority record at \(path): \(error)")
-        }
-    }
-
-    private static func release(
-        _ descriptors: [(descriptor: Int32, url: URL)],
-        unlockDescriptor: (Int32) -> Int32,
-        closeDescriptor: (Int32) -> Int32
-    ) -> [String] {
-        var failures: [String] = []
-        for held in descriptors.reversed() {
-            if unlockDescriptor(held.descriptor) != 0 {
-                failures.append(posixFailure("flock(LOCK_UN)", path: held.url.path, code: errno))
-            }
-            if closeDescriptor(held.descriptor) != 0 {
-                failures.append(posixFailure("close", path: held.url.path, code: errno))
-            }
-        }
-        return failures
-    }
-
-    static func lockURL(for fileURL: URL) -> URL {
-        let standardizedURL = fileURL.standardizedFileURL
-        let canonicalURL = standardizedURL
-            .deletingLastPathComponent()
-            .resolvingSymlinksInPath()
-            .appendingPathComponent(standardizedURL.lastPathComponent)
-        return lockURL(forCanonicalFileURL: canonicalURL)
-    }
-
-    private static func lockURL(forCanonicalFileURL fileURL: URL) -> URL {
-        let digest = SHA256.hash(data: Data(fileURL.path.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return FileManager.default.temporaryDirectory
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-            .appendingPathComponent(".holoscape-operation-\(digest).lock")
     }
 
     private static func missingDirectories(endingAt directoryURL: URL) -> [URL] {

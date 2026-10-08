@@ -88,6 +88,7 @@ struct DurableAtomicFileCommitter {
         let writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)?
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
+        let synchronizeDirectoryAtDescriptor: ((Int32) throws -> Void)?
         let removeTemporaryFile: (URL) throws -> Void
         let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
         let closeDirectoryDescriptor: (Int32) -> Int32
@@ -98,6 +99,7 @@ struct DurableAtomicFileCommitter {
             writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)? = nil,
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
+            synchronizeDirectoryAtDescriptor: ((Int32) throws -> Void)? = nil,
             removeTemporaryFile: @escaping (URL) throws -> Void,
             removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
             closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close,
@@ -107,6 +109,7 @@ struct DurableAtomicFileCommitter {
             self.writeAndSynchronizeTemporaryFileAtDescriptor = writeAndSynchronizeTemporaryFileAtDescriptor
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
+            self.synchronizeDirectoryAtDescriptor = synchronizeDirectoryAtDescriptor
             self.removeTemporaryFile = removeTemporaryFile
             self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
             self.closeDirectoryDescriptor = closeDirectoryDescriptor
@@ -118,6 +121,7 @@ struct DurableAtomicFileCommitter {
             writeAndSynchronizeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             replaceFile: DurableAtomicFileCommitter.replaceFile,
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
+            synchronizeDirectoryAtDescriptor: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
             removeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.removeTemporaryFile,
             closeDirectoryDescriptor: Darwin.close,
@@ -172,7 +176,12 @@ struct DurableAtomicFileCommitter {
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
             try persistence.replaceFile(temporaryURL, destinationURL)
             replacementCommitted = true
-            try persistence.synchronizeDirectory(directoryURL)
+            if let authorityDescriptor,
+               let synchronizeDirectoryAtDescriptor = persistence.synchronizeDirectoryAtDescriptor {
+                try synchronizeDirectoryAtDescriptor(authorityDescriptor)
+            } else {
+                try persistence.synchronizeDirectory(directoryURL)
+            }
             for directory in additionalDirectoriesToSynchronize {
                 try persistence.synchronizeDirectory(directory)
             }
@@ -392,5 +401,9 @@ struct DurableAtomicFileCommitter {
         }
         if let syncError { throw syncError }
         if let closeError { throw closeError }
+    }
+
+    static func synchronizeDirectory(_ descriptor: Int32) throws {
+        try fullSync(descriptor)
     }
 }

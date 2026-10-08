@@ -454,6 +454,55 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(service.lastDiagnostic?.message.contains("Directory authority changed") == true)
     }
 
+    func testReplacementDirectorySynchronizationUsesRetainedAuthorityDescriptor() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        let originalIdentity = try DurableDirectoryIdentity.read(at: configDir)
+        let displaced = root.appendingPathComponent("displaced")
+        var synchronizedDescriptorIdentity: DurableDirectoryIdentity?
+        var didRestorePath = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            writeAndSynchronizeTemporaryFileAtDescriptor: { data, descriptor, leaf in
+                try DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile(
+                    data,
+                    at: descriptor,
+                    named: leaf
+                )
+            },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+            },
+            synchronizeDirectory: { url in
+                XCTAssertNotEqual(url.path, configDir.path, "replacement directory must not be reopened by path")
+            },
+            synchronizeDirectoryAtDescriptor: { descriptor in
+                try FileManager.default.moveItem(at: configDir, to: displaced)
+                try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+                var metadata = stat()
+                XCTAssertEqual(fstat(descriptor, &metadata), 0)
+                synchronizedDescriptorIdentity = DurableDirectoryIdentity(
+                    device: UInt64(metadata.st_dev),
+                    inode: UInt64(metadata.st_ino),
+                    generation: metadata.st_gen,
+                    changeSeconds: Int64(metadata.st_ctimespec.tv_sec),
+                    changeNanoseconds: Int64(metadata.st_ctimespec.tv_nsec)
+                )
+                try DurableAtomicFileCommitter.synchronizeDirectory(descriptor)
+                try FileManager.default.removeItem(at: configDir)
+                try FileManager.default.moveItem(at: displaced, to: configDir)
+                didRestorePath = true
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+
+        XCTAssertTrue(service.save(.default))
+        XCTAssertTrue(didRestorePath)
+        XCTAssertTrue(synchronizedDescriptorIdentity?.hasSameAuthority(as: originalIdentity) == true)
+    }
+
     func testDirectorySwapAndSyncFailureAfterReplacementDoesNotPoisonCache() throws {
         let root = temporaryConfigDir()
         let configDir = root.appendingPathComponent("config")

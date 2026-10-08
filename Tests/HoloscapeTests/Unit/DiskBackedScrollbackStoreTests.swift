@@ -214,19 +214,21 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         )
     }
 
-    func testAppendWaitsForProcessSharedSessionLockAfterDirectoryDisplacement() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let directory = root.appendingPathComponent("scrollback", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    func testAppendWaitsForProcessSharedSessionLock() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "cross-process-session")
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         let scrollbackURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
-        let lockPath = PersistentFileOperationLocks.lockURL(for: scrollbackURL).path
-        let readyURL = root.appendingPathComponent("child-ready")
-        let releaseURL = root.appendingPathComponent("child-release")
+        let lockPath = scrollbackURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .appendingPathExtension("lock")
+            .path
+        let readyURL = directory.appendingPathComponent("child-ready")
+        let releaseURL = directory.appendingPathComponent("child-release")
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         child.arguments = [
@@ -257,10 +259,6 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
 
-        let displacedDirectory = root.appendingPathComponent("displaced-scrollback", isDirectory: true)
-        try FileManager.default.moveItem(at: directory, to: displacedDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-
         let appendDone = DispatchSemaphore(value: 0)
         let errors = ScrollbackStoreErrorRecorder()
         DispatchQueue.global().async {
@@ -287,70 +285,6 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
     }
 
-    func testRecreatedDirectoryFailsClosedWhileLegacyProcessHoldsDisplacedLock() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let directory = root.appendingPathComponent("legacy-scrollback", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let fileURL = directory.appendingPathComponent("session.scrollback")
-        let locks = PersistentFileOperationLocks()
-
-        // Seed the stable authority while the legacy pathname still names the
-        // same directory that a pre-migration broker will use.
-        try locks.withLock(for: fileURL) {}
-
-        let legacyLockURL = fileURL.appendingPathExtension("lock")
-        let readyURL = root.appendingPathComponent("legacy-child-ready")
-        let releaseURL = root.appendingPathComponent("legacy-child-release")
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        child.arguments = [
-            "xctest",
-            "-XCTest",
-            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
-            Bundle(for: Self.self).bundleURL.path
-        ]
-        child.environment = ProcessInfo.processInfo.environment.merging([
-            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
-            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": legacyLockURL.path,
-            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
-            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
-        ]) { _, helperValue in helperValue }
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
-        try child.run()
-        defer {
-            try? Data().write(to: releaseURL)
-            if child.isRunning { child.terminate() }
-        }
-
-        let readyDeadline = Date().addingTimeInterval(3)
-        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
-
-        let displaced = root.appendingPathComponent("displaced-legacy-scrollback", isDirectory: true)
-        try FileManager.default.moveItem(at: directory, to: displaced)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-
-        var operationRan = false
-        XCTAssertThrowsError(try locks.withLock(for: fileURL) { operationRan = true }) { error in
-            let lockError = error as? PersistentFileOperationLocks.LockError
-            XCTAssertNotNil(lockError)
-            XCTAssertTrue(lockError?.message.contains("directory authority changed") == true)
-        }
-        XCTAssertFalse(operationRan)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyLockURL.path))
-        XCTAssertTrue(child.isRunning)
-
-        try Data().write(to: releaseURL)
-        let childExited = expectation(description: "legacy lock helper exited")
-        child.terminationHandler = { _ in childExited.fulfill() }
-        wait(for: [childExited], timeout: 3)
-        XCTAssertEqual(child.terminationStatus, 0)
-    }
-
     func testLockSetupWrapsParentDirectoryFailureAsLockError() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -368,178 +302,16 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
-    func testRecreatedLockDirectorySyncFailureIsRetriedBeforeAuthorityFailure() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let lockDirectory = root.appendingPathComponent("recreated-locks")
-        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
-        let locks = PersistentFileOperationLocks()
-        var events: [String] = []
-
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {
-            events.append("operation")
-        }
-
-        try FileManager.default.removeItem(at: lockDirectory)
-        events.removeAll()
-        var shouldFailSynchronization = true
-        XCTAssertThrowsError(
-            try locks.withLock(
-                for: fileURL,
-                synchronizeCreatedDirectoryEntries: { url in
-                    events.append("sync:\(url.path)")
-                    if shouldFailSynchronization {
-                        shouldFailSynchronization = false
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                }
-            ) {
-                events.append("operation")
-            }
-        )
-        XCTAssertFalse(events.contains("operation"))
-
-        events.removeAll()
-        XCTAssertThrowsError(
-            try locks.withLock(
-                for: fileURL,
-                synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-            ) {
-                events.append("operation")
-            }
-        ) { error in
-            XCTAssertTrue(String(describing: error).contains("directory authority changed"))
-        }
-        XCTAssertFalse(events.contains("operation"))
-        XCTAssertTrue(events.contains("sync:\(root.path)"))
-    }
-
-    func testCompletedLockDirectoryRecreationFailsClosedAfterResynchronizingParent() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let lockDirectory = root.appendingPathComponent("replaced-locks")
-        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
-        let locks = PersistentFileOperationLocks()
-        var events: [String] = []
-
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {
-            events.append("operation")
-        }
-
-        try FileManager.default.removeItem(at: lockDirectory)
-        try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: false)
-        events.removeAll()
-
-        XCTAssertThrowsError(
-            try locks.withLock(
-                for: fileURL,
-                synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-            ) {
-                events.append("operation")
-            }
-        ) { error in
-            XCTAssertTrue(String(describing: error).contains("directory authority changed"))
-        }
-        XCTAssertFalse(events.contains("operation"))
-        XCTAssertTrue(events.contains("sync:\(root.path)"))
-    }
-
-    func testDisplacedLockDirectoryCannotSplitProcessSharedAuthority() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let lockDirectory = root.appendingPathComponent("replaceable-locks")
-        try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: false)
-        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
-        let displaced = root.appendingPathComponent("displaced-locks")
-        let firstLocks = PersistentFileOperationLocks()
-        let secondLocks = PersistentFileOperationLocks()
-        let firstEntered = DispatchSemaphore(value: 0)
-        let releaseFirst = DispatchSemaphore(value: 0)
-        let firstDone = DispatchSemaphore(value: 0)
-        let secondEntered = DispatchSemaphore(value: 0)
-        let secondDone = DispatchSemaphore(value: 0)
-        let errors = ScrollbackStoreErrorRecorder()
-
-        DispatchQueue.global().async {
-            defer { firstDone.signal() }
-            do {
-                try firstLocks.withLock(for: fileURL) {
-                    firstEntered.signal()
-                    releaseFirst.wait()
-                }
-            } catch {
-                errors.record(error)
-                firstEntered.signal()
-            }
-        }
-        XCTAssertEqual(firstEntered.wait(timeout: .now() + 2), .success)
-        try FileManager.default.moveItem(at: lockDirectory, to: displaced)
-        try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: false)
-
-        DispatchQueue.global().async {
-            defer { secondDone.signal() }
-            do {
-                _ = try secondLocks.withLock(for: fileURL) {
-                    secondEntered.signal()
-                }
-            } catch {
-                errors.record(error)
-                secondEntered.signal()
-            }
-        }
-        XCTAssertEqual(secondEntered.wait(timeout: .now() + 0.1), .timedOut)
-
-        releaseFirst.signal()
-        XCTAssertEqual(firstDone.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(secondEntered.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(secondDone.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(errors.values.count, 1)
-        XCTAssertTrue(String(describing: errors.values[0]).contains("directory authority changed"))
-    }
-
-    func testSameInodeLockDirectoryRelinkResynchronizesParentBeforeOperation() throws {
-        let root = try makeTempDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let lockDirectory = root.appendingPathComponent("relinked-locks")
-        let displaced = root.appendingPathComponent("temporarily-displaced-locks")
-        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
-        let locks = PersistentFileOperationLocks()
-        var events: [String] = []
-
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {}
-        try FileManager.default.moveItem(at: lockDirectory, to: displaced)
-        try FileManager.default.moveItem(at: displaced, to: lockDirectory)
-        events.removeAll()
-
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {
-            events.append("operation")
-        }
-        let operationIndex = try XCTUnwrap(events.firstIndex(of: "operation"))
-        XCTAssertTrue(events[..<operationIndex].contains("sync:\(root.path)"))
-    }
-
     func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "list-symlink-lock")
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         try store.append(Data("persisted-tail".utf8), for: id)
-        let scrollbackURL = directory
+        let lockURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
-        let lockURL = PersistentFileOperationLocks.lockURL(for: scrollbackURL)
+            .appendingPathExtension("lock")
         let foreignTarget = directory.appendingPathComponent("foreign-lock-target")
         try FileManager.default.removeItem(at: lockURL)
         try FileManager.default.createSymbolicLink(at: lockURL, withDestinationURL: foreignTarget)
@@ -594,10 +366,10 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 1_024)
         try store.append(Data("persisted-tail".utf8), for: id)
 
-        let scrollbackURL = directory
+        let lockURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
-        let lockURL = PersistentFileOperationLocks.lockURL(for: scrollbackURL)
+            .appendingPathExtension("lock")
         try FileManager.default.removeItem(at: lockURL)
         try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: false)
 
@@ -619,7 +391,11 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         let scrollbackURL = directory
             .appendingPathComponent(id.rawValue)
             .appendingPathExtension("scrollback")
-        let lockPath = PersistentFileOperationLocks.lockURL(for: scrollbackURL).path
+        let lockPath = scrollbackURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .appendingPathExtension("lock")
+            .path
         let readyURL = directory.appendingPathComponent("list-child-ready")
         let releaseURL = directory.appendingPathComponent("list-child-release")
         let child = Process()
