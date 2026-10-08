@@ -20,7 +20,7 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
-    private var durabilityInitializedPaths: Set<String> = []
+    private var durableDirectoryIdentities: [String: DurableDirectoryIdentity] = [:]
 
     struct LockError: LocalizedError {
         let message: String
@@ -70,31 +70,24 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             let lockURL = canonicalURL.appendingPathExtension("lock")
             let lockDirectoryURL = lockURL.deletingLastPathComponent()
             let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
-            if !missingDirectories.isEmpty {
-                // Deletion invalidates the cached proof that this directory
-                // entry is durable. Clear it before recreation so a failed
-                // synchronization is retried before any later operation.
-                _ = registryLock.withLock {
-                    durabilityInitializedPaths.remove(key)
-                }
-            }
-            let needsDurabilityInitialization = registryLock.withLock {
-                !durabilityInitializedPaths.contains(key)
-            }
             do {
                 try FileManager.default.createDirectory(
                     at: lockDirectoryURL,
                     withIntermediateDirectories: true
                 )
                 if let synchronizeCreatedDirectoryEntries {
+                    let currentIdentity = try DurableDirectoryIdentity.read(at: lockDirectoryURL)
+                    let needsDurabilityInitialization = registryLock.withLock {
+                        !missingDirectories.isEmpty || durableDirectoryIdentities[key] != currentIdentity
+                    }
                     let directoriesToSynchronize = needsDurabilityInitialization
                         ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
                         : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
                     for directory in directoriesToSynchronize {
                         try synchronizeCreatedDirectoryEntries(directory)
                     }
-                    _ = registryLock.withLock {
-                        durabilityInitializedPaths.insert(key)
+                    registryLock.withLock {
+                        durableDirectoryIdentities[key] = currentIdentity
                     }
                 }
             } catch {

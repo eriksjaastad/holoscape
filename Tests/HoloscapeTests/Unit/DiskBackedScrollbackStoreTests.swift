@@ -350,6 +350,38 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         )
     }
 
+    func testCompletedLockDirectoryRecreationResynchronizesParentBeforeOperation() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lockDirectory = root.appendingPathComponent("replaced-locks")
+        let fileURL = lockDirectory.appendingPathComponent("session.scrollback")
+        let locks = PersistentFileOperationLocks()
+        var events: [String] = []
+
+        try locks.withLock(
+            for: fileURL,
+            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+        ) {
+            events.append("operation")
+        }
+
+        try FileManager.default.removeItem(at: lockDirectory)
+        try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: false)
+        events.removeAll()
+
+        try locks.withLock(
+            for: fileURL,
+            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+        ) {
+            events.append("operation")
+        }
+        let operationIndex = try XCTUnwrap(events.firstIndex(of: "operation"))
+        XCTAssertTrue(
+            events[..<operationIndex].contains("sync:\(root.path)"),
+            "same-path lock-directory replacement must invalidate cached durability authority"
+        )
+    }
+
     func testListStoredTailsRejectsSymlinkedLockWithoutCreatingForeignTarget() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

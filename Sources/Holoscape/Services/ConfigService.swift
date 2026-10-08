@@ -18,9 +18,10 @@ class ConfigService {
 
     /// In-memory cache — avoids disk reads on every load().
     private var cachedConfig: HoloscapeConfig?
-    /// A failed synchronization can leave a visible directory whose parent
-    /// entry is not durable. Do not trust existence alone on a later attempt.
-    private var directoryDurabilityInitialized = false
+    /// Identity of the directory whose parent linkage was last established.
+    /// Path equality is insufficient because deletion and recreation can occur
+    /// entirely between two saves.
+    private var durableDirectoryIdentity: DurableDirectoryIdentity?
     private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
     init() {
@@ -53,7 +54,7 @@ class ConfigService {
         // Callers of this test-only initializer own fixture-directory setup.
         // Treat an already-present fixture root as established so the suite
         // does not issue real F_FULLFSYNC calls for every isolated test path.
-        self.directoryDurabilityInitialized = FileManager.default.fileExists(atPath: configDir.path)
+        self.durableDirectoryIdentity = try? DurableDirectoryIdentity.read(at: configDir)
     }
 
     func load() -> HoloscapeConfig {
@@ -116,11 +117,14 @@ class ConfigService {
             guard isDirectory.boolValue else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
             }
+            let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
             // An existing config file could only have been linked through an
-            // already-existing directory. First-save initialization is needed
-            // only while the config leaf is absent.
-            if FileManager.default.fileExists(atPath: configURL.path) {
-                directoryDurabilityInitialized = true
+            // already-existing directory. A fresh service may trust that fact,
+            // but a live service must not trust a different directory that was
+            // recreated at the same pathname between saves.
+            if FileManager.default.fileExists(atPath: configURL.path),
+               durableDirectoryIdentity == nil || durableDirectoryIdentity == currentIdentity {
+                durableDirectoryIdentity = currentIdentity
                 return
             }
         }
@@ -135,25 +139,20 @@ class ConfigService {
             candidate = parent
         }
 
-        // A previously initialized directory may have been removed and is now
-        // about to be recreated. Invalidate the cached durability authority
-        // before creating anything so a failed parent sync remains pending on
-        // the next save even though the directory is then visible.
-        if !missingDirectories.isEmpty {
-            directoryDurabilityInitialized = false
-        }
-
         for directory in missingDirectories.reversed() {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         }
 
-        let directoriesToSynchronize = directoryDurabilityInitialized
-            ? missingDirectories.reversed().map { $0.deletingLastPathComponent() }
-            : Self.directoryEntryParents(endingAt: configDir)
+        let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
+        let needsDurabilityInitialization = !missingDirectories.isEmpty
+            || durableDirectoryIdentity != currentIdentity
+        let directoriesToSynchronize = needsDurabilityInitialization
+            ? Self.directoryEntryParents(endingAt: configDir)
+            : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
         for directory in directoriesToSynchronize {
             try persistence.synchronizeDirectory(directory)
         }
-        directoryDurabilityInitialized = true
+        durableDirectoryIdentity = currentIdentity
     }
 
     /// Synchronize the full ancestry until one complete pass succeeds. This

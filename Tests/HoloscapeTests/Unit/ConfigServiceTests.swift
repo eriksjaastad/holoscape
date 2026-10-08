@@ -294,6 +294,38 @@ final class ConfigServiceTests: XCTestCase {
         )
     }
 
+    func testCompletedDirectoryRecreationResynchronizesParentBeforeWriting() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("replaced-config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        var events: [String] = []
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in
+                events.append("write")
+                try data.write(to: url)
+            },
+            replaceFile: { source, destination in
+                events.append("replace")
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            synchronizeDirectory: { events.append("sync:\($0.path)") },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        XCTAssertTrue(service.save(.default))
+
+        try FileManager.default.removeItem(at: configDir)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        events.removeAll()
+
+        XCTAssertTrue(service.save(.default))
+        let firstWrite = try XCTUnwrap(events.firstIndex(of: "write"))
+        XCTAssertTrue(
+            events[..<firstWrite].contains("sync:\(root.path)"),
+            "same-path directory replacement must invalidate cached durability authority"
+        )
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ConfigServiceTests")

@@ -1,6 +1,45 @@
 import Darwin
 import Foundation
 
+/// Filesystem identity for detecting delete-and-recreate replacement at an
+/// unchanged pathname. `st_gen` distinguishes inode reuse when the filesystem
+/// provides a generation number.
+struct DurableDirectoryIdentity: Equatable, Sendable {
+    let device: UInt64
+    let inode: UInt64
+    let generation: UInt32
+
+    static func read(at url: URL) throws -> DurableDirectoryIdentity {
+        let descriptor = url.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var metadata = stat()
+        let metadataError: Error? = Darwin.fstat(descriptor, &metadata) == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        let closeError: Error? = Darwin.close(descriptor) == 0
+            ? nil
+            : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if let metadataError, let closeError {
+            throw DurableAtomicFileCommitter.CommitError.persistenceAndCleanupFailed(
+                operation: String(describing: metadataError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if let metadataError { throw metadataError }
+        if let closeError { throw closeError }
+        return DurableDirectoryIdentity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino),
+            generation: metadata.st_gen
+        )
+    }
+}
+
 /// Commits one file through a synchronized sibling temporary file and atomic
 /// replacement. A post-replacement failure is distinct because the new bytes
 /// are already visible and callers must not pretend the old value remains
