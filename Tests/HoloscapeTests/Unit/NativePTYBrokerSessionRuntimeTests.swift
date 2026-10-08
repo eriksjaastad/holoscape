@@ -1968,6 +1968,46 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         )
     }
 
+    func testRuntimeDeinitCompletionWaitsForProcessTerminationHandler() throws {
+        let terminationHandlerGate = OneShotLifecyclePublicationGate()
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        let id = BrokerSessionID(rawValue: "runtime-deinit-termination-handler-quiescence")
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            inputDescriptorCloser: { descriptor in
+                _ = Darwin.close(descriptor)
+                return .closedWithWarning(EIO)
+            },
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() },
+            processTerminationHandlerWillRun: { _ in terminationHandlerGate.pause() }
+        )
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/sh",
+                arguments: ["-c", "exit 0"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer { terminationHandlerGate.release() }
+
+        XCTAssertEqual(terminationHandlerGate.waitUntilPaused(), .success)
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Runtime cleanup must not complete while its termination handler can still emit cleanup diagnostics"
+        )
+        terminationHandlerGate.release()
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now() + 2),
+            .success,
+            "Runtime cleanup must complete after the process termination handler becomes quiescent"
+        )
+    }
+
     func testRuntimeDeinitCleanupWaitsForCapturedOutputAvailabilityCallback() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
         let availabilityGate = OneShotLifecyclePublicationGate()

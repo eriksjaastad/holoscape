@@ -36,6 +36,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
     private var status: Int32?
     private var waitError: Int32?
     private var storedTerminationHandler: TerminationHandler?
+    private let terminationHandlerGroup = DispatchGroup()
     private var waitingStarted = false
     private let waiter: Waiter
     private let reaper: Reaper
@@ -153,9 +154,21 @@ final class NativePTYChildProcess: @unchecked Sendable {
                 finalObservation = observation
                 publishStoppedLifecycleUnlessCleanupComplete(finalObservation)
             }
-            let handler = lock.withLock { storedTerminationHandler }
-            handler?(self)
+            let handler = lock.withLock { () -> TerminationHandler? in
+                guard let handler = storedTerminationHandler else { return nil }
+                terminationHandlerGroup.enter()
+                return handler
+            }
+            if let handler {
+                handler(self)
+                terminationHandlerGroup.leave()
+            }
         }
+    }
+
+    func clearTerminationHandlerAndWait(until deadline: DispatchTime) -> Bool {
+        lock.withLock { storedTerminationHandler = nil }
+        return terminationHandlerGroup.wait(timeout: deadline) == .success
     }
 
     private func waitForObservationRetry() -> Bool {
@@ -682,12 +695,18 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 } catch {
                     failureReason = String(describing: error)
                 }
-                self?.completePersistenceWrite(byteCount: data.count, failureReason: failureReason)
+                let shouldResumeOutputRead = self?.completePersistenceWrite(
+                    byteCount: data.count,
+                    failureReason: failureReason
+                ) ?? false
                 group.leave()
+                if shouldResumeOutputRead {
+                    self?.startOutputMonitoring()
+                }
             }
         }
 
-        private func completePersistenceWrite(byteCount: Int, failureReason: String?) {
+        private func completePersistenceWrite(byteCount: Int, failureReason: String?) -> Bool {
             var nextWrite: Data?
             var shouldResumeOutputRead = false
             lock.lock()
@@ -722,10 +741,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             if let nextWrite {
                 schedulePersistenceWrite(nextWrite)
             }
-            if shouldResumeOutputRead {
-                startOutputMonitoring()
-            }
             signalOutputAvailability()
+            return shouldResumeOutputRead
         }
 
         private func signalOutputAvailability() {
@@ -1477,6 +1494,8 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
             guard process.cleanupIsComplete else { return false }
 
+            guard process.clearTerminationHandlerAndWait(until: deadline) else { return false }
+
             while inputDescriptorOwnershipIsRetained() {
                 guard NativePTYChildProcess.waitForCleanupRetry(until: deadline) else { return false }
                 do {
@@ -1669,6 +1688,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let outputCleanupTimeoutMilliseconds: Int
     private let installsOutputReadabilityHandler: Bool
     private let runtimeDeinitCleanupDidComplete: @Sendable (BrokerSessionID) -> Void
+    private let processTerminationHandlerWillRun: @Sendable (BrokerSessionID) -> Void
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
@@ -1688,6 +1708,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         outputCleanupTimeoutMilliseconds: Int = 500,
         installsOutputReadabilityHandler: Bool = true,
         runtimeDeinitCleanupDidComplete: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
+        processTerminationHandlerWillRun: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32) = { descriptor, buffer, count in
             let readCount = Darwin.read(descriptor, buffer, count)
             return (readCount, readCount < 0 ? errno : 0)
@@ -1760,6 +1781,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.runtimeDeinitCleanupDidComplete = runtimeDeinitCleanupDidComplete
+        self.processTerminationHandlerWillRun = processTerminationHandlerWillRun
         self.processGroupLookup = processGroupLookup
         self.processGroupSignal = processGroupSignal
     }
@@ -1953,7 +1975,9 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             scrollbackAppender: scrollbackAppender
         )
         let processGroupSignal = self.processGroupSignal
-        process.terminationHandler = { [weak session] process in
+        let processTerminationHandlerWillRun = self.processTerminationHandlerWillRun
+        process.terminationHandler = { [weak session, id] process in
+            processTerminationHandlerWillRun(id)
             session?.handleProcessTermination(process.terminationObservation)
         }
         if installsOutputReadabilityHandler {
