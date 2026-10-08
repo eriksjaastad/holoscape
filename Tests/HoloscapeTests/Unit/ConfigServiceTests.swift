@@ -535,6 +535,67 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup also failed") == true)
     }
 
+    func testDisplacementBeforeTemporaryCreationRemainsDescriptorBound() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        let displaced = root.appendingPathComponent("displaced")
+        var temporaryLeaf = ""
+        var didDisplace = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in XCTFail("pathname writer must not be used") },
+            writeAndSynchronizeTemporaryFileAtDescriptor: { data, descriptor, leaf in
+                temporaryLeaf = leaf
+                try FileManager.default.moveItem(at: configDir, to: displaced)
+                try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+                didDisplace = true
+                try DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile(
+                    data,
+                    at: descriptor,
+                    named: leaf
+                )
+            },
+            replaceFile: { _, _ in XCTFail("replacement must not run after authority loss") },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { _ in XCTFail("descriptor cleanup must be used") }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+
+        XCTAssertFalse(service.save(.default))
+        XCTAssertTrue(didDisplace)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: displaced.appendingPathComponent(temporaryLeaf).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configDir.appendingPathComponent(temporaryLeaf).path))
+    }
+
+    func testCommittedClassificationSurvivesDirectoryDescriptorCloseFailure() throws {
+        let configDir = temporaryConfigDir()
+        enum InjectedFailure: Error { case directorySync }
+        var replacementCommitted = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+                replacementCommitted = true
+            },
+            synchronizeDirectory: { _ in
+                if replacementCommitted { throw InjectedFailure.directorySync }
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
+            closeDirectoryDescriptor: { descriptor in
+                _ = Darwin.close(descriptor)
+                return -1
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Committed Despite Close Failure"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("replacement committed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ConfigServiceTests")

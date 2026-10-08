@@ -28,33 +28,40 @@ struct BrokerSessionRegistry {
 
     struct Persistence: @unchecked Sendable {
         let writeAndSynchronizeTemporaryFile: (Data, URL) throws -> Void
+        let writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)?
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
         let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
+        let closeDirectoryDescriptor: (Int32) -> Int32
         let unlockFileLock: (Int32) -> Int32
         let closeFileLock: (Int32) -> Int32
 
         init(
             writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
+            writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)? = nil,
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
             removeTemporaryFile: @escaping (URL) throws -> Void,
             removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
+            closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close,
             unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
             closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
         ) {
             self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
+            self.writeAndSynchronizeTemporaryFileAtDescriptor = writeAndSynchronizeTemporaryFileAtDescriptor
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
             self.removeTemporaryFile = removeTemporaryFile
             self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
+            self.closeDirectoryDescriptor = closeDirectoryDescriptor
             self.unlockFileLock = unlockFileLock
             self.closeFileLock = closeFileLock
         }
 
         static let live = Persistence(
             writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            writeAndSynchronizeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             replaceFile: DurableAtomicFileCommitter.replaceFile,
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
@@ -246,10 +253,12 @@ struct BrokerSessionRegistry {
         let committer = DurableAtomicFileCommitter(
             persistence: .init(
                 writeAndSynchronizeTemporaryFile: persistence.writeAndSynchronizeTemporaryFile,
+                writeAndSynchronizeTemporaryFileAtDescriptor: persistence.writeAndSynchronizeTemporaryFileAtDescriptor,
                 replaceFile: persistence.replaceFile,
                 synchronizeDirectory: persistence.synchronizeDirectory,
                 removeTemporaryFile: persistence.removeTemporaryFile,
-                removeTemporaryFileAtDescriptor: persistence.removeTemporaryFileAtDescriptor
+                removeTemporaryFileAtDescriptor: persistence.removeTemporaryFileAtDescriptor,
+                closeDirectoryDescriptor: persistence.closeDirectoryDescriptor
             )
         )
         do {

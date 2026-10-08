@@ -85,31 +85,39 @@ struct DurableAtomicFileCommitter {
 
     struct Persistence: @unchecked Sendable {
         let writeAndSynchronizeTemporaryFile: (Data, URL) throws -> Void
+        let writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)?
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
         let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
+        let closeDirectoryDescriptor: (Int32) -> Int32
 
         init(
             writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
+            writeAndSynchronizeTemporaryFileAtDescriptor: ((Data, Int32, String) throws -> Void)? = nil,
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
             removeTemporaryFile: @escaping (URL) throws -> Void,
-            removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile
+            removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
+            closeDirectoryDescriptor: @escaping (Int32) -> Int32 = Darwin.close
         ) {
             self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
+            self.writeAndSynchronizeTemporaryFileAtDescriptor = writeAndSynchronizeTemporaryFileAtDescriptor
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
             self.removeTemporaryFile = removeTemporaryFile
             self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
+            self.closeDirectoryDescriptor = closeDirectoryDescriptor
         }
 
         static let live = Persistence(
             writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
+            writeAndSynchronizeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             replaceFile: DurableAtomicFileCommitter.replaceFile,
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
             removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
-            removeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.removeTemporaryFile
+            removeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.removeTemporaryFile,
+            closeDirectoryDescriptor: Darwin.close
         )
     }
 
@@ -151,7 +159,12 @@ struct DurableAtomicFileCommitter {
         let operationResult: Result<Void, Error>
         do {
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
-            try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
+            if let authorityDescriptor,
+               let descriptorWriter = persistence.writeAndSynchronizeTemporaryFileAtDescriptor {
+                try descriptorWriter(data, authorityDescriptor, temporaryURL.lastPathComponent)
+            } else {
+                try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
+            }
             try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
             try persistence.replaceFile(temporaryURL, destinationURL)
             replacementCommitted = true
@@ -194,7 +207,7 @@ struct DurableAtomicFileCommitter {
             }
         }
 
-        if let authorityDescriptor, Darwin.close(authorityDescriptor) != 0 {
+        if let authorityDescriptor, persistence.closeDirectoryDescriptor(authorityDescriptor) != 0 {
             let closeError = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             switch operationResult {
             case .success where replacementCommitted:
@@ -202,6 +215,13 @@ struct DurableAtomicFileCommitter {
             case .success:
                 throw closeError
             case .failure(let operationError):
+                if case let CommitError.replacementCommitted(durabilityFailure) = operationError {
+                    throw CommitError.replacementCommitted(
+                        durabilityFailure: durabilityFailure
+                            + "; directory authority cleanup failed: "
+                            + String(describing: closeError)
+                    )
+                }
                 throw CommitError.persistenceAndCleanupFailed(
                     operation: String(describing: operationError),
                     cleanup: String(describing: closeError)
@@ -259,7 +279,29 @@ struct DurableAtomicFileCommitter {
         guard descriptor >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
+        try writeSynchronizeAndClose(data, descriptor: descriptor)
+    }
 
+    static func writeAndSynchronizeTemporaryFile(
+        _ data: Data,
+        at directoryDescriptor: Int32,
+        named name: String
+    ) throws {
+        let descriptor = name.withCString {
+            Darwin.openat(
+                directoryDescriptor,
+                $0,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try writeSynchronizeAndClose(data, descriptor: descriptor)
+    }
+
+    private static func writeSynchronizeAndClose(_ data: Data, descriptor: Int32) throws {
         var operationError: Error?
         do {
             try writeAll(data, to: descriptor)

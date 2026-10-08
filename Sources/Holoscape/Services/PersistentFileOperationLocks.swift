@@ -109,25 +109,46 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
                 )
             }
 
-            // Keep process-shared authority outside the replaceable data
-            // directory. The hashed leaf remains stable while that directory
-            // is deleted, recreated, or temporarily displaced.
+            // Acquire the deletion-stable authority first, then the legacy
+            // sibling lock so a surviving pre-migration broker remains
+            // serialized with the current GUI during a rolling relaunch.
             let lockURL = Self.lockURL(forCanonicalFileURL: canonicalURL)
-            let descriptor = Darwin.open(
-                lockURL.path,
-                O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
-                S_IRUSR | S_IWUSR
-            )
-            guard descriptor >= 0 else {
-                throw LockError(message: Self.posixFailure("open", path: lockURL.path, code: errno))
-            }
-            guard flock(descriptor, LOCK_EX) == 0 else {
-                let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: lockURL.path, code: errno)
-                if closeDescriptor(descriptor) != 0 {
-                    let closeFailure = Self.posixFailure("close", path: lockURL.path, code: errno)
-                    throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
+            let legacyLockURL = canonicalURL.appendingPathExtension("lock")
+            var heldDescriptors: [(descriptor: Int32, url: URL)] = []
+
+            func acquire(_ url: URL) throws {
+                let descriptor = Darwin.open(
+                    url.path,
+                    O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
+                    S_IRUSR | S_IWUSR
+                )
+                guard descriptor >= 0 else {
+                    throw LockError(message: Self.posixFailure("open", path: url.path, code: errno))
                 }
-                throw LockError(message: lockFailure)
+                guard flock(descriptor, LOCK_EX) == 0 else {
+                    let lockFailure = Self.posixFailure("flock(LOCK_EX)", path: url.path, code: errno)
+                    if closeDescriptor(descriptor) != 0 {
+                        let closeFailure = Self.posixFailure("close", path: url.path, code: errno)
+                        throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
+                    }
+                    throw LockError(message: lockFailure)
+                }
+                heldDescriptors.append((descriptor, url))
+            }
+
+            do {
+                try acquire(lockURL)
+                try acquire(legacyLockURL)
+            } catch {
+                let cleanupFailures = Self.release(
+                    heldDescriptors,
+                    unlockDescriptor: unlockDescriptor,
+                    closeDescriptor: closeDescriptor
+                )
+                let cleanupSuffix = cleanupFailures.isEmpty
+                    ? ""
+                    : "; cleanup also failed: " + cleanupFailures.joined(separator: "; ")
+                throw LockError(message: "lock acquisition failed: \(error)\(cleanupSuffix)")
             }
 
             do {
@@ -136,13 +157,11 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
                     durableDirectoryIdentities[key] = currentIdentity
                 }
             } catch {
-                var cleanupFailures: [String] = []
-                if unlockDescriptor(descriptor) != 0 {
-                    cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
-                }
-                if closeDescriptor(descriptor) != 0 {
-                    cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
-                }
+                let cleanupFailures = Self.release(
+                    heldDescriptors,
+                    unlockDescriptor: unlockDescriptor,
+                    closeDescriptor: closeDescriptor
+                )
                 let cleanupSuffix = cleanupFailures.isEmpty
                     ? ""
                     : "; cleanup also failed: " + cleanupFailures.joined(separator: "; ")
@@ -158,13 +177,11 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
                 result = .failure(error)
             }
 
-            var cleanupFailures: [String] = []
-            if unlockDescriptor(descriptor) != 0 {
-                cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
-            }
-            if closeDescriptor(descriptor) != 0 {
-                cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
-            }
+            let cleanupFailures = Self.release(
+                heldDescriptors,
+                unlockDescriptor: unlockDescriptor,
+                closeDescriptor: closeDescriptor
+            )
             if !cleanupFailures.isEmpty {
                 switch result {
                 case .success:
@@ -187,6 +204,23 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
     }
 
+    private static func release(
+        _ descriptors: [(descriptor: Int32, url: URL)],
+        unlockDescriptor: (Int32) -> Int32,
+        closeDescriptor: (Int32) -> Int32
+    ) -> [String] {
+        var failures: [String] = []
+        for held in descriptors.reversed() {
+            if unlockDescriptor(held.descriptor) != 0 {
+                failures.append(posixFailure("flock(LOCK_UN)", path: held.url.path, code: errno))
+            }
+            if closeDescriptor(held.descriptor) != 0 {
+                failures.append(posixFailure("close", path: held.url.path, code: errno))
+            }
+        }
+        return failures
+    }
+
     static func lockURL(for fileURL: URL) -> URL {
         let standardizedURL = fileURL.standardizedFileURL
         let canonicalURL = standardizedURL
@@ -200,7 +234,9 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         let digest = SHA256.hash(data: Data(fileURL.path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return fileURL.deletingLastPathComponent().deletingLastPathComponent()
+        return FileManager.default.temporaryDirectory
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
             .appendingPathComponent(".holoscape-operation-\(digest).lock")
     }
 
