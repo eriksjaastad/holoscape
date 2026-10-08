@@ -105,11 +105,13 @@ class ConfigService {
                 )
             } catch let error as DurableAtomicFileCommitter.CommitError {
                 switch error {
-                case .replacementCommitted, .replacementCommittedWithCleanupFailure:
+                case .replacementCommitted,
+                     .replacementCommittedWithCleanupFailure,
+                     .replacementCommittedWithDurabilityAndCleanupFailure:
                     // The new file is already visible. Preserve that truth in
                     // memory even though save did not complete cleanly.
                     cachedConfig = committedConfig
-                case .persistenceAndCleanupFailed:
+                case .persistenceCleanupFailed, .persistenceAndCleanupFailed:
                     break
                 }
                 throw error

@@ -686,7 +686,8 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertFalse(service.save(replacement))
         XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
         XCTAssertTrue(service.lastDiagnostic?.message.contains("replacement committed") == true)
-        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("durability could not be confirmed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup also failed") == true)
     }
 
     func testCloseOnlyFailureAfterDurableReplacementIsReportedAsCleanupFailure() throws {
@@ -734,6 +735,122 @@ final class ConfigServiceTests: XCTestCase {
         XCTAssertTrue(service.lastDiagnostic?.message.contains("Persistence operation failed") == true)
         XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup also failed") == true)
         XCTAssertFalse(service.lastDiagnostic?.message.contains("temporary-file cleanup") == true)
+    }
+
+    func testHelperDescriptorCloseOutcomesPreserveOperationAndCleanupPhases() throws {
+        enum InjectedFailure: Error { case operation, close }
+
+        XCTAssertThrowsError(
+            try DurableAtomicFileCommitter.resolveDescriptorOperation(
+                Result<Void, Error>.success(()),
+                closeError: InjectedFailure.close
+            )
+        ) { error in
+            guard case .persistenceCleanupFailed = error as? DurableAtomicFileCommitter.CommitError else {
+                return XCTFail("expected cleanup-only classification, got \(error)")
+            }
+        }
+
+        XCTAssertThrowsError(
+            try DurableAtomicFileCommitter.resolveDescriptorOperation(
+                Result<Void, Error>.failure(InjectedFailure.operation),
+                closeError: InjectedFailure.close
+            )
+        ) { error in
+            guard case .persistenceAndCleanupFailed = error as? DurableAtomicFileCommitter.CommitError else {
+                return XCTFail("expected operation-and-cleanup classification, got \(error)")
+            }
+        }
+    }
+
+    func testTemporaryFileCloseOnlyFailureIsPrecommitCleanupFailure() throws {
+        let configDir = temporaryConfigDir()
+        enum InjectedFailure: Error { case close }
+        var baseline = HoloscapeConfig.default
+        baseline.appearance.fontFamily = "Baseline"
+        XCTAssertTrue(ConfigService(configDir: configDir).save(baseline))
+
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in
+                throw DurableAtomicFileCommitter.CommitError.persistenceCleanupFailed(
+                    cleanup: String(describing: InjectedFailure.close)
+                )
+            },
+            replaceFile: { _, _ in XCTFail("replacement must not run") },
+            synchronizeDirectory: { _ in XCTFail("directory sync must not run") },
+            removeTemporaryFile: { _ in }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        XCTAssertEqual(service.load().appearance.fontFamily, baseline.appearance.fontFamily)
+        var replacement = baseline
+        replacement.appearance.fontFamily = "Must Not Commit"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertEqual(service.load().appearance.fontFamily, baseline.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("Persistence cleanup failed") == true)
+        XCTAssertFalse(service.lastDiagnostic?.message.contains("replacement committed") == true)
+    }
+
+    func testParentDirectoryCloseOnlyFailurePreservesCommittedCacheAndConfirmedDurability() throws {
+        let configDir = temporaryConfigDir()
+        var replacementCommitted = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+                replacementCommitted = true
+            },
+            synchronizeDirectory: { _ in
+                if replacementCommitted {
+                    throw DurableAtomicFileCommitter.CommitError.persistenceCleanupFailed(
+                        cleanup: "injected parent descriptor close"
+                    )
+                }
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Committed Parent Close"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("durability was confirmed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
+        XCTAssertFalse(service.lastDiagnostic?.message.contains("durability could not be confirmed") == true)
+    }
+
+    func testRepeatedFinalIdentityCloseOnlyFailuresPreserveCommittedCache() throws {
+        let configDir = temporaryConfigDir()
+        var replacementCommitted = false
+        var identityReadCount = 0
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+                replacementCommitted = true
+            },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
+            readDirectoryIdentity: { url in
+                identityReadCount += 1
+                if identityReadCount >= 3 {
+                    throw DurableAtomicFileCommitter.CommitError.persistenceCleanupFailed(
+                        cleanup: "injected identity descriptor close \(identityReadCount)"
+                    )
+                }
+                return try DurableDirectoryIdentity.read(at: url)
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        var replacement = HoloscapeConfig.default
+        replacement.appearance.fontFamily = "Committed Identity Close"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertTrue(replacementCommitted)
+        XCTAssertEqual(service.load().appearance.fontFamily, replacement.appearance.fontFamily)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("durability was confirmed") == true)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("cleanup failed") == true)
     }
 
     func testTransientFinalIdentityReadFailureRemainsCommitted() throws {

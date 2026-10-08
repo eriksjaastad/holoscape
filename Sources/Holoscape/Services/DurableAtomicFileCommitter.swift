@@ -29,15 +29,10 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
         let closeError: Error? = Darwin.close(descriptor) == 0
             ? nil
             : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if case let .failure(identityError) = identityResult, let closeError {
-            throw DurableAtomicFileCommitter.CommitError.persistenceAndCleanupFailed(
-                operation: String(describing: identityError),
-                cleanup: String(describing: closeError)
-            )
-        }
-        if case let .failure(identityError) = identityResult { throw identityError }
-        if let closeError { throw closeError }
-        return try identityResult.get()
+        return try DurableAtomicFileCommitter.resolveDescriptorOperation(
+            identityResult,
+            closeError: closeError
+        )
     }
 
     static func read(at descriptor: Int32) throws -> DurableDirectoryIdentity {
@@ -75,18 +70,27 @@ enum DurableDirectoryAuthorityError: Error, LocalizedError {
 /// authoritative.
 struct DurableAtomicFileCommitter {
     enum CommitError: Error, Equatable, LocalizedError {
+        case persistenceCleanupFailed(cleanup: String)
         case persistenceAndCleanupFailed(operation: String, cleanup: String)
         case replacementCommitted(durabilityFailure: String)
         case replacementCommittedWithCleanupFailure(cleanupFailure: String)
+        case replacementCommittedWithDurabilityAndCleanupFailure(
+            durabilityFailure: String,
+            cleanupFailure: String
+        )
 
         var errorDescription: String? {
             switch self {
+            case let .persistenceCleanupFailed(cleanup):
+                return "Persistence cleanup failed after the operation succeeded: \(cleanup)"
             case let .persistenceAndCleanupFailed(operation, cleanup):
                 return "Persistence operation failed (\(operation)); cleanup also failed (\(cleanup))"
             case let .replacementCommitted(durabilityFailure):
                 return "Atomic replacement committed, but durability could not be confirmed: \(durabilityFailure)"
             case let .replacementCommittedWithCleanupFailure(cleanupFailure):
                 return "Atomic replacement committed and durability was confirmed, but directory authority cleanup failed: \(cleanupFailure)"
+            case let .replacementCommittedWithDurabilityAndCleanupFailure(durabilityFailure, cleanupFailure):
+                return "Atomic replacement committed, but durability could not be confirmed (\(durabilityFailure)); cleanup also failed (\(cleanupFailure))"
             }
         }
     }
@@ -228,9 +232,16 @@ struct DurableAtomicFileCommitter {
             if replacementCommitted {
                 do {
                     try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
-                    operationResult = .failure(CommitError.replacementCommitted(
-                        durabilityFailure: String(describing: operationError)
-                    ))
+                    operationResult = .failure(classifyCommittedFailure(operationError))
+                } catch let validationError as CommitError {
+                    if case let .persistenceCleanupFailed(validationCleanup) = validationError {
+                        operationResult = .failure(classifyCommittedFailure(
+                            operationError,
+                            additionalCleanupFailure: validationCleanup
+                        ))
+                    } else {
+                        operationResult = .failure(validationError)
+                    }
                 } catch {
                     // The replacement remains authoritative only while it is
                     // visible through the directory pathname the caller owns.
@@ -263,14 +274,22 @@ struct DurableAtomicFileCommitter {
                 throw closeError
             case .failure(let operationError):
                 if case let CommitError.replacementCommitted(durabilityFailure) = operationError {
-                    throw CommitError.replacementCommitted(
-                        durabilityFailure: durabilityFailure
-                            + "; directory authority cleanup failed: "
-                            + String(describing: closeError)
+                    throw CommitError.replacementCommittedWithDurabilityAndCleanupFailure(
+                        durabilityFailure: durabilityFailure,
+                        cleanupFailure: String(describing: closeError)
                     )
                 }
                 if case let CommitError.replacementCommittedWithCleanupFailure(cleanupFailure) = operationError {
                     throw CommitError.replacementCommittedWithCleanupFailure(
+                        cleanupFailure: cleanupFailure + "; " + String(describing: closeError)
+                    )
+                }
+                if case let CommitError.replacementCommittedWithDurabilityAndCleanupFailure(
+                    durabilityFailure,
+                    cleanupFailure
+                ) = operationError {
+                    throw CommitError.replacementCommittedWithDurabilityAndCleanupFailure(
+                        durabilityFailure: durabilityFailure,
                         cleanupFailure: cleanupFailure + "; " + String(describing: closeError)
                     )
                 }
@@ -313,6 +332,12 @@ struct DurableAtomicFileCommitter {
         let currentIdentity: DurableDirectoryIdentity
         do {
             currentIdentity = try persistence.readDirectoryIdentity(directoryURL)
+        } catch let error as CommitError {
+            if case .persistenceCleanupFailed = error { throw error }
+            throw DurableDirectoryAuthorityError.unavailable(
+                path: directoryURL.path,
+                reason: String(describing: error)
+            )
         } catch {
             throw DurableDirectoryAuthorityError.unavailable(
                 path: directoryURL.path,
@@ -366,14 +391,8 @@ struct DurableAtomicFileCommitter {
         let closeError = closeResult == 0
             ? nil
             : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if let operationError, let closeError {
-            throw CommitError.persistenceAndCleanupFailed(
-                operation: String(describing: operationError),
-                cleanup: String(describing: closeError)
-            )
-        }
-        if let operationError { throw operationError }
-        if let closeError { throw closeError }
+        let operationResult: Result<Void, Error> = operationError.map(Result.failure) ?? .success(())
+        _ = try resolveDescriptorOperation(operationResult, closeError: closeError)
     }
 
     private static func writeAll(_ data: Data, to descriptor: Int32) throws {
@@ -451,17 +470,78 @@ struct DurableAtomicFileCommitter {
         let closeError = closeResult == 0
             ? nil
             : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        if let syncError, let closeError {
-            throw CommitError.persistenceAndCleanupFailed(
-                operation: String(describing: syncError),
-                cleanup: String(describing: closeError)
-            )
-        }
-        if let syncError { throw syncError }
-        if let closeError { throw closeError }
+        let syncResult: Result<Void, Error> = syncError.map(Result.failure) ?? .success(())
+        _ = try resolveDescriptorOperation(syncResult, closeError: closeError)
     }
 
     static func synchronizeDirectory(_ descriptor: Int32) throws {
         try fullSync(descriptor)
+    }
+
+    static func resolveDescriptorOperation<T>(
+        _ operationResult: Result<T, Error>,
+        closeError: Error?
+    ) throws -> T {
+        if case let .failure(operationError) = operationResult, let closeError {
+            throw CommitError.persistenceAndCleanupFailed(
+                operation: String(describing: operationError),
+                cleanup: String(describing: closeError)
+            )
+        }
+        if case let .failure(operationError) = operationResult { throw operationError }
+        if let closeError {
+            throw CommitError.persistenceCleanupFailed(cleanup: String(describing: closeError))
+        }
+        return try operationResult.get()
+    }
+
+    private func classifyCommittedFailure(
+        _ operationError: Error,
+        additionalCleanupFailure: String? = nil
+    ) -> CommitError {
+        func combinedCleanup(_ failures: String?...) -> String? {
+            let value = failures.compactMap { $0 }.joined(separator: "; ")
+            return value.isEmpty ? nil : value
+        }
+
+        switch operationError {
+        case let CommitError.persistenceCleanupFailed(cleanup):
+            return .replacementCommittedWithCleanupFailure(
+                cleanupFailure: combinedCleanup(cleanup, additionalCleanupFailure) ?? cleanup
+            )
+        case let CommitError.persistenceAndCleanupFailed(operation, cleanup):
+            return .replacementCommittedWithDurabilityAndCleanupFailure(
+                durabilityFailure: operation,
+                cleanupFailure: combinedCleanup(cleanup, additionalCleanupFailure) ?? cleanup
+            )
+        case let CommitError.replacementCommitted(durabilityFailure):
+            if let cleanup = additionalCleanupFailure {
+                return .replacementCommittedWithDurabilityAndCleanupFailure(
+                    durabilityFailure: durabilityFailure,
+                    cleanupFailure: cleanup
+                )
+            }
+            return .replacementCommitted(durabilityFailure: durabilityFailure)
+        case let CommitError.replacementCommittedWithCleanupFailure(cleanupFailure):
+            return .replacementCommittedWithCleanupFailure(
+                cleanupFailure: combinedCleanup(cleanupFailure, additionalCleanupFailure) ?? cleanupFailure
+            )
+        case let CommitError.replacementCommittedWithDurabilityAndCleanupFailure(
+            durabilityFailure,
+            cleanupFailure
+        ):
+            return .replacementCommittedWithDurabilityAndCleanupFailure(
+                durabilityFailure: durabilityFailure,
+                cleanupFailure: combinedCleanup(cleanupFailure, additionalCleanupFailure) ?? cleanupFailure
+            )
+        default:
+            if let cleanup = additionalCleanupFailure {
+                return .replacementCommittedWithDurabilityAndCleanupFailure(
+                    durabilityFailure: String(describing: operationError),
+                    cleanupFailure: cleanup
+                )
+            }
+            return .replacementCommitted(durabilityFailure: String(describing: operationError))
+        }
     }
 }
