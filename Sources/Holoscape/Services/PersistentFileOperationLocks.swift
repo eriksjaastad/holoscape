@@ -20,6 +20,7 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
+    private var durabilityInitializedPaths: Set<String> = []
 
     struct LockError: LocalizedError {
         let message: String
@@ -55,18 +56,23 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             let lockURL = canonicalURL.appendingPathExtension("lock")
             let lockDirectoryURL = lockURL.deletingLastPathComponent()
             let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
-            let establishesPersistentAuthority = !FileManager.default.fileExists(atPath: lockURL.path)
+            let needsDurabilityInitialization = registryLock.withLock {
+                !durabilityInitializedPaths.contains(key)
+            }
             do {
                 try FileManager.default.createDirectory(
                     at: lockDirectoryURL,
                     withIntermediateDirectories: true
                 )
                 if let synchronizeCreatedDirectoryEntries {
-                    let directoriesToSynchronize = establishesPersistentAuthority
+                    let directoriesToSynchronize = needsDurabilityInitialization
                         ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
                         : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
                     for directory in directoriesToSynchronize {
                         try synchronizeCreatedDirectoryEntries(directory)
+                    }
+                    _ = registryLock.withLock {
+                        durabilityInitializedPaths.insert(key)
                     }
                 }
             } catch {
