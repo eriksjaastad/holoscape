@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// Coordinates file transactions both within this process and with other
@@ -18,9 +19,25 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         }
     }
 
+    private struct DirectoryLinkIdentity: Equatable {
+        let directory: DurableDirectoryIdentity
+        let parent: DurableDirectoryIdentity
+
+        static func read(at directoryURL: URL) throws -> DirectoryLinkIdentity {
+            DirectoryLinkIdentity(
+                directory: try DurableDirectoryIdentity.read(at: directoryURL),
+                parent: try DurableDirectoryIdentity.read(at: directoryURL.deletingLastPathComponent())
+            )
+        }
+
+        static func == (lhs: DirectoryLinkIdentity, rhs: DirectoryLinkIdentity) -> Bool {
+            lhs.directory.hasSameAuthority(as: rhs.directory) && lhs.parent == rhs.parent
+        }
+    }
+
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
-    private var durableDirectoryIdentities: [String: DurableDirectoryIdentity] = [:]
+    private var durableDirectoryIdentities: [String: DirectoryLinkIdentity] = [:]
 
     struct LockError: LocalizedError {
         let message: String
@@ -67,38 +84,35 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
             return created
         }
         return try lockBox.lock.withLock {
-            let lockURL = canonicalURL.appendingPathExtension("lock")
-            let lockDirectoryURL = lockURL.deletingLastPathComponent()
-            let missingDirectories = Self.missingDirectories(endingAt: lockDirectoryURL)
+            let targetDirectoryURL = canonicalURL.deletingLastPathComponent()
+            let missingDirectories = Self.missingDirectories(endingAt: targetDirectoryURL)
             do {
                 try FileManager.default.createDirectory(
-                    at: lockDirectoryURL,
+                    at: targetDirectoryURL,
                     withIntermediateDirectories: true
                 )
                 if let synchronizeCreatedDirectoryEntries {
-                    let currentIdentity = try DurableDirectoryIdentity.read(at: lockDirectoryURL)
+                    let currentIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
                     let needsDurabilityInitialization = registryLock.withLock {
                         !missingDirectories.isEmpty || durableDirectoryIdentities[key] != currentIdentity
                     }
                     let directoriesToSynchronize = needsDurabilityInitialization
-                        ? Self.directoryEntryParents(endingAt: lockDirectoryURL)
+                        ? Self.directoryEntryParents(endingAt: targetDirectoryURL)
                         : missingDirectories.reversed().map { $0.deletingLastPathComponent() }
                     for directory in directoriesToSynchronize {
                         try synchronizeCreatedDirectoryEntries(directory)
                     }
-                    registryLock.withLock {
-                        durableDirectoryIdentities[key] = currentIdentity
-                    }
                 }
             } catch {
                 throw LockError(
-                    message: "createDirectory failed or synchronization failed for \(lockDirectoryURL.path): \(error)"
+                    message: "createDirectory failed or synchronization failed for \(targetDirectoryURL.path): \(error)"
                 )
             }
 
-            // The lock leaf is persistent authority, not an aliasable path.
-            // Refuse symlinks atomically at open so a concurrent replacement
-            // cannot redirect flock outside the intended directory.
+            // Keep process-shared authority outside the replaceable data
+            // directory. The hashed leaf remains stable while that directory
+            // is deleted, recreated, or temporarily displaced.
+            let lockURL = Self.lockURL(forCanonicalFileURL: canonicalURL)
             let descriptor = Darwin.open(
                 lockURL.path,
                 O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC,
@@ -114,6 +128,27 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
                     throw LockError(message: "\(lockFailure); cleanup also failed: \(closeFailure)")
                 }
                 throw LockError(message: lockFailure)
+            }
+
+            do {
+                let currentIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
+                registryLock.withLock {
+                    durableDirectoryIdentities[key] = currentIdentity
+                }
+            } catch {
+                var cleanupFailures: [String] = []
+                if unlockDescriptor(descriptor) != 0 {
+                    cleanupFailures.append(Self.posixFailure("flock(LOCK_UN)", path: lockURL.path, code: errno))
+                }
+                if closeDescriptor(descriptor) != 0 {
+                    cleanupFailures.append(Self.posixFailure("close", path: lockURL.path, code: errno))
+                }
+                let cleanupSuffix = cleanupFailures.isEmpty
+                    ? ""
+                    : "; cleanup also failed: " + cleanupFailures.joined(separator: "; ")
+                throw LockError(
+                    message: "directory authority read failed for \(targetDirectoryURL.path): \(error)\(cleanupSuffix)"
+                )
             }
 
             let result: Result<T, Error>
@@ -150,6 +185,23 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
+    }
+
+    static func lockURL(for fileURL: URL) -> URL {
+        let standardizedURL = fileURL.standardizedFileURL
+        let canonicalURL = standardizedURL
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .appendingPathComponent(standardizedURL.lastPathComponent)
+        return lockURL(forCanonicalFileURL: canonicalURL)
+    }
+
+    private static func lockURL(forCanonicalFileURL fileURL: URL) -> URL {
+        let digest = SHA256.hash(data: Data(fileURL.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return fileURL.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(".holoscape-operation-\(digest).lock")
     }
 
     private static func missingDirectories(endingAt directoryURL: URL) -> [URL] {

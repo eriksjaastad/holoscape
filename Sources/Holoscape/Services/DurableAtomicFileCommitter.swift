@@ -8,6 +8,14 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let generation: UInt32
+    let changeSeconds: Int64
+    let changeNanoseconds: Int64
+
+    func hasSameAuthority(as other: DurableDirectoryIdentity) -> Bool {
+        device == other.device
+            && inode == other.inode
+            && generation == other.generation
+    }
 
     static func read(at url: URL) throws -> DurableDirectoryIdentity {
         let descriptor = url.path.withCString {
@@ -35,7 +43,9 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
         return DurableDirectoryIdentity(
             device: UInt64(metadata.st_dev),
             inode: UInt64(metadata.st_ino),
-            generation: metadata.st_gen
+            generation: metadata.st_gen,
+            changeSeconds: Int64(metadata.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(metadata.st_ctimespec.tv_nsec)
         )
     }
 }
@@ -78,24 +88,28 @@ struct DurableAtomicFileCommitter {
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
+        let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
 
         init(
             writeAndSynchronizeTemporaryFile: @escaping (Data, URL) throws -> Void,
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
-            removeTemporaryFile: @escaping (URL) throws -> Void
+            removeTemporaryFile: @escaping (URL) throws -> Void,
+            removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile
         ) {
             self.writeAndSynchronizeTemporaryFile = writeAndSynchronizeTemporaryFile
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
             self.removeTemporaryFile = removeTemporaryFile
+            self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
         }
 
         static let live = Persistence(
             writeAndSynchronizeTemporaryFile: DurableAtomicFileCommitter.writeAndSynchronizeTemporaryFile,
             replaceFile: DurableAtomicFileCommitter.replaceFile,
             synchronizeDirectory: DurableAtomicFileCommitter.synchronizeDirectory,
-            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) },
+            removeTemporaryFileAtDescriptor: DurableAtomicFileCommitter.removeTemporaryFile
         )
     }
 
@@ -150,12 +164,19 @@ struct DurableAtomicFileCommitter {
         } catch {
             let operationError = error
             if replacementCommitted {
-                if operationError is DurableDirectoryAuthorityError {
-                    operationResult = .failure(operationError)
-                } else {
-                    operationResult = .failure(CommitError.replacementCommitted(
-                        durabilityFailure: String(describing: operationError)
-                    ))
+                do {
+                    try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
+                    if operationError is DurableDirectoryAuthorityError {
+                        operationResult = .failure(operationError)
+                    } else {
+                        operationResult = .failure(CommitError.replacementCommitted(
+                            durabilityFailure: String(describing: operationError)
+                        ))
+                    }
+                } catch {
+                    // The replacement remains authoritative only while it is
+                    // visible through the directory pathname the caller owns.
+                    operationResult = .failure(error)
                 }
             } else {
                 do {
@@ -194,17 +215,22 @@ struct DurableAtomicFileCommitter {
         _ temporaryURL: URL,
         authorityDescriptor: Int32?
     ) throws {
-        if FileManager.default.fileExists(atPath: temporaryURL.path) {
-            try persistence.removeTemporaryFile(temporaryURL)
+        if let authorityDescriptor {
+            try persistence.removeTemporaryFileAtDescriptor(
+                authorityDescriptor,
+                temporaryURL.lastPathComponent
+            )
             return
         }
-        if let authorityDescriptor {
-            let result = temporaryURL.lastPathComponent.withCString {
-                Darwin.unlinkat(authorityDescriptor, $0, 0)
-            }
-            if result == 0 || errno == ENOENT { return }
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        if FileManager.default.fileExists(atPath: temporaryURL.path) {
+            try persistence.removeTemporaryFile(temporaryURL)
         }
+    }
+
+    static func removeTemporaryFile(at descriptor: Int32, named name: String) throws {
+        let result = name.withCString { Darwin.unlinkat(descriptor, $0, 0) }
+        if result == 0 || errno == ENOENT { return }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 
     private func validateDirectoryIdentity(
@@ -221,7 +247,7 @@ struct DurableAtomicFileCommitter {
                 reason: String(describing: error)
             )
         }
-        guard currentIdentity == expectedIdentity else {
+        guard currentIdentity.hasSameAuthority(as: expectedIdentity) else {
             throw DurableDirectoryAuthorityError.replaced(path: directoryURL.path)
         }
     }

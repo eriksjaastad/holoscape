@@ -31,6 +31,7 @@ struct BrokerSessionRegistry {
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
+        let removeTemporaryFileAtDescriptor: (Int32, String) throws -> Void
         let unlockFileLock: (Int32) -> Int32
         let closeFileLock: (Int32) -> Int32
 
@@ -39,6 +40,7 @@ struct BrokerSessionRegistry {
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
             removeTemporaryFile: @escaping (URL) throws -> Void,
+            removeTemporaryFileAtDescriptor: @escaping (Int32, String) throws -> Void = DurableAtomicFileCommitter.removeTemporaryFile,
             unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
             closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
         ) {
@@ -46,6 +48,7 @@ struct BrokerSessionRegistry {
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
             self.removeTemporaryFile = removeTemporaryFile
+            self.removeTemporaryFileAtDescriptor = removeTemporaryFileAtDescriptor
             self.unlockFileLock = unlockFileLock
             self.closeFileLock = closeFileLock
         }
@@ -245,11 +248,17 @@ struct BrokerSessionRegistry {
                 writeAndSynchronizeTemporaryFile: persistence.writeAndSynchronizeTemporaryFile,
                 replaceFile: persistence.replaceFile,
                 synchronizeDirectory: persistence.synchronizeDirectory,
-                removeTemporaryFile: persistence.removeTemporaryFile
+                removeTemporaryFile: persistence.removeTemporaryFile,
+                removeTemporaryFileAtDescriptor: persistence.removeTemporaryFileAtDescriptor
             )
         )
         do {
-            try committer.commit(data, to: fileURL)
+            let directoryIdentity = try DurableDirectoryIdentity.read(at: fileURL.deletingLastPathComponent())
+            try committer.commit(
+                data,
+                to: fileURL,
+                directoryIdentity: directoryIdentity
+            )
         } catch let error as DurableAtomicFileCommitter.CommitError {
             switch error {
             case let .replacementCommitted(durabilityFailure):

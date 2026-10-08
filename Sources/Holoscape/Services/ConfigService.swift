@@ -127,7 +127,7 @@ class ConfigService {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
             }
             let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
-            if durableDirectoryIdentity == currentIdentity {
+            if durableDirectoryIdentity?.hasSameAuthority(as: currentIdentity) == true {
                 durableDirectoryIdentity = currentIdentity
                 return
             }

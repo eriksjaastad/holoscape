@@ -174,9 +174,10 @@ final class BrokerSessionRegistryTests: XCTestCase {
             },
             replaceFile: { _, _ in XCTFail("A failed file sync must not replace the registry") },
             synchronizeDirectory: { _ in XCTFail("A failed file sync must not synchronize the directory") },
-            removeTemporaryFile: { temporaryURL in
-                removedTemporaryURL = temporaryURL
-                try FileManager.default.removeItem(at: temporaryURL)
+            removeTemporaryFile: { _ in XCTFail("descriptor cleanup must be used") },
+            removeTemporaryFileAtDescriptor: { descriptor, leaf in
+                removedTemporaryURL = self.tempDirectory.appendingPathComponent(leaf)
+                try DurableAtomicFileCommitter.removeTemporaryFile(at: descriptor, named: leaf)
             }
         )
         let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
@@ -200,9 +201,10 @@ final class BrokerSessionRegistryTests: XCTestCase {
             writeAndSynchronizeTemporaryFile: { data, temporaryURL in try data.write(to: temporaryURL) },
             replaceFile: { _, _ in throw RegistryPersistenceFailure.replace },
             synchronizeDirectory: { _ in XCTFail("A failed replacement must not synchronize the directory") },
-            removeTemporaryFile: { temporaryURL in
-                removedTemporaryURL = temporaryURL
-                try FileManager.default.removeItem(at: temporaryURL)
+            removeTemporaryFile: { _ in XCTFail("descriptor cleanup must be used") },
+            removeTemporaryFileAtDescriptor: { descriptor, leaf in
+                removedTemporaryURL = self.tempDirectory.appendingPathComponent(leaf)
+                try DurableAtomicFileCommitter.removeTemporaryFile(at: descriptor, named: leaf)
             }
         )
         let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
@@ -301,7 +303,8 @@ final class BrokerSessionRegistryTests: XCTestCase {
             },
             replaceFile: { _, _ in XCTFail("A failed file sync must not replace the registry") },
             synchronizeDirectory: { _ in },
-            removeTemporaryFile: { _ in throw RegistryPersistenceFailure.cleanup }
+            removeTemporaryFile: { _ in XCTFail("descriptor cleanup must be used") },
+            removeTemporaryFileAtDescriptor: { _, _ in throw RegistryPersistenceFailure.cleanup }
         )
         let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
 
