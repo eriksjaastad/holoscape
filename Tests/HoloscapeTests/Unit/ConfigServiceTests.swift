@@ -326,6 +326,127 @@ final class ConfigServiceTests: XCTestCase {
         )
     }
 
+    func testFreshServiceWithExistingConfigResynchronizesCanonicalParentBeforeWriting() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("restored-config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        try Data("{}".utf8).write(to: configDir.appendingPathComponent("config.json"))
+        var events: [String] = []
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in
+                events.append("write")
+                try data.write(to: url)
+            },
+            replaceFile: { source, destination in
+                events.append("replace")
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+            },
+            synchronizeDirectory: { events.append("sync:\($0.path)") },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(
+            configDir: configDir,
+            persistence: persistence,
+            assumeExistingDirectoryIsDurable: false
+        )
+
+        XCTAssertTrue(service.save(.default))
+        let firstWrite = try XCTUnwrap(events.firstIndex(of: "write"))
+        XCTAssertTrue(events[..<firstWrite].contains("sync:\(root.path)"))
+    }
+
+    func testSymlinkedConfigRootSynchronizesTargetParentBeforeWriting() throws {
+        let root = temporaryConfigDir()
+        let targetParent = root.appendingPathComponent("target-parent")
+        let target = targetParent.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let alias = root.appendingPathComponent("config-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        var events: [String] = []
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in
+                events.append("write")
+                try data.write(to: url)
+            },
+            replaceFile: { source, destination in
+                events.append("replace")
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            synchronizeDirectory: { events.append("sync:\($0.path)") },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(
+            configDir: alias,
+            persistence: persistence,
+            assumeExistingDirectoryIsDurable: false
+        )
+
+        XCTAssertTrue(service.save(.default))
+        let firstWrite = try XCTUnwrap(events.firstIndex(of: "write"))
+        XCTAssertTrue(events[..<firstWrite].contains("sync:\(targetParent.path)"))
+    }
+
+    func testDirectorySwapDuringCommitFailsBeforeReplacement() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        let displaced = root.appendingPathComponent("displaced")
+        var didReplace = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in
+                try data.write(to: url)
+                try FileManager.default.moveItem(at: configDir, to: displaced)
+                try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+            },
+            replaceFile: { _, _ in didReplace = true },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { url in
+                let displacedTemporary = displaced.appendingPathComponent(url.lastPathComponent)
+                if FileManager.default.fileExists(atPath: displacedTemporary.path) {
+                    try FileManager.default.removeItem(at: displacedTemporary)
+                }
+            }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+
+        XCTAssertFalse(service.save(HoloscapeConfig.default))
+        XCTAssertFalse(didReplace)
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("Directory authority changed") == true)
+    }
+
+    func testDirectorySwapAfterReplacementDoesNotPoisonCache() throws {
+        let root = temporaryConfigDir()
+        let configDir = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+        var baseline = HoloscapeConfig.default
+        baseline.appearance.fontFamily = "Baseline Font"
+        XCTAssertTrue(ConfigService(configDir: configDir).save(baseline))
+
+        let displaced = root.appendingPathComponent("displaced")
+        var didSwap = false
+        let persistence = DurableAtomicFileCommitter.Persistence(
+            writeAndSynchronizeTemporaryFile: { data, url in try data.write(to: url) },
+            replaceFile: { source, destination in
+                try DurableAtomicFileCommitter.replaceFile(at: source, with: destination)
+            },
+            synchronizeDirectory: { _ in
+                guard !didSwap else { return }
+                didSwap = true
+                try FileManager.default.moveItem(at: configDir, to: displaced)
+                try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: false)
+            },
+            removeTemporaryFile: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = ConfigService(configDir: configDir, persistence: persistence)
+        XCTAssertEqual(service.load().appearance.fontFamily, "Baseline Font")
+        var replacement = baseline
+        replacement.appearance.fontFamily = "Uncertain Font"
+
+        XCTAssertFalse(service.save(replacement))
+        XCTAssertEqual(service.load().appearance.fontFamily, "Baseline Font")
+        XCTAssertTrue(service.lastDiagnostic?.message.contains("Directory authority changed") == true)
+    }
+
     private func temporaryConfigDir() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ConfigServiceTests")

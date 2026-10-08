@@ -40,6 +40,17 @@ struct DurableDirectoryIdentity: Equatable, Sendable {
     }
 }
 
+enum DurableDirectoryAuthorityError: Error, LocalizedError {
+    case replaced(path: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .replaced(path):
+            return "Directory authority changed during durable commit: \(path)"
+        }
+    }
+}
+
 /// Commits one file through a synchronized sibling temporary file and atomic
 /// replacement. A post-replacement failure is distinct because the new bytes
 /// are already visible and callers must not pretend the old value remains
@@ -93,7 +104,11 @@ struct DurableAtomicFileCommitter {
 
     /// Returns only after both file contents and the containing-directory
     /// replacement entry have been synchronized.
-    func commit(_ data: Data, to destinationURL: URL) throws {
+    func commit(
+        _ data: Data,
+        to destinationURL: URL,
+        directoryIdentity expectedDirectoryIdentity: DurableDirectoryIdentity? = nil
+    ) throws {
         let directoryURL = destinationURL.deletingLastPathComponent()
         let temporaryURL = directoryURL.appendingPathComponent(
             ".\(destinationURL.lastPathComponent).\(UUID().uuidString).tmp"
@@ -101,13 +116,22 @@ struct DurableAtomicFileCommitter {
 
         var replacementCommitted = false
         do {
+            try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
             try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
+            try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
             try persistence.replaceFile(temporaryURL, destinationURL)
             replacementCommitted = true
             try persistence.synchronizeDirectory(directoryURL)
+            try validateDirectoryIdentity(expectedDirectoryIdentity, at: directoryURL)
         } catch {
             let operationError = error
             if replacementCommitted {
+                // A path replacement means the committed bytes are no longer
+                // proven visible at the requested destination. Do not map that
+                // uncertainty to the ordinary committed-but-unsynced contract.
+                if operationError is DurableDirectoryAuthorityError {
+                    throw operationError
+                }
                 throw CommitError.replacementCommitted(
                     durabilityFailure: String(describing: operationError)
                 )
@@ -124,6 +148,16 @@ struct DurableAtomicFileCommitter {
                 )
             }
             throw operationError
+        }
+    }
+
+    private func validateDirectoryIdentity(
+        _ expectedIdentity: DurableDirectoryIdentity?,
+        at directoryURL: URL
+    ) throws {
+        guard let expectedIdentity else { return }
+        guard try DurableDirectoryIdentity.read(at: directoryURL) == expectedIdentity else {
+            throw DurableDirectoryAuthorityError.replaced(path: directoryURL.path)
         }
     }
 

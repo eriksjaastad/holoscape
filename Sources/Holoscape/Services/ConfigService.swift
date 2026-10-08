@@ -32,10 +32,10 @@ class ConfigService {
         // persistence under --ui-testing to avoid cross-test pollution —
         // which in turn breaks restart/persistence tests.
         if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            self.configDir = URL(fileURLWithPath: override)
+            self.configDir = URL(fileURLWithPath: override).standardizedFileURL.resolvingSymlinksInPath()
         } else {
             let home = FileManager.default.homeDirectoryForCurrentUser
-            self.configDir = home.appendingPathComponent(".holoscape")
+            self.configDir = home.appendingPathComponent(".holoscape").standardizedFileURL.resolvingSymlinksInPath()
         }
         self.configURL = configDir.appendingPathComponent("config.json")
         self.persistence = .live
@@ -46,15 +46,19 @@ class ConfigService {
     /// under parallel XCTest execution.
     init(
         configDir: URL,
-        persistence: DurableAtomicFileCommitter.Persistence = .live
+        persistence: DurableAtomicFileCommitter.Persistence = .live,
+        assumeExistingDirectoryIsDurable: Bool = true
     ) {
-        self.configDir = configDir
-        self.configURL = configDir.appendingPathComponent("config.json")
+        let canonicalConfigDir = configDir.standardizedFileURL.resolvingSymlinksInPath()
+        self.configDir = canonicalConfigDir
+        self.configURL = canonicalConfigDir.appendingPathComponent("config.json")
         self.persistence = persistence
         // Callers of this test-only initializer own fixture-directory setup.
         // Treat an already-present fixture root as established so the suite
         // does not issue real F_FULLFSYNC calls for every isolated test path.
-        self.durableDirectoryIdentity = try? DurableDirectoryIdentity.read(at: configDir)
+        if assumeExistingDirectoryIsDurable {
+            self.durableDirectoryIdentity = try? DurableDirectoryIdentity.read(at: canonicalConfigDir)
+        }
     }
 
     func load() -> HoloscapeConfig {
@@ -93,7 +97,11 @@ class ConfigService {
             decoder.dateDecodingStrategy = .iso8601
             let committedConfig = try decoder.decode(HoloscapeConfig.self, from: data)
             do {
-                try DurableAtomicFileCommitter(persistence: persistence).commit(data, to: configURL)
+                try DurableAtomicFileCommitter(persistence: persistence).commit(
+                    data,
+                    to: configURL,
+                    directoryIdentity: durableDirectoryIdentity
+                )
             } catch let error as DurableAtomicFileCommitter.CommitError {
                 if case .replacementCommitted = error {
                     // The new file is already visible. Preserve that truth in
@@ -118,12 +126,7 @@ class ConfigService {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: configDir.path])
             }
             let currentIdentity = try DurableDirectoryIdentity.read(at: configDir)
-            // An existing config file could only have been linked through an
-            // already-existing directory. A fresh service may trust that fact,
-            // but a live service must not trust a different directory that was
-            // recreated at the same pathname between saves.
-            if FileManager.default.fileExists(atPath: configURL.path),
-               durableDirectoryIdentity == nil || durableDirectoryIdentity == currentIdentity {
+            if durableDirectoryIdentity == currentIdentity {
                 durableDirectoryIdentity = currentIdentity
                 return
             }
