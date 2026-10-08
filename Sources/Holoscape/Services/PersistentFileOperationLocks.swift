@@ -35,6 +35,33 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
         }
     }
 
+    private struct StableAuthorityRecord: Codable, Equatable {
+        let directoryDevice: UInt64
+        let directoryInode: UInt64
+        let directoryGeneration: UInt32
+        let parentDevice: UInt64
+        let parentInode: UInt64
+        let parentGeneration: UInt32
+
+        init(_ identity: DirectoryLinkIdentity) {
+            directoryDevice = identity.directory.device
+            directoryInode = identity.directory.inode
+            directoryGeneration = identity.directory.generation
+            parentDevice = identity.parent.device
+            parentInode = identity.parent.inode
+            parentGeneration = identity.parent.generation
+        }
+
+        func matches(_ identity: DirectoryLinkIdentity) -> Bool {
+            directoryDevice == identity.directory.device
+                && directoryInode == identity.directory.inode
+                && directoryGeneration == identity.directory.generation
+                && parentDevice == identity.parent.device
+                && parentInode == identity.parent.inode
+                && parentGeneration == identity.parent.generation
+        }
+    }
+
     private let registryLock = NSLock()
     private var locksByPath: [String: WeakLockBox] = [:]
     private var durableDirectoryIdentities: [String: DirectoryLinkIdentity] = [:]
@@ -138,7 +165,31 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
             do {
                 try acquire(lockURL)
+                guard let stableDescriptor = heldDescriptors.first?.descriptor else {
+                    throw LockError(message: "stable lock acquisition produced no authority descriptor")
+                }
+                let initialIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
+                // The stable lock persists the directory authority observed
+                // before compatibility locking. Once initialized, replacement
+                // of that directory fails closed instead of opening a different
+                // legacy sibling inode from a surviving older broker.
+                let stableAuthority = try Self.readOrInitializeStableAuthority(
+                    descriptor: stableDescriptor,
+                    identity: initialIdentity,
+                    path: lockURL.path
+                )
+                guard stableAuthority.matches(initialIdentity) else {
+                    throw LockError(
+                        message: "directory authority changed for \(targetDirectoryURL.path); refusing split legacy lock authority"
+                    )
+                }
                 try acquire(legacyLockURL)
+                let lockedIdentity = try DirectoryLinkIdentity.read(at: targetDirectoryURL)
+                guard stableAuthority.matches(lockedIdentity) else {
+                    throw LockError(
+                        message: "directory authority changed for \(targetDirectoryURL.path); refusing split legacy lock authority"
+                    )
+                }
             } catch {
                 let cleanupFailures = Self.release(
                     heldDescriptors,
@@ -202,6 +253,60 @@ final class PersistentFileOperationLocks: @unchecked Sendable {
 
     private static func posixFailure(_ operation: String, path: String, code: Int32) -> String {
         "\(operation) failed for \(path): \(String(cString: strerror(code))) (errno \(code))"
+    }
+
+    private static func readOrInitializeStableAuthority(
+        descriptor: Int32,
+        identity: DirectoryLinkIdentity,
+        path: String
+    ) throws -> StableAuthorityRecord {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            throw LockError(message: posixFailure("fstat", path: path, code: errno))
+        }
+        if metadata.st_size == 0 {
+            let record = StableAuthorityRecord(identity)
+            let data = try JSONEncoder().encode(record)
+            var writeOffset = 0
+            while writeOffset < data.count {
+                let written = data.withUnsafeBytes { buffer in
+                    Darwin.pwrite(
+                        descriptor,
+                        buffer.baseAddress?.advanced(by: writeOffset),
+                        buffer.count - writeOffset,
+                        off_t(writeOffset)
+                    )
+                }
+                guard written > 0 else {
+                    let code = written < 0 ? errno : EIO
+                    throw LockError(message: posixFailure("pwrite", path: path, code: code))
+                }
+                writeOffset += written
+            }
+            guard ftruncate(descriptor, off_t(data.count)) == 0 else {
+                throw LockError(message: posixFailure("ftruncate", path: path, code: errno))
+            }
+            guard fsync(descriptor) == 0 else {
+                throw LockError(message: posixFailure("fsync", path: path, code: errno))
+            }
+            return record
+        }
+        guard metadata.st_size > 0, metadata.st_size <= 4_096 else {
+            throw LockError(message: "invalid stable lock authority record at \(path)")
+        }
+        var data = Data(count: Int(metadata.st_size))
+        let bytesRead = data.withUnsafeMutableBytes { buffer in
+            Darwin.pread(descriptor, buffer.baseAddress, buffer.count, 0)
+        }
+        guard bytesRead == data.count else {
+            let code = bytesRead < 0 ? errno : EIO
+            throw LockError(message: posixFailure("pread", path: path, code: code))
+        }
+        do {
+            return try JSONDecoder().decode(StableAuthorityRecord.self, from: data)
+        } catch {
+            throw LockError(message: "invalid stable lock authority record at \(path): \(error)")
+        }
     }
 
     private static func release(

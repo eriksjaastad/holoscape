@@ -287,6 +287,70 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(child.terminationStatus, 0)
     }
 
+    func testRecreatedDirectoryFailsClosedWhileLegacyProcessHoldsDisplacedLock() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("legacy-scrollback", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let fileURL = directory.appendingPathComponent("session.scrollback")
+        let locks = PersistentFileOperationLocks()
+
+        // Seed the stable authority while the legacy pathname still names the
+        // same directory that a pre-migration broker will use.
+        try locks.withLock(for: fileURL) {}
+
+        let legacyLockURL = fileURL.appendingPathExtension("lock")
+        let readyURL = root.appendingPathComponent("legacy-child-ready")
+        let releaseURL = root.appendingPathComponent("legacy-child-release")
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = [
+            "xctest",
+            "-XCTest",
+            "HoloscapeTests.DiskBackedScrollbackStoreTests/testProcessSharedLockHelper",
+            Bundle(for: Self.self).bundleURL.path
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_SCROLLBACK_LOCK_HELPER": "1",
+            "HOLOSCAPE_SCROLLBACK_LOCK_PATH": legacyLockURL.path,
+            "HOLOSCAPE_SCROLLBACK_READY_PATH": readyURL.path,
+            "HOLOSCAPE_SCROLLBACK_RELEASE_PATH": releaseURL.path
+        ]) { _, helperValue in helperValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            try? Data().write(to: releaseURL)
+            if child.isRunning { child.terminate() }
+        }
+
+        let readyDeadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let displaced = root.appendingPathComponent("displaced-legacy-scrollback", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: displaced)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+
+        var operationRan = false
+        XCTAssertThrowsError(try locks.withLock(for: fileURL) { operationRan = true }) { error in
+            let lockError = error as? PersistentFileOperationLocks.LockError
+            XCTAssertNotNil(lockError)
+            XCTAssertTrue(lockError?.message.contains("directory authority changed") == true)
+        }
+        XCTAssertFalse(operationRan)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyLockURL.path))
+        XCTAssertTrue(child.isRunning)
+
+        try Data().write(to: releaseURL)
+        let childExited = expectation(description: "legacy lock helper exited")
+        child.terminationHandler = { _ in childExited.fulfill() }
+        wait(for: [childExited], timeout: 3)
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
     func testLockSetupWrapsParentDirectoryFailureAsLockError() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -304,7 +368,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         }
     }
 
-    func testRecreatedLockDirectorySyncFailureIsRetriedBeforeOperation() throws {
+    func testRecreatedLockDirectorySyncFailureIsRetriedBeforeAuthorityFailure() throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let lockDirectory = root.appendingPathComponent("recreated-locks")
@@ -339,20 +403,21 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertFalse(events.contains("operation"))
 
         events.removeAll()
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {
-            events.append("operation")
+        XCTAssertThrowsError(
+            try locks.withLock(
+                for: fileURL,
+                synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+            ) {
+                events.append("operation")
+            }
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("directory authority changed"))
         }
-        let operationIndex = try XCTUnwrap(events.firstIndex(of: "operation"))
-        XCTAssertTrue(
-            events[..<operationIndex].contains("sync:\(root.path)"),
-            "retry must resynchronize the recreated lock-directory entry before opening the lock"
-        )
+        XCTAssertFalse(events.contains("operation"))
+        XCTAssertTrue(events.contains("sync:\(root.path)"))
     }
 
-    func testCompletedLockDirectoryRecreationResynchronizesParentBeforeOperation() throws {
+    func testCompletedLockDirectoryRecreationFailsClosedAfterResynchronizingParent() throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let lockDirectory = root.appendingPathComponent("replaced-locks")
@@ -371,17 +436,18 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: false)
         events.removeAll()
 
-        try locks.withLock(
-            for: fileURL,
-            synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
-        ) {
-            events.append("operation")
+        XCTAssertThrowsError(
+            try locks.withLock(
+                for: fileURL,
+                synchronizeCreatedDirectoryEntries: { events.append("sync:\($0.path)") }
+            ) {
+                events.append("operation")
+            }
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("directory authority changed"))
         }
-        let operationIndex = try XCTUnwrap(events.firstIndex(of: "operation"))
-        XCTAssertTrue(
-            events[..<operationIndex].contains("sync:\(root.path)"),
-            "same-path lock-directory replacement must invalidate cached durability authority"
-        )
+        XCTAssertFalse(events.contains("operation"))
+        XCTAssertTrue(events.contains("sync:\(root.path)"))
     }
 
     func testDisplacedLockDirectoryCannotSplitProcessSharedAuthority() throws {
@@ -433,7 +499,8 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         XCTAssertEqual(firstDone.wait(timeout: .now() + 2), .success)
         XCTAssertEqual(secondEntered.wait(timeout: .now() + 2), .success)
         XCTAssertEqual(secondDone.wait(timeout: .now() + 2), .success)
-        XCTAssertTrue(errors.values.isEmpty, "Unexpected lock errors: \(errors.values)")
+        XCTAssertEqual(errors.values.count, 1)
+        XCTAssertTrue(String(describing: errors.values[0]).contains("directory authority changed"))
     }
 
     func testSameInodeLockDirectoryRelinkResynchronizesParentBeforeOperation() throws {
