@@ -11,6 +11,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     enum LaunchError: Error, Equatable {
         case launchFailed(String)
         case socketTimedOut(String)
+        case brokerOwnershipIndeterminate(String)
         case launchCleanupFailed(String)
     }
 
@@ -104,6 +105,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let socketWaitTimeoutMilliseconds: Int
     private let requestTimeoutMilliseconds: Int
     private let launchedChildObserver: ((LaunchedChild) -> Void)?
+    private let brokerProcessIDProvider: (String) throws -> pid_t
     private let lock = NSLock()
     private var launchedChild: LaunchedChild?
 
@@ -113,7 +115,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         environment: [String: String]? = nil,
         socketWaitTimeoutMilliseconds: Int = 5_000,
         requestTimeoutMilliseconds: Int = 10_000,
-        launchedChildObserver: ((LaunchedChild) -> Void)? = nil
+        launchedChildObserver: ((LaunchedChild) -> Void)? = nil,
+        brokerProcessIDProvider: @escaping (String) throws -> pid_t = {
+            try BrokerSessionHostUnixSocketServer.activeBrokerProcessID($0)
+        }
     ) {
         self.executableURL = executableURL
         self.socketPath = socketPath
@@ -121,6 +126,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
         self.launchedChildObserver = launchedChildObserver
+        self.brokerProcessIDProvider = brokerProcessIDProvider
     }
 
     func sendFrame(_ frame: Data) throws -> Data {
@@ -185,7 +191,19 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
             throw readinessError
         }
 
-        guard BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath) == child.pid else {
+        let activeBrokerPID: pid_t
+        do {
+            activeBrokerPID = try brokerProcessIDProvider(socketPath)
+        } catch {
+            // Readiness alone cannot prove whether this child or a concurrent
+            // broker owns the socket. Retain child authority for a later retry;
+            // never signal a process while ownership is indeterminate.
+            throw LaunchError.brokerOwnershipIndeterminate(
+                "Broker helper PID \(child.pid) reached socket \(socketPath), but lock ownership could not be verified: \(error.localizedDescription)"
+            )
+        }
+
+        guard activeBrokerPID == child.pid else {
             // Another broker won readiness. Retire only our still-owned child,
             // then let the caller retry against the authoritative socket.
             do {

@@ -1813,7 +1813,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         try waitForSocket(at: socketPath)
 
         XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
-        XCTAssertEqual(BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath), getpid())
+        XCTAssertEqual(try BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath), getpid())
         XCTAssertTrue(BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath))
 
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, readChunkSize: 3)
@@ -2109,6 +2109,72 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "listSessions",
             "isRunning ownership-race-session",
         ])
+    }
+
+    func testLazyUnixSocketTransportDoesNotRetireChildWhenBrokerOwnershipIsUnreadable() throws {
+        struct OwnershipReadFailure: Error {}
+
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LazyUnixSocketOwnershipReadTests-\(UUID().uuidString)")
+        let helperURL = temporaryDirectory.appendingPathComponent("unverified-broker")
+        let helperReadyURL = temporaryDirectory.appendingPathComponent("helper-ready")
+        let socketPath = "/tmp/hs-lazy-ownership-read-\(UUID().uuidString).sock"
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+            unlink(socketPath)
+            unlink(socketPath + ".lock")
+        }
+        try """
+        #!/bin/sh
+        trap '' TERM
+        : > "\(helperReadyURL.path)"
+        while :; do :; done
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime)
+        )
+        let serverFinished = expectation(description: "reachable broker served readiness probe")
+        let serverError = LockedErrorBox()
+        var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: helperURL,
+            socketPath: socketPath,
+            socketWaitTimeoutMilliseconds: 1_000,
+            requestTimeoutMilliseconds: 1_000,
+            launchedChildObserver: { child in
+                launchedChild = child
+                for _ in 0..<100 where !FileManager.default.fileExists(atPath: helperReadyURL.path) {
+                    usleep(10_000)
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try server.run(maxConnections: 1)
+                    } catch {
+                        serverError.set(error)
+                    }
+                    serverFinished.fulfill()
+                }
+                try? self.waitForSocket(at: socketPath)
+            },
+            brokerProcessIDProvider: { _ in throw OwnershipReadFailure() }
+        )
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.brokerOwnershipIndeterminate = error else {
+                return XCTFail("Expected brokerOwnershipIndeterminate, got \(error)")
+            }
+        }
+        let child = try XCTUnwrap(launchedChild)
+        XCTAssertFalse(child.isReaped, "Indeterminate ownership must not retire the launched child")
+        try child.terminateAndReap(graceMilliseconds: 250)
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
 
     func testLazyUnixSocketTransportSendsRequestWithoutProbeWhenBrokerIsBusy() throws {

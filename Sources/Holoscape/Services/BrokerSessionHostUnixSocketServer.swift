@@ -176,18 +176,29 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
     }
 
-    static func activeBrokerProcessID(_ socketPath: String) -> pid_t? {
+    static func activeBrokerProcessID(_ socketPath: String) throws -> pid_t {
         let descriptor = open(socketPath + ".lock", O_RDONLY)
-        guard descriptor >= 0 else { return nil }
+        guard descriptor >= 0 else {
+            throw ServerError.socketFailed(String(cString: strerror(errno)))
+        }
         defer { Darwin.close(descriptor) }
 
         var bytes = [UInt8](repeating: 0, count: 32)
-        let count = pread(descriptor, &bytes, bytes.count, 0)
+        let count: Int
+        while true {
+            let result = pread(descriptor, &bytes, bytes.count, 0)
+            if result == -1, errno == EINTR { continue }
+            count = result
+            break
+        }
+        if count == -1 {
+            throw ServerError.readFailed(String(cString: strerror(errno)))
+        }
         guard count > 0,
               let text = String(bytes: bytes.prefix(count), encoding: .utf8),
               let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
               pid > 0 else {
-            return nil
+            throw ServerError.readFailed("broker lock owner metadata is missing or invalid")
         }
         return pid
     }
