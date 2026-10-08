@@ -1808,10 +1808,16 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     }
 
     private func makeShutdownAuthority() -> ShutdownAuthority {
-        ShutdownAuthority(
-            sessions: Array(sessions.values),
-            retainedProcesses: retainedLaunchCleanups.values.map(\.process),
-            retainedInputDescriptors: retainedLaunchFailureInputDescriptors,
+        lock.lock()
+        let sessionSnapshot = Array(sessions.values)
+        let retainedProcessSnapshot = retainedLaunchCleanups.values.map(\.process)
+        let retainedInputDescriptorSnapshot = retainedLaunchFailureInputDescriptors
+        lock.unlock()
+
+        return ShutdownAuthority(
+            sessions: sessionSnapshot,
+            retainedProcesses: retainedProcessSnapshot,
+            retainedInputDescriptors: retainedInputDescriptorSnapshot,
             inputDescriptorCloser: inputDescriptorCloser,
             signalProcessGroup: processGroupSignal,
             passTimeoutMilliseconds: Self.terminationGracePeriodMilliseconds
