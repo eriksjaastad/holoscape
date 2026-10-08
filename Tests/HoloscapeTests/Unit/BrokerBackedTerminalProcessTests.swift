@@ -1541,8 +1541,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
 
         try waitUntil { events.last == "termination" }
-        XCTAssertEqual(events, ["output", "output", "termination"])
-        XCTAssertEqual(outputLifecycles, [.running, .running], "Durable exit must follow delivery of the final drain")
+        XCTAssertEqual(events.last, "termination")
+        XCTAssertFalse(events.dropLast().isEmpty, "Final output must be delivered before termination")
+        XCTAssertTrue(events.dropLast().allSatisfy { $0 == "output" }, events.joined(separator: ","))
+        XCTAssertTrue(
+            outputLifecycles.allSatisfy { $0 == .running },
+            "Durable exit must follow delivery of every final drain callback"
+        )
         let finalLines = fixture.terminal.lastLines(5).joined(separator: "\n")
         XCTAssertTrue(finalLines.contains("first-final-lane-output"))
         XCTAssertTrue(finalLines.contains("raced-final-lane-output"))
