@@ -68,11 +68,16 @@ final class NativePTYChildProcess: @unchecked Sendable {
     var terminationHandler: TerminationHandler? {
         get { lock.withLock { storedTerminationHandler } }
         set {
-            let shouldNotify = lock.withLock {
+            let handlerToNotify = lock.withLock { () -> TerminationHandler? in
                 storedTerminationHandler = newValue
-                return !running && newValue != nil
+                guard !running, let newValue else { return nil }
+                terminationHandlerGroup.enter()
+                return newValue
             }
-            if shouldNotify { newValue?(self) }
+            if let handlerToNotify {
+                handlerToNotify(self)
+                terminationHandlerGroup.leave()
+            }
         }
     }
 
@@ -2504,6 +2509,20 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 throw RuntimeError.terminationFailed(session.id, reason: reason)
             }
         }
+
+        let callbackDeadline = DispatchTime.now()
+            + .milliseconds(Self.terminationGracePeriodMilliseconds)
+        guard session.process.clearTerminationHandlerAndWait(until: callbackDeadline) else {
+            throw RuntimeError.terminationFailed(
+                session.id,
+                reason: "process termination callback remained pending after cleanup"
+            )
+        }
+        // Clearing before the waiter enrolls prevents a later callback; joining an
+        // enrolled callback makes its state publication authoritative. Reapply the
+        // observation after either path so forced retirement never depends on a
+        // callback that cleanup has deliberately revoked.
+        session.updateProcessCleanupObservation(session.process.terminationObservation)
     }
 
     private func throwProcessGroupCleanupErrorIfPresent(for session: Session) throws {

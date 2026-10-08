@@ -444,6 +444,50 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try waitForTerminationStatus(from: runtime, id: id), 42)
     }
 
+    func testForcedRetirementWaitsForProcessTerminationHandlerBeforeRemovingSession() throws {
+        let terminationHandlerGate = OneShotLifecyclePublicationGate()
+        let retirementFinished = DispatchSemaphore(value: 0)
+        let retirementError = LockedRuntimeErrorBox()
+        let runtime = NativePTYBrokerSessionRuntime(
+            processTerminationHandlerWillRun: { _ in terminationHandlerGate.pause() }
+        )
+        let id = BrokerSessionID(rawValue: "forced-retirement-termination-handler-quiescence")
+        try runtime.createSession(
+            id: id,
+            request: BrokerSessionLaunchRequest(
+                command: "/bin/cat",
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                initialSize: TerminalGridSize(columns: 80, rows: 24)
+            )
+        )
+        defer {
+            terminationHandlerGate.release()
+            try? runtime.markSessionErrored(id: id)
+        }
+
+        DispatchQueue.global().async {
+            do {
+                try runtime.markSessionErrored(id: id)
+            } catch {
+                retirementError.store(error)
+            }
+            retirementFinished.signal()
+        }
+
+        XCTAssertEqual(terminationHandlerGate.waitUntilPaused(), .success)
+        XCTAssertEqual(
+            retirementFinished.wait(timeout: .now() + .milliseconds(150)),
+            .timedOut,
+            "Forced retirement must not remove the session while its termination callback can still publish"
+        )
+        XCTAssertEqual(try runtime.listSessions(), [id])
+        terminationHandlerGate.release()
+        XCTAssertEqual(retirementFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(retirementError.value)
+        XCTAssertEqual(try runtime.listSessions(), [])
+    }
+
     func testLateExitObserverFailureCannotUndoForcedCleanupCompletion() throws {
         let observer = LateFailureAfterReapObserver()
         let runtime = NativePTYBrokerSessionRuntime(
