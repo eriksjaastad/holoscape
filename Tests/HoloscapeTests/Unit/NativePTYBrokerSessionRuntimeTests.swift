@@ -1779,11 +1779,13 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
     func testContinuousOutputWithBlockedPersistenceKeepsOneBoundedBacklogAndBoundsRetirement() throws {
         let appender = BlockingScrollbackAppender(shouldFail: false)
-        let runtime = NativePTYBrokerSessionRuntime(
-            scrollbackAppender: appender.append,
-            outputCleanupTimeoutMilliseconds: 100
-        )
         let id = BrokerSessionID(rawValue: "forced-retirement-continuous-blocked-persistence")
+        let cleanupCompleted = DispatchSemaphore(value: 0)
+        var runtime: NativePTYBrokerSessionRuntime! = NativePTYBrokerSessionRuntime(
+            scrollbackAppender: appender.append,
+            outputCleanupTimeoutMilliseconds: 100,
+            runtimeDeinitCleanupDidComplete: { _ in cleanupCompleted.signal() }
+        )
         try runtime.createSession(
             id: id,
             request: BrokerSessionLaunchRequest(
@@ -1814,9 +1816,9 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
 
         let retirementFinished = DispatchSemaphore(value: 0)
         let retirementError = LockedRuntimeErrorBox()
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [runtime] in
             do {
-                try runtime.markSessionErrored(id: id)
+                try runtime!.markSessionErrored(id: id)
             } catch {
                 retirementError.store(error)
             }
@@ -1852,6 +1854,13 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         }
         XCTAssertEqual(try runtime.outputPersistenceBacklogByteCount(id: id), 0)
         XCTAssertFalse(try runtime.isOutputMonitoring(id: id))
+
+        runtime = nil
+        XCTAssertEqual(
+            cleanupCompleted.wait(timeout: .now()),
+            .success,
+            "Settled persistence must let runtime deinit finish cleanup synchronously"
+        )
     }
 
     func testTerminatePreservesExitCodeMismatchFailure() throws {

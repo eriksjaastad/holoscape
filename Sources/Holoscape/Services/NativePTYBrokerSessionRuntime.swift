@@ -563,6 +563,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         private let outputPersistenceQueue: DispatchQueue
         private let outputPersistenceGroup = DispatchGroup()
         private let outputCleanupTimeoutMilliseconds: Int
+        private let runtimeDeinitCleanupDidComplete: @Sendable (BrokerSessionID) -> Void
         let scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         private var processGroupCleanupFailureReason: String?
         let lock = NSLock()
@@ -604,6 +605,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32),
             installsOutputReadabilityHandler: Bool,
             outputCleanupTimeoutMilliseconds: Int,
+            runtimeDeinitCleanupDidComplete: @escaping @Sendable (BrokerSessionID) -> Void,
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         ) {
             self.id = id
@@ -620,6 +622,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 label: "com.holoscape.broker-session-output-persistence.\(id.rawValue)"
             )
             self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
+            self.runtimeDeinitCleanupDidComplete = runtimeDeinitCleanupDidComplete
             self.scrollbackAppender = scrollbackAppender
         }
 
@@ -1410,11 +1413,23 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 try drainFinalOutput()
             } catch {
                 NSLog("Native PTY final output cleanup failed for \(id.rawValue): \(error)")
+                // A retained persistence write is recoverable, so keep the session
+                // alive until that authority settles. A terminal drain warning
+                // with no pending write cannot recover by retrying: retaining the
+                // closed process forever only leaks its runtime and callbacks.
+                guard hasPendingScrollbackPersistence() else {
+                    masterHandle.closeFile()
+                    setOutputAvailabilityHandler(nil)
+                    lock.withLock { runtimeDeinitCleanupComplete = true }
+                    runtimeDeinitCleanupDidComplete(id)
+                    return true
+                }
                 return false
             }
             masterHandle.closeFile()
             setOutputAvailabilityHandler(nil)
             lock.withLock { runtimeDeinitCleanupComplete = true }
+            runtimeDeinitCleanupDidComplete(id)
             return true
         }
 
@@ -1576,6 +1591,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let outputReader: @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32)
     private let outputCleanupTimeoutMilliseconds: Int
     private let installsOutputReadabilityHandler: Bool
+    private let runtimeDeinitCleanupDidComplete: @Sendable (BrokerSessionID) -> Void
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
@@ -1594,6 +1610,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         outputReadDidStart: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         outputCleanupTimeoutMilliseconds: Int = 500,
         installsOutputReadabilityHandler: Bool = true,
+        runtimeDeinitCleanupDidComplete: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32) = { descriptor, buffer, count in
             let readCount = Darwin.read(descriptor, buffer, count)
             return (readCount, readCount < 0 ? errno : 0)
@@ -1665,6 +1682,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.processGroupValidator = processGroupValidator
         self.outputCleanupTimeoutMilliseconds = max(1, outputCleanupTimeoutMilliseconds)
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
+        self.runtimeDeinitCleanupDidComplete = runtimeDeinitCleanupDidComplete
         self.processGroupLookup = processGroupLookup
         self.processGroupSignal = processGroupSignal
     }
@@ -1854,6 +1872,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             outputReader: outputReader,
             installsOutputReadabilityHandler: installsOutputReadabilityHandler,
             outputCleanupTimeoutMilliseconds: outputCleanupTimeoutMilliseconds,
+            runtimeDeinitCleanupDidComplete: runtimeDeinitCleanupDidComplete,
             scrollbackAppender: scrollbackAppender
         )
         let processGroupSignal = self.processGroupSignal
