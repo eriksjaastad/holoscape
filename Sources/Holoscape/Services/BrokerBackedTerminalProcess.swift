@@ -391,11 +391,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 startOutputPump()
             }
         } catch {
-            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+            if case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, _) = error {
+                // The runtime and visible registry identity both exist. Preserve
+                // that exact generation so retry reattaches instead of creating
+                // a duplicate, while still surfacing the durability failure.
+                brokerSessionID = record.id
+                presentedBrokerSessionID = record.id
+                agentStatusOwnerToken = record.agentStatusOwnerToken
+            } else if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
                 untrackedBrokerSessionID = id
+                brokerSessionID = nil
+                agentStatusOwnerToken = nil
+            } else {
+                brokerSessionID = nil
+                agentStatusOwnerToken = nil
             }
-            brokerSessionID = nil
-            agentStatusOwnerToken = nil
             revokeOutputDeliveryOwnership()
             sessionIOReady = false
             startFailureDescription = String(describing: error)
@@ -411,7 +421,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 completeCancelledFreshStart()
             }
         case .failure(let error):
-            if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
+            if case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, _) = error {
+                retireTrackedForTeardown(record.id) { [self] in
+                    completeCancelledFreshStart()
+                }
+            } else if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
                 retireUntrackedForTeardown(id) { [self] in
                     completeCancelledFreshStart()
                 }
@@ -2360,6 +2374,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                  .exitCodeMismatch, .exitStillPending:
                 return .failed
             case .concurrentSessionTransition, .untrackedSession:
+                return .failed
+            case .registryTransitionCommitted:
                 return .failed
             }
         }

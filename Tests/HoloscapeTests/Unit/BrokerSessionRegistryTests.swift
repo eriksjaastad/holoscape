@@ -234,7 +234,11 @@ final class BrokerSessionRegistryTests: XCTestCase {
         let registry = BrokerSessionRegistry(fileURL: registryURL, persistence: persistence)
 
         XCTAssertThrowsError(try registry.save([replacement])) { error in
-            XCTAssertEqual(error as? RegistryPersistenceFailure, .directorySync)
+            guard case let BrokerSessionRegistry.RegistryError.replacementCommitted(records, durabilityFailure) = error else {
+                return XCTFail("Expected typed committed replacement, got \(error)")
+            }
+            XCTAssertEqual(records, [replacement])
+            XCTAssertTrue(durabilityFailure.contains("directorySync"), durabilityFailure)
         }
         XCTAssertEqual(try BrokerSessionRegistry(fileURL: registryURL).load(), [replacement])
     }

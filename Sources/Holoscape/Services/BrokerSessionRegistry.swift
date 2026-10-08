@@ -12,6 +12,10 @@ struct BrokerSessionRegistry {
     enum RegistryError: Error, Equatable {
         case invalidRecord(BrokerSessionID, BrokerSessionRecord.ValidationError)
         case persistenceAndCleanupFailed(operation: String, cleanup: String)
+        /// The atomic replacement is already visible, but synchronizing its
+        /// containing directory failed. Callers must preserve the committed
+        /// records instead of compensating as if the mutation never happened.
+        case replacementCommitted(records: [BrokerSessionRecord], durabilityFailure: String)
     }
 
     struct Persistence: @unchecked Sendable {
@@ -142,30 +146,39 @@ struct BrokerSessionRegistry {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(records.sortedBySessionID())
+        let sortedRecords = records.sortedBySessionID()
+        let data = try encoder.encode(sortedRecords)
 
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try persist(data)
+        try persist(data, committedRecords: sortedRecords)
     }
 
     /// Commit registry bytes in crash-safe order: fully synchronize a sibling
     /// temporary file, atomically rename it over the registry, then synchronize
     /// the containing directory so the rename itself is durable.
-    private func persist(_ data: Data) throws {
+    private func persist(_ data: Data, committedRecords: [BrokerSessionRecord]) throws {
         let directoryURL = fileURL.deletingLastPathComponent()
         let temporaryURL = directoryURL.appendingPathComponent(
             ".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp"
         )
 
+        var replacementCommitted = false
         do {
             try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
             try persistence.replaceFile(temporaryURL, fileURL)
+            replacementCommitted = true
             try persistence.synchronizeDirectory(directoryURL)
         } catch {
             let operationError = error
+            if replacementCommitted {
+                throw RegistryError.replacementCommitted(
+                    records: committedRecords,
+                    durabilityFailure: String(describing: operationError)
+                )
+            }
             guard FileManager.default.fileExists(atPath: temporaryURL.path) else {
                 throw operationError
             }
