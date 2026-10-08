@@ -3,16 +3,21 @@ import XCTest
 
 @MainActor
 final class HistoryBufferTests: XCTestCase {
+    private func makePersistenceURL() -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        return root.appendingPathComponent("history-buffer.json")
+    }
 
-    override func tearDown() {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/history-buffer.json")
-        try? FileManager.default.removeItem(at: url)
-        super.tearDown()
+    private func makeBuffer() -> HistoryBuffer {
+        HistoryBuffer(persistURL: makePersistenceURL(), startsPeriodicFlush: false)
     }
 
     func testRecordCommandAddsEntry() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         buffer.recordCommand("ls -la", channelName: "Shell")
         let snap = buffer.snapshot()
         XCTAssertEqual(snap.recentCommands.count, 1)
@@ -22,7 +27,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testCommandBufferRolls() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         for i in 0..<25 {
             buffer.recordCommand("cmd-\(i)", channelName: "Shell")
         }
@@ -34,7 +39,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testRecordChannelSwitchAddsEntry() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         buffer.recordChannelSwitch(from: "Shell", to: "Agent")
         let snap = buffer.snapshot()
         XCTAssertEqual(snap.recentChannelSwitches.count, 1)
@@ -44,7 +49,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testChannelSwitchBufferRolls() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         for i in 0..<15 {
             buffer.recordChannelSwitch(from: "ch-\(i)", to: "ch-\(i+1)")
         }
@@ -54,7 +59,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testRecordSettingsChangeAddsEntry() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         buffer.recordSettingsChange(setting: "theme", oldValue: "Dark", newValue: "Nord")
         let snap = buffer.snapshot()
         XCTAssertEqual(snap.recentSettingsChanges.count, 1)
@@ -63,7 +68,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testSettingsChangeBufferRolls() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         for i in 0..<8 {
             buffer.recordSettingsChange(setting: "s-\(i)", oldValue: "old", newValue: "new")
         }
@@ -73,7 +78,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testRecordErrorAddsEntry() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         buffer.recordError("connection failed", context: "SSH")
         let snap = buffer.snapshot()
         XCTAssertEqual(snap.recentErrors.count, 1)
@@ -83,7 +88,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testErrorBufferRolls() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         for i in 0..<25 {
             buffer.recordError("err-\(i)")
         }
@@ -93,7 +98,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testSnapshotCapturesAllCategories() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         buffer.recordCommand("test", channelName: "Shell")
         buffer.recordChannelSwitch(from: nil, to: "Shell")
         buffer.recordSettingsChange(setting: "theme", oldValue: "Dark", newValue: "Nord")
@@ -107,7 +112,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testSnapshotTimestamp() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         let before = Date()
         let snap = buffer.snapshot()
         let after = Date()
@@ -116,19 +121,37 @@ final class HistoryBufferTests: XCTestCase {
         buffer.stopPeriodicFlush()
     }
 
-    func testFlushWritesToDisk() {
-        let buffer = HistoryBuffer()
+    func testFlushWritesToDisk() throws {
+        let persistURL = makePersistenceURL()
+        let buffer = HistoryBuffer(persistURL: persistURL, startsPeriodicFlush: false)
         buffer.recordCommand("flush-test", channelName: "Shell")
         guard case .success = buffer.flush() else {
             return XCTFail("Flush should report a successful write")
         }
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/history-buffer.json")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Flush should write to disk")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: persistURL.path), "Flush should write to disk")
         // Verify it's valid JSON
-        let data = try! Data(contentsOf: url)
+        let data = try Data(contentsOf: persistURL)
         XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data))
         buffer.stopPeriodicFlush()
+    }
+
+    func testFlushPreservesUnrelatedLiveHistorySentinel() throws {
+        let testHistoryURL = makePersistenceURL()
+        let liveHistoryURL = testHistoryURL.deletingLastPathComponent()
+            .appendingPathComponent("live-history-buffer.json")
+        let sentinel = Data("existing-user-history".utf8)
+        try FileManager.default.createDirectory(
+            at: liveHistoryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try sentinel.write(to: liveHistoryURL)
+
+        let buffer = HistoryBuffer(persistURL: testHistoryURL, startsPeriodicFlush: false)
+        buffer.recordCommand("isolated-test", channelName: "Shell")
+        try buffer.flush().get()
+
+        XCTAssertEqual(try Data(contentsOf: liveHistoryURL), sentinel)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: testHistoryURL.path))
     }
 
     func testFlushRetriesSameSnapshotAfterWriteFailure() throws {
@@ -199,12 +222,13 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testLoadPersistedSnapshot() throws {
-        let buffer = HistoryBuffer()
+        let persistURL = makePersistenceURL()
+        let buffer = HistoryBuffer(persistURL: persistURL, startsPeriodicFlush: false)
         buffer.recordCommand("persist-test", channelName: "Shell")
         buffer.recordError("persist-error")
-        buffer.flush()
+        try buffer.flush().get()
 
-        let loaded = try HistoryBuffer.loadPersistedSnapshot().get()
+        let loaded = try HistoryBuffer.loadPersistedSnapshot(from: persistURL).get()
         XCTAssertNotNil(loaded, "Should load persisted snapshot")
         XCTAssertEqual(loaded?.recentCommands.count, 1)
         XCTAssertEqual(loaded?.recentCommands.first?.command, "persist-test")
@@ -213,7 +237,7 @@ final class HistoryBufferTests: XCTestCase {
     }
 
     func testEmptyBufferSnapshot() {
-        let buffer = HistoryBuffer()
+        let buffer = makeBuffer()
         let snap = buffer.snapshot()
         XCTAssertTrue(snap.recentCommands.isEmpty)
         XCTAssertTrue(snap.recentChannelSwitches.isEmpty)
