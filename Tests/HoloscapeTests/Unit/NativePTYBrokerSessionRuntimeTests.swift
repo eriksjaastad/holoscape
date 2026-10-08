@@ -491,6 +491,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
     func testShutdownWaitsForInFlightCreateBeforeSnapshottingSession() throws {
         let creationGate = OneShotLifecyclePublicationGate()
         let creationFinished = DispatchSemaphore(value: 0)
+        let shutdownSnapshotAttempted = DispatchSemaphore(value: 0)
         let shutdownFinished = DispatchSemaphore(value: 0)
         let creationError = LockedRuntimeErrorBox()
         let runtime = NativePTYBrokerSessionRuntime(
@@ -499,7 +500,8 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
                 let duplicationError = duplicate < 0 ? errno : nil
                 creationGate.pause()
                 return (duplicate, duplicationError)
-            }
+            },
+            shutdownSnapshotWillAcquireLock: { shutdownSnapshotAttempted.signal() }
         )
         let id = BrokerSessionID(rawValue: "native-pty-shutdown-create-snapshot")
         defer {
@@ -530,6 +532,7 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
             shutdownFinished.signal()
         }
 
+        XCTAssertEqual(shutdownSnapshotAttempted.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(
             shutdownFinished.wait(timeout: .now() + .milliseconds(150)),
             .timedOut,

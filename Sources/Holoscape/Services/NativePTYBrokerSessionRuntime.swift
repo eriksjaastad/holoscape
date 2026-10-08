@@ -1694,6 +1694,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     private let installsOutputReadabilityHandler: Bool
     private let runtimeDeinitCleanupDidComplete: @Sendable (BrokerSessionID) -> Void
     private let processTerminationHandlerWillRun: @Sendable (BrokerSessionID) -> Void
+    private let shutdownSnapshotWillAcquireLock: @Sendable () -> Void
     private static let terminationGracePeriodMilliseconds = 500
 
     init(
@@ -1714,6 +1715,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         installsOutputReadabilityHandler: Bool = true,
         runtimeDeinitCleanupDidComplete: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
         processTerminationHandlerWillRun: @escaping @Sendable (BrokerSessionID) -> Void = { _ in },
+        shutdownSnapshotWillAcquireLock: @escaping @Sendable () -> Void = {},
         outputReader: @escaping @Sendable (Int32, UnsafeMutableRawPointer?, Int) -> (count: Int, errno: Int32) = { descriptor, buffer, count in
             let readCount = Darwin.read(descriptor, buffer, count)
             return (readCount, readCount < 0 ? errno : 0)
@@ -1787,6 +1789,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         self.installsOutputReadabilityHandler = installsOutputReadabilityHandler
         self.runtimeDeinitCleanupDidComplete = runtimeDeinitCleanupDidComplete
         self.processTerminationHandlerWillRun = processTerminationHandlerWillRun
+        self.shutdownSnapshotWillAcquireLock = shutdownSnapshotWillAcquireLock
         self.processGroupLookup = processGroupLookup
         self.processGroupSignal = processGroupSignal
     }
@@ -1808,6 +1811,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
     }
 
     private func makeShutdownAuthority() -> ShutdownAuthority {
+        shutdownSnapshotWillAcquireLock()
         lock.lock()
         let sessionSnapshot = Array(sessions.values)
         let retainedProcessSnapshot = retainedLaunchCleanups.values.map(\.process)
