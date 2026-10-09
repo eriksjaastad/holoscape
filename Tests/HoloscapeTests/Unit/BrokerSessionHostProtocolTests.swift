@@ -1690,6 +1690,50 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
     }
 
+    func testUnixSocketServerRejectsTruncatedRequestAtEOFWithoutDispatchingRuntime() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.isRunning = true
+        let codec = BrokerSessionHostCodec()
+        let socketPath = "/tmp/hs-truncated-frame-\(UUID().uuidString).sock"
+        var frame = try codec.encodeRequest(
+            .isRunning(id: BrokerSessionID(rawValue: "unix-socket-truncated-frame"))
+        )
+        XCTAssertEqual(frame.popLast(), 0x0A)
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime),
+            readChunkSize: 3
+        )
+        let serverFinished = expectation(description: "socket broker rejected truncated request")
+        let serverError = LockedErrorBox()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(maxConnections: 1)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        let clientFD = try makeConnectedUnixSocket(to: socketPath)
+        defer { Darwin.close(clientFD) }
+        let client = FileHandle(fileDescriptor: clientFD, closeOnDealloc: false)
+        try client.write(contentsOf: frame)
+        XCTAssertEqual(shutdown(clientFD, SHUT_WR), 0)
+        let response = try codec.decodeResponse(client.readDataToEndOfFile())
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected truncated-frame protocol failure response")
+        }
+        XCTAssertEqual(failure.code, "protocol-error")
+        XCTAssertTrue(failure.message.contains("truncatedFrame"), failure.message)
+        XCTAssertTrue(runtime.events.isEmpty)
+    }
+
     func testUnixSocketServerRejectsOversizedRequestWithoutDispatchingRuntime() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
