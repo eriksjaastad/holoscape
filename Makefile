@@ -60,7 +60,7 @@ test-ui-fast: bundle
 		-destination 'platform=macOS' \
 		-only-testing:HoloscapeUITests/HoloscapeUITests \
 		-only-testing:HoloscapeUITests/SettingsUITests \
-		-only-testing:HoloscapeUITests/SearchBarUITests \
+		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
 		-only-testing:HoloscapeUITests/SidebarUITests \
 		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
 		2>&1 | grep -E "Test Case|Executed|TEST"
