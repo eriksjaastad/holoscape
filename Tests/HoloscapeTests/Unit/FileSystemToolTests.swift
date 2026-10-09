@@ -21,6 +21,23 @@ final class FileSystemToolTests: XCTestCase {
         temporaryDirectory = nil
     }
 
+    func testToolHandlerReportsFilesystemFailureWithoutHoloscapeOutageAdvice() async throws {
+        let result = try await executeToolHandler {
+            throw FileSystemToolError.enumerationFailed(
+                path: "/tmp/blocked",
+                message: "permission denied"
+            )
+        }
+
+        XCTAssertEqual(result.isError, true)
+        XCTAssertEqual(result.content.count, 1)
+        guard case let .text(text, _, _) = result.content[0] else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertEqual(text, "Error: Could not enumerate directory at /tmp/blocked: permission denied")
+        XCTAssertFalse(text.contains("Is Holoscape running?"))
+    }
+
     func testSearchContentSkipsValidNonUTF8Files() throws {
         try Data([0xFF, 0xFE, 0xFD]).write(to: temporaryDirectory.appendingPathComponent("binary.dat"))
         try Data("needle\n".utf8).write(to: temporaryDirectory.appendingPathComponent("text.txt"))
