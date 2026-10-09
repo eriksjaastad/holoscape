@@ -70,6 +70,11 @@ final class WampBundleLoader {
     /// Instance cap on the running total of all assets in a bundle.
     let bundleSizeCap: Int
 
+    /// Removes one cache entry during LRU eviction. Injectable so deletion
+    /// failures can be exercised deterministically without depending on
+    /// filesystem permission behavior.
+    private let removeCacheEntry: (URL) throws -> Void
+
     /// The SkinEngine holds the sandbox helpers
     /// (`validateAssetPath`, `assertPathResolvesInside`). Weak to avoid
     /// a retain cycle — the engine owns the loader.
@@ -78,11 +83,15 @@ final class WampBundleLoader {
     init(
         cacheRoot: URL?,
         assetSizeCap: Int = WampBundleLoader.defaultAssetSizeCap,
-        bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap
+        bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap,
+        removeCacheEntry: @escaping (URL) throws -> Void = { url in
+            try FileManager.default.removeItem(at: url)
+        }
     ) {
         self.cacheRoot = cacheRoot
         self.assetSizeCap = assetSizeCap
         self.bundleSizeCap = bundleSizeCap
+        self.removeCacheEntry = removeCacheEntry
     }
 
     /// Return the unzipped directory URL for `bundleURL`, unzipping on
@@ -217,7 +226,13 @@ final class WampBundleLoader {
 
         for entry in evictable {
             guard total > effectiveCap else { break }
-            try? FileManager.default.removeItem(at: entry.url)
+            do {
+                try removeCacheEntry(entry.url)
+            } catch {
+                throw LoadError.ioFailure(
+                    "could not evict cache entry '\(entry.name)': \(error.localizedDescription)"
+                )
+            }
             total -= entry.bytes
         }
     }
