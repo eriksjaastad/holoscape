@@ -145,7 +145,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     private func runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: Date?) {
         guard !isUITesting else { return }
-        bugReportService.retryPendingReports()
+        Task { [bugReportService] in
+            let summary = await bugReportService.retryPendingReports()
+            if summary.discoveredCount > 0 || !summary.failures.isEmpty {
+                NSLog("%@", summary.logMessage)
+            }
+        }
         checkForCrashes(lastLaunch: previousLaunchTimestamp)
 
         // Reload after channel restoration so recording launch metadata can
