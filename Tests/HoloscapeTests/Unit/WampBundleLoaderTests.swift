@@ -342,14 +342,18 @@ final class WampBundleLoaderTests: XCTestCase {
     }
 
     func testPurgeLRUSurfacesCacheEntryDeletionFailure() throws {
-        let failingHash = "a".repeated(64)
-        let retainedHash = "b".repeated(64)
+        let successfullyRemovedHash = "a".repeated(64)
+        let failingHash = "b".repeated(64)
+        let retainedHash = "c".repeated(64)
         let now = Date()
+        try stageCacheEntry(hash: successfullyRemovedHash, sizedBytes: 1024,
+                            mtime: now.addingTimeInterval(-300))
         try stageCacheEntry(hash: failingHash, sizedBytes: 1024,
                             mtime: now.addingTimeInterval(-200))
         try stageCacheEntry(hash: retainedHash, sizedBytes: 1024,
                             mtime: now.addingTimeInterval(-100))
 
+        let successfullyRemovedURL = cacheRoot.appendingPathComponent(successfullyRemovedHash)
         let failingURL = cacheRoot.appendingPathComponent(failingHash)
         let deletionError = NSError(
             domain: NSCocoaErrorDomain,
@@ -370,7 +374,12 @@ final class WampBundleLoaderTests: XCTestCase {
             }
             XCTAssertTrue(detail.contains(failingHash))
             XCTAssertTrue(detail.contains("synthetic permission failure"))
+            XCTAssertEqual(error.localizedDescription, detail)
         }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: successfullyRemovedURL.path),
+            "Successful evictions before the failure must remain committed"
+        )
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: failingURL.path),
             "A failed eviction must remain visible instead of being counted as removed"
