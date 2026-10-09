@@ -4,7 +4,7 @@ Emits beveled chrome button states (Winamp 2.x aesthetic — flat dark
 chrome with 1px highlight/shadow bevels and an LCD-green accent on
 hover/pressed). Run from the repo root:
 
-    uv run --with pillow Tools/holoscape_classic/generate_sprites.py
+    uv run --with pillow tools/holoscape_classic/generate_sprites.py
 
 Regenerate any time the palette is tweaked. Output ends up at
 Sources/Holoscape/Resources/Skins/HoloscapeClassic/assets/*.png.
@@ -15,7 +15,7 @@ import os
 import pathlib
 
 # Resolve OUT_DIR via __file__ so the script is safe to run from any
-# CWD. This file lives at Tools/holoscape_classic/generate_sprites.py
+# CWD. This file lives at tools/holoscape_classic/generate_sprites.py
 # — two parents up is the repo root.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 OUT_DIR = str(REPO_ROOT / "Sources/Holoscape/Resources/Skins/HoloscapeClassic/assets")

@@ -1,4 +1,4 @@
-.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume xcode bundle clean run setup check-submodules
+.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume validate-tools xcode bundle clean run setup check-submodules
 
 help:
 	@echo "Holoscape — common ops"
@@ -7,6 +7,7 @@ help:
 	@echo "  make test             Unit + property tests"
 	@echo "  make test-unit        Unit tests only"
 	@echo "  make test-property    Property tests only"
+	@echo "  make validate-tools   Check shell syntax and bundled skin archives"
 	@echo "  make bundle           Build debug .app bundle"
 	@echo "  make run              Build and open debug .app bundle"
 	@echo "  make setup            Install Claude Code MCP/hooks integration"
@@ -32,6 +33,11 @@ test-unit: check-submodules
 # Run only property-based tests
 test-property: check-submodules
 	swift test --filter HoloscapePropertyTests
+
+# Validate scripts and generated skin archives without modifying them
+validate-tools:
+	@./scripts/validate-tools.sh
+	@./scripts/test-package-tools.sh
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle
