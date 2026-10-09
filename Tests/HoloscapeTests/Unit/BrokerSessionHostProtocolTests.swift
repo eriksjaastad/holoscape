@@ -1909,6 +1909,38 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         wait(for: [serverFinished], timeout: 1)
     }
 
+    func testUnixSocketTransportRejectsTruncatedResponseAtEOF() throws {
+        let codec = BrokerSessionHostCodec()
+        var response = try codec.encodeResponse(.running(true))
+        XCTAssertEqual(response.popLast(), 0x0A)
+
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: response,
+                maximumResponseFrameSize: response.count + 1
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostProtocolError,
+                .truncatedFrame
+            )
+        }
+    }
+
+    func testUnixSocketTransportPreservesTypedEmptyResponseFailure() throws {
+        XCTAssertThrowsError(
+            try rawUnixSocketTransportResult(
+                response: Data(),
+                maximumResponseFrameSize: 16
+            ).get()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostUnixSocketTransport.TransportError,
+                .emptyResponse
+            )
+        }
+    }
+
     func testUnixSocketTransportAcceptsResponseAtMaximumFrameSize() throws {
         let maximumFrameSize = 16
         var response = Data(repeating: 0x78, count: maximumFrameSize - 1)
