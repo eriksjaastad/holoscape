@@ -231,7 +231,8 @@ final class BugReportService: Sendable {
 
     private static func isMissingPendingDirectory(_ error: Error) -> Bool {
         let nsError = error as NSError
-        return (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError)
+        return (nsError.domain == NSCocoaErrorDomain
+                && (nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError))
             || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT))
     }
 }

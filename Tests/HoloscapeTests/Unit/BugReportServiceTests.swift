@@ -332,10 +332,8 @@ final class BugReportServiceTests: XCTestCase {
     }
 
     func testRetryPendingReportsTreatsOnlyMissingDirectoryAsEmpty() async {
-        let missingService = BugReportService(
-            pendingDirectory: pendingDir,
-            directoryContents: { _ in throw CocoaError(.fileNoSuchFile) }
-        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pendingDir.path))
+        let missingService = BugReportService(pendingDirectory: pendingDir)
         let inaccessibleService = BugReportService(
             pendingDirectory: pendingDir,
             directoryContents: { _ in throw CocoaError(.fileReadNoPermission) }
