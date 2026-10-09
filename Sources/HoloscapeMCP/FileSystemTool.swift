@@ -7,6 +7,9 @@ enum FileSystemToolError: LocalizedError {
     case missingContent
     case notDirectory(String)
     case notText(String)
+    case metadataReadFailed(path: String, message: String)
+    case fileReadFailed(path: String, message: String)
+    case enumerationFailed(path: String, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +23,12 @@ enum FileSystemToolError: LocalizedError {
             return "Not a directory: \(path)"
         case .notText(let path):
             return "File is not valid UTF-8 text: \(path)"
+        case .metadataReadFailed(let path, let message):
+            return "Could not read file metadata at \(path): \(message)"
+        case .fileReadFailed(let path, let message):
+            return "Could not read file at \(path): \(message)"
+        case .enumerationFailed(let path, let message):
+            return "Could not enumerate directory at \(path): \(message)"
         }
     }
 }
@@ -89,11 +98,16 @@ func searchFilesTool(args: [String: Value]) throws -> String {
     let limit = args["limit"]?.intValue ?? 100
     let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     var matches: [String] = []
+    var enumerationFailure: FileSystemToolError?
     let rootURL = URL(fileURLWithPath: root)
     guard let enumerator = FileManager.default.enumerator(
         at: rootURL,
         includingPropertiesForKeys: [.isDirectoryKey],
-        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        options: [.skipsHiddenFiles, .skipsPackageDescendants],
+        errorHandler: { url, error in
+            enumerationFailure = .enumerationFailed(path: url.path, message: error.localizedDescription)
+            return false
+        }
     ) else {
         throw FileSystemToolError.notDirectory(root)
     }
@@ -104,6 +118,9 @@ func searchFilesTool(args: [String: Value]) throws -> String {
             matches.append(url.path)
             if matches.count >= limit { break }
         }
+    }
+    if let enumerationFailure {
+        throw enumerationFailure
     }
     return matches.isEmpty ? "(no matching files)" : matches.joined(separator: "\n")
 }
@@ -117,17 +134,34 @@ func searchContentTool(args: [String: Value]) throws -> String {
     let regex = try NSRegularExpression(pattern: pattern)
     let rootURL = URL(fileURLWithPath: root)
     var matches: [String] = []
+    var enumerationFailure: FileSystemToolError?
     guard let enumerator = FileManager.default.enumerator(
         at: rootURL,
         includingPropertiesForKeys: [.isRegularFileKey],
-        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        options: [.skipsHiddenFiles, .skipsPackageDescendants],
+        errorHandler: { url, error in
+            enumerationFailure = .enumerationFailed(path: url.path, message: error.localizedDescription)
+            return false
+        }
     ) else {
         throw FileSystemToolError.notDirectory(root)
     }
     for case let url as URL in enumerator {
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
-        guard values?.isRegularFile == true,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isRegularFileKey])
+        } catch {
+            throw FileSystemToolError.metadataReadFailed(path: url.path, message: error.localizedDescription)
+        }
+        guard values.isRegularFile == true else { continue }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw FileSystemToolError.fileReadFailed(path: url.path, message: error.localizedDescription)
+        }
+        guard let text = String(data: data, encoding: .utf8) else { continue }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         for (index, lineSubstr) in lines.enumerated() {
             let line = String(lineSubstr)
@@ -137,6 +171,9 @@ func searchContentTool(args: [String: Value]) throws -> String {
                 if matches.count >= limit { return matches.joined(separator: "\n") }
             }
         }
+    }
+    if let enumerationFailure {
+        throw enumerationFailure
     }
     return matches.isEmpty ? "(no content matches)" : matches.joined(separator: "\n")
 }
