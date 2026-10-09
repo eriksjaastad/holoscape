@@ -129,9 +129,23 @@ final class StaleBrokerRelaunchTests: XCTestCase {
 
         /// Run the app's termination path in the same order as
         /// `applicationWillTerminate`.
-        func quit() {
+        func quit(
+            timeout: TimeInterval = 3,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
             manager.saveState()
-            manager.detachAllChannelsForAppTermination()
+            var completed = false
+            manager.detachAllChannelsForAppTermination {
+                completed = true
+            }
+            let deadline = Date().addingTimeInterval(timeout)
+            while !completed, Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            }
+            if !completed {
+                XCTFail("Timed out waiting for app-termination detach", file: file, line: line)
+            }
         }
 
         func cleanup() {
