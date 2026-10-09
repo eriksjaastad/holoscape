@@ -377,7 +377,9 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         while true {
             try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
-            if count == 0 { return buffer }
+            if count == 0 {
+                throw BrokerSessionHostProtocolError.truncatedFrame
+            }
             if count < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw ServerError.readFailed(String(cString: strerror(errno)))
@@ -597,7 +599,10 @@ final class BrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         while true {
             try waitUntilReady(fd: fd, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.read(fd, &chunk, chunk.count)
-            if count == 0 { return buffer }
+            if count == 0 {
+                if buffer.isEmpty { return buffer }
+                throw BrokerSessionHostProtocolError.truncatedFrame
+            }
             if count < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 throw TransportError.readFailed(String(cString: strerror(errno)))
