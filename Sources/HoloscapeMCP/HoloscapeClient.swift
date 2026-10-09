@@ -97,9 +97,21 @@ struct HoloscapeClient: Sendable {
             throw HoloscapeError.invalidResponse
         }
         guard (200..<300).contains(response.statusCode) else {
-            throw HoloscapeError.httpError(statusCode: response.statusCode)
+            throw HoloscapeError.httpError(
+                statusCode: response.statusCode,
+                message: responseErrorMessage(from: data)
+            )
         }
         return data
+    }
+
+    private func responseErrorMessage(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawMessage = object["error"] as? String else {
+            return nil
+        }
+        let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty ? nil : message
     }
 
     private func decodeObject(from data: Data) throws -> [String: Any] {
@@ -113,7 +125,7 @@ struct HoloscapeClient: Sendable {
 enum HoloscapeError: Error, Equatable {
     case invalidResponse
     case connectionFailed
-    case httpError(statusCode: Int)
+    case httpError(statusCode: Int, message: String?)
 }
 
 extension HoloscapeError: LocalizedError {
@@ -123,7 +135,10 @@ extension HoloscapeError: LocalizedError {
             return "Holoscape returned an invalid response"
         case .connectionFailed:
             return "Could not connect to Holoscape"
-        case let .httpError(statusCode):
+        case let .httpError(statusCode, message):
+            if let message {
+                return "Holoscape returned HTTP status \(statusCode): \(message)"
+            }
             return "Holoscape returned HTTP status \(statusCode)"
         }
     }

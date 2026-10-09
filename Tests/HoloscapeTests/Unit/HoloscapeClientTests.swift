@@ -1,4 +1,5 @@
 import XCTest
+import MCP
 @testable import HoloscapeMCP
 
 final class HoloscapeClientTests: XCTestCase {
@@ -80,16 +81,58 @@ final class HoloscapeClientTests: XCTestCase {
                 return Self.response(statusCode: statusCode, body: #"{"error":"not ready"}"#)
             }
 
-            await assertHTTPError(statusCode: statusCode) {
+            await assertHTTPError(statusCode: statusCode, message: "not ready") {
                 try await client.listChannels()
             }
-            await assertHTTPError(statusCode: statusCode) {
+            await assertHTTPError(statusCode: statusCode, message: "not ready") {
                 try await client.createChannel(type: "shell", dir: nil, label: nil, cmd: nil)
             }
-            await assertHTTPError(statusCode: statusCode) {
+            await assertHTTPError(statusCode: statusCode, message: "not ready") {
                 try await client.closeChannel(id: "channel-1")
             }
         }
+    }
+
+    func testHTTPErrorFallsBackToStatusWhenBodyHasNoErrorString() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            Self.response(statusCode: 502, body: "upstream failure")
+        }
+
+        await assertHTTPError(statusCode: 502, message: nil) {
+            try await client.listChannels()
+        }
+    }
+
+    func testHTTPApplicationFailureRemainsActionableAtToolBoundary() async throws {
+        let result = try await executeToolHandler {
+            throw HoloscapeError.httpError(
+                statusCode: 400,
+                message: "Unsupported channel type: robot"
+            )
+        }
+
+        XCTAssertEqual(result.isError, true)
+        XCTAssertEqual(result.content.count, 1)
+        guard case let .text(text, _, _) = result.content[0] else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertEqual(
+            text,
+            "Error: Holoscape returned HTTP status 400: Unsupported channel type: robot"
+        )
+        XCTAssertFalse(text.contains("Is Holoscape running?"))
+    }
+
+    func testConnectionFailureKeepsOutageAdviceAtToolBoundary() async throws {
+        let result = try await executeToolHandler {
+            throw HoloscapeError.connectionFailed
+        }
+
+        XCTAssertEqual(result.isError, true)
+        guard case let .text(text, _, _) = result.content[0] else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertEqual(text, "Error: Could not connect to Holoscape. Is Holoscape running?")
     }
 
     func testEveryRequestUsesBoundedLocalAPITimeout() async throws {
@@ -153,6 +196,7 @@ final class HoloscapeClientTests: XCTestCase {
 
     private func assertHTTPError<T>(
         statusCode: Int,
+        message: String?,
         operation: () async throws -> T,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -161,7 +205,12 @@ final class HoloscapeClientTests: XCTestCase {
             _ = try await operation()
             XCTFail("Expected HTTP error", file: file, line: line)
         } catch {
-            XCTAssertEqual(error as? HoloscapeError, .httpError(statusCode: statusCode), file: file, line: line)
+            XCTAssertEqual(
+                error as? HoloscapeError,
+                .httpError(statusCode: statusCode, message: message),
+                file: file,
+                line: line
+            )
         }
     }
 
