@@ -47,7 +47,9 @@ enum DefaultWorkingDirectory {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return preferredURL
+            // Preserve the configured launch target so an unavailable project
+            // root fails visibly instead of silently opening an unrelated shell.
+            return rootURL.standardizedFileURL
         }
 
         if let exact = entries.first(where: { $0.lastPathComponent == label && isDirectory($0) }) {
