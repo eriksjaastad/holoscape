@@ -331,6 +331,23 @@ final class BugReportServiceTests: XCTestCase {
         XCTAssertNil(summary.failures.first?.fileName)
     }
 
+    func testRetryPendingReportsTreatsOnlyMissingDirectoryAsEmpty() async {
+        let missingService = BugReportService(
+            pendingDirectory: pendingDir,
+            directoryContents: { _ in throw CocoaError(.fileNoSuchFile) }
+        )
+        let inaccessibleService = BugReportService(
+            pendingDirectory: pendingDir,
+            directoryContents: { _ in throw CocoaError(.fileReadNoPermission) }
+        )
+
+        let missingSummary = await missingService.retryPendingReports()
+        let inaccessibleSummary = await inaccessibleService.retryPendingReports()
+
+        XCTAssertEqual(missingSummary, PendingReportRetrySummary())
+        XCTAssertEqual(inaccessibleSummary.failures.map(\.stage), [.enumerate])
+    }
+
     func testRetryPendingReportsReportsMetadataFailureWithoutSubmitting() async throws {
         try networkService.savePendingBugReport(makeBugReport())
         BugReportURLProtocolStub.setHandler { _ in

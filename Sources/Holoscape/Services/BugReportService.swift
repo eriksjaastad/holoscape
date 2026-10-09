@@ -128,8 +128,6 @@ final class BugReportService: Sendable {
     }
 
     func retryPendingReports() async -> PendingReportRetrySummary {
-        guard FileManager.default.fileExists(atPath: pendingDir.path) else { return PendingReportRetrySummary() }
-
         let files: [URL]
         do {
             files = try directoryContents(pendingDir).filter {
@@ -137,6 +135,9 @@ final class BugReportService: Sendable {
                     && ($0.lastPathComponent.hasPrefix("bug-") || $0.lastPathComponent.hasPrefix("crash-"))
             }
         } catch {
+            if Self.isMissingPendingDirectory(error) {
+                return PendingReportRetrySummary()
+            }
             return PendingReportRetrySummary(failures: [
                 .init(fileName: nil, stage: .enumerate, message: error.localizedDescription)
             ])
@@ -226,6 +227,12 @@ final class BugReportService: Sendable {
             }
         }
         return summary
+    }
+
+    private static func isMissingPendingDirectory(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError)
+            || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT))
     }
 }
 
