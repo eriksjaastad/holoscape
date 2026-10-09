@@ -13,6 +13,22 @@ make run
 open build/Holoscape.app
 ```
 
+## Documentation map
+
+- [`PRD.md`](PRD.md) — current product behavior and explicitly future work.
+- [`DECISIONS.md`](DECISIONS.md) — canonical architecture and reliability
+  invariants.
+- [`SETUP.md`](SETUP.md) — first-run, permissions, diagnostics, and recovery.
+- [`docs/scrollback-history-persistence.md`](docs/scrollback-history-persistence.md)
+  — broker scrollback retention, replay, and privacy contract.
+- [`docs/agent-status-adapters.md`](docs/agent-status-adapters.md) — external
+  status-event and process-ownership contract.
+- [`docs/plugin-architecture.md`](docs/plugin-architecture.md) — optional plugin
+  boundary and Project Tracker isolation.
+
+Historical plans and audits under `docs/archive/` and `claude-specs/archive/`
+are evidence only and do not define current behavior.
+
 ## Setup Claude Code Integration
 
 ```bash
@@ -41,13 +57,13 @@ Right-click any sidebar entry for: Close, Rename, Duplicate, Reconnect, Pin/Unpi
 
 | Type | What it does |
 |------|-------------|
-| **Shell** | Local zsh terminal (PTY via SwiftTerm) |
-| **Agent (OAuth)** | Claude Code session with OAuth auth (clean env, no API key leak) |
-| **Agent (API Key)** | Claude Code session with ANTHROPIC_API_KEY injected |
+| **Shell** | Local zsh in a broker-owned PTY, rendered by SwiftTerm |
+| **Agent (OAuth)** | Broker-owned Claude Code session with OAuth auth (clean env, no API key leak) |
+| **Agent (API Key)** | Broker-owned Claude Code session with ANTHROPIC_API_KEY injected |
 | **SSH** | Remote terminal via SSH |
-| **Group Chat** | Multi-agent chat via WebSocket API |
+| **Group Chat** | Multi-agent chat via HTTP polling |
 | **Bridge** | Broadcast channel to all agents |
-| **MCP** | Model Context Protocol server connection |
+| **MCP** | Client channel connected to an external Model Context Protocol server; distinct from the `HoloscapeMCP` control server |
 
 ## Running Tests
 
@@ -83,13 +99,20 @@ App config lives in `~/.holoscape/` (or `$HOLOSCAPE_CONFIG_DIR` if set):
 ~/.holoscape/
   config.json          # Appearance, channels, SSH defaults
   skins/               # Color theme directories (each with skin.json)
-  history-buffer.json  # Terminal scrollback history
+  history-buffer.json  # Command/channel/settings/error history
+  scrollback/          # Bounded broker-session output used for reattach replay
   pending-reports/     # Unsent bug reports
 ```
 
-## API Server
+Local shell and agent processes are owned by the broker host rather than by a
+tab view. They can survive GUI quit/relaunch and reattach through durable broker
+session IDs. SSH restores by reconnecting; it does not claim to preserve the
+remote PTY.
 
-Holoscape runs a local HTTP server (default port 7865) for MCP and hook integration:
+## Local API server
+
+Holoscape runs a loopback-only HTTP server (default port 7865) for trusted local
+MCP and hook integration:
 
 ```
 GET  /channels                    # List all channels
@@ -102,6 +125,12 @@ POST /notify                      # Send notification (type, cwd)
 ```
 
 Use `--api-port <PORT>` to change the port.
+
+`HoloscapeMCP` is a separate newline-delimited stdio MCP server. Its
+channel-control tools use this loopback API; its file, search, process, and
+AppleScript tools execute locally in the MCP server process with the invoking
+user's privileges. It controls HoloScape; it is not an MCP client channel or a
+cloud service.
 
 ## Build
 

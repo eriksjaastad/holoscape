@@ -5,9 +5,10 @@
 > Erik's Macs when audited on 2026-10-01. Its executable and tests were removed
 > rather than hardening an unused, lossy delivery path. This document is kept as
 > historical product research only. Any future messaging UI must use the
-> removable Project Tracker plugin boundary described in
-> `project-tracker-message-board-plan.md`; it must not revive this sidecar as
-> Holoscape core behavior.
+> removable integration boundary defined by `DECISIONS.md` and
+> `docs/plugin-architecture.md`; it must not revive this sidecar as HoloScape core
+> behavior. The retired Project Tracker message-board plan is retained at
+> `docs/archive/project-tracker-message-board-plan.md` as historical evidence.
 
 ## Project Overview
 

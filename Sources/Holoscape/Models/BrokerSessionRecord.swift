@@ -37,7 +37,7 @@ enum BrokerEnvironmentProfile: String, Codable, Equatable, Sendable {
 /// Internal lifecycle states for process-survival work.
 ///
 /// UI-facing `ChannelState` remains intentionally small for now; broker sessions need the richer
-/// vocabulary required by docs/session-survival-substrate.md before tab truth can be mapped cleanly.
+/// vocabulary described by DECISIONS.md before tab truth can be mapped cleanly.
 enum BrokerSessionLifecycle: String, Codable, Equatable, Sendable {
     case creating
     case running

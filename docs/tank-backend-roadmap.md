@@ -67,7 +67,7 @@ Purpose: Holoscape must be a reliable terminal before it becomes a clever agent 
 
 New cards:
 - #7166 — terminal correctness audit against iTerm daily-driver behavior. Audit: `docs/terminal-correctness-iterm-audit.md`.
-- #7167 — choose session survival substrate: native PTY manager vs tmux/dtach/abduco. Decision: Holoscape-owned native session broker; see `docs/session-survival-substrate.md`.
+- #7167 — choose session survival substrate: native PTY manager vs tmux/dtach/abduco. Decision: Holoscape-owned native session broker; see `DECISIONS.md` and the historical record at `docs/archive/session-survival-substrate.md`.
 - #7168 — implement process/session survival across app quit and crash; blocked by #7167
 
 Existing cards folded into this phase:
@@ -87,7 +87,7 @@ Definition of done:
 Purpose: banners are secondary. The tab/sidebar must hold the truth until the user clears it.
 
 New cards:
-- #7169 — define persistent channel state model for running/ready/needs-approval/error/stale
+- #7169 — define persistent channel state model for disconnected/ready/running/needs-approval/error/stale
 - #7170 — make Claude/Codex agent status parity work through adapters; blocked by #7169
 
 Existing cards folded into this phase:

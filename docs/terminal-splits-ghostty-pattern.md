@@ -152,7 +152,7 @@ Ghostty's drag/drop and cross-window moves are useful, but they are not the firs
 - **Do not make splits a Project Tracker/plugin feature.** Splits are core terminal workspace structure. Plugins may contribute commands later, but the pane tree belongs to core.
 - **Do not let closing a pane silently kill a broker-backed long-running session.** Ghostty confirms process-kill on close; Holoscape must be stricter because session survival is a core promise. Closing a pane may need `detach`, `terminate`, or `hide` choices.
 - **Do not use `NSView` identity for persistence.** Broker/session/channel identity must outlive a SwiftUI/AppKit view rebuild.
-- **Do not add split rendering before the channel state model can explain each pane.** Tab/sidebar truth and pane truth must agree about running/ready/needs-approval/error/stale states.
+- **Do not add split rendering before the channel state model can explain each pane.** Tab/sidebar truth and pane truth must agree about disconnected/ready/running/needs-approval/error/stale states.
 - **Do not let skin chrome own split geometry.** Skins can style dividers later; the split tree and ratios must remain functional with skins off.
 
 ## Suggested future implementation cards

@@ -1,19 +1,44 @@
-# DIRECTION.md — Holoscape
+# HoloScape direction
 
 ## Goal
-Native macOS terminal that replaces iTerm/Warp with channel-based management of AI agent conversations, local shells, and remote connections. Channels isolate auth, display role identity, and prevent mixed-up agent messages through clear visual distinction and unread indicators.
 
-## Type: Milestone
-A sprint-based project with defined version phases (V1 shipped, V2 shipped, V3 in progress) building toward full feature completion, then ongoing maintenance and refinement.
+Build a native macOS terminal that can replace iTerm and Warp for daily work:
+rock-solid local session ownership, clear channel identity, durable state, and
+useful visual character without making AI integrations part of the terminal core.
 
-## North Star
-Erik stops mixing up agent windows — every connection is visually distinct, identity is unambiguous, and text input works like a normal text editor.
+## North star
 
-## Current Focus
-- V3 features: desktop notifications for unread channels, window splitting (side-by-side panes), bridge channel (broadcast to all agents), tab pinning, search across scrollback
-- Infrastructure: bug report API endpoint, crash detection on launch
-- Polish: keyboard shortcuts (Cmd+1-9), color theme presets
+Every connection is unambiguous, sessions survive ordinary UI lifecycle changes,
+and terminal input/output remains correct under failure, retry, and relaunch.
 
-## Future
-- V3 completion: Winamp-style skin engine, full layout customization
-- V4: plugin/extension model, scriptable automation, multi-window support
+## Shipped foundation
+
+- Native AppKit terminal with SwiftTerm rendering.
+- Broker-owned local shell and agent PTYs with detach/reattach and bounded
+  disk-backed scrollback.
+- Persistent tab truth and process-scoped agent status.
+- Sidebar/top-tab navigation, pinning, flat split panes, native menus, session
+  launcher, SSH, group chat, and current skin/chrome infrastructure.
+- Loopback HTTP control API and separate `HoloscapeMCP` server executable.
+- Optional, permissioned plugin seam with Project Tracker as a removable
+  first-party plugin.
+
+## Current priorities
+
+1. Terminal/process correctness and crash resilience.
+2. Truthful launch, restore, quit, persistence, and failure behavior.
+3. Main-actor responsiveness and bounded broker transport work.
+4. Daily-driver regression coverage for launch/restore/teardown, persistence
+   failure, process cancellation, and app-hosted UI behavior.
+5. Documentation and tooling that describe only current, executable paths.
+
+## Future product work
+
+- Complete remaining notification, bridge, output-search, and split-layout polish.
+- Continue skin/chrome work without weakening terminal reliability or removing
+  existing visual capabilities by assumption.
+- Consider marketplace distribution, general scripting, or multi-window support
+  only after the core daily-driver gate is stable.
+
+Current architecture decisions live in `DECISIONS.md`; product behavior and
+explicitly future scope live in `PRD.md`.

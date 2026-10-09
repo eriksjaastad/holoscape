@@ -4,6 +4,11 @@ Holoscape should start as a normal terminal before it asks for any macOS trust. 
 
 Open **Holoscape > Setup Diagnostics…** first. It checks config/bootstrap errors, broker-host launch failures, notification authorization, Accessibility trust, Automation guidance, and crash diagnostics readability without forcing broad permission prompts. Actionable permission rows include an **Open System Settings** button for the matching macOS pane.
 
+Architecture and failure ownership are summarized in `DECISIONS.md`. The current
+macOS permission inventory lives in `docs/macos-permission-audit.md`, and broker
+scrollback retention/privacy behavior lives in
+`docs/scrollback-history-persistence.md`.
+
 ## Recommended first run
 
 1. Build/install Holoscape normally.
@@ -22,6 +27,14 @@ Open **Holoscape > Setup Diagnostics…** first. It checks config/bootstrap erro
 | Network volumes | Shell/agent working directories under `/Volumes/...` | macOS prompts when a user-initiated process accesses the volume | Avoid auto-restored tabs parked on network volumes. Reconnect intentionally and grant once if that volume is part of the workflow. |
 
 ## Config and broker diagnostics
+
+These failures have intentionally different outcomes:
+
+| Owner | Required behavior |
+| --- | --- |
+| App config | Preserve malformed input, use documented safe defaults, and report diagnostics |
+| Broker helper/session infrastructure | Fail loudly; never switch to weaker in-process ownership |
+| Optional plugin | Report a plugin-scoped diagnostic without blocking core terminal startup |
 
 ### Config file
 
@@ -48,7 +61,7 @@ Holoscape intentionally does not hide this behind an in-process fallback; missin
 
 ## Prompt audit
 
-The current audit lives at `docs/macos-permission-audit.md`. It found current or likely prompt surfaces for notifications, network volume working directories, Accessibility, Automation/Apple Events, and crash diagnostics. It did not find current production use of `NSOpenPanel`, `NSSavePanel`, security-scoped bookmarks, `NSAppleScript`, `osascript`, camera, microphone, contacts, calendars, location, or screen recording APIs.
+The current audit lives at `docs/macos-permission-audit.md`. It found current or likely prompt surfaces for notifications, network volume working directories, Accessibility, Automation/Apple Events, and crash diagnostics. The HoloScape app does not currently invoke `NSAppleScript` or `osascript`; the separate `HoloscapeMCP` executable exposes an AppleScript tool that runs `/usr/bin/osascript` and can trigger normal Automation prompts. The audit did not find current production use of `NSOpenPanel`, `NSSavePanel`, security-scoped bookmarks, camera, microphone, contacts, calendars, location, or screen recording APIs.
 
 If a future feature adds a new macOS privacy surface, update `docs/macos-permission-audit.md` and this setup guide in the same change.
 

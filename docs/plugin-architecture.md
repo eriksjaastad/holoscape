@@ -21,7 +21,7 @@ Core owns these invariants and must not delegate them to plugins:
 
 1. **Process/session lifecycle** — broker session ids, PTY process ownership, lifecycle recovery, stale/error recovery actions.
 2. **Terminal correctness** — PTY input/output, resize propagation, cwd truth, environment baselines, scrollback replay.
-3. **Persistent channel state** — ready/running/needs-approval/error/stale model and clearing rules.
+3. **Persistent channel state** — disconnected/ready/running/needs-approval/error/stale model and clearing rules.
 4. **Config/bootstrap** — `~/.holoscape` or `$HOLOSCAPE_CONFIG_DIR`, first-window launch, default shell/agent creation.
 5. **Local privacy/storage policy** — core persistence formats and retention limits.
 6. **UI safety** — a plugin can contribute optional surfaces, but core tabs/sidebar/terminal panes remain usable without it.
