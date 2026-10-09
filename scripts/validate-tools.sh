@@ -7,13 +7,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-shell_scripts=()
-while IFS= read -r relative_path; do
-    shell_scripts+=("${relative_path}")
-done < <(git -C "${REPO_ROOT}" ls-files '*.sh')
-for relative_path in "${shell_scripts[@]}"; do
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/holoscape-tool-validation.XXXXXX")"
+trap 'rm -rf "${temp_dir}"' EXIT
+
+tracked_scripts="${temp_dir}/tracked-shell-scripts"
+if ! git -C "${REPO_ROOT}" ls-files -z '*.sh' > "${tracked_scripts}"; then
+    echo "error: could not enumerate tracked shell scripts" >&2
+    exit 1
+fi
+
+shell_script_count=0
+while IFS= read -r -d '' relative_path; do
     bash -n "${REPO_ROOT}/${relative_path}"
-done
+    shell_script_count=$((shell_script_count + 1))
+done < "${tracked_scripts}"
+if [[ "${shell_script_count}" -eq 0 ]]; then
+    echo "error: tracked shell-script enumeration returned no files" >&2
+    exit 1
+fi
 
 package_tools=(
     "tools/package_synthwave.sh"
@@ -30,8 +41,7 @@ for relative_path in "${package_tools[@]}"; do
 done
 
 missing_skin="HoloscapeValidationMissingSkin"
-missing_output="$(mktemp "${TMPDIR:-/tmp}/holoscape-missing-skin.XXXXXX")"
-trap 'rm -f "${missing_output}"' EXIT
+missing_output="${temp_dir}/missing-skin-output"
 if "${REPO_ROOT}/tools/package_skin.sh" "${missing_skin}" --check >"${missing_output}" 2>&1; then
     echo "error: missing skin package validation unexpectedly passed" >&2
     exit 1
@@ -43,4 +53,4 @@ if ! grep -Fq "directory-layout skin not found" "${missing_output}"; then
 fi
 
 printf 'validated %d shell scripts and %d skin package contracts\n' \
-    "${#shell_scripts[@]}" "${#package_tools[@]}"
+    "${shell_script_count}" "${#package_tools[@]}"

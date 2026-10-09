@@ -37,6 +37,7 @@ test-property: check-submodules
 # Validate scripts and generated skin archives without modifying them
 validate-tools:
 	@./scripts/validate-tools.sh
+	@./scripts/test-package-tools.sh
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle

@@ -56,6 +56,11 @@ if [[ "${mode}" == "--check" ]]; then
 
     source_list="${temp_dir}/source-files"
     archive_list="${temp_dir}/archive-files"
+    archive_entry="${temp_dir}/archive-entry"
+    if ! unzip -tqq "${output}"; then
+        echo "error: ${skin_name}.wamp failed archive integrity validation" >&2
+        exit 1
+    fi
     (
         cd "${skin_dir}"
         find . -type f -print | while IFS= read -r relative_path; do
@@ -80,7 +85,11 @@ if [[ "${mode}" == "--check" ]]; then
     fi
 
     while IFS= read -r relative_path; do
-        if ! cmp -s "${skin_dir}/${relative_path}" <(unzip -p "${output}" "${relative_path}"); then
+        if ! unzip -p "${output}" "${relative_path}" > "${archive_entry}"; then
+            echo "error: could not extract ${relative_path} from ${skin_name}.wamp" >&2
+            exit 1
+        fi
+        if ! cmp -s "${skin_dir}/${relative_path}" "${archive_entry}"; then
             echo "error: ${skin_name}.wamp has stale bytes for ${relative_path}" >&2
             exit 1
         fi
