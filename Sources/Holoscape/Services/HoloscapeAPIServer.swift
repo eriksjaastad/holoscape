@@ -209,7 +209,15 @@ class HoloscapeAPIServer {
             return .error("Invalid JSON body")
         }
 
-        let type = json["type"] as? String ?? "shell"
+        let type: String
+        if let suppliedType = json["type"] {
+            guard let suppliedType = suppliedType as? String else {
+                return .error("Channel type must be a string", status: 400)
+            }
+            type = suppliedType
+        } else {
+            type = "shell"
+        }
         let dir = json["dir"] as? String
         let label = json["label"] as? String
         let cmd = json["cmd"] as? String

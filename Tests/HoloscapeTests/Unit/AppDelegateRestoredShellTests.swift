@@ -171,6 +171,20 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(response.statusText, "Created")
         XCTAssertEqual(manager.count, 1)
         XCTAssertEqual(coordinator.startCallCount, 1)
+
+        let defaultedResponse = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: [
+                "dir": tempDirectory.path
+            ])
+        ))
+
+        XCTAssertEqual(defaultedResponse.status, 201)
+        XCTAssertEqual(defaultedResponse.statusText, "Created")
+        XCTAssertEqual(manager.count, 2)
+        XCTAssertEqual(coordinator.startCallCount, 2)
     }
 
     func testCreateChannelAPIRejectsUnsupportedChannelType() async throws {
@@ -201,6 +215,17 @@ final class AppDelegateRestoredShellTests: XCTestCase {
 
         XCTAssertEqual(response.status, 400)
         XCTAssertEqual(response.statusText, "Bad Request")
+        XCTAssertEqual(manager.count, 0)
+
+        let malformedResponse = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: ["type": 42])
+        ))
+
+        XCTAssertEqual(malformedResponse.status, 400)
+        XCTAssertEqual(malformedResponse.statusText, "Bad Request")
         XCTAssertEqual(manager.count, 0)
     }
 
