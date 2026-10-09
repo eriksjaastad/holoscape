@@ -8,6 +8,11 @@ func executeToolHandler(
         return try await operation()
     } catch is CancellationError {
         throw CancellationError()
+    } catch let error as FileSystemToolError {
+        return CallTool.Result(
+            content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)],
+            isError: true
+        )
     } catch let error as ProcessToolError {
         return CallTool.Result(
             content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)],
