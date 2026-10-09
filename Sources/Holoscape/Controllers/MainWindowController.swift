@@ -1939,8 +1939,15 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     // MARK: - URL Scheme
 
-    func openChannel(type: String, directory: String?, label: String?, command: String? = nil) {
-        guard channelMutationEnabled else { return }
+    enum ChannelOpenResult: Equatable {
+        case created(UUID)
+        case mutationsDisabled
+        case unsupportedType(String)
+    }
+
+    @discardableResult
+    func openChannel(type: String, directory: String?, label: String?, command: String? = nil) -> ChannelOpenResult {
+        guard channelMutationEnabled else { return .mutationsDisabled }
         let explicitDir = directory.flatMap { path -> URL? in
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
@@ -1978,6 +1985,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 }
             }
             switchToChannel(channel.channelId)
+            return .created(channel.channelId)
 
         case "agent":
             let dir = DefaultWorkingDirectory.launchURL(fromOptionalPath: directory)
@@ -2000,9 +2008,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             channel.delegate = self
             channel.activate()
             switchToChannel(channel.channelId)
+            return .created(channel.channelId)
 
         default:
             NSLog("Holoscape openChannel: unknown type '\(type)'")
+            return .unsupportedType(type)
         }
     }
 
