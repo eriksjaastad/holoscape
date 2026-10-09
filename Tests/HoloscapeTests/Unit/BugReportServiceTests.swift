@@ -276,6 +276,131 @@ final class BugReportServiceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(reportFiles.count, 3, "Each save should create a separate file")
     }
 
+    func testRetryPendingReportsReturnsAfterAcceptedReportIsRemoved() async throws {
+        BugReportURLProtocolStub.setHandler { _ in
+            Self.response(statusCode: 200, body: #"{"success":true,"message":"received"}"#)
+        }
+        try networkService.savePendingBugReport(makeBugReport())
+
+        let summary = await networkService.retryPendingReports()
+
+        XCTAssertEqual(summary.discoveredCount, 1)
+        XCTAssertEqual(summary.retriedCount, 1)
+        XCTAssertEqual(summary.expiredCount, 0)
+        XCTAssertTrue(summary.failures.isEmpty)
+        let remaining = try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testRetryPendingReportsRetainsAndReportsMalformedSavedReport() async throws {
+        try FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
+        let file = pendingDir.appendingPathComponent("bug-malformed.json")
+        try Data("not-json".utf8).write(to: file)
+
+        let summary = await networkService.retryPendingReports()
+
+        XCTAssertEqual(summary.failures.map(\.stage), [.decode])
+        XCTAssertEqual(summary.failures.first?.fileName, file.lastPathComponent)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testRetryPendingReportsRetainsAndReportsServerRejection() async throws {
+        BugReportURLProtocolStub.setHandler { _ in
+            Self.response(statusCode: 200, body: #"{"success":false,"message":"duplicate"}"#)
+        }
+        try networkService.savePendingCrashReport(makeCrashReport())
+
+        let summary = await networkService.retryPendingReports()
+
+        XCTAssertEqual(summary.failures.map(\.stage), [.rejected])
+        XCTAssertEqual(summary.failures.first?.message, "duplicate")
+        let remaining = try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(remaining.count, 1)
+    }
+
+    func testRetryPendingReportsReportsEnumerationFailure() async throws {
+        let directoryPathOccupiedByFile = pendingDir.appendingPathComponent("not-a-directory")
+        try FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
+        try Data("file".utf8).write(to: directoryPathOccupiedByFile)
+        let service = BugReportService(pendingDirectory: directoryPathOccupiedByFile)
+
+        let summary = await service.retryPendingReports()
+
+        XCTAssertEqual(summary.discoveredCount, 0)
+        XCTAssertEqual(summary.failures.map(\.stage), [.enumerate])
+        XCTAssertNil(summary.failures.first?.fileName)
+    }
+
+    func testRetryPendingReportsReportsMetadataFailureWithoutSubmitting() async throws {
+        try networkService.savePendingBugReport(makeBugReport())
+        BugReportURLProtocolStub.setHandler { _ in
+            XCTFail("Metadata failure must retain the report without submitting it")
+            return Self.response(statusCode: 200, body: #"{"success":true}"#)
+        }
+        let service = BugReportService(
+            endpoint: URL(string: "https://reports.test/reports")!,
+            session: session,
+            pendingDirectory: pendingDir,
+            creationDate: { _ in throw CocoaError(.fileReadNoPermission) }
+        )
+
+        let summary = await service.retryPendingReports()
+
+        XCTAssertEqual(summary.failures.map(\.stage), [.metadata])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil).count, 1)
+    }
+
+    func testRetryPendingReportsReportsReadFailureWithoutSubmitting() async throws {
+        try networkService.savePendingBugReport(makeBugReport())
+        BugReportURLProtocolStub.setHandler { _ in
+            XCTFail("Read failure must retain the report without submitting it")
+            return Self.response(statusCode: 200, body: #"{"success":true}"#)
+        }
+        let service = BugReportService(
+            endpoint: URL(string: "https://reports.test/reports")!,
+            session: session,
+            pendingDirectory: pendingDir,
+            creationDate: { _ in nil },
+            dataReader: { _ in throw CocoaError(.fileReadCorruptFile) }
+        )
+
+        let summary = await service.retryPendingReports()
+
+        XCTAssertEqual(summary.failures.map(\.stage), [.read])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil).count, 1)
+    }
+
+    func testRetryPendingReportsReportsTransportFailureAndRetainsReport() async throws {
+        try networkService.savePendingCrashReport(makeCrashReport())
+        BugReportURLProtocolStub.setHandler { _ in throw URLError(.notConnectedToInternet) }
+
+        let summary = await networkService.retryPendingReports()
+
+        XCTAssertEqual(summary.failures.map(\.stage), [.submit])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil).count, 1)
+    }
+
+    func testRetryPendingReportsReportsRemovalFailureAfterAcceptance() async throws {
+        try networkService.savePendingBugReport(makeBugReport())
+        BugReportURLProtocolStub.setHandler { _ in
+            Self.response(statusCode: 200, body: #"{"success":true,"message":"received"}"#)
+        }
+        let service = BugReportService(
+            endpoint: URL(string: "https://reports.test/reports")!,
+            session: session,
+            pendingDirectory: pendingDir,
+            fileRemover: { _ in throw CocoaError(.fileWriteNoPermission) }
+        )
+
+        let summary = await service.retryPendingReports()
+
+        XCTAssertEqual(summary.retriedCount, 0)
+        XCTAssertEqual(summary.failures.map(\.stage), [.remove])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil).count, 1)
+        XCTAssertTrue(summary.logMessage.contains("discovered=1, retried=0, expired=0, failures=1"))
+        XCTAssertTrue(summary.logMessage.contains("[remove]"))
+    }
+
     func testAgingDeletesOldReports() throws {
         let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
@@ -291,7 +416,12 @@ final class BugReportServiceTests: XCTestCase {
         try FileManager.default.setAttributes([.creationDate: oldDate], ofItemAtPath: bugFile.path)
 
         // Run retry (which should age out the old file)
-        service.retryPendingReports()
+        let completion = expectation(description: "retry completes")
+        Task {
+            _ = await service.retryPendingReports()
+            completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
 
         // Poll for file deletion instead of fixed sleep
         let startTime = Date()

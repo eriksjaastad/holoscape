@@ -5,21 +5,70 @@ struct BugReportResponse: Codable {
     let message: String?
 }
 
+struct PendingReportRetrySummary: Equatable, Sendable {
+    struct Failure: Equatable, Sendable {
+        enum Stage: String, Equatable, Sendable {
+            case enumerate
+            case metadata
+            case read
+            case decode
+            case submit
+            case rejected
+            case remove
+        }
+
+        let fileName: String?
+        let stage: Stage
+        let message: String
+    }
+
+    var discoveredCount = 0
+    var retriedCount = 0
+    var expiredCount = 0
+    var failures: [Failure] = []
+
+    var logMessage: String {
+        let base = "Pending report retry: discovered=\(discoveredCount), retried=\(retriedCount), expired=\(expiredCount), failures=\(failures.count)"
+        guard !failures.isEmpty else { return base }
+        let details = failures.map { failure in
+            let target = failure.fileName ?? "pending-reports directory"
+            return "\(target) [\(failure.stage.rawValue)]: \(failure.message)"
+        }.joined(separator: "; ")
+        return "\(base). \(details)"
+    }
+}
+
 final class BugReportService: Sendable {
     let silAPIEndpoint: URL
     private let pendingDir: URL
     private let session: URLSession
+    private let directoryContents: @Sendable (URL) throws -> [URL]
+    private let creationDate: @Sendable (URL) throws -> Date?
+    private let dataReader: @Sendable (URL) throws -> Data
+    private let fileRemover: @Sendable (URL) throws -> Void
 
     init(
         endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!,
         session: URLSession = .shared,
-        pendingDirectory: URL? = nil
+        pendingDirectory: URL? = nil,
+        directoryContents: @escaping @Sendable (URL) throws -> [URL] = {
+            try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)
+        },
+        creationDate: @escaping @Sendable (URL) throws -> Date? = {
+            try FileManager.default.attributesOfItem(atPath: $0.path)[.creationDate] as? Date
+        },
+        dataReader: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+        fileRemover: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
     ) {
         self.silAPIEndpoint = endpoint
         self.session = session
         self.pendingDir = pendingDirectory
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".holoscape/pending-reports")
+        self.directoryContents = directoryContents
+        self.creationDate = creationDate
+        self.dataReader = dataReader
+        self.fileRemover = fileRemover
     }
 
     func submitBugReport(_ report: BugReport) async throws -> BugReportResponse {
@@ -78,51 +127,105 @@ final class BugReportService: Sendable {
         try data.write(to: fileURL, options: .atomic)
     }
 
-    func retryPendingReports() {
-        guard FileManager.default.fileExists(atPath: pendingDir.path) else { return }
-        guard let files = try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil) else { return }
+    func retryPendingReports() async -> PendingReportRetrySummary {
+        guard FileManager.default.fileExists(atPath: pendingDir.path) else { return PendingReportRetrySummary() }
+
+        let files: [URL]
+        do {
+            files = try directoryContents(pendingDir).filter {
+                $0.pathExtension == "json"
+                    && ($0.lastPathComponent.hasPrefix("bug-") || $0.lastPathComponent.hasPrefix("crash-"))
+            }
+        } catch {
+            return PendingReportRetrySummary(failures: [
+                .init(fileName: nil, stage: .enumerate, message: error.localizedDescription)
+            ])
+        }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 3600)
+        var summary = PendingReportRetrySummary(discoveredCount: files.count)
 
-        for file in files where file.pathExtension == "json" {
-            // Delete pending reports older than 30 days
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
-               let created = attrs[.creationDate] as? Date,
-               created < thirtyDaysAgo {
-                try? FileManager.default.removeItem(at: file)
+        for file in files {
+            let created: Date?
+            do {
+                created = try creationDate(file)
+            } catch {
+                summary.failures.append(.init(
+                    fileName: file.lastPathComponent,
+                    stage: .metadata,
+                    message: error.localizedDescription
+                ))
                 continue
             }
 
-            guard let data = try? Data(contentsOf: file) else { continue }
+            if let created, created < thirtyDaysAgo {
+                do {
+                    try fileRemover(file)
+                    summary.expiredCount += 1
+                } catch {
+                    summary.failures.append(.init(
+                        fileName: file.lastPathComponent,
+                        stage: .remove,
+                        message: error.localizedDescription
+                    ))
+                }
+                continue
+            }
 
-            if file.lastPathComponent.hasPrefix("bug-") {
-                guard let report = try? decoder.decode(BugReport.self, from: data) else { continue }
-                Task {
-                    do {
-                        let response = try await self.submitBugReport(report)
-                        if response.success {
-                            try? FileManager.default.removeItem(at: file)
-                        }
-                    } catch {
-                        print("[BugReportService] Retry failed for \(file.lastPathComponent): \(error.localizedDescription)")
-                    }
+            let data: Data
+            do {
+                data = try dataReader(file)
+            } catch {
+                summary.failures.append(.init(
+                    fileName: file.lastPathComponent,
+                    stage: .read,
+                    message: error.localizedDescription
+                ))
+                continue
+            }
+
+            do {
+                let response: BugReportResponse
+                if file.lastPathComponent.hasPrefix("bug-") {
+                    response = try await submitBugReport(decoder.decode(BugReport.self, from: data))
+                } else {
+                    response = try await submitCrashReport(decoder.decode(CrashReport.self, from: data))
                 }
-            } else if file.lastPathComponent.hasPrefix("crash-") {
-                guard let report = try? decoder.decode(CrashReport.self, from: data) else { continue }
-                Task {
-                    do {
-                        let response = try await self.submitCrashReport(report)
-                        if response.success {
-                            try? FileManager.default.removeItem(at: file)
-                        }
-                    } catch {
-                        print("[BugReportService] Retry failed for \(file.lastPathComponent): \(error.localizedDescription)")
-                    }
+                guard response.success else {
+                    summary.failures.append(.init(
+                        fileName: file.lastPathComponent,
+                        stage: .rejected,
+                        message: response.message ?? "Report server rejected the pending report"
+                    ))
+                    continue
                 }
+                do {
+                    try fileRemover(file)
+                    summary.retriedCount += 1
+                } catch {
+                    summary.failures.append(.init(
+                        fileName: file.lastPathComponent,
+                        stage: .remove,
+                        message: error.localizedDescription
+                    ))
+                }
+            } catch is DecodingError {
+                summary.failures.append(.init(
+                    fileName: file.lastPathComponent,
+                    stage: .decode,
+                    message: "Saved report is not valid report JSON"
+                ))
+            } catch {
+                summary.failures.append(.init(
+                    fileName: file.lastPathComponent,
+                    stage: .submit,
+                    message: error.localizedDescription
+                ))
             }
         }
+        return summary
     }
 }
 
