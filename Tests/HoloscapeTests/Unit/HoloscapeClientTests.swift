@@ -135,6 +135,20 @@ final class HoloscapeClientTests: XCTestCase {
         XCTAssertEqual(text, "Error: Could not connect to Holoscape. Is Holoscape running?")
     }
 
+    func testUnclassifiedFailureDoesNotReceiveOutageAdvice() async throws {
+        let failure = CocoaError(.fileReadNoSuchFile)
+        let result = try await executeToolHandler {
+            throw failure
+        }
+
+        XCTAssertEqual(result.isError, true)
+        guard case let .text(text, _, _) = result.content[0] else {
+            return XCTFail("Expected text error content")
+        }
+        XCTAssertEqual(text, "Error: \(failure.localizedDescription)")
+        XCTAssertFalse(text.contains("Is Holoscape running?"))
+    }
+
     func testEveryRequestUsesBoundedLocalAPITimeout() async throws {
         HoloscapeClientURLProtocolStub.setHandler { request in
             XCTAssertGreaterThan(request.timeoutInterval, 0)

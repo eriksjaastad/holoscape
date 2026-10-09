@@ -26,7 +26,7 @@ func executeToolHandler(
         )
     } catch {
         return CallTool.Result(
-            content: [.text(text: "Error: \(error.localizedDescription). Is Holoscape running?", annotations: nil, _meta: nil)],
+            content: [.text(text: "Error: \(error.localizedDescription)", annotations: nil, _meta: nil)],
             isError: true
         )
     }
