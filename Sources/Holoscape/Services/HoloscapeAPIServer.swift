@@ -214,8 +214,14 @@ class HoloscapeAPIServer {
         let label = json["label"] as? String
         let cmd = json["cmd"] as? String
 
-        wc.openChannel(type: type, directory: dir, label: label, command: cmd)
-        return .json(["status": "created"], status: 201)
+        switch wc.openChannel(type: type, directory: dir, label: label, command: cmd) {
+        case .created:
+            return .json(["status": "created"], status: 201)
+        case .mutationsDisabled:
+            return .error("Channel creation is temporarily unavailable", status: 503)
+        case .unsupportedType(let unsupportedType):
+            return .error("Unsupported channel type: \(unsupportedType)", status: 400)
+        }
     }
 
     private func handleCloseChannel(id: String) -> HTTPResponse {

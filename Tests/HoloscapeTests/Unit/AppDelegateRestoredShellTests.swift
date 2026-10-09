@@ -88,6 +88,122 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(manager.count, 0, "A request accepted before stop must not mutate the teardown snapshot")
     }
 
+    func testCreateChannelAPIRejectsMutationWhileLifecycleDisablesChannelChanges() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIMutationGateTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = HoloscapeAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.start()
+        defer { apiServer.stop() }
+        windowController.setChannelMutationEnabled(false)
+
+        let response = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: ["type": "shell"])
+        ))
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertEqual(response.statusText, "Service Unavailable")
+        XCTAssertEqual(manager.count, 0)
+    }
+
+    func testCreateChannelAPIAcceptsSupportedChannelType() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPISupportedTypeTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.nextStartRecord = BrokerSessionRecord(
+            id: BrokerSessionID(rawValue: "api-created-shell"),
+            channelType: .shell,
+            label: "Shell",
+            command: "/bin/zsh",
+            arguments: [],
+            workingDirectory: tempDirectory.path,
+            environmentProfile: .shell,
+            lifecycle: .running,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 10),
+            lastAttachedChannelID: nil
+        )
+        let manager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = HoloscapeAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.start()
+        defer { apiServer.stop() }
+
+        let response = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: [
+                "type": "shell",
+                "dir": tempDirectory.path
+            ])
+        ))
+
+        XCTAssertEqual(response.status, 201)
+        XCTAssertEqual(response.statusText, "Created")
+        XCTAssertEqual(manager.count, 1)
+        XCTAssertEqual(coordinator.startCallCount, 1)
+    }
+
+    func testCreateChannelAPIRejectsUnsupportedChannelType() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateAPIUnsupportedTypeTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let manager = ChannelManager(configService: ConfigService(configDir: tempDirectory))
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: ConfigService(configDir: tempDirectory)
+        )
+        let apiServer = HoloscapeAPIServer(
+            channelManager: manager,
+            windowController: windowController,
+            port: 0
+        )
+        apiServer.start()
+        defer { apiServer.stop() }
+
+        let response = await apiServer.route(HTTPRequest(
+            method: "POST",
+            path: "/channels",
+            queryParams: [:],
+            body: try JSONSerialization.data(withJSONObject: ["type": "unsupported"])
+        ))
+
+        XCTAssertEqual(response.status, 400)
+        XCTAssertEqual(response.statusText, "Bad Request")
+        XCTAssertEqual(manager.count, 0)
+    }
+
     func testTerminationDeadlineRestartsSameAPIServerWithMuteStateIntact() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateAPIRestartTests-")
