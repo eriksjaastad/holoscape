@@ -25,7 +25,7 @@ final class WampBundleLoader {
     /// Errors raised by `unzipIfNeeded`. Specific cases let callers
     /// surface different banner text and distinct log lines per
     /// Requirement 13.5.
-    enum LoadError: Error, Equatable {
+    enum LoadError: LocalizedError, Equatable {
         /// Foundation could not resolve the user's caches directory.
         /// Directory-layout skins remain usable, but `.wamp` bundles
         /// cannot be extracted without an explicit cache authority.
@@ -44,6 +44,25 @@ final class WampBundleLoader {
         case bundleTooLarge(bytes: Int)
         /// Bundle extracted cleanly but has no `skin.json` at the root.
         case missingManifest
+
+        var errorDescription: String? {
+            switch self {
+            case .cacheDirectoryUnavailable:
+                return "WAMP cache directory is unavailable"
+            case .ioFailure(let detail):
+                return detail
+            case .notAZip(let name):
+                return "'\(name)' is not a valid ZIP archive"
+            case .zipEntryEscapesSandbox(let path):
+                return "WAMP entry escapes the cache sandbox: '\(path)'"
+            case .assetTooLarge(let path, let bytes):
+                return "WAMP asset '\(path)' exceeds the size cap (\(bytes) bytes)"
+            case .bundleTooLarge(let bytes):
+                return "WAMP bundle exceeds the size cap (\(bytes) bytes)"
+            case .missingManifest:
+                return "WAMP bundle is missing skin.json"
+            }
+        }
     }
 
     /// 50 MB per-asset and per-bundle. Defaults; tests can override
@@ -70,6 +89,11 @@ final class WampBundleLoader {
     /// Instance cap on the running total of all assets in a bundle.
     let bundleSizeCap: Int
 
+    /// Removes one cache entry during LRU eviction. Injectable so deletion
+    /// failures can be exercised deterministically without depending on
+    /// filesystem permission behavior.
+    private let removeCacheEntry: (URL) throws -> Void
+
     /// The SkinEngine holds the sandbox helpers
     /// (`validateAssetPath`, `assertPathResolvesInside`). Weak to avoid
     /// a retain cycle — the engine owns the loader.
@@ -78,11 +102,15 @@ final class WampBundleLoader {
     init(
         cacheRoot: URL?,
         assetSizeCap: Int = WampBundleLoader.defaultAssetSizeCap,
-        bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap
+        bundleSizeCap: Int = WampBundleLoader.defaultBundleSizeCap,
+        removeCacheEntry: @escaping (URL) throws -> Void = { url in
+            try FileManager.default.removeItem(at: url)
+        }
     ) {
         self.cacheRoot = cacheRoot
         self.assetSizeCap = assetSizeCap
         self.bundleSizeCap = bundleSizeCap
+        self.removeCacheEntry = removeCacheEntry
     }
 
     /// Return the unzipped directory URL for `bundleURL`, unzipping on
@@ -217,7 +245,13 @@ final class WampBundleLoader {
 
         for entry in evictable {
             guard total > effectiveCap else { break }
-            try? FileManager.default.removeItem(at: entry.url)
+            do {
+                try removeCacheEntry(entry.url)
+            } catch {
+                throw LoadError.ioFailure(
+                    "could not evict cache entry '\(entry.name)': \(error.localizedDescription)"
+                )
+            }
             total -= entry.bytes
         }
     }
