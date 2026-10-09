@@ -17,7 +17,7 @@ import UniformTypeIdentifiers
 ///
 /// `.wamp` forms of no-anim fixtures aren't staged here because
 /// `WampBundleLoader` requires a full ZIP ceremony; the two in-tree
-/// skins that have both forms (HoloscapeSynthwave + HoloscapeClassic)
+/// skins that have both forms (HoloscapeSynthwave + HoloscapeClassic-live)
 /// cover the directory ↔ wamp parity contract in the original BC
 /// tests. This file focuses on v4-specific decoding + bake + validate.
 @MainActor

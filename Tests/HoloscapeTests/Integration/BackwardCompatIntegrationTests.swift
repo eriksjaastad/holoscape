@@ -14,7 +14,7 @@ import XCTest
 /// The test uses the bundled resources directly rather than staging
 /// fixtures — this way a skin-content change that accidentally
 /// breaks parity between directory and `.wamp` forms fails this
-/// test immediately. Running `Tools/package_synthwave.sh` is what
+/// test immediately. Running `tools/package_synthwave.sh` is what
 /// keeps the `.wamp` synchronized; the test doesn't re-package
 /// on the fly.
 @MainActor
@@ -42,7 +42,7 @@ final class BackwardCompatIntegrationTests: XCTestCase {
         // `.wamp` for display; loadComposite(named:) matches by resolved
         // file. We work around the name-collision rule by setting up a
         // second engine that sees ONLY the .wamp bundle.
-        let wampForm = try loadWampOnly(named: "HoloscapeSynthwave", in: engine)
+        let wampForm = try loadWampOnly(named: "HoloscapeSynthwave")
 
         // Surfaces parity — same SurfaceKey set.
         let dirKeys = Set(directoryForm.surfaces?.keys ?? [:].keys)
@@ -82,12 +82,22 @@ final class BackwardCompatIntegrationTests: XCTestCase {
         )
     }
 
+    func testClassicLiveWampLoadsCurrentBakedChrome() throws {
+        let wampForm = try loadWampOnly(named: "HoloscapeClassic-live")
+
+        XCTAssertEqual(wampForm.chrome?.mode, .baked)
+        XCTAssertEqual(wampForm.chrome?.width, 1000)
+        XCTAssertEqual(wampForm.chrome?.height, 700)
+        XCTAssertEqual(wampForm.chrome?.animations?.count, 4)
+        XCTAssertNotNil(wampForm.baseImage)
+    }
+
     // MARK: - Helpers
 
-    /// Load the HoloscapeSynthwave `.wamp` via a fresh engine that has
+    /// Load a bundled `.wamp` via a fresh engine that has
     /// an isolated bundle dir containing only the bundle file — so
     /// `resolveSkinDir` picks the `.wamp` (no dir-layout to prefer).
-    private func loadWampOnly(named name: String, in engine: SkinEngine) throws -> LoadedSkin {
+    private func loadWampOnly(named name: String) throws -> LoadedSkin {
         // Stage a temp bundle root that holds just the `.wamp` copy.
         // HOLOSCAPE_BUNDLE_SKINS_DIR env override lets `SkinEngine`
         // find the staging dir without touching the real bundle.
@@ -100,13 +110,13 @@ final class BackwardCompatIntegrationTests: XCTestCase {
         // staging dir. `Bundle.module.url` resolves SwiftPM-generated
         // bundle paths.
         guard let moduleURL = Bundle.module.url(
-            forResource: "HoloscapeSynthwave",
+            forResource: name,
             withExtension: "wamp",
             subdirectory: "Skins"
         ) else {
-            throw XCTSkip("HoloscapeSynthwave.wamp not in bundle — run Tools/package_synthwave.sh")
+            throw XCTSkip("\(name).wamp not in bundle — run its tools/package_*.sh command")
         }
-        let dest = tempRoot.appendingPathComponent("HoloscapeSynthwave.wamp")
+        let dest = tempRoot.appendingPathComponent("\(name).wamp")
         try FileManager.default.copyItem(at: moduleURL, to: dest)
 
         // Isolated engine scoped to the staging dir.
