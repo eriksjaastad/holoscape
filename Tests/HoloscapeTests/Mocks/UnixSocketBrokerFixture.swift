@@ -53,7 +53,7 @@ final class UnixSocketBrokerFixture {
                 Thread.sleep(forTimeInterval: serverStartDelay)
             }
             do {
-                try server.run(maxConnections: 128, stopSignal: signal)
+                try server.run(stopSignal: signal)
             } catch {
                 failure.record(error)
             }

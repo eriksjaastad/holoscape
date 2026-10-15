@@ -1061,9 +1061,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             attachedChannelID: nil
         )
         let configService = ConfigService(configDir: fixture.directory.appendingPathComponent("config"))
+        let recoveryCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 901))
         let manager = ChannelManager(
             configService: configService,
-            brokerBackedShellCoordinator: fixture.coordinator
+            brokerBackedShellCoordinator: recoveryCoordinator
         )
         let appDelegate = AppDelegate()
         appDelegate.channelManagerRef = manager
