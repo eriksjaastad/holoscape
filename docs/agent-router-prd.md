@@ -71,7 +71,7 @@ All infrastructure already exists. This is wiring, not invention.
 | `holoscape_send_input` (MCP tool) | Injects text into a channel's PTY as if typed by the user | None |
 | `holoscape_read_output` (MCP tool) | Captures terminal output from a channel | None |
 | `holoscape_list_channels` (MCP tool) | Returns channel IDs, labels, and states | **Verify:** does it return channel state (running/ready)? If not, need a small addition. |
-| Holoscape HTTP API (port 7865) | Backend for all MCP tools | None |
+| Holoscape HTTP API (port 7865) | Backend for the six channel-control MCP tools; file/search/process/AppleScript tools run directly in the `HoloscapeMCP` process | None |
 | Channel state tracking | Per-channel running/ready state (confirmed by card #5879) | None — daemon reads it, doesn't write it |
 | `check_chat.sh` hook | Fires on PreToolUse:Bash to surface new messages | None — coexists with the daemon |
 

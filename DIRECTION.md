@@ -18,7 +18,7 @@ and terminal input/output remains correct under failure, retry, and relaunch.
   disk-backed scrollback.
 - Persistent tab truth and process-scoped agent status.
 - Sidebar/top-tab navigation, pinning, flat split panes, native menus, session
-  launcher, SSH, group chat, and current skin/chrome infrastructure.
+  launcher, SSH, group chat, bridge broadcast, and current skin/chrome infrastructure.
 - Loopback HTTP control API and separate `HoloscapeMCP` server executable.
 - Optional, permissioned plugin seam with Project Tracker as a removable
   first-party plugin.
@@ -34,7 +34,7 @@ and terminal input/output remains correct under failure, retry, and relaunch.
 
 ## Future product work
 
-- Complete remaining notification, bridge, output-search, and split-layout polish.
+- Complete remaining notification, output-search, and split-layout polish.
 - Continue skin/chrome work without weakening terminal reliability or removing
   existing visual capabilities by assumption.
 - Consider marketplace distribution, general scripting, or multi-window support

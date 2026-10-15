@@ -38,7 +38,7 @@ Holoscape should not invent its own second message database, inbox model, or cro
 
 ### Holoscape core owns
 
-- The removable plugin contribution seam documented in `plugin-architecture.md`
+- The removable plugin contribution seam documented in [plugin-architecture.md](../plugin-architecture.md)
 - Core terminal operation when the Project Tracker plugin is absent, disabled, or unavailable
 - Generic presentation primitives only when they are useful without Project Tracker
 
@@ -116,7 +116,7 @@ Current recommendation:
 
 ### Phase 2: First-party Project Tracker plugin surface
 
-Plugin work, using only the contribution points in `plugin-architecture.md`:
+Plugin work, using only the contribution points in [plugin-architecture.md](../plugin-architecture.md):
 
 - contribute an optional `Message Board` channel entry that disappears when the plugin is disabled
 - render PT messages in a single tab

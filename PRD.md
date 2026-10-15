@@ -128,10 +128,15 @@ The local API is a first-class integration surface for automation, tests, and Cl
 Claude Code
   -> MCP stdio
   -> HoloscapeMCP binary
-  -> HTTP localhost:7865
-  -> Holoscape API server inside the app
-  -> ChannelManager / MainWindowController / channel views
+     |-> channel-control tools -> HTTP localhost:7865
+     |                          -> Holoscape API server inside the app
+     |                          -> ChannelManager / MainWindowController / channel views
+     `-> file/search/process/AppleScript tools -> local user environment
 ```
+
+The six channel-control tools call the loopback app API. The seven local
+capability tools run inside `HoloscapeMCP` with the invoking user's privileges;
+they do not pass through the app API.
 
 **HTTP implementation:**
 - Default port is `7865`; tests and development may override it with `--api-port <port>`.
@@ -148,13 +153,22 @@ Claude Code
 - `GET /channels/{id}/output?lines=N` — read the last N output lines.
 - `POST /notify` — ingest agent hook notifications and map them into tab state.
 
-**HoloscapeMCP tools:**
+**HoloscapeMCP channel-control tools (through the app API):**
 - `holoscape_list_channels`
 - `holoscape_open_channel`
 - `holoscape_switch_channel`
 - `holoscape_close_channel`
 - `holoscape_send_input`
 - `holoscape_read_output`
+
+**HoloscapeMCP local capability tools (inside the MCP process):**
+- `holoscape_read_file`
+- `holoscape_write_file`
+- `holoscape_list_directory`
+- `holoscape_search_files`
+- `holoscape_search_content`
+- `holoscape_run_process`
+- `holoscape_run_applescript`
 
 **Notification hook events:** `permission_prompt`, `idle_prompt`, `auth_success`, and `elicitation_dialog`.
 
@@ -487,7 +501,7 @@ View two channels simultaneously in a split terminal area.
 - The active pane ID is tracked separately from the sidebar selection.
 - Layout export types exist, but production save/restore is not wired yet.
 
-### Bridge Channel (Broadcast to All Agents)
+### Bridge Channel (Broadcast to All Agents) — shipped
 
 A special channel type that sends messages to ALL open agent channels simultaneously.
 
@@ -586,12 +600,11 @@ Fully customizable window chrome and UI elements via skin packages.
 - Local `/notify` hook for agent events that maps permission/idle/auth/dialog notifications into tab state and optional desktop notifications
 - `holoscape://` URL-scheme channel opener for explicit shell/agent launch requests
 - Removable plugin seam with closed manifests, permissions, namespaced storage, command routing, and optional first-party Project Tracker plugin
-- Split panes and tab pinning are implemented surfaces, not future-only roadmap items
+- Bridge broadcast, split panes, and tab pinning are implemented surfaces, not future-only roadmap items
 
 **V3 — Remaining product surface:**
 - Complete notification preferences and click-through focus behavior
 - Window splitting polish and persistence follow-up, if the current implementation lacks any intended UX behavior
-- Bridge channel (broadcast a message to all open agent channels simultaneously)
 - Search across channel output (Cmd+F to search scrollback in active channel)
 - Skin/chrome polish on top of the existing shaped-window, Metal/shader, MercuryDeck, and reactive-uniform substrate
 
