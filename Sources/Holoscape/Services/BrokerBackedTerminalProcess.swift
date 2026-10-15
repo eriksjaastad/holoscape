@@ -1589,13 +1589,13 @@ private final class BrokerOutputCoordinator: @unchecked Sendable {
     }
 }
 
-struct ScrollbackReplayResult: Sendable {
+fileprivate struct ScrollbackReplayResult: Sendable {
     let replay: ScrollbackReplay?
     let generation: UInt64?
     let error: String?
 }
 
-struct ReattachResult: Sendable {
+fileprivate struct ReattachResult: Sendable {
     let record: Result<BrokerSessionRecord, Error>
     let replay: ScrollbackReplayResult?
 }
@@ -1627,7 +1627,7 @@ final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
         }
     }
 
-    func reattach(
+    fileprivate func reattach(
         _ id: BrokerSessionID,
         attachedChannelID: UUID,
         shouldReplayScrollback: Bool,
