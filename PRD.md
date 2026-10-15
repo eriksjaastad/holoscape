@@ -485,13 +485,15 @@ When Holoscape is not the frontmost app and a channel receives eligible content 
 View two channels simultaneously in a split terminal area.
 
 **How it works:**
-- **Cmd+D** splits the terminal area horizontally (left/right)
-- **Cmd+Shift+D** splits vertically (top/bottom)
+- On the first split, **Cmd+D** chooses a left/right layout and
+  **Cmd+Shift+D** chooses a top/bottom layout
+- Third and fourth panes append to that same flat split orientation; later
+  split commands do not create a nested grid or change orientation
 - Each split pane shows a different channel's content view
 - The active pane has a subtle border highlight
 - Click a pane to make it active — input goes to the active pane's channel
 - **Cmd+Shift+W** closes the current split pane (returns to single view)
-- Maximum 4 panes (2x2 grid)
+- Maximum 4 panes in one flat row or column
 - Split state does not yet persist across restarts
 
 **Implementation:**
@@ -546,7 +548,7 @@ Search the scrollback buffer of the active channel.
 - For PTY channels (SwiftTerm): search the terminal buffer text
 - For NSTextView channels (MCP, group chat): search the text storage
 
-### Winamp-Style Skin Engine
+### Winamp-Style Skin Engine — shipped runtime; authoring polish remaining
 
 Fully customizable window chrome and UI elements via skin packages.
 
@@ -558,7 +560,9 @@ Fully customizable window chrome and UI elements via skin packages.
 - Default skin is the built-in Dark theme
 - Community skins can be shared as zip files
 
-**This is a large feature — defer detailed design until V3 implementation.**
+The shipped package/runtime contract is documented in `docs/amplify-format.md`
+and `docs/chrome-format.md`. Future work may polish public authoring and
+distribution without treating the existing engine as unimplemented.
 
 ## MVP Scope
 

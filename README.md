@@ -71,7 +71,7 @@ Right-click any sidebar entry for: Close, Rename, Duplicate, Reconnect, Pin/Unpi
 # Unit + property tests
 make test
 
-# Full UI test suite (~5 hrs; current shard inventory is defined by the runner)
+# Full UI test suite (current inventory and grouping are defined by the runner)
 make test-ui
 
 # Quick smoke test (~5 min)
@@ -171,7 +171,7 @@ Sources/
 Tests/
   HoloscapeTests/      # Unit tests
   HoloscapePropertyTests/ # Property-based tests (SwiftCheck)
-  HoloscapeUITests/    # UI tests (350 tests, 30 classes)
+  HoloscapeUITests/    # Sharded app-hosted UI test suite
 
 scripts/
   test-ui-shards.sh    # Sharded test runner
