@@ -87,8 +87,7 @@ service endpoint (`https://api.synthinsightlabs.com/reports`):
 - Close channels (with confirmation if process is running)
 - Switch between channels via tab bar
 - Auto-number duplicate role channels (AR1, AR2)
-- Unread indicator (dot) on tabs with new content since last viewed
-- Unread channels bump to the left of the tab bar
+- Unread indicator (dot) on tabs with new content since last viewed; tabs keep their position
 - Channel state persists across app restarts (which channels were open, their type and role)
 
 ### Terminal Emulation
@@ -229,8 +228,7 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 ### Tab Bar
 - Each tab: role label + unread dot
 - Format: "Shell", "Architect", "FM-tracker", "CEO", "Group", "AR2"
-- Unread tabs show a dot indicator
-- Unread tabs bump to left of tab bar
+- Unread tabs show a dot indicator and stay in place
 - Scrollable when many tabs open
 - Click to switch, Cmd+W to close
 
@@ -326,7 +324,7 @@ Stored in `~/.holoscape/config.json` alongside appearance and channel state:
 - Each tab shows: role label, unread dot, connection status
 - Sidebar is scrollable when many tabs are open
 - Active tab is visually distinct
-- Unread tabs auto-move to the top of the sidebar and are highlighted
+- Unread tabs are highlighted and stay in place
 
 ### Collapsed: Top tab bar
 
@@ -443,12 +441,12 @@ When Holoscape is not the frontmost app and a channel receives eligible content 
 
 **How it works:**
 - Uses `UNUserNotificationCenter` for native macOS notifications
-- Notification shows: channel label, first line of new content (truncated to 100 chars)
+- Notification shows the channel label
 - Clicking the notification brings Holoscape to front and switches to that channel
 - Notifications are only sent when Holoscape is NOT the active app (no notifications while focused)
 - Notification grouping: one notification per channel, updated on subsequent messages (not spammed)
-- Settings should eventually enable/disable notifications per channel type and event type
-- Global toggle: Settings > Notifications > Enable Desktop Notifications
+- Per-channel-type switches live in the notifications config (`perChannelType`); per-event-type switches are not built
+- Global toggle: Settings > Enable Notifications
 - Notification permission is lazy: do not request authorization at app launch just to prepare this feature
 
 **Config:**
@@ -488,7 +486,7 @@ View two channels simultaneously in a split terminal area.
 - The active pane ID is tracked separately from the sidebar selection.
 - Layout export types exist, but production save/restore is not wired yet.
 
-### Bridge Channel (Broadcast to All Agents)
+### Bridge Channel (Broadcast to All Agents) — shipped
 
 A special channel type that sends messages to ALL open agent channels simultaneously.
 
@@ -508,13 +506,12 @@ A special channel type that sends messages to ALL open agent channels simultaneo
 
 ### Tab Pinning — shipped
 
-Pin important tabs so they don't move when other channels get unread indicators.
+Pin important tabs to keep them first.
 
 **How it works:**
 - Right-click a tab → "Pin" (added to context menu)
 - Pinned tabs stay at the top of the sidebar / left of the tab bar
 - Pinned tabs show a small pin icon next to the label
-- Unread reordering only affects unpinned tabs
 - Pinned tabs are ordered by pin time (first pinned = first position)
 - "Unpin" option in right-click menu to remove the pin
 - Pin state persists in channel metadata
@@ -533,19 +530,21 @@ Search the scrollback buffer of the active channel.
 - For PTY channels (SwiftTerm): search the terminal buffer text
 - For NSTextView channels (MCP, group chat): search the text storage
 
-### Winamp-Style Skin Engine
+### Winamp-Style Skin Engine — substrate shipped; public authoring contract remaining
 
-Fully customizable window chrome and UI elements via skin packages.
+Fully customizable window chrome and UI elements via skin packages. The engine,
+loading from `~/.holoscape/skins/<skin-name>/`, and the Settings skin picker ship;
+`docs/chrome-format.md` and `docs/amplify-format.md` define the current formats.
 
 **How it works:**
 - A skin is a directory containing: `skin.json` (layout + color definitions) and image assets (PNG)
 - `skin.json` defines: window background, title bar, sidebar background, tab active/inactive colors, button images, border styles, font overrides
 - Skins are loaded from `~/.holoscape/skins/<skin-name>/`
-- Settings panel gets a skin picker dropdown (similar to theme picker but more comprehensive)
+- Settings panel has a skin picker
 - Default skin is the built-in Dark theme
 - Community skins can be shared as zip files
 
-**This is a large feature — defer detailed design until V3 implementation.**
+Remaining: decide which parts become a public skin authoring contract (Open Question 12).
 
 ## MVP Scope
 
@@ -590,9 +589,8 @@ Fully customizable window chrome and UI elements via skin packages.
 - Split panes and tab pinning are implemented surfaces, not future-only roadmap items
 
 **V3 — Remaining product surface:**
-- Complete notification preferences and click-through focus behavior
+- Notification body content (the notification currently shows only the channel label)
 - Window splitting polish and persistence follow-up, if the current implementation lacks any intended UX behavior
-- Bridge channel (broadcast a message to all open agent channels simultaneously)
 - Search across channel output (Cmd+F to search scrollback in active channel)
 - Skin/chrome polish on top of the existing shaped-window, Metal/shader, MercuryDeck, and reactive-uniform substrate
 
