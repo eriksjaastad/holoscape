@@ -37,6 +37,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var availableOutputReadCount = 0
         var listedSessionIDs: [BrokerSessionID] = []
         var onList: (() throws -> Void)?
+        var onIsRunning: ((BrokerSessionID) throws -> Void)?
 
         func listSessions() throws -> [BrokerSessionID] {
             try onList?()
@@ -102,6 +103,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         func isRunning(id: BrokerSessionID) throws -> Bool {
             statusCalledOnMainActor = Thread.isMainThread
+            try onIsRunning?(id)
             if let statusError = statusErrorForID?(id) { throw statusError }
             if let statusError { throw statusError }
             return running
@@ -1479,28 +1481,41 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
         wait(for: [createEntered], timeout: 1)
 
+        allowCreate.signal()
+        wait(for: [startCompleted], timeout: 1)
+        XCTAssertNil(results.error)
+        XCTAssertEqual(results.record?.lifecycle, .running)
+
         allowList.signal()
         wait(for: [discoveryCompleted], timeout: 1)
         XCTAssertFalse(runtime.events.contains { event in
             if case .markErrored = event { return true }
             return false
         })
-
-        allowCreate.signal()
-        wait(for: [startCompleted], timeout: 1)
-        XCTAssertNil(results.error)
-        XCTAssertEqual(results.record?.lifecycle, .running)
+        let durableRecords = try registry.load()
+        let durable = try XCTUnwrap(durableRecords.first)
+        XCTAssertEqual(durableRecords.count, 1)
+        XCTAssertEqual(durable.id, results.record?.id)
+        XCTAssertEqual(durable.lifecycle, .running)
     }
 
     func testStartWithLostCreateResponsePreservesDurableCreatingIdentity() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
         let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 601) })
+        let request = BrokerSessionLaunchRequest(
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/uncertain-create",
+            environmentProfile: .agentOAuth,
+            agentStatusOwnerToken: "requested-but-unconfirmed",
+            initialSize: TerminalGridSize(columns: 80, rows: 24)
+        )
 
         XCTAssertThrowsError(
             try coordinator.start(
-                launchRequest(workingDirectory: "/tmp/uncertain-create"),
-                channelType: .shell,
+                request,
+                channelType: .agentDirect,
                 label: "uncertain",
                 attachedChannelID: nil
             )
@@ -1510,6 +1525,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             }
             XCTAssertEqual(reason, "response lost")
             XCTAssertEqual(record.lifecycle, .creating)
+            XCTAssertNil(record.agentStatusOwnerToken)
             XCTAssertEqual(try? coordinator.loadAll(), [record])
             XCTAssertTrue(runtime.events.isEmpty)
         }
@@ -1618,6 +1634,72 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recovered.id, durableCreating.id)
         XCTAssertEqual(recovered.lifecycle, .detached)
         XCTAssertEqual(runtime.events, [])
+    }
+
+    func testDiscoveryKeepsInventoryOwnedCreatingIdentityPendingUntilFinalStatusIsKnown() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 604.25) })
+        var creatingID: BrokerSessionID?
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/final-status-pending"),
+                channelType: .shell,
+                label: "final-status-pending",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error else {
+                return XCTFail("Expected ambiguous launch, got \(error)")
+            }
+            creatingID = record.id
+        }
+
+        let id = try XCTUnwrap(creatingID)
+        runtime.createError = nil
+        runtime.listedSessionIDs = [id]
+        runtime.running = false
+        runtime.observedTerminationStatus = nil
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .creating)
+        XCTAssertFalse(runtime.events.contains(.markErrored(id)))
+    }
+
+    func testDiscoveryReclassifiesCreatingIdentityAfterLostPromotionCAS() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        var coordinator: BrokerSessionCoordinator!
+        coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 604.375) })
+        var creatingID: BrokerSessionID?
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/promotion-cas-race"),
+                channelType: .shell,
+                label: "promotion-cas-race",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error else {
+                return XCTFail("Expected ambiguous launch, got \(error)")
+            }
+            creatingID = record.id
+        }
+
+        let id = try XCTUnwrap(creatingID)
+        runtime.createError = nil
+        runtime.listedSessionIDs = [id]
+        runtime.running = true
+        runtime.onIsRunning = { observedID in
+            runtime.onIsRunning = nil
+            XCTAssertEqual(observedID, id)
+            _ = try coordinator.markErrored(id)
+        }
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .errored)
     }
 
     func testDiscoveryRetiresCleanupOnlyCreatingIdentityInsteadOfPromotingIt() throws {

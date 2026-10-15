@@ -211,7 +211,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         for orphanID in runtimeSessionIDs
             where !recordedIDs.contains(orphanID) && !launchClaims.contains(orphanID) {
             do {
-                try retireUntrackedSession(orphanID)
+                try retireOrphanIfStillUntracked(orphanID)
             } catch let error where isCompletedRetirementFailure(error) {
                 // The runtime owner is gone. Discovery has no interactive caller
                 // to receive this warning, so continue restoring unrelated tabs.
@@ -332,7 +332,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
-            agentStatusOwnerToken: request.agentStatusOwnerToken,
+            // Requested ownership is not durable truth until the broker confirms
+            // that the child received the token. An ambiguous create response
+            // must remain tokenless rather than rejecting the child's events.
+            agentStatusOwnerToken: nil,
             lifecycle: .creating,
             exitCode: nil,
             createdAt: timestamp,
@@ -490,57 +493,107 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         _ record: BrokerSessionRecord,
         runtimeSessionIDs: Set<BrokerSessionID>
     ) throws -> BrokerSessionRecord? {
-        do {
-            let runtimeOwnsSession = try runtime.isRunning(id: record.id)
-            guard runtimeOwnsSession else {
-                if let exitCode = try runtime.terminationStatus(id: record.id) {
-                    return try exit(record.id, exitCode: exitCode)
-                }
-                _ = try updateMetadataOnly(record.id) { current in
-                    current.withLifecycle(
+        var current = record
+        while true {
+            switch current.lifecycle {
+            case .creating:
+                break
+            case .running, .detached, .stale:
+                return current
+            case .exited:
+                return runtimeSessionIDs.contains(current.id) ? current : nil
+            case .reattaching, .errored, .exiting, .terminating:
+                return nil
+            }
+
+            do {
+                let runtimeOwnsSession = try runtime.isRunning(id: current.id)
+                guard runtimeOwnsSession else {
+                    if let exitCode = try runtime.terminationStatus(id: current.id) {
+                        return try exit(current.id, exitCode: exitCode)
+                    }
+                    // The broker still inventories this generation, so nil final
+                    // status means its last output/status is still settling. Keep
+                    // the create intent pending instead of manufacturing stale
+                    // truth that neither recovery nor orphan cleanup can finish.
+                    guard !runtimeSessionIDs.contains(current.id) else { return nil }
+                    let stale = current.withLifecycle(
                         .stale,
                         exitCode: nil,
                         updatedAt: now(),
                         lastAttachedChannelID: nil
                     )
+                    let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                        stale,
+                        ifUnchangedFrom: current
+                    )
+                    if wasReplaced {
+                        if let durabilityWarning {
+                            throw CoordinatorError.registryTransitionCommitted(
+                                stale,
+                                durabilityFailure: durabilityWarning
+                            )
+                        }
+                        return nil
+                    }
+                    current = try self.record(for: current.id)
+                    continue
                 }
-                return nil
-            }
-        } catch let error where isMissingRuntimeSessionError(error, id: record.id) {
-            if runtimeSessionIDs.contains(record.id) {
-                try retireUntrackedSession(record.id)
-            }
-            _ = try updateMetadataOnly(record.id) { current in
-                current.withLifecycle(
+            } catch let error where isMissingRuntimeSessionError(error, id: current.id) {
+                if runtimeSessionIDs.contains(current.id) {
+                    try retireUntrackedSession(current.id)
+                }
+                let stale = current.withLifecycle(
                     .stale,
                     exitCode: nil,
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    stale,
+                    ifUnchangedFrom: current
+                )
+                if wasReplaced {
+                    if let durabilityWarning {
+                        throw CoordinatorError.registryTransitionCommitted(
+                            stale,
+                            durabilityFailure: durabilityWarning
+                        )
+                    }
+                    return nil
+                }
+                current = try self.record(for: current.id)
+                continue
             }
-            return nil
-        }
 
-        let detached = record.withLifecycle(
-            .detached,
-            exitCode: nil,
-            updatedAt: now(),
-            lastAttachedChannelID: nil
-        )
-        let (wasReplaced, durabilityWarning) = try replaceRegistry(
-            detached,
-            ifUnchangedFrom: record
-        )
-        guard wasReplaced else {
-            return try self.record(for: record.id)
-        }
-        if let durabilityWarning {
-            throw CoordinatorError.registryTransitionCommitted(
-                detached,
-                durabilityFailure: durabilityWarning
+            let detached = current.withLifecycle(
+                .detached,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
             )
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                detached,
+                ifUnchangedFrom: current
+            )
+            if wasReplaced {
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        detached,
+                        durabilityFailure: durabilityWarning
+                    )
+                }
+                return detached
+            }
+            current = try self.record(for: current.id)
         }
-        return detached
+    }
+
+    private func retireOrphanIfStillUntracked(_ id: BrokerSessionID) throws {
+        guard !launchClaims.contains(id) else { return }
+        let currentRecordedIDs = Set(try registry.load().map(\.id))
+        guard !currentRecordedIDs.contains(id), !launchClaims.contains(id) else { return }
+        try retireUntrackedSession(id)
     }
 
     func retireUntrackedSession(_ id: BrokerSessionID) throws {
