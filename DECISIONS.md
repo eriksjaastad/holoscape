@@ -45,6 +45,25 @@ The broker registry uses the richer lifecycle vocabulary `creating`, `running`,
 `stale`. These broker-owned states are distinct from the six UI-facing tab
 states below.
 
+### Broker lifecycle state and ownership
+
+Verified against `BrokerSessionCoordinator`: the coordinator is the durable
+registry writer and transition authority; `NativePTYBrokerSessionRuntime` owns
+the live PTY/process and reports runtime truth. The UI never owns a broker
+lifecycle transition.
+
+| State | Writer / owner | Meaning |
+| --- | --- | --- |
+| `creating` | Coordinator / broker runtime | Launch is being reconciled; no durable running claim is complete yet. |
+| `running` | Broker runtime; coordinator records it | A live PTY/process is owned by the broker and may be attached. |
+| `detached` | Coordinator; broker runtime remains owner | No tab is attached; the live PTY/process remains reattachable. |
+| `reattaching` | Coordinator lease; broker runtime remains owner | One restore/attach operation has claimed the session identity. |
+| `exiting` | Coordinator intent; broker runtime drains/finalizes | Exit was requested; final output/status still have authority to settle. |
+| `exited` | Broker runtime reports; coordinator persists | The process has ended and its exit metadata is durable. |
+| `terminating` | Coordinator intent; broker runtime cleanup owner | Retirement/termination is in progress and must not be replaced concurrently. |
+| `errored` | Coordinator persists authoritative failure | The session operation failed; the failure remains visible rather than becoming an empty success. |
+| `stale` | Coordinator persists loss of runtime ownership | The broker can no longer verify the session; recovery must not silently spawn a replacement. |
+
 Source contracts:
 
 - `Sources/Holoscape/Services/NativePTYBrokerSessionRuntime.swift`
