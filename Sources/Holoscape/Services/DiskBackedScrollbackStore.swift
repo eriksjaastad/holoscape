@@ -76,8 +76,14 @@ struct DiskBackedScrollbackStore: Sendable {
     }
 
     func readTail(for id: BrokerSessionID, maxBytes: Int) throws -> Data {
+        guard maxRetainedBytes > 0 else {
+            // Retention is disabled, so a tail persisted under an earlier
+            // positive cap must not stay on disk; append alone never revisits it.
+            try remove(for: id)
+            return Data()
+        }
         let url = try fileURL(for: id)
-        guard maxBytes > 0, maxRetainedBytes > 0 else {
+        guard maxBytes > 0 else {
             try validateExistingLeaf(at: url)
             return Data()
         }

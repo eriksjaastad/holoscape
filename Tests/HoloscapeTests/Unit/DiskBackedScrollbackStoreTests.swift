@@ -713,7 +713,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
         )
     }
 
-    func testReadTailZeroRetentionOnExistingPersistedFileReturnsEmpty() throws {
+    func testReadTailZeroRetentionClearsExistingPersistedFile() throws {
         let directory = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let id = BrokerSessionID(rawValue: "disk-backed-scrollback-zero-retention")
@@ -724,6 +724,7 @@ final class DiskBackedScrollbackStoreTests: XCTestCase {
 
         let store = DiskBackedScrollbackStore(directory: directory, maxRetainedBytes: 0)
         XCTAssertEqual(try store.readTail(for: id, maxBytes: 64), Data())
+        XCTAssertEqual(try Data(contentsOf: url), Data())
     }
 
     func testReadTailNegativeRetentionOnExistingPersistedFileReturnsEmpty() throws {
