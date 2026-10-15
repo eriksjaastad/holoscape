@@ -205,13 +205,12 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 - Unread indicator when new messages arrive while viewing another channel
 
 ### Bug Reporting
-- Cmd+B opens one-line input overlay
-- User types description, Enter to submit
-- Auto-attaches: channel name, channel type, last 20 lines of output, timestamp, macOS version
-- POSTs to Synth Insight Labs API endpoint
-- On launch: scan ~/Library/Logs/DiagnosticReports/ for Holoscape crash logs since last launch
-- If crash found: prompt "Holoscape crashed. File a report?" with one-click submit
-- Crash report includes full crash trace + last channel state before crash
+- Cmd+B opens a review dialog with the active channel, system/app context, recent output, and an optional screenshot
+- The user enters a description and explicitly submits or dismisses the report
+- The submitted payload includes active channel identity, up to 100 recent output lines, all-channel state, appearance/split context, uptime, history metadata, and the optional screenshot
+- Reports go to the fixed HoloScape report-service endpoint; failed submissions are saved locally for the bounded retry policy described above
+- On launch, scan `~/Library/Logs/DiagnosticReports/` for a recent HoloScape crash
+- A detected crash opens a Submit Report/Dismiss prompt; the crash payload includes the trace, saved channel state, app/system context, and recovered history when available
 
 ### Appearance
 - Background color picker
