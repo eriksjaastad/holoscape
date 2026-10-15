@@ -5355,6 +5355,53 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTFail("Timed out waiting for broker output containing \(expected). Saw: \(output)", file: file, line: line)
         return output
     }
+
+    func testLifecycleClassifiesRuntimeFailuresForRecoveryGuidance() {
+        let id = BrokerSessionID(rawValue: "classified")
+        let cases: [(Error, TerminalStartFailureKind)] = [
+            (BrokerSessionCoordinator.CoordinatorError.missingSession(id), .brokerSessionStale),
+            (BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, "down"), .brokerHostUnavailable),
+            (BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(id, expected: 0, observed: 9), .failed),
+            (BrokerSessionHostClientRuntime.ClientError.transportFailed("socket"), .brokerHostUnavailable),
+            (BrokerSessionHostClientRuntime.ClientError.hostFailure(code: "output-monitoring-failed", message: ""), .brokerSessionStale),
+            (BrokerSessionHostClientRuntime.ClientError.hostFailure(code: "retirement-completed-with-input-close-failure", message: ""), .brokerSessionStale),
+            (RuntimeError.outputReadFailed, .failed),
+        ]
+        for (error, expected) in cases {
+            XCTAssertEqual(BrokerTerminalLifecycle.classifyStartFailure(error), expected, "\(error)")
+        }
+    }
+
+    func testLaunchFailureNamesTheGenerationAnAmbiguousOutcomeLeavesBehind() {
+        let id = BrokerSessionID(rawValue: "ambiguous-launch")
+        let record = BrokerSessionRecord(
+            id: id,
+            channelType: .shell,
+            label: nil,
+            command: "/bin/zsh",
+            arguments: [],
+            workingDirectory: "/tmp",
+            environmentProfile: .shell,
+            agentStatusOwnerToken: nil,
+            lifecycle: .running,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            lastAttachedChannelID: nil
+        )
+
+        guard case .outcomeUnknown(let unknown) = BrokerLaunchFailure(
+            BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, reason: "timed out")
+        ) else { return XCTFail("launchOutcomeUnknown must keep the pre-persisted generation") }
+        XCTAssertEqual(unknown.id, id)
+        guard case .untracked(let untrackedID) = BrokerLaunchFailure(
+            BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, registryFailure: "r", rollbackFailure: "x")
+        ) else { return XCTFail("untrackedSession must name the generation to retire") }
+        XCTAssertEqual(untrackedID, id)
+        guard case .unattributed = BrokerLaunchFailure(RuntimeError.outputReadFailed) else {
+            return XCTFail("an unrelated failure leaves no generation behind")
+        }
+    }
 }
 
 private extension NSLock {
