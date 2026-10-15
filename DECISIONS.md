@@ -93,6 +93,8 @@ Source contracts:
 - `Sources/Holoscape/Services/DiskBackedScrollbackStore.swift`
 
 A real spawned-process lock regression is required for changes to this boundary.
+Existing ones: `BrokerSessionRegistryTests` (`testSpawnedProcesses...`) and
+`DiskBackedScrollbackStoreTests` (`...ProcessSharedSessionLock`).
 
 ## Scrollback and history
 
@@ -197,8 +199,9 @@ types. They must not become startup dependencies; new service-specific workflow
 integration belongs behind the plugin seam rather than adding another core
 dependency.
 
-Current detail: `docs/plugin-architecture.md` and the manifest, manager, storage,
-command-router, and Project Tracker plugin tests.
+Current detail: `docs/plugin-architecture.md`. Tests: `PluginManifestTests`, and
+`SetupDiagnosticsServiceTests` for a plugin configuration failure that leaves core
+available. Plugin storage, manager, and command routing have no direct tests yet.
 
 ## Setup and permissions
 
