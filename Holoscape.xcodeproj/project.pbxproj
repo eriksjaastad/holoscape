@@ -90,6 +90,7 @@
 		388E3941FDA76A28F5B01951 /* libCglslang.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 212041D5FDF1C8CE4CA3DEA1 /* libCglslang.a */; };
 		3A5C93CAF916DA366DE096E8 /* HTTPAPIUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3B3880B494EAFD92D64E4C /* HTTPAPIUITests.swift */; };
 		3B0FA67C9BF673590AEBBF56 /* BrokerSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AF76C944B6A52FDD2AB69BF /* BrokerSessionCoordinator.swift */; };
+		2BD5EFEF998F48B5B0C4EF40 /* BrokerOutputTransactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D99A626AC41C4812A5ADF185 /* BrokerOutputTransactions.swift */; };
 		3B2A61675499374C035B6F6E /* SessionLauncherUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ECE732B91599E01FA9102F1 /* SessionLauncherUITests.swift */; };
 		3B863E76EF8A0EEEFB975122 /* libCspirv_cross.a in Frameworks */ = {isa = PBXBuildFile; fileRef = CC3023414AFAD0FE44E24D76 /* libCspirv_cross.a */; };
 		3BBD60F2668A4FDD27A853AA /* BrokerSessionHostUnixSocketServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B31D33931DF982C6B374758 /* BrokerSessionHostUnixSocketServer.swift */; };
@@ -479,6 +480,7 @@
 		0A748D8403291538C0375ABE /* SkinDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinDefinition.swift; sourceTree = "<group>"; };
 		0A85BA3A27AD3E0680FC6466 /* MCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPClient.swift; sourceTree = "<group>"; };
 		0AF76C944B6A52FDD2AB69BF /* BrokerSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrokerSessionCoordinator.swift; sourceTree = "<group>"; };
+		D99A626AC41C4812A5ADF185 /* BrokerOutputTransactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrokerOutputTransactions.swift; sourceTree = "<group>"; };
 		0B30E8C3E7987A98F0593775 /* spirv.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = spirv.h; sourceTree = "<group>"; };
 		0B3DFC48059193EE4F3CDB31 /* SSHChannelUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHChannelUITests.swift; sourceTree = "<group>"; };
 		0CBFE3B0A7D08A75014E2F91 /* SkinWarningBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinWarningBanner.swift; sourceTree = "<group>"; };
@@ -1152,6 +1154,7 @@
 				18DF2D8257A1CB528A129D6E /* ANSIStripper.swift */,
 				4A60210985827D4BF2CC1EFF /* AuthEnvironmentBuilder.swift */,
 				89E9E856CFF663719167DF68 /* BrokerBackedTerminalProcess.swift */,
+				D99A626AC41C4812A5ADF185 /* BrokerOutputTransactions.swift */,
 				0AF76C944B6A52FDD2AB69BF /* BrokerSessionCoordinator.swift */,
 				DD33920819640D787C3A7362 /* BrokerSessionHost.swift */,
 				490A9ABC2E1342F62E3096A9 /* BrokerSessionHostClientRuntime.swift */,
@@ -1877,6 +1880,7 @@
 				5B5BDC73BDD15EB0FEB195A5 /* AuthEnvironmentBuilder.swift in Sources */,
 				1475134FD3CC9E1E82CD2176 /* BridgeChannelController.swift in Sources */,
 				7266D983342A277F98EE2B1E /* BrokerBackedTerminalProcess.swift in Sources */,
+				2BD5EFEF998F48B5B0C4EF40 /* BrokerOutputTransactions.swift in Sources */,
 				3B0FA67C9BF673590AEBBF56 /* BrokerSessionCoordinator.swift in Sources */,
 				8090AAC9A7DD4D179BA138C1 /* BrokerSessionHost.swift in Sources */,
 				80DA971C8CB1AF58BEF3CC56 /* BrokerSessionHostClientRuntime.swift in Sources */,
