@@ -54,7 +54,7 @@ lifecycle transition.
 
 | State | Writer / owner | Meaning |
 | --- | --- | --- |
-| `creating` | Reserved lifecycle vocabulary; no normal production writer | The enum supports an in-progress creation state, but the current coordinator does not persist it; `start` persists `running` after runtime creation succeeds. |
+| `creating` | Coordinator intent; broker runtime may be admitting the launch | The complete launch identity is durable before process creation. A lost or timed-out create response keeps this state so retry or relaunch can reconcile the same broker generation instead of spawning a duplicate. |
 | `running` | Broker runtime; coordinator records it | A live PTY/process is owned by the broker and may be attached. |
 | `detached` | Coordinator; broker runtime remains owner | The durable attachment claim was cleared before the advisory runtime detach call; the live PTY/process remains reattachable, but this state is not a literal runtime attachment observation. |
 | `reattaching` | Coordinator lease; broker runtime remains owner | One restore/attach operation has claimed the session identity. |

@@ -398,6 +398,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 brokerSessionID = record.id
                 presentedBrokerSessionID = record.id
                 agentStatusOwnerToken = record.agentStatusOwnerToken
+            } else if case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error {
+                // Creation may have committed at the broker. Preserve the
+                // pre-persisted identity so retry reattaches this generation
+                // instead of creating a second process.
+                brokerSessionID = record.id
+                agentStatusOwnerToken = record.agentStatusOwnerToken
             } else if case let BrokerSessionCoordinator.CoordinatorError.untrackedSession(id, _, _) = error {
                 untrackedBrokerSessionID = id
                 brokerSessionID = nil
@@ -422,6 +428,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             }
         case .failure(let error):
             if case let BrokerSessionCoordinator.CoordinatorError.registryTransitionCommitted(record, _) = error {
+                retireTrackedForTeardown(record.id) { [self] in
+                    completeCancelledFreshStart()
+                }
+            } else if case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error {
                 retireTrackedForTeardown(record.id) { [self] in
                     completeCancelledFreshStart()
                 }
@@ -2367,6 +2377,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             case .missingSession, .staleSession:
                 return .brokerSessionStale
             case .brokerHostUnavailable:
+                return .brokerHostUnavailable
+            case .launchOutcomeUnknown:
                 return .brokerHostUnavailable
             case .retirementRollbackFailed, .retirementFinalizationFailed,
                  .detachRollbackFailed, .reattachRollbackFailed,

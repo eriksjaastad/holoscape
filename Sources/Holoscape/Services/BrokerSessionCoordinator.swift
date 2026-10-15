@@ -150,6 +150,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case exitStillPending(BrokerSessionID)
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
+        case launchOutcomeUnknown(BrokerSessionRecord, reason: String)
         case registryTransitionCommitted(BrokerSessionRecord, durabilityFailure: String)
         case registryPruneCommitted(
             removedRecords: [BrokerSessionRecord],
@@ -278,7 +279,9 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // controller. An exited record without a runtime owner has no live
                 // replay authority and remains final.
                 return runtimeSessionIDs.contains(record.id) ? record : nil
-            case .creating, .errored:
+            case .creating:
+                return try recoverCreatingSessionForDiscovery(record, runtimeSessionIDs: runtimeSessionIDs)
+            case .errored:
                 return nil
             }
         }
@@ -292,6 +295,22 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord {
         let timestamp = now()
         let id = BrokerSessionID()
+        let creating = BrokerSessionRecord(
+            id: id,
+            channelType: channelType,
+            label: label,
+            command: request.command,
+            arguments: request.arguments,
+            workingDirectory: request.workingDirectory,
+            environmentProfile: request.environmentProfile,
+            agentStatusOwnerToken: request.agentStatusOwnerToken,
+            lifecycle: .creating,
+            exitCode: nil,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            lastAttachedChannelID: attachedChannelID
+        )
+        let creatingDurabilityWarning = try upsertRegistry(creating)
         let ownerTokenWasApplied: Bool
         do {
             if request.agentStatusOwnerToken != nil,
@@ -305,40 +324,37 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 ownerTokenWasApplied = false
             }
         } catch let runtimeError as NativePTYBrokerSessionRuntime.RuntimeError {
-            guard case let .launchCleanupPending(pendingID, reason) = runtimeError else {
-                throw runtimeError
+            guard case let .launchCleanupPending(_, reason) = runtimeError else {
+                try recordFailedCreate(creating, runtimeFailure: runtimeError)
             }
-            throw CoordinatorError.untrackedSession(
-                pendingID,
-                registryFailure: "broker launch failed before registry persistence",
-                rollbackFailure: reason
+            let terminating = creating.withLifecycle(
+                .terminating,
+                exitCode: nil,
+                updatedAt: now(),
+                lastAttachedChannelID: nil
             )
+            _ = try replaceRegistry(terminating, ifUnchangedFrom: creating)
+            throw CoordinatorError.launchOutcomeUnknown(terminating, reason: reason)
         } catch let clientError as BrokerSessionHostClientRuntime.ClientError {
-            if case let .launchCleanupPending(pendingID, reason) = clientError {
-                throw CoordinatorError.untrackedSession(
-                    pendingID,
-                    registryFailure: "broker launch failed before registry persistence",
-                    rollbackFailure: reason
+            if case let .launchCleanupPending(_, reason) = clientError {
+                let terminating = creating.withLifecycle(
+                    .terminating,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
                 )
+                _ = try replaceRegistry(terminating, ifUnchangedFrom: creating)
+                throw CoordinatorError.launchOutcomeUnknown(terminating, reason: reason)
             }
             guard let message = clientError.ambiguousCreateFailureReason else {
-                throw clientError
+                try recordFailedCreate(creating, runtimeFailure: clientError)
             }
-            // A lost or malformed response does not prove create failed: the
-            // broker may own a
-            // live process under this generated ID. Retire that exact generation
-            // before returning, or preserve its identity in a typed failure so a
-            // retry cannot create a duplicate while the outcome is uncertain.
-            do {
-                try retireUntrackedSession(id)
-            } catch let rollbackFailure {
-                throw CoordinatorError.untrackedSession(
-                    id,
-                    registryFailure: "broker create outcome uncertain: \(message)",
-                    rollbackFailure: String(describing: rollbackFailure)
-                )
-            }
-            throw CoordinatorError.brokerHostUnavailable(id, message)
+            // The broker may have created the process before its response was
+            // lost. Keep the pre-persisted generation so retry and relaunch
+            // reconcile this exact ID instead of launching a duplicate.
+            throw CoordinatorError.launchOutcomeUnknown(creating, reason: message)
+        } catch {
+            try recordFailedCreate(creating, runtimeFailure: error)
         }
         let record = BrokerSessionRecord(
             id: id,
@@ -357,7 +373,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         )
         let durabilityWarning: String?
         do {
-            durabilityWarning = try upsertRegistry(record)
+            let (wasReplaced, replacementWarning) = try replaceRegistry(
+                record,
+                ifUnchangedFrom: creating
+            )
+            guard wasReplaced else {
+                throw CoordinatorError.concurrentSessionTransition(id)
+            }
+            durabilityWarning = replacementWarning ?? creatingDurabilityWarning
         } catch let registryFailure {
             // The runtime session exists but Holoscape could not record it, so it
             // could never be reattached, exited, or recovered: roll it back before
@@ -382,6 +405,90 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             )
         }
         return record
+    }
+
+    private func recordFailedCreate(
+        _ creating: BrokerSessionRecord,
+        runtimeFailure: Error
+    ) throws -> Never {
+        let errored = creating.withLifecycle(
+            .errored,
+            exitCode: nil,
+            updatedAt: now(),
+            lastAttachedChannelID: nil
+        )
+        let (wasReplaced, durabilityWarning) = try replaceRegistry(
+            errored,
+            ifUnchangedFrom: creating
+        )
+        guard wasReplaced else {
+            throw CoordinatorError.concurrentSessionTransition(creating.id)
+        }
+        if let durabilityWarning {
+            throw CoordinatorError.registryTransitionCommitted(
+                errored,
+                durabilityFailure: durabilityWarning
+            )
+        }
+        throw runtimeFailure
+    }
+
+    private func recoverCreatingSessionForDiscovery(
+        _ record: BrokerSessionRecord,
+        runtimeSessionIDs: Set<BrokerSessionID>
+    ) throws -> BrokerSessionRecord? {
+        do {
+            let runtimeOwnsSession = runtimeSessionIDs.contains(record.id)
+                ? true
+                : try runtime.isRunning(id: record.id)
+            guard runtimeOwnsSession else {
+                if let exitCode = try runtime.terminationStatus(id: record.id) {
+                    return try exit(record.id, exitCode: exitCode)
+                }
+                _ = try updateMetadataOnly(record.id) { current in
+                    current.withLifecycle(
+                        .stale,
+                        exitCode: nil,
+                        updatedAt: now(),
+                        lastAttachedChannelID: nil
+                    )
+                }
+                return nil
+            }
+        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
+            return nil
+        } catch let error where isMissingRuntimeSessionError(error, id: record.id) {
+            _ = try updateMetadataOnly(record.id) { current in
+                current.withLifecycle(
+                    .stale,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
+            }
+            return nil
+        }
+
+        let detached = record.withLifecycle(
+            .detached,
+            exitCode: nil,
+            updatedAt: now(),
+            lastAttachedChannelID: nil
+        )
+        let (wasReplaced, durabilityWarning) = try replaceRegistry(
+            detached,
+            ifUnchangedFrom: record
+        )
+        guard wasReplaced else {
+            return try self.record(for: record.id)
+        }
+        if let durabilityWarning {
+            throw CoordinatorError.registryTransitionCommitted(
+                detached,
+                durabilityFailure: durabilityWarning
+            )
+        }
+        return detached
     }
 
     func retireUntrackedSession(_ id: BrokerSessionID) throws {

@@ -2648,43 +2648,6 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(failures.map(\.kind), [.brokerSessionStale])
     }
 
-    func testRetryRetiresUntrackedGenerationOffMainBeforeReplacement() throws {
-        let runtime = BlockingUntrackedRetirementRuntime()
-        let parent = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BrokerBackedTerminalUntrackedTests-")
-            .appendingPathComponent(UUID().uuidString)
-        let blocker = parent.appendingPathComponent("blocked")
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try Data("not a directory".utf8).write(to: blocker)
-        defer { try? FileManager.default.removeItem(at: parent) }
-        let coordinator = BrokerSessionCoordinator(
-            registry: BrokerSessionRegistry(fileURL: blocker.appendingPathComponent("sessions.json")),
-            runtime: runtime
-        )
-        let terminal = BrokerBackedTerminalProcess(
-            channelID: UUID(),
-            channelType: .shell,
-            label: "untracked",
-            environmentProfile: .shell,
-            coordinator: coordinator
-        )
-
-        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
-        let untrackedID = try XCTUnwrap(terminal.untrackedBrokerSessionID)
-
-        let started = Date()
-        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
-        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05)
-        XCTAssertTrue(runtime.waitForRetirement(), "Retry must begin retirement on the recovery lane")
-        XCTAssertEqual(terminal.untrackedBrokerSessionID, untrackedID)
-        XCTAssertTrue(terminal.completesStartAsynchronously)
-
-        runtime.unblockRetirement()
-        try waitUntil { !terminal.completesStartAsynchronously }
-        XCTAssertNil(terminal.untrackedBrokerSessionID)
-        XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
-        XCTAssertEqual(runtime.createdIDs, [untrackedID], "Replacement cannot start before the old generation is retired")
-    }
 
     func testProductionLaunchCleanupFailurePreservesGeneratedIdentityUntilRetirement() throws {
         let runtime = LaunchCleanupPendingRuntime()
@@ -2718,15 +2681,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { !terminal.completesStartAsynchronously }
 
         let generatedID = try XCTUnwrap(runtime.pendingID)
-        XCTAssertEqual(
-            terminal.untrackedBrokerSessionID,
-            generatedID,
-            "The host error must carry the runtime-generated cleanup identity through the coordinator and terminal"
-        )
-        guard terminal.untrackedBrokerSessionID == generatedID else {
-            return
-        }
-        XCTAssertNil(terminal.brokerOwnedSessionID, "Cleanup-only authority must not become attachable")
+        XCTAssertEqual(terminal.brokerOwnedSessionID, generatedID)
+        XCTAssertNil(terminal.untrackedBrokerSessionID)
         XCTAssertTrue(terminal.startFailureDescription?.contains("launch cleanup remains retryable") == true)
 
         terminal.startProcess(
@@ -2738,11 +2694,22 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         try waitUntil { !terminal.completesStartAsynchronously }
         XCTAssertEqual(runtime.createAttempts, [generatedID], "A failed cleanup retry must not launch a replacement")
-        XCTAssertEqual(terminal.untrackedBrokerSessionID, generatedID)
+        XCTAssertEqual(terminal.brokerOwnedSessionID, generatedID)
         XCTAssertEqual(runtime.retirementAttempts, [generatedID])
         XCTAssertTrue(terminal.startFailureDescription?.contains("launch cleanup remains retryable") == true)
 
         runtime.allowCleanup()
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+        XCTAssertNil(terminal.brokerOwnedSessionID)
+        XCTAssertEqual(terminal.staleBrokerSessionID, generatedID)
+
         terminal.startProcess(
             executable: "/bin/zsh",
             args: [],
@@ -2763,34 +2730,6 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { teardownCompleted }
     }
 
-    func testTeardownRetiresRememberedUntrackedGeneration() throws {
-        let runtime = BlockingUntrackedRetirementRuntime()
-        runtime.unblockRetirement()
-        let parent = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BrokerBackedTerminalUntrackedTeardownTests-")
-            .appendingPathComponent(UUID().uuidString)
-        let blocker = parent.appendingPathComponent("blocked")
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try Data("not a directory".utf8).write(to: blocker)
-        defer { try? FileManager.default.removeItem(at: parent) }
-        let terminal = BrokerBackedTerminalProcess(
-            channelID: UUID(),
-            channelType: .shell,
-            label: "untracked",
-            environmentProfile: .shell,
-            coordinator: BrokerSessionCoordinator(
-                registry: BrokerSessionRegistry(fileURL: blocker.appendingPathComponent("sessions.json")),
-                runtime: runtime
-            )
-        )
-
-        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
-        let untrackedID = try XCTUnwrap(terminal.untrackedBrokerSessionID)
-        terminal.detachBrokerSession()
-
-        try waitUntil { terminal.untrackedBrokerSessionID == nil }
-        XCTAssertEqual(runtime.retirementAttempts, [untrackedID, untrackedID])
-    }
 
     func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {
         let fixture = try makeMidSessionFixture(
@@ -5124,7 +5063,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.brokerSessionID)
         XCTAssertTrue(terminal.startFailureDescription?.contains("createFailed") == true, terminal.startFailureDescription ?? "nil")
         XCTAssertEqual(terminal.startFailureKind, .failed)
-        XCTAssertEqual(try registry.load(), [])
+        let failedRecord = try XCTUnwrap(registry.load().first)
+        XCTAssertEqual(failedRecord.lifecycle, .errored)
     }
 
     func testReattachMissingRuntimeSessionIsObservableAsStaleAndMarksRecordStale() throws {
