@@ -71,7 +71,7 @@ Right-click any sidebar entry for: Close, Rename, Duplicate, Reconnect, Pin/Unpi
 # Unit + property tests
 make test
 
-# Full UI test suite (~80 min, 350 tests across 10 shards)
+# Full UI test suite (~5 hrs; current shard inventory is defined by the runner)
 make test-ui
 
 # Quick smoke test (~5 min)

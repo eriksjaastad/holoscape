@@ -211,7 +211,7 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 - **Startup:** Under 2 seconds to usable window
 - **Channel switching:** Instant (no re-rendering delay)
 - **Terminal rendering:** Match or exceed iTerm performance (SwiftTerm handles this)
-- **Memory:** Each channel backend is an independent broker/session process — closing or terminating a channel releases its resources
+- **Memory:** Each local shell or agent channel owns a broker session within the shared broker-host process; closing or terminating a channel releases that session's resources
 - **Crash resilience:** App crash should not kill running broker-backed agent/shell processes; they can be restored, reattached, or marked stale with visible diagnostics
 - **No telemetry:** No analytics, no phone-home, no tracking. Erik's terminal, Erik's data.
 
