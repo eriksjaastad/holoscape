@@ -128,11 +128,13 @@ no attached live process and a normal reconnect is available; `stale` means a
 saved external session is missing or unverifiable. Display priority, from lowest
 to highest, is disconnected → ready → running → needs approval → error → stale,
 so lower-priority activity cannot hide a state that needs attention. Resolution
-compares state-kind priority first, then source priority only to break a tie
-(broker registry → process lifecycle → terminal output → agent adapter → user
-action → plugin). Plugin attention states can therefore outrank lower-kind
-runtime states and remain visible after process teardown; healthy/busy plugin
-states are ignored while the channel is inactive. Owner tokens scope adapter
+for agent channels compares state-kind priority first, then source priority only
+to break a tie (broker registry → process lifecycle → terminal output → agent
+adapter → user action → plugin). In agent channels, plugin attention states can
+therefore outrank lower-kind runtime states and remain visible after process
+teardown; healthy/busy plugin states are ignored while the channel is inactive.
+Shell and SSH controllers currently resolve their smaller runtime/failure inputs
+directly rather than applying this source ordering. Owner tokens scope adapter
 events to the process generation that owns the channel; stale or foreign events
 cannot claim a fresh process.
 
@@ -199,8 +201,10 @@ types. They must not become startup dependencies; new service-specific workflow
 integration belongs behind the plugin seam rather than adding another core
 dependency.
 
-Current detail: `docs/plugin-architecture.md` and the manifest, manager, storage,
-command-router, and Project Tracker plugin tests.
+Current detail: `docs/plugin-architecture.md`; manifest, manager, storage,
+command-router, and Project Tracker cases in
+`Tests/HoloscapeTests/Unit/PluginManifestTests.swift`; and the plugin diagnostic
+case in `Tests/HoloscapeTests/Unit/SetupDiagnosticsServiceTests.swift`.
 
 ## Setup and permissions
 

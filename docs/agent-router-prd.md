@@ -7,8 +7,9 @@
 > historical product research only. Any future messaging UI must use the
 > removable integration boundary defined by [`DECISIONS.md`](../DECISIONS.md) and
 > [`docs/plugin-architecture.md`](plugin-architecture.md); it must not revive this sidecar as HoloScape core
-> behavior. The retired Project Tracker message-board plan is retained at
-> [`docs/archive/project-tracker-message-board-plan.md`](archive/project-tracker-message-board-plan.md) as historical evidence.
+> behavior. The Project Tracker message-board plan is retained at
+> [`docs/archive/project-tracker-message-board-plan.md`](archive/project-tracker-message-board-plan.md) as non-normative
+> plugin/message-ledger design evidence; this router sidecar, not that entire ownership split, is retired.
 
 ## Project Overview
 

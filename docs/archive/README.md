@@ -15,9 +15,10 @@ implementation work from them without first reconciling the claim with
 - [`first-launch-setup-permissions.md`](first-launch-setup-permissions.md) — implementation close-out record;
   operator guidance now lives in [`SETUP.md`](../../SETUP.md) and the current prompt inventory in
   [`docs/macos-permission-audit.md`](../macos-permission-audit.md).
-- [`project-tracker-message-board-plan.md`](project-tracker-message-board-plan.md) — pre-plugin integration plan with
-  retired service/UI assumptions; current integration boundaries live in
-  [`DECISIONS.md`](../../DECISIONS.md) and [`docs/plugin-architecture.md`](../plugin-architecture.md).
+- [`project-tracker-message-board-plan.md`](project-tracker-message-board-plan.md) — non-normative plugin/message-ledger
+  design evidence. Its router-sidecar assumptions are retired, while its ownership
+  split remains useful context; current integration boundaries live in [`DECISIONS.md`](../../DECISIONS.md)
+  and [`docs/plugin-architecture.md`](../plugin-architecture.md).
 
 Archiving preserves provenance while preventing old launch ownership, state, and
 roadmap descriptions from competing with current contracts.
