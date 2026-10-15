@@ -45,6 +45,25 @@ The broker registry uses the richer lifecycle vocabulary `creating`, `running`,
 `stale`. These broker-owned states are distinct from the six UI-facing tab
 states below.
 
+### Broker lifecycle state and ownership
+
+Verified against `BrokerSessionCoordinator`: the coordinator is the durable
+registry writer and transition authority; `NativePTYBrokerSessionRuntime` owns
+the live PTY/process and reports runtime truth. The UI never owns a broker
+lifecycle transition.
+
+| State | Writer / owner | Meaning |
+| --- | --- | --- |
+| `creating` | Reserved lifecycle vocabulary; no normal production writer | The enum supports an in-progress creation state, but the current coordinator does not persist it; `start` persists `running` after runtime creation succeeds. |
+| `running` | Broker runtime; coordinator records it | A live PTY/process is owned by the broker and may be attached. |
+| `detached` | Coordinator; broker runtime remains owner | The durable attachment claim was cleared before the advisory runtime detach call; the live PTY/process remains reattachable, but this state is not a literal runtime attachment observation. |
+| `reattaching` | Coordinator lease; broker runtime remains owner | One restore/attach operation has claimed the session identity. |
+| `exiting` | Coordinator intent; broker runtime drains/finalizes | Exit was requested; final output/status still have authority to settle. |
+| `exited` | Broker runtime reports; coordinator persists | The process has ended and its exit metadata is durable. |
+| `terminating` | Coordinator intent; broker runtime cleanup owner | Retirement/termination is in progress and must not be replaced concurrently. |
+| `errored` | Coordinator persists completed runtime retirement | The broker runtime session has been retired after an explicit retirement request or an unrecoverable runtime failure; terminal metadata remains durable for observability and retention. |
+| `stale` | Coordinator persists an explicitly missing runtime identity | The runtime reports that the recorded session no longer exists. The durable identity remains non-attachable so callers can present stale/recreate truth without treating a transport outage as session loss. |
+
 Source contracts:
 
 - `Sources/Holoscape/Services/NativePTYBrokerSessionRuntime.swift`

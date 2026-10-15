@@ -1666,6 +1666,56 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try secondClient.listSessions(), [])
     }
 
+    @MainActor
+    func testUnixSocketBrokerFixtureCleansArtifactsWhenStartupTimesOut() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UnixSocketBrokerFixtureStartupFailure-")
+            .appendingPathComponent(UUID().uuidString)
+        let socketPath = "/tmp/hs-fixture-startup-timeout-\(UUID().uuidString).sock"
+
+        XCTAssertThrowsError(
+            try UnixSocketBrokerFixture(
+                directory: directory,
+                socketPath: socketPath,
+                serverStartDelay: 0.1,
+                readinessTimeout: 0.01
+            )
+        ) { error in
+            XCTAssertTrue(error is UnixSocketBrokerFixtureError, String(describing: error))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+    }
+
+    func testUnixSocketServerCanBeStoppedWhileWaitingForConnections() throws {
+        let socketPath = "/tmp/hs-stop-signal-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime())
+        )
+        let stopSignal = BrokerSessionHostUnixSocketServer.StopSignal()
+        let serverFinished = expectation(description: "socket broker stops without request budget")
+        let serverError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(stopSignal: stopSignal)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+        stopSignal.requestStop()
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
+        if FileManager.default.fileExists(atPath: socketPath + ".lock") {
+            XCTAssertNoThrow(try FileManager.default.removeItem(atPath: socketPath + ".lock"))
+        }
+    }
+
     func testUnixSocketServerShutsDownRuntimeBeforeReleasingLockOnSetupError() throws {
         let socketPath = "/tmp/" + String(repeating: "s", count: 160)
         var observedLockDuringShutdown = false
@@ -2898,38 +2948,12 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
     @MainActor
     func testBrokerBackedShellTabRestoresThroughUnixSocketHostRuntimeAcrossAppRelaunch() async throws {
-        let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SocketHostedShellRelaunchTests-")
-            .appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDirectory) }
-
-        let socketPath = "/tmp/hs-shell-relaunch-\(UUID().uuidString).sock"
-        let server = BrokerSessionHostUnixSocketServer(
-            socketPath: socketPath,
-            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
-        )
-        let serverFinished = expectation(description: "socket broker served shell relaunch requests")
-        let serverError = LockedErrorBox()
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try server.run(maxConnections: 64)
-            } catch {
-                serverError.set(error)
-            }
-            serverFinished.fulfill()
-        }
-        try waitForSocket(at: socketPath)
-
-        let configService = ConfigService(configDir: tempDirectory)
-        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
-        let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        let firstCoordinator = BrokerSessionCoordinator(
-            registry: registry,
-            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try firstTransport.sendFrame(frame) },
-            now: { Date(timeIntervalSince1970: 9_200) }
-        )
+        let fixture = try UnixSocketBrokerFixture()
+        defer { fixture.cleanup() }
+        let tempDirectory = fixture.directory
+        let configService = ConfigService(configDir: tempDirectory.appendingPathComponent("config"))
+        let registry = fixture.registry
+        let firstCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_200))
         let firstLaunchManager = ChannelManager(
             configService: configService,
             brokerBackedShellCoordinator: firstCoordinator
@@ -2973,12 +2997,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(configService.load().channels.count, 1)
         XCTAssertEqual(configService.load().channels.first?.brokerSessionID, brokerSessionID)
 
-        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        let secondCoordinator = BrokerSessionCoordinator(
-            registry: registry,
-            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try secondTransport.sendFrame(frame) },
-            now: { Date(timeIntervalSince1970: 9_201) }
-        )
+        let secondCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_201))
         let secondLaunchManager = ChannelManager(
             configService: configService,
             brokerBackedShellCoordinator: secondCoordinator
@@ -3020,50 +3039,15 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(records[0].lastAttachedChannelID, restoredShell.channelId)
         XCTAssertEqual(configService.load().channels.map(\.brokerSessionID), [brokerSessionID])
 
-        // The terminal's off-main start/reattach lanes make the exact number of
-        // background output polls scheduling-dependent. Drain the bounded test
-        // server deterministically instead of coupling this integration test to
-        // one incidental connection count.
-        for _ in 0..<64 {
-            guard (try? secondCoordinator.isRunning(brokerSessionID)) != nil else { break }
-        }
-        await fulfillment(of: [serverFinished], timeout: 2)
-        XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
 
     @MainActor
     func testBrokerBackedAgentSessionReattachesThroughUnixSocketHostRuntime() throws {
-        let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SocketHostedAgentReattachTests-")
-            .appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDirectory) }
-
-        let socketPath = "/tmp/hs-agent-reattach-\(UUID().uuidString).sock"
-        let server = BrokerSessionHostUnixSocketServer(
-            socketPath: socketPath,
-            host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
-        )
-        let serverFinished = expectation(description: "socket broker served agent relaunch requests")
-        let serverError = LockedErrorBox()
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try server.run(maxConnections: 64)
-            } catch {
-                serverError.set(error)
-            }
-            serverFinished.fulfill()
-        }
-        try waitForSocket(at: socketPath)
-
-        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
-        let firstTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        let firstCoordinator = BrokerSessionCoordinator(
-            registry: registry,
-            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try firstTransport.sendFrame(frame) },
-            now: { Date(timeIntervalSince1970: 9_100) }
-        )
+        let fixture = try UnixSocketBrokerFixture()
+        defer { fixture.cleanup() }
+        let tempDirectory = fixture.directory
+        let registry = fixture.registry
+        let firstCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_100))
         let firstChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009101")!
         let firstTerminal = BrokerBackedTerminalProcess(
             channelID: firstChannelID,
@@ -3088,12 +3072,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         firstTerminal.detachBrokerSession { detached.fulfill() }
         wait(for: [detached], timeout: 1)
 
-        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        let secondCoordinator = BrokerSessionCoordinator(
-            registry: registry,
-            runtime: BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in try secondTransport.sendFrame(frame) },
-            now: { Date(timeIntervalSince1970: 9_101) }
-        )
+        let secondCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_101))
         let restoredChannelID = UUID(uuidString: "00000000-0000-0000-0000-000000009102")!
         let restoredTerminal = BrokerBackedTerminalProcess(
             channelID: restoredChannelID,
@@ -3126,17 +3105,6 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(records[0].lastAttachedChannelID, restoredChannelID)
 
         _ = try secondCoordinator.markErrored(brokerSessionID)
-        // Output polling and the teardown exit probe make the exact request
-        // count scheduling-dependent. Exhaust the bounded server through a raw
-        // runtime client instead of relying on the now-errored registry record.
-        let drainRuntime = BrokerSessionHostClientRuntime { frame in
-            try secondTransport.sendFrame(frame)
-        }
-        for _ in 0..<64 {
-            guard (try? drainRuntime.listSessions()) != nil else { break }
-        }
-        wait(for: [serverFinished], timeout: 2)
-        XCTAssertNil(serverError.value.map(String.init(describing:)))
     }
 
     func testUnixSocketServerRefusesToReplaceReachableBrokerAtSamePath() throws {

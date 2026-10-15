@@ -25,6 +25,19 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         case indeterminate
     }
 
+    final class StopSignal: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stopped = false
+
+        func requestStop() {
+            lock.withLock { stopped = true }
+        }
+
+        var isStopRequested: Bool {
+            lock.withLock { stopped }
+        }
+    }
+
     private let socketPath: String
     private let host: BrokerSessionHost
     private let codec: BrokerSessionHostCodec
@@ -56,7 +69,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         self.maximumFrameSize = maximumFrameSize
     }
 
-    func run(maxConnections: Int? = nil) throws {
+    func run(maxConnections: Int? = nil, stopSignal: StopSignal? = nil) throws {
         var brokerLockFD: Int32?
         var serverFD: Int32?
         var handlerGroup: DispatchGroup?
@@ -91,6 +104,16 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
         var handledConnections = 0
         while maxConnections.map({ handledConnections < $0 }) ?? true {
+            if let stopSignal {
+                if stopSignal.isStopRequested { break }
+                var readiness = pollfd(fd: createdServerFD, events: Int16(POLLIN), revents: 0)
+                let pollResult = poll(&readiness, 1, 50)
+                if pollResult == -1 {
+                    if errno == EINTR { continue }
+                    throw ServerError.acceptFailed(String(cString: strerror(errno)))
+                }
+                guard pollResult > 0 else { continue }
+            }
             let clientFD = accept(createdServerFD, nil, nil)
             if clientFD < 0 {
                 if errno == EINTR { continue }
