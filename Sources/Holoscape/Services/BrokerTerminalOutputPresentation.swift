@@ -11,10 +11,18 @@ final class BrokerTerminalOutputPresentation {
     private let deliveryGate = BrokerOutputDeliveryGate()
     private var outputHandler: (() -> Void)?
     private var nextDeliveryGeneration: UInt = 0
+    /// Identifies the terminal-view ownership window allowed to consume broker
+    /// output. A queued main-actor delivery must still hold this exact lease;
+    /// matching the broker ID alone is insufficient because teardown deliberately
+    /// preserves that ID for later reattach.
     private(set) var activeDeliveryGeneration: UInt?
     private(set) var activeHandoffGeneration: UInt?
     private(set) var lastScrollbackReplay: ScrollbackReplay?
+    /// The broker session whose output generation is already represented by the
+    /// current terminal view.
     var presentedBrokerSessionID: BrokerSessionID?
+    /// Bytes rendered before acknowledgement failed. A retry strips this exact
+    /// prefix while still acknowledging the full transactional generation.
     private var presentedUnacknowledgedOutput: (sessionID: BrokerSessionID, data: Data)?
     var hasOutputHandler: Bool { outputHandler != nil }
 

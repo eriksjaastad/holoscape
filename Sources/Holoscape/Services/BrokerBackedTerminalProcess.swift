@@ -69,10 +69,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// instead of independently stopping its output lane.
     private var closeRetirementInFlight = false
     private var closeRetirementCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
-    /// Identifies the terminal-view ownership window allowed to consume broker
-    /// output. A queued main-actor delivery must still hold this exact lease;
-    /// matching the broker ID alone is insufficient because teardown deliberately
-    /// preserves that ID for later reattach.
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private let exitedOutputResolutionClaim = BrokerExitResolutionClaim()
