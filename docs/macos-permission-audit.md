@@ -10,7 +10,7 @@ Scope: Holoscape launch and normal terminal use. This audit lists code paths tha
 | User notifications | Confirmed TCC prompt | Deferred until first eligible background notification | Covered by setup diagnostics; include in setup guide. |
 | Network volume working directories | Confirmed TCC prompt | Restored `/Volumes/...` tabs no longer auto-launch fresh processes without a broker session | Keep explicit reconnect user-initiated; include in setup guide. |
 | Accessibility | Possible TCC prompt when workflows need UI control | Diagnostics read trust state with `AXIsProcessTrusted()` only | Keep as diagnostic/setup guidance until a feature actually needs it. |
-| Automation / Apple Events | Possible TCC prompt if Holoscape controls System Events or other apps | No direct Apple Event sender found in current source; diagnostics warn because planned workflows may need it | Do not request proactively; document per-target Automation grant flow. |
+| Automation / Apple Events | Possible TCC prompt when an automation tool controls another app | The HoloScape app has no direct sender; the separate `HoloscapeMCP` executable invokes `/usr/bin/osascript` for its AppleScript tool | Do not request proactively; document per-target Automation grant flow. |
 | Crash logs | Possible Full Disk Access edge case, no prompt expected for own user logs | Reads `~/Library/Logs/DiagnosticReports` after launch to find Holoscape crashes | Setup Diagnostics now warns if the diagnostics directory is unreadable; Full Disk Access stays optional and explicit. |
 | Shell/agent subprocess cwd | Inherits file access risk of selected cwd | Local broker sets `Process.currentDirectoryURL` from saved/profile directory | Treat user-selected protected locations as user-initiated; avoid auto-starting risky saved paths. |
 | Project discovery SSH | No macOS privacy prompt expected | Runs `/usr/bin/ssh` to remote host and `ls` configured root | Network/auth failure only; no TCC hardening needed. |
@@ -73,10 +73,13 @@ Setup guidance:
 
 Source:
 - `Sources/Holoscape/Services/SetupDiagnosticsService.swift`
+- `Sources/HoloscapeMCP/AppleScriptTool.swift`
 
 Prompt trigger:
-- No current direct sender found for `NSAppleScript`, Apple Event descriptors, `osascript`, or System Events control in `Sources/Holoscape`.
-- macOS Automation prompts would appear per target app if a future workflow controls System Events or another app.
+- No current direct sender was found in the HoloScape app target.
+- The separate `HoloscapeMCP` executable runs `/usr/bin/osascript` when its
+  AppleScript tool is invoked. macOS Automation prompts can then appear for each
+  target app controlled by the script.
 
 Current behavior:
 - Setup Diagnostics warns that Automation is per-target and may prompt on first use.
@@ -143,9 +146,8 @@ The audit did not find current production use of:
 
 - `NSOpenPanel` / `NSSavePanel`
 - security-scoped bookmarks
-- `NSAppleScript`
-- direct Apple Event descriptor sending
-- `osascript`
+- `NSAppleScript` in the HoloScape app target
+- direct Apple Event descriptor sending in the HoloScape app target
 - direct Full Disk Access APIs
 - camera, microphone, contacts, calendars, location, screen recording APIs
 
