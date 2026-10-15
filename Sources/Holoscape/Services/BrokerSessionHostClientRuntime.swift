@@ -7,7 +7,7 @@ import Foundation
 /// bytes, pipes, or protocol response shapes. A later launch wrapper can provide
 /// the real process transport. Tests can provide an in-process host transport,
 /// but the adapter itself contains no silent fallback path.
-final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum ClientError: Error, Equatable {
         case hostFailure(code: String, message: String)
         case launchCleanupPending(BrokerSessionID, reason: String)
@@ -116,6 +116,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         default:
             throw ClientError.unexpectedResponse(expected: "ok or created", actual: response)
         }
+    }
+
+    func agentStatusOwnerToken(id: BrokerSessionID) throws -> String? {
+        let response = try response(for: .agentStatusOwnerToken(id: id))
+        guard case let .agentStatusOwnerToken(token) = response else {
+            throw ClientError.unexpectedResponse(expected: "agentStatusOwnerToken", actual: response)
+        }
+        return token
     }
 
     func detachSession(id: BrokerSessionID) throws {

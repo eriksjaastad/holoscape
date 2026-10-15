@@ -2385,7 +2385,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                  .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,
                  .exitCodeMismatch, .exitStillPending:
                 return .failed
-            case .concurrentSessionTransition, .untrackedSession:
+            case .concurrentSessionTransition, .untrackedSession,
+                 .agentStatusOwnerTokenMismatch:
                 return .failed
             case .registryTransitionCommitted, .registryPruneCommitted:
                 return .failed

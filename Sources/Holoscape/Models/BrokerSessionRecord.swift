@@ -98,6 +98,10 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
     let arguments: [String]
     let workingDirectory: String?
     let environmentProfile: BrokerEnvironmentProfile
+    /// Token requested for the child launch. This remains distinct from the
+    /// acknowledged token below because a create response can be lost after the
+    /// broker starts the process.
+    let requestedAgentStatusOwnerToken: String?
     let agentStatusOwnerToken: String?
     let lifecycle: BrokerSessionLifecycle
     let exitCode: Int32?
@@ -116,6 +120,7 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
         arguments: [String],
         workingDirectory: String?,
         environmentProfile: BrokerEnvironmentProfile,
+        requestedAgentStatusOwnerToken: String? = nil,
         agentStatusOwnerToken: String? = nil,
         lifecycle: BrokerSessionLifecycle,
         exitCode: Int32?,
@@ -131,6 +136,7 @@ struct BrokerSessionRecord: Codable, Equatable, Sendable {
         self.arguments = arguments
         self.workingDirectory = workingDirectory
         self.environmentProfile = environmentProfile
+        self.requestedAgentStatusOwnerToken = requestedAgentStatusOwnerToken
         self.agentStatusOwnerToken = agentStatusOwnerToken
         self.lifecycle = lifecycle
         self.exitCode = exitCode

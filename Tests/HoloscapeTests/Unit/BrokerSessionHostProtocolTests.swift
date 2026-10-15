@@ -33,6 +33,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .resize(id: sessionID, size: TerminalGridSize(columns: 132, rows: 48)),
             .isRunning(id: sessionID),
             .terminationStatus(id: sessionID),
+            .agentStatusOwnerToken(id: sessionID),
         ]
 
         for request in requests {
@@ -76,6 +77,8 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .running(false),
             .terminationStatus(nil),
             .terminationStatus(7),
+            .agentStatusOwnerToken(nil),
+            .agentStatusOwnerToken("response-owner-token"),
             .failure(BrokerSessionHostFailure(code: "missing-session", message: "session not found")),
         ]
 
@@ -136,6 +139,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         runtime.output = Data("broker-output".utf8)
         runtime.isRunning = true
         runtime.terminationStatus = 9
+        runtime.agentStatusOwnerToken = "host-owner-token"
         let host = BrokerSessionHost(runtime: runtime)
         let codec = BrokerSessionHostCodec()
         let sessionID = BrokerSessionID(rawValue: "host-dispatch-test")
@@ -159,6 +163,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try host.handle(codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))), try codec.encodeResponse(.outputAvailable(false)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.isRunning(id: sessionID))), try codec.encodeResponse(.running(true)))
         XCTAssertEqual(try host.handle(codec.encodeRequest(.terminationStatus(id: sessionID))), try codec.encodeResponse(.terminationStatus(9)))
+        XCTAssertEqual(
+            try host.handle(codec.encodeRequest(.agentStatusOwnerToken(id: sessionID))),
+            try codec.encodeResponse(.agentStatusOwnerToken("host-owner-token"))
+        )
         XCTAssertEqual(try host.handle(codec.encodeRequest(.readScrollbackTail(id: sessionID, maxBytes: 64))), try codec.encodeResponse(.output(Data("scrollback-tail".utf8))))
         XCTAssertEqual(
             try host.handle(codec.encodeRequest(.snapshotScrollbackReplay(id: sessionID, maxBytes: 64))),
@@ -188,6 +196,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "readAvailableOutput host-dispatch-test",
             "isRunning host-dispatch-test",
             "terminationStatus host-dispatch-test",
+            "agentStatusOwnerToken host-dispatch-test",
             "readScrollbackTail host-dispatch-test 64",
             "readScrollbackReplay host-dispatch-test 64",
             "resize host-dispatch-test 100x30",
@@ -307,6 +316,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         hostedRuntime.output = Data("client-output".utf8)
         hostedRuntime.isRunning = true
         hostedRuntime.terminationStatus = 12
+        hostedRuntime.agentStatusOwnerToken = "client-owner-token"
         let host = BrokerSessionHost(runtime: hostedRuntime)
         let client = BrokerSessionHostClientRuntime { frame in
             try host.handle(frame)
@@ -328,6 +338,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data("client-output".utf8))
         XCTAssertTrue(try client.isRunning(id: sessionID))
         XCTAssertEqual(try client.terminationStatus(id: sessionID), 12)
+        XCTAssertEqual(try client.agentStatusOwnerToken(id: sessionID), "client-owner-token")
         XCTAssertEqual(try client.readScrollbackTail(id: sessionID, maxBytes: 32), Data("scrollback-tail".utf8))
         XCTAssertEqual(
             try client.readScrollbackReplay(id: sessionID, maxBytes: 32),
@@ -351,6 +362,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             "acknowledgeOutput client-runtime-test 1",
             "isRunning client-runtime-test",
             "terminationStatus client-runtime-test",
+            "agentStatusOwnerToken client-runtime-test",
             "readScrollbackTail client-runtime-test 32",
             "readScrollbackReplay client-runtime-test 32",
             "resize client-runtime-test 120x40",
@@ -3676,12 +3688,13 @@ private final class ShutdownRecordingBrokerSessionRuntime:
     }
 }
 
-private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackReplayReportingRuntime, BrokerTransactionalOutputRuntime {
+private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerTransactionalOutputRuntime {
     var events: [String] = []
     var output = Data()
     var scrollbackReplayGeneration: UInt64?
     var isRunning = false
     var terminationStatus: Int32?
+    var agentStatusOwnerToken: String?
     var error: Error?
 
     func listSessions() throws -> [BrokerSessionID] {
@@ -3783,6 +3796,12 @@ private class RecordingBrokerSessionRuntime: BrokerSessionRuntime, ScrollbackRep
         try throwIfNeeded()
         events.append("terminationStatus \(id.rawValue)")
         return terminationStatus
+    }
+
+    func agentStatusOwnerToken(id: BrokerSessionID) throws -> String? {
+        try throwIfNeeded()
+        events.append("agentStatusOwnerToken \(id.rawValue)")
+        return agentStatusOwnerToken
     }
 
     private func throwIfNeeded() throws {

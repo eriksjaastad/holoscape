@@ -170,6 +170,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
         case launchOutcomeUnknown(BrokerSessionRecord, reason: String)
+        case agentStatusOwnerTokenMismatch(BrokerSessionID)
         case registryTransitionCommitted(BrokerSessionRecord, durabilityFailure: String)
         case registryPruneCommitted(
             removedRecords: [BrokerSessionRecord],
@@ -332,6 +333,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
+            requestedAgentStatusOwnerToken: request.agentStatusOwnerToken,
             // Requested ownership is not durable truth until the broker confirms
             // that the child received the token. An ambiguous create response
             // must remain tokenless rather than rejecting the child's events.
@@ -420,6 +422,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
             arguments: request.arguments,
             workingDirectory: request.workingDirectory,
             environmentProfile: request.environmentProfile,
+            requestedAgentStatusOwnerToken: request.agentStatusOwnerToken,
             agentStatusOwnerToken: ownerTokenWasApplied ? request.agentStatusOwnerToken : nil,
             lifecycle: .running,
             exitCode: nil,
@@ -510,13 +513,16 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 let runtimeOwnsSession = try runtime.isRunning(id: current.id)
                 guard runtimeOwnsSession else {
                     if let exitCode = try runtime.terminationStatus(id: current.id) {
-                        return try exit(current.id, exitCode: exitCode)
+                        return discoveryCreatingRecoveryResult(
+                            try exit(current.id, exitCode: exitCode),
+                            runtimeSessionIDs: runtimeSessionIDs
+                        )
                     }
                     // The broker still inventories this generation, so nil final
                     // status means its last output/status is still settling. Keep
                     // the create intent pending instead of manufacturing stale
                     // truth that neither recovery nor orphan cleanup can finish.
-                    guard !runtimeSessionIDs.contains(current.id) else { return nil }
+                    guard !runtimeSessionIDs.contains(current.id) else { return current }
                     let stale = current.withLifecycle(
                         .stale,
                         exitCode: nil,
@@ -566,12 +572,25 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 continue
             }
 
-            let detached = current.withLifecycle(
-                .detached,
-                exitCode: nil,
-                updatedAt: now(),
-                lastAttachedChannelID: nil
-            )
+            let recoveredOwnerToken: String?
+            if let requestedOwnerToken = current.requestedAgentStatusOwnerToken,
+               let reportingRuntime = runtime as? BrokerSessionAgentStatusOwnerTokenReportingRuntime {
+                let reportedOwnerToken = try reportingRuntime.agentStatusOwnerToken(id: current.id)
+                guard reportedOwnerToken == nil || reportedOwnerToken == requestedOwnerToken else {
+                    throw CoordinatorError.agentStatusOwnerTokenMismatch(current.id)
+                }
+                recoveredOwnerToken = reportedOwnerToken
+            } else {
+                recoveredOwnerToken = current.agentStatusOwnerToken
+            }
+            let detached = current
+                .withAgentStatusOwnerToken(recoveredOwnerToken)
+                .withLifecycle(
+                    .detached,
+                    exitCode: nil,
+                    updatedAt: now(),
+                    lastAttachedChannelID: nil
+                )
             let (wasReplaced, durabilityWarning) = try replaceRegistry(
                 detached,
                 ifUnchangedFrom: current
@@ -594,6 +613,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         let currentRecordedIDs = Set(try registry.load().map(\.id))
         guard !currentRecordedIDs.contains(id), !launchClaims.contains(id) else { return }
         try retireUntrackedSession(id)
+    }
+
+    private func discoveryCreatingRecoveryResult(
+        _ record: BrokerSessionRecord,
+        runtimeSessionIDs: Set<BrokerSessionID>
+    ) -> BrokerSessionRecord? {
+        switch record.lifecycle {
+        case .creating, .running, .detached, .stale:
+            return record
+        case .exited:
+            return runtimeSessionIDs.contains(record.id) ? record : nil
+        case .reattaching, .errored, .exiting, .terminating:
+            return nil
+        }
     }
 
     func retireUntrackedSession(_ id: BrokerSessionID) throws {
@@ -1701,6 +1734,27 @@ private extension BrokerSessionRecord {
             arguments: arguments,
             workingDirectory: workingDirectory,
             environmentProfile: environmentProfile,
+            requestedAgentStatusOwnerToken: requestedAgentStatusOwnerToken,
+            agentStatusOwnerToken: agentStatusOwnerToken,
+            lifecycle: lifecycle,
+            exitCode: exitCode,
+            requestedExitCode: requestedExitCode,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            lastAttachedChannelID: lastAttachedChannelID
+        )
+    }
+
+    func withAgentStatusOwnerToken(_ agentStatusOwnerToken: String?) -> BrokerSessionRecord {
+        BrokerSessionRecord(
+            id: id,
+            channelType: channelType,
+            label: label,
+            command: command,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environmentProfile: environmentProfile,
+            requestedAgentStatusOwnerToken: requestedAgentStatusOwnerToken,
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,
@@ -1726,6 +1780,7 @@ private extension BrokerSessionRecord {
             arguments: arguments,
             workingDirectory: workingDirectory,
             environmentProfile: environmentProfile,
+            requestedAgentStatusOwnerToken: requestedAgentStatusOwnerToken,
             agentStatusOwnerToken: agentStatusOwnerToken,
             lifecycle: lifecycle,
             exitCode: exitCode,

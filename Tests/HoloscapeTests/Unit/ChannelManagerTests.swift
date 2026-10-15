@@ -672,6 +672,40 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(match?.id, expectedSessionID)
     }
 
+    func testBrokerBackedShellSessionToRestorePreservesPendingCreatingIdentity() {
+        let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007202")!
+        let expectedSessionID = BrokerSessionID(rawValue: "pending-creating-session")
+        let recordingCoordinator = RecordingBrokerSessionCoordinator()
+        recordingCoordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: expectedSessionID,
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .creating,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: channelID
+            ),
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: recordingCoordinator
+        )
+
+        let match = manager.brokerBackedShellSessionToRestore(
+            for: channelID,
+            brokerSessionID: expectedSessionID
+        )
+
+        XCTAssertEqual(match?.id, expectedSessionID)
+        XCTAssertEqual(match?.lifecycle, .creating)
+    }
+
     func testBrokerBackedAgentSessionToRestorePrefersPersistedBrokerSessionID() {
         let channelID = UUID(uuidString: "00000000-0000-0000-0000-000000007301")!
         let expectedSessionID = BrokerSessionID(rawValue: "persisted-agent-session")
