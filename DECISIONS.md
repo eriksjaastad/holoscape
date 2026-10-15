@@ -163,9 +163,11 @@ than hanging forever or reporting success.
 ## Local API and MCP boundaries
 
 The in-app HTTP API is trusted local automation bound to loopback, default port
-`7865`. It is not a cloud service or session source of truth. Requests return
-truthful HTTP failures when lifecycle state, validation, or routing rejects an
-operation.
+`7865`. It is not a cloud service or session source of truth. Validation and
+routing failures return explicit HTTP errors. One current lifecycle limitation
+is that `POST /channels/{id}/input` returns `200 sent` for a known shell or agent
+channel even when its disconnected controller rejects the input; callers must
+confirm channel state before sending until that API path is made truthful.
 
 `HoloscapeMCP` is a separate executable that exposes MCP tools over the Swift MCP
 SDK's newline-delimited stdio transport. Channel-control tools call the app's

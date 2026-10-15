@@ -207,9 +207,9 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 - Unread indicator when new messages arrive while viewing another channel
 
 ### Bug Reporting
-- Cmd+B opens a partial context preview with the active channel, system/app context, the last 50 output lines, and an optional screenshot
+- Cmd+Shift+B opens a partial context preview with the active channel, system/app context, the last 50 output lines, and an optional screenshot
 - The user enters a description and explicitly submits or dismisses the report
-- The submitted payload includes active channel identity, up to 100 recent output lines, all-channel state, appearance/split context, uptime, history metadata, and the optional screenshot
+- The submitted payload includes active channel identity, up to 100 recent output lines, all-channel state, appearance context, uptime, history metadata, and the optional screenshot; live split state is not captured because split-layout persistence is not wired
 - Reports go to the fixed HoloScape report-service endpoint; failed submissions are saved locally for the bounded retry policy described above
 - On launch, scan `~/Library/Logs/DiagnosticReports/` for a recent HoloScape crash
 - A detected crash opens a Submit Report/Dismiss prompt; the crash payload includes the trace, saved channel state, app/system context, and recovered history when available
@@ -371,8 +371,9 @@ terminal startup or session truth.
 
 An external integration supplies its endpoint, authentication, and routing.
 HoloScape renders incoming messages, sends outgoing messages through the MCP
-client protocol, and surfaces connection/disconnection state. No specific
-external service or agent role is part of the core contract.
+client protocol, and surfaces connection/disconnection state. The current
+renderer labels successful external responses `CEO` regardless of profile; a
+role-neutral label remains required before this channel is agent-agnostic.
 
 Example session profile:
 
@@ -412,16 +413,17 @@ Each tab shows durable backend/agent state without relying on a hidden timer as 
 - **Stale** channels refer to a missing or unverifiable saved external session
 - Supplemental plugin metadata may be displayed, but must not mask higher-priority terminal/agent states
 
-### Timestamps on Terminal Output
+### Timestamp toggle infrastructure — rendering not yet wired
 
-Toggle-able timestamps prepended to every line of terminal output.
+The View menu and persisted setting are shipped, but channel output does not
+yet read the setting. `TimestampInjector` remains test-covered utility code
+rather than a production rendering path.
 
-- When enabled, each line of output gets a `[HH:MM:SS]` prefix in a dimmed color
 - Toggle via menu: View > Show Timestamps (Cmd+T)
 - Setting persists to config
-- Applies to all channel types (shell, agent, SSH, group chat, MCP, bridge)
-- Timestamps are local time
-- For group chat, the existing `[HH:MM PM] sender:` format remains — the timestamp toggle adds seconds precision
+- Remaining work: apply local-time `[HH:MM:SS]` prefixes consistently without
+  double-prefixing channel types such as group chat and MCP that already render
+  their own timestamps
 
 ### Color Theme Presets
 
@@ -572,7 +574,7 @@ distribution without treating the existing engine as unimplemented.
 - Top tab bar for channels with role labels and unread indicators
 - Shell channel (local zsh with real text editing input)
 - Agent channel (spawn claude process with auth isolation)
-- Cmd+B bug reporting with SIL API integration
+- Cmd+Shift+B bug reporting with SIL API integration
 - Crash detection and one-click reporting on launch
 - Background color, transparency, font settings
 - Channel state persistence across restarts
