@@ -568,6 +568,27 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             case closeFailedOwnershipRetained(errno: Int32)
         }
 
+        /// The provisional phase drains only currently readable bytes while the
+        /// process can still produce output. The terminal phase owns the
+        /// authoritative EOF/limit decision and persistence barrier.
+        enum FinalOutputDrainPhase {
+            case beforeTermination
+            case afterTermination
+
+            var completesDrain: Bool {
+                self == .afterTermination
+            }
+
+            var persistenceLimitReason: String {
+                switch self {
+                case .beforeTermination:
+                    return "final PTY output persistence remained pending at the bounded pre-termination drain limit"
+                case .afterTermination:
+                    return "final PTY output persistence remained pending at the bounded drain limit"
+                }
+            }
+        }
+
         let id: BrokerSessionID
         let agentStatusOwnerToken: String?
         let process: NativePTYChildProcess
@@ -842,81 +863,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             return min(maxBytes, max(0, maxScrollbackBytes - outputPersistenceBytesOutstanding))
         }
 
-        func drainBufferedOutputBeforeTermination() throws {
-            outputReadLock.lock()
-            defer { outputReadLock.unlock() }
-            var drainState = finalOutputDrainState()
-            if let reason = drainState.failureReason {
-                guard drainState.retryAfterPersistence else {
-                    throw RuntimeError.retirementCompletedWithOutputFailure(id, reason: reason)
-                }
-                let persistenceDeadline = DispatchTime.now()
-                    + .milliseconds(outputCleanupTimeoutMilliseconds)
-                guard outputPersistenceGroup.wait(timeout: persistenceDeadline) == .success else {
-                    try retainFinalOutputDrainFailure(
-                        reason: "final PTY output persistence timed out",
-                        retryAfterPersistence: true
-                    )
-                }
-                lock.lock()
-                finalOutputDrainFailureReason = nil
-                finalOutputDrainRetryAfterPersistence = false
-                lock.unlock()
-                drainState = finalOutputDrainState()
-            }
-            guard !drainState.complete else {
-                try throwScrollbackPersistenceErrorAsRetirementWarning()
-                return
-            }
-            var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
-            let deadline = DispatchTime.now() + .milliseconds(outputCleanupTimeoutMilliseconds)
-            var drainedByteCount = 0
-            while true {
-                if DispatchTime.now() >= deadline || drainedByteCount >= maxScrollbackBytes {
-                    if hasPendingScrollbackPersistence() {
-                        try retainFinalOutputDrainFailure(
-                            reason: "final PTY output persistence remained pending at the bounded pre-termination drain limit",
-                            retryAfterPersistence: true
-                        )
-                    }
-                    return
-                }
-                let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
-                if readCapacity == 0 {
-                    try retainFinalOutputDrainFailure(
-                        reason: "final PTY output persistence backlog reached the bounded retention limit",
-                        retryAfterPersistence: true
-                    )
-                }
-                var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
-                let ready = poll(&descriptor, 1, 0)
-                if ready == 0 {
-                    return
-                }
-                if ready < 0 {
-                    if errno == EINTR { continue }
-                    try retainFinalOutputDrainFailure(errno: errno)
-                }
-                let readResult = buffer.withUnsafeMutableBytes { rawBuffer in
-                    outputReader(masterHandle.fileDescriptor, rawBuffer.baseAddress, readCapacity)
-                }
-                let count = readResult.count
-                if count > 0 {
-                    drainedByteCount += count
-                    appendOutput(Data(buffer.prefix(count)))
-                    continue
-                }
-                if count == 0 || readResult.errno == EIO {
-                    return
-                }
-                if readResult.errno == EINTR {
-                    continue
-                }
-                try retainFinalOutputDrainFailure(errno: readResult.errno)
-            }
-        }
-
-        func drainFinalOutput() throws {
+        func drainOutput(_ phase: FinalOutputDrainPhase) throws {
             outputReadLock.lock()
             defer { outputReadLock.unlock() }
             var drainState = finalOutputDrainState()
@@ -950,19 +897,23 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 if DispatchTime.now() >= deadline {
                     if hasPendingScrollbackPersistence() {
                         try retainFinalOutputDrainFailure(
-                            reason: "final PTY output persistence timed out",
+                            reason: phase == .beforeTermination
+                                ? phase.persistenceLimitReason
+                                : "final PTY output persistence timed out",
                             retryAfterPersistence: true
                         )
                     }
+                    guard phase.completesDrain else { return }
                     try retainFinalOutputDrainFailure(reason: "final PTY output drain timed out")
                 }
                 if drainedByteCount >= maxScrollbackBytes {
                     if hasPendingScrollbackPersistence() {
                         try retainFinalOutputDrainFailure(
-                            reason: "final PTY output persistence remained pending at the bounded drain limit",
+                            reason: phase.persistenceLimitReason,
                             retryAfterPersistence: true
                         )
                     }
+                    guard phase.completesDrain else { return }
                     try retainFinalOutputDrainFailure(reason: "final PTY output exceeded the bounded drain limit")
                 }
                 let readCapacity = persistenceReadCapacity(maxBytes: buffer.count)
@@ -975,6 +926,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 var descriptor = pollfd(fd: masterHandle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
                 let ready = poll(&descriptor, 1, 0)
                 if ready == 0 {
+                    guard phase.completesDrain else { return }
                     break
                 }
                 if ready < 0 {
@@ -991,6 +943,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                     continue
                 }
                 if count == 0 || readResult.errno == EIO {
+                    guard phase.completesDrain else { return }
                     break
                 }
                 if readResult.errno == EINTR {
@@ -998,6 +951,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 }
                 try retainFinalOutputDrainFailure(errno: readResult.errno)
             }
+            guard phase.completesDrain else { return }
             lock.lock()
             finalOutputDrainComplete = true
             lock.unlock()
@@ -1481,7 +1435,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
                 NSLog("Native PTY input descriptor cleanup failed for \(id.rawValue): \(error)")
             }
             do {
-                try drainBufferedOutputBeforeTermination()
+                try drainOutput(.beforeTermination)
             } catch {
                 NSLog("Native PTY buffered output cleanup failed for \(id.rawValue): \(error)")
                 if finalOutputDrainState().retryAfterPersistence
@@ -1515,7 +1469,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
             shutDownOutputMonitoring()
             do {
-                try drainFinalOutput()
+                try drainOutput(.afterTermination)
             } catch {
                 NSLog("Native PTY final output cleanup failed for \(id.rawValue): \(error)")
                 // Persistence backpressure and in-flight callbacks are recoverable,
@@ -2287,7 +2241,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let inputCloseError = inputCloseFailure(for: session)
         var outputDrainError: Error?
         do {
-            try session.drainBufferedOutputBeforeTermination()
+            try session.drainOutput(.beforeTermination)
         } catch {
             outputDrainError = error
         }
@@ -2330,7 +2284,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
         session.shutDownOutputMonitoring()
         do {
-            try session.drainFinalOutput()
+            try session.drainOutput(.afterTermination)
             // A bounded backlog warning from the pre-termination drain is no
             // longer actionable once the quiescent final drain succeeds.
             outputDrainError = nil
