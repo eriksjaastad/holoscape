@@ -372,7 +372,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
-    func testClientTreatsLegacyProtocolErrorForOwnerTokenQueryAsUnapplied() throws {
+    func testClientFailsClosedWhenHostCannotReportAppliedOwnerToken() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { _ in
             try codec.encodeResponse(
@@ -385,11 +385,17 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             )
         }
 
-        XCTAssertNil(
-            try client.agentStatusOwnerToken(
-                id: BrokerSessionID(rawValue: "legacy-owner-token-query")
+        XCTAssertThrowsError(
+            try client.agentStatusOwnerToken(id: BrokerSessionID(rawValue: "legacy-owner-token-query"))
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .hostFailure(
+                    code: "protocol-error",
+                    message: "unknown enum case agentStatusOwnerToken"
+                )
             )
-        )
+        }
     }
 
     func testHostClientLiveReplayConsumesDetachedOutputExactlyOnce() throws {

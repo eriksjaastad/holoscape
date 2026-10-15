@@ -119,16 +119,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     func agentStatusOwnerToken(id: BrokerSessionID) throws -> String? {
-        let response: BrokerSessionHostResponse
-        do {
-            response = try self.response(for: .agentStatusOwnerToken(id: id))
-        } catch let ClientError.hostFailure(code, _) where code == "protocol-error" {
-            // A broker process can outlive the app version that launched it.
-            // Hosts predating this additive query reject the enum case before
-            // dispatch; those hosts also predate owner-token injection, so nil is
-            // the truthful applied-token result rather than a transport outage.
-            return nil
-        }
+        let response = try self.response(for: .agentStatusOwnerToken(id: id))
         guard case let .agentStatusOwnerToken(token) = response else {
             throw ClientError.unexpectedResponse(expected: "agentStatusOwnerToken", actual: response)
         }
