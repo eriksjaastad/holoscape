@@ -15,7 +15,7 @@ Holoscape is a native macOS terminal application that replaces iTerm/Warp with a
 - Text input works like a normal text editor — click to position cursor, select text, delete
 - Agent conversations and shell sessions coexist in the same application
 - OAuth and API key auth are isolated per channel — no billing accidents
-- Bug and crash reports are explicit, privacy-bounded, and retry truthfully
+- Bug and crash reports are sent only after user action and retry truthfully
 - HoloScape owns terminal/session lifecycle while using narrow, audited dependencies such as SwiftTerm
 
 ## Non-Goals
@@ -69,14 +69,16 @@ The secondary problem: existing terminals are someone else's product. They can't
 
 **Bug reports** are explicit user submissions to the fixed HoloScape report
 service endpoint (`https://api.synthinsightlabs.com/reports`):
-- The payload can include channel identity, recent terminal output, user
-  description, app/system context, history metadata, and an optional screenshot.
-  This context may contain sensitive terminal or conversation data; users must
-  review it before submission.
+- The bug-report dialog previews app, channel, and appearance context plus the
+  last 50 output lines. Submission sends more than the preview shows: the last
+  100 output lines, a history snapshot, the user description, and any attached
+  screenshot. Any of it may contain sensitive terminal or conversation data.
 - Failed submissions are stored locally and retried automatically after launch;
   pending reports older than 30 days are deleted.
-- Crash traces are read from `~/Library/Logs/DiagnosticReports/` for explicit
-  crash-report flows.
+- After a crash, the next launch reads the trace from
+  `~/Library/Logs/DiagnosticReports/` and asks whether to submit it. The prompt
+  shows a summary only; submission sends up to 10,000 characters of the trace,
+  saved channel state, and a history snapshot.
 
 ## Functional Requirements
 
@@ -246,8 +248,8 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 ## Success Metrics
 
 - Erik stops mixing up agent windows (primary — qualitative, self-reported)
-- Bug reports expose their attached context, submit only after user action, and
-  retry failed deliveries automatically for up to 30 days
+- Bug reports submit only after user action and retry failed deliveries
+  automatically for up to 30 days
 - Channel switching is instant and identity is unambiguous
 - Text input feels like a normal text editor, not a 1970s terminal
 - Holoscape becomes Erik's primary terminal within 1 week of V1
@@ -354,10 +356,10 @@ local stdio tool server that controls HoloScape through its loopback HTTP API;
 external agent endpoint. The channel is optional and cannot participate in core
 terminal startup or session truth.
 
-An external integration supplies its endpoint, authentication, and routing.
-HoloScape renders incoming messages, sends outgoing messages through the MCP
-client protocol, and surfaces connection/disconnection state. No specific
-external service or agent role is part of the core contract.
+The profile supplies the endpoint. The channel is request/response: each line the
+user sends becomes one `send_message` tool call, and the channel shows that call's
+reply under the fixed label `CEO`. It has no path for messages that arrive
+independently. It surfaces connecting, active, and disconnected state.
 
 Example session profile:
 
