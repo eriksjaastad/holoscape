@@ -2380,6 +2380,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 return .brokerHostUnavailable
             case .launchOutcomeUnknown:
                 return .brokerHostUnavailable
+            case .launchStillPending:
+                return .failed
             case .retirementRollbackFailed, .retirementFinalizationFailed,
                  .detachRollbackFailed, .reattachRollbackFailed,
                  .reattachCleanupFailed, .exitRollbackFailed, .exitFinalizationFailed,

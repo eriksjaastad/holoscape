@@ -170,6 +170,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         case concurrentSessionTransition(BrokerSessionID)
         case untrackedSession(BrokerSessionID, registryFailure: String, rollbackFailure: String)
         case launchOutcomeUnknown(BrokerSessionRecord, reason: String)
+        case launchStillPending(BrokerSessionID)
         case agentStatusOwnerTokenMismatch(BrokerSessionID)
         case registryTransitionCommitted(BrokerSessionRecord, durabilityFailure: String)
         case registryPruneCommitted(
@@ -522,7 +523,14 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     // status means its last output/status is still settling. Keep
                     // the create intent pending instead of manufacturing stale
                     // truth that neither recovery nor orphan cleanup can finish.
-                    guard !runtimeSessionIDs.contains(current.id) else { return current }
+                    if runtimeSessionIDs.contains(current.id) {
+                        let latest = try self.record(for: current.id)
+                        guard latest == current else {
+                            current = latest
+                            continue
+                        }
+                        return current
+                    }
                     let stale = current.withLifecycle(
                         .stale,
                         exitCode: nil,
@@ -723,7 +731,20 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord {
-        let existing = try record(for: id)
+        var existing = try record(for: id)
+        if existing.lifecycle == .creating {
+            let runtimeSessionIDs = Set(try runtime.listSessions())
+            guard let recovered = try recoverCreatingSessionForDiscovery(
+                existing,
+                runtimeSessionIDs: runtimeSessionIDs
+            ) else {
+                throw CoordinatorError.staleSession(id)
+            }
+            guard recovered.lifecycle != .creating else {
+                throw CoordinatorError.launchStillPending(id)
+            }
+            existing = recovered
+        }
         if existing.lifecycle == .terminating {
             // A prior retirement may have removed the runtime session before its
             // final metadata write or response completed. Finish that idempotent

@@ -1588,10 +1588,12 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         let originalID = try XCTUnwrap(ambiguousID)
         runtime.createError = nil
         runtime.attachError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(originalID)
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(originalID)
         XCTAssertThrowsError(try coordinator.reattach(originalID, attachedChannelID: UUID())) { error in
             XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .staleSession(originalID))
         }
         runtime.attachError = nil
+        runtime.statusError = nil
 
         let replacement = try coordinator.start(
             launchRequest(workingDirectory: "/tmp/replaced-broker"),
@@ -1685,6 +1687,49 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recovered.agentStatusOwnerToken, ownerToken)
     }
 
+    func testRetryReattachRecoversAcknowledgedOwnerTokenAfterLostCreateResponse() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 604.1875) })
+        let ownerToken = "applied-before-retry"
+        var creatingID: BrokerSessionID?
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                BrokerSessionLaunchRequest(
+                    command: "/usr/bin/env",
+                    arguments: ["codex"],
+                    workingDirectory: "/tmp/owner-token-retry",
+                    environmentProfile: .agentOAuth,
+                    agentStatusOwnerToken: ownerToken,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                ),
+                channelType: .agentDirect,
+                label: "owner-token-retry",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error else {
+                return XCTFail("Expected ambiguous launch, got \(error)")
+            }
+            creatingID = record.id
+        }
+
+        let id = try XCTUnwrap(creatingID)
+        runtime.createError = nil
+        runtime.listedSessionIDs = [id]
+        runtime.running = true
+        runtime.reportedAgentStatusOwnerToken = ownerToken
+        let channelID = UUID()
+
+        let attached = try coordinator.reattach(id, attachedChannelID: channelID)
+
+        XCTAssertEqual(attached.lifecycle, .running)
+        XCTAssertEqual(attached.lastAttachedChannelID, channelID)
+        XCTAssertEqual(attached.requestedAgentStatusOwnerToken, ownerToken)
+        XCTAssertEqual(attached.agentStatusOwnerToken, ownerToken)
+    }
+
     func testDiscoveryRejectsDifferentOwnerTokenAfterLostCreateResponse() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
@@ -1764,6 +1809,17 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(pending.lifecycle, .creating)
         XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .creating)
         XCTAssertFalse(runtime.events.contains(.markErrored(id)))
+        XCTAssertThrowsError(try coordinator.reattach(id, attachedChannelID: UUID())) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionCoordinator.CoordinatorError,
+                .launchStillPending(id)
+            )
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .creating)
+        XCTAssertFalse(runtime.events.contains { event in
+            if case .attach = event { return true }
+            return false
+        })
     }
 
     func testDiscoveryReclassifiesCreatingIdentityAfterLostPromotionCAS() throws {
@@ -1826,7 +1882,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         runtime.createError = nil
         runtime.listedSessionIDs = [id]
         runtime.running = false
-        runtime.observedTerminationStatus = 0
+        runtime.observedTerminationStatus = nil
         runtime.onTerminationStatus = { observedID in
             runtime.onTerminationStatus = nil
             XCTAssertEqual(observedID, id)

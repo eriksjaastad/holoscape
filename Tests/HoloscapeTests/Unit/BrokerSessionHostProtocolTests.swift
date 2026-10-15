@@ -372,6 +372,26 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         ])
     }
 
+    func testClientTreatsLegacyProtocolErrorForOwnerTokenQueryAsUnapplied() throws {
+        let codec = BrokerSessionHostCodec()
+        let client = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { _ in
+            try codec.encodeResponse(
+                .failure(
+                    BrokerSessionHostFailure(
+                        code: "protocol-error",
+                        message: "unknown enum case agentStatusOwnerToken"
+                    )
+                )
+            )
+        }
+
+        XCTAssertNil(
+            try client.agentStatusOwnerToken(
+                id: BrokerSessionID(rawValue: "legacy-owner-token-query")
+            )
+        )
+    }
+
     func testHostClientLiveReplayConsumesDetachedOutputExactlyOnce() throws {
         let nativeRuntime = NativePTYBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: nativeRuntime)
