@@ -399,15 +399,14 @@ Each tab shows durable backend/agent state without relying on a hidden timer as 
 - **Stale** channels refer to a missing or unverifiable saved external session
 - Supplemental plugin metadata may be displayed, but must not mask higher-priority terminal/agent states
 
-### Timestamps on Terminal Output
+### Timestamps on Terminal Output — setting shipped; rendering remaining
 
-Toggle-able timestamps prepended to every line of terminal output.
+Shipped: View > Show Timestamps (Cmd+T) toggles `showTimestamps`, which persists
+to config. No channel reads the setting yet, so no output is timestamped.
 
-- When enabled, each line of output gets a `[HH:MM:SS]` prefix in a dimmed color
-- Toggle via menu: View > Show Timestamps (Cmd+T)
-- Setting persists to config
+Remaining:
+- When enabled, each line of output gets a `[HH:MM:SS]` local-time prefix in a dimmed color
 - Applies to all channel types (shell, agent, SSH, group chat, MCP, bridge)
-- Timestamps are local time
 - For group chat, the existing `[HH:MM PM] sender:` format remains — the timestamp toggle adds seconds precision
 
 ### Color Theme Presets
