@@ -43,6 +43,7 @@ enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
     case resize(id: BrokerSessionID, size: TerminalGridSize)
     case isRunning(id: BrokerSessionID)
     case terminationStatus(id: BrokerSessionID)
+    case agentStatusOwnerToken(id: BrokerSessionID)
 }
 
 enum BrokerSessionHostResponse: Codable, Equatable, Sendable {
@@ -56,6 +57,7 @@ enum BrokerSessionHostResponse: Codable, Equatable, Sendable {
     case outputAvailable(Bool)
     case running(Bool)
     case terminationStatus(Int32?)
+    case agentStatusOwnerToken(String?)
     case failure(BrokerSessionHostFailure)
 }
 

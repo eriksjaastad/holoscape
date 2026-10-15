@@ -87,6 +87,26 @@ final class UnixSocketBrokerFixture {
         )
     }
 
+    func makeCoordinatorDroppingFirstCreateResponse(timestamp: Date) -> BrokerSessionCoordinator {
+        let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
+        let dropper = FirstCreateResponseDropper()
+        let runtime = BrokerSessionHostClientRuntime(
+            supportsOutputAvailabilityMonitoring: false,
+            startsOutputAvailabilityMonitor: false
+        ) { frame in
+            let response = try transport.sendFrame(frame)
+            if dropper.shouldDrop(frame) {
+                throw UnixSocketBrokerFixtureError.simulatedLostCreateResponse
+            }
+            return response
+        }
+        return BrokerSessionCoordinator(
+            registry: registry,
+            runtime: runtime,
+            now: { timestamp }
+        )
+    }
+
     func cleanup(file: StaticString = #filePath, line: UInt = #line) {
         guard !didCleanUp else { return }
         didCleanUp = true
@@ -153,11 +173,31 @@ final class UnixSocketBrokerFixture {
 
 enum UnixSocketBrokerFixtureError: Error, CustomStringConvertible {
     case initializationFailed([String])
+    case simulatedLostCreateResponse
 
     var description: String {
         switch self {
         case .initializationFailed(let failures):
             return failures.joined(separator: "; ")
+        case .simulatedLostCreateResponse:
+            return "simulated lost create response"
+        }
+    }
+}
+
+private final class FirstCreateResponseDropper: @unchecked Sendable {
+    private let lock = NSLock()
+    private let codec = BrokerSessionHostCodec()
+    private var didDrop = false
+
+    func shouldDrop(_ frame: Data) -> Bool {
+        lock.withLock {
+            guard !didDrop,
+                  case .create = try? codec.decodeRequest(frame) else {
+                return false
+            }
+            didDrop = true
+            return true
         }
     }
 }

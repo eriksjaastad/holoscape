@@ -414,7 +414,10 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertNil(controller.brokerSessionID)
         XCTAssertEqual(controller.recoveryAction, .reconnect)
         XCTAssertEqual(delegate.stateChanges, [.connecting, .disconnected])
-        XCTAssertTrue(try fixture.records().isEmpty, "A failed broker start must not leave a phantom record")
+        let creating = try fixture.singleRecord()
+        XCTAssertEqual(creating.lifecycle, .creating)
+        XCTAssertEqual(creating.command, "/bin/zsh")
+        XCTAssertEqual(creating.workingDirectory, "/Users/test/work")
     }
 
     func testCoordinatorBackedShellDetachWithBrokerHostOutageKeepsRecordReattachable() throws {

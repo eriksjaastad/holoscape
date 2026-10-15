@@ -524,7 +524,7 @@ final class NativePTYChildProcess: @unchecked Sendable {
 /// owns a real PTY/process pair behind `BrokerSessionRuntime`, which lets the
 /// coordinator facade exercise launch, input/output, resize, and termination
 /// semantics before the process host is moved outside the UI app.
-final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionHostShutdownRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
+final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionInputInterruptingRuntime, BrokerSessionHostShutdownRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime, BrokerTransactionalOutputRuntime, @unchecked Sendable {
     enum InputDescriptorCloseResult: Equatable, Sendable {
         case closed
         case closedWithWarning(Int32)
@@ -569,6 +569,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         }
 
         let id: BrokerSessionID
+        let agentStatusOwnerToken: String?
         let process: NativePTYChildProcess
         let masterHandle: FileHandle
         private let inputDescriptor: Int32
@@ -614,6 +615,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         init(
             id: BrokerSessionID,
+            agentStatusOwnerToken: String?,
             process: NativePTYChildProcess,
             masterHandle: FileHandle,
             inputDescriptor: Int32,
@@ -628,6 +630,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
             scrollbackAppender: (@Sendable (Data, BrokerSessionID) throws -> Void)?
         ) {
             self.id = id
+            self.agentStatusOwnerToken = agentStatusOwnerToken
             self.process = process
             self.masterHandle = masterHandle
             self.inputDescriptor = inputDescriptor
@@ -1854,10 +1857,14 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
 
         try validatePTYGridSize(request.initialSize)
         var resolvedEnvironment = try environment(for: request.environmentProfile)
+        let appliedOwnerToken: String?
         if request.environmentProfile == .agentOAuth || request.environmentProfile == .agentAPI,
            let ownerToken = request.agentStatusOwnerToken,
            !ownerToken.isEmpty {
             resolvedEnvironment["HOLOSCAPE_AGENT_STATUS_OWNER_TOKEN"] = ownerToken
+            appliedOwnerToken = ownerToken
+        } else {
+            appliedOwnerToken = nil
         }
 
         let launch: (process: NativePTYChildProcess, processGroupID: pid_t, masterDescriptor: Int32)
@@ -1976,6 +1983,7 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
         let session = Session(
             id: id,
+            agentStatusOwnerToken: appliedOwnerToken,
             process: process,
             masterHandle: masterHandle,
             inputDescriptor: inputDescriptor,
@@ -2017,6 +2025,10 @@ final class NativePTYBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionIn
         let profileAcceptsOwnerToken = request.environmentProfile == .agentOAuth
             || request.environmentProfile == .agentAPI
         return profileAcceptsOwnerToken && request.agentStatusOwnerToken?.isEmpty == false
+    }
+
+    func agentStatusOwnerToken(id: BrokerSessionID) throws -> String? {
+        try session(for: id).agentStatusOwnerToken
     }
 
     func detachSession(id: BrokerSessionID) throws {

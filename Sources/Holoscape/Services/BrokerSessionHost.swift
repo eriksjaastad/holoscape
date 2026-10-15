@@ -162,6 +162,10 @@ struct BrokerSessionHost {
             return .running(try runtime.isRunning(id: id))
         case let .terminationStatus(id):
             return .terminationStatus(try runtime.terminationStatus(id: id))
+        case let .agentStatusOwnerToken(id):
+            let token = try (runtime as? BrokerSessionAgentStatusOwnerTokenReportingRuntime)?
+                .agentStatusOwnerToken(id: id)
+            return .agentStatusOwnerToken(token)
         }
     }
 
@@ -343,7 +347,8 @@ private extension BrokerSessionHostRequest {
              let .acknowledgeOutput(id, _),
              let .resize(id, _),
              let .isRunning(id),
-             let .terminationStatus(id):
+             let .terminationStatus(id),
+             let .agentStatusOwnerToken(id):
             return id
         }
     }

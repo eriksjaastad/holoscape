@@ -48,6 +48,12 @@ protocol BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime {
     ) throws -> Bool
 }
 
+/// Optional recovery capability for reading the token the broker actually
+/// injected after an ambiguous create response.
+protocol BrokerSessionAgentStatusOwnerTokenReportingRuntime {
+    func agentStatusOwnerToken(id: BrokerSessionID) throws -> String?
+}
+
 enum ScrollbackReplaySource: String, Codable, Equatable, Sendable {
     case liveBrokerMemory
     case persistedDiskTail
