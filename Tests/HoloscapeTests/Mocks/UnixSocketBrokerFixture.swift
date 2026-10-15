@@ -66,9 +66,10 @@ final class UnixSocketBrokerFixture {
             Thread.sleep(forTimeInterval: 0.01)
         }
         guard BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath) else {
-            var failures = [
-                serverFailure.message ?? "the broker socket did not become reachable",
-            ]
+            var failures: [String] = []
+            if serverFailure.message == nil {
+                failures.append("the broker socket did not become reachable")
+            }
             failures.append(contentsOf: stopServerAndCleanArtifacts())
             throw UnixSocketBrokerFixtureError.initializationFailed(failures)
         }
@@ -141,7 +142,10 @@ final class UnixSocketBrokerFixture {
 
     private static func makeClient(socketPath: String) -> BrokerSessionHostClientRuntime {
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
-        return BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+        return BrokerSessionHostClientRuntime(
+            supportsOutputAvailabilityMonitoring: false,
+            startsOutputAvailabilityMonitor: false
+        ) { frame in
             try transport.sendFrame(frame)
         }
     }
