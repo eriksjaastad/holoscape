@@ -2730,6 +2730,50 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { teardownCompleted }
     }
 
+    func testLostUnixSocketCreateResponseRetryReusesBrokerGeneration() throws {
+        let fixture = try UnixSocketBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "lost-create-response",
+            environmentProfile: .shell,
+            coordinator: fixture.makeCoordinatorDroppingFirstCreateResponse(
+                timestamp: Date(timeIntervalSince1970: 699)
+            )
+        )
+
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "sleep 30"],
+            environment: nil,
+            execName: "sh",
+            currentDirectory: fixture.directory.path
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        let originalID = try XCTUnwrap(terminal.brokerOwnedSessionID)
+        XCTAssertEqual(try fixture.activeSessionIDs(), [originalID])
+        XCTAssertEqual(terminal.startFailureKind, .brokerHostUnavailable)
+
+        terminal.startProcess(
+            executable: "/bin/sh",
+            args: ["-c", "sleep 30"],
+            environment: nil,
+            execName: "sh",
+            currentDirectory: fixture.directory.path
+        )
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        XCTAssertEqual(terminal.brokerOwnedSessionID, originalID)
+        XCTAssertNil(terminal.startFailureKind)
+        XCTAssertEqual(try fixture.activeSessionIDs(), [originalID])
+
+        var teardownCompleted = false
+        terminal.retireBrokerSessionForClose { _ in teardownCompleted = true }
+        try waitUntil { teardownCompleted }
+    }
+
 
     func testOperationsWithoutLiveBrokerSessionAreIgnoredWithoutReportedHostLoss() throws {
         let fixture = try makeMidSessionFixture(

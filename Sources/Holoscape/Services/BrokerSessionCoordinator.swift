@@ -1,5 +1,24 @@
 import Foundation
 
+private final class BrokerSessionLaunchClaims: @unchecked Sendable {
+    static let shared = BrokerSessionLaunchClaims()
+
+    private let lock = NSLock()
+    private var claimedIDs: Set<BrokerSessionID> = []
+
+    func claim(_ id: BrokerSessionID) {
+        lock.withLock { _ = claimedIDs.insert(id) }
+    }
+
+    func release(_ id: BrokerSessionID) {
+        lock.withLock { _ = claimedIDs.remove(id) }
+    }
+
+    func contains(_ id: BrokerSessionID) -> Bool {
+        lock.withLock { claimedIDs.contains(id) }
+    }
+}
+
 protocol BrokerSessionCoordinating {
     var requiresOffMainBrokerWork: Bool { get }
     func start(
@@ -162,6 +181,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     private let registry: BrokerSessionRegistry
     private let runtime: any BrokerSessionRuntime
     private let now: () -> Date
+    private let launchClaims = BrokerSessionLaunchClaims.shared
     private let legacyOutputTransactions = LegacyBrokerOutputTransactions()
 
     init(
@@ -280,6 +300,12 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 // replay authority and remains final.
                 return runtimeSessionIDs.contains(record.id) ? record : nil
             case .creating:
+                // A durable create intent is visible before the runtime call.
+                // Discovery in this GUI process must not recover that record
+                // while the start that owns it is still in flight. Claims are
+                // deliberately process-local: a crash releases them so relaunch
+                // discovery can reconcile an ambiguous broker outcome.
+                guard !launchClaims.contains(record.id) else { return nil }
                 return try recoverCreatingSessionForDiscovery(record, runtimeSessionIDs: runtimeSessionIDs)
             case .errored:
                 return nil
@@ -295,6 +321,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     ) throws -> BrokerSessionRecord {
         let timestamp = now()
         let id = BrokerSessionID()
+        launchClaims.claim(id)
+        defer { launchClaims.release(id) }
         let creating = BrokerSessionRecord(
             id: id,
             channelType: channelType,
@@ -333,7 +361,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 updatedAt: now(),
                 lastAttachedChannelID: nil
             )
-            _ = try replaceRegistry(terminating, ifUnchangedFrom: creating)
+            let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                terminating,
+                ifUnchangedFrom: creating
+            )
+            guard wasReplaced else {
+                throw CoordinatorError.concurrentSessionTransition(id)
+            }
+            if let durabilityWarning {
+                throw CoordinatorError.registryTransitionCommitted(
+                    terminating,
+                    durabilityFailure: durabilityWarning
+                )
+            }
             throw CoordinatorError.launchOutcomeUnknown(terminating, reason: reason)
         } catch let clientError as BrokerSessionHostClientRuntime.ClientError {
             if case let .launchCleanupPending(_, reason) = clientError {
@@ -343,7 +383,19 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                     updatedAt: now(),
                     lastAttachedChannelID: nil
                 )
-                _ = try replaceRegistry(terminating, ifUnchangedFrom: creating)
+                let (wasReplaced, durabilityWarning) = try replaceRegistry(
+                    terminating,
+                    ifUnchangedFrom: creating
+                )
+                guard wasReplaced else {
+                    throw CoordinatorError.concurrentSessionTransition(id)
+                }
+                if let durabilityWarning {
+                    throw CoordinatorError.registryTransitionCommitted(
+                        terminating,
+                        durabilityFailure: durabilityWarning
+                    )
+                }
                 throw CoordinatorError.launchOutcomeUnknown(terminating, reason: reason)
             }
             guard let message = clientError.ambiguousCreateFailureReason else {
