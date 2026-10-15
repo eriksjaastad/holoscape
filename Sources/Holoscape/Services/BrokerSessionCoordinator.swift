@@ -208,7 +208,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         // ID (for example after tab close or app termination). The broker's live
         // inventory is the durable fallback authority: retire any generation
         // that has no registry record before offering sessions for restore.
-        for orphanID in runtimeSessionIDs where !recordedIDs.contains(orphanID) {
+        for orphanID in runtimeSessionIDs
+            where !recordedIDs.contains(orphanID) && !launchClaims.contains(orphanID) {
             do {
                 try retireUntrackedSession(orphanID)
             } catch let error where isCompletedRetirementFailure(error) {
@@ -490,9 +491,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         runtimeSessionIDs: Set<BrokerSessionID>
     ) throws -> BrokerSessionRecord? {
         do {
-            let runtimeOwnsSession = runtimeSessionIDs.contains(record.id)
-                ? true
-                : try runtime.isRunning(id: record.id)
+            let runtimeOwnsSession = try runtime.isRunning(id: record.id)
             guard runtimeOwnsSession else {
                 if let exitCode = try runtime.terminationStatus(id: record.id) {
                     return try exit(record.id, exitCode: exitCode)
@@ -507,9 +506,10 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
                 }
                 return nil
             }
-        } catch BrokerSessionHostClientRuntime.ClientError.transportFailed {
-            return nil
         } catch let error where isMissingRuntimeSessionError(error, id: record.id) {
+            if runtimeSessionIDs.contains(record.id) {
+                try retireUntrackedSession(record.id)
+            }
             _ = try updateMetadataOnly(record.id) { current in
                 current.withLifecycle(
                     .stale,

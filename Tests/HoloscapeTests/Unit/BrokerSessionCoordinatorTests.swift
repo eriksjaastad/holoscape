@@ -36,8 +36,12 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var availableOutput = Data()
         var availableOutputReadCount = 0
         var listedSessionIDs: [BrokerSessionID] = []
+        var onList: (() throws -> Void)?
 
-        func listSessions() throws -> [BrokerSessionID] { listedSessionIDs }
+        func listSessions() throws -> [BrokerSessionID] {
+            try onList?()
+            return listedSessionIDs
+        }
 
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
             try onCreate?(id)
@@ -1425,6 +1429,69 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(results.record?.lifecycle, .running)
     }
 
+    func testDiscoveryDoesNotRetireLaunchCreatedAfterRegistrySnapshot() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let listEntered = expectation(description: "runtime inventory entered")
+        let createEntered = expectation(description: "runtime create entered")
+        let discoveryCompleted = expectation(description: "discovery completed")
+        let startCompleted = expectation(description: "start completed")
+        let allowList = DispatchSemaphore(value: 0)
+        let allowCreate = DispatchSemaphore(value: 0)
+        let registry = BrokerSessionRegistry(
+            fileURL: tempDirectory.appendingPathComponent("snapshot-race.json")
+        )
+        let coordinator = makeCoordinator(
+            runtime: runtime,
+            registry: registry,
+            now: { Date(timeIntervalSince1970: 600.75) }
+        )
+        let concurrentCoordinator = ConcurrentCoordinator(coordinator)
+        let results = ConcurrentStartResults()
+        let request = launchRequest(workingDirectory: "/tmp/snapshot-race")
+        runtime.onList = {
+            listEntered.fulfill()
+            allowList.wait()
+        }
+        runtime.onCreate = { id in
+            runtime.listedSessionIDs = [id]
+            createEntered.fulfill()
+            allowCreate.wait()
+        }
+
+        DispatchQueue.global().async {
+            _ = try? concurrentCoordinator.value.reattachableSessions()
+            discoveryCompleted.fulfill()
+        }
+        wait(for: [listEntered], timeout: 1)
+
+        DispatchQueue.global().async {
+            do {
+                results.record(try concurrentCoordinator.value.start(
+                    request,
+                    channelType: .shell,
+                    label: "snapshot-race",
+                    attachedChannelID: UUID()
+                ))
+            } catch {
+                results.record(error)
+            }
+            startCompleted.fulfill()
+        }
+        wait(for: [createEntered], timeout: 1)
+
+        allowList.signal()
+        wait(for: [discoveryCompleted], timeout: 1)
+        XCTAssertFalse(runtime.events.contains { event in
+            if case .markErrored = event { return true }
+            return false
+        })
+
+        allowCreate.signal()
+        wait(for: [startCompleted], timeout: 1)
+        XCTAssertNil(results.error)
+        XCTAssertEqual(results.record?.lifecycle, .running)
+    }
+
     func testStartWithLostCreateResponsePreservesDurableCreatingIdentity() throws {
         let runtime = RecordingBrokerSessionRuntime()
         runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
@@ -1551,6 +1618,69 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recovered.id, durableCreating.id)
         XCTAssertEqual(recovered.lifecycle, .detached)
         XCTAssertEqual(runtime.events, [])
+    }
+
+    func testDiscoveryRetiresCleanupOnlyCreatingIdentityInsteadOfPromotingIt() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 604.5) })
+        var creatingID: BrokerSessionID?
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/cleanup-only"),
+                channelType: .shell,
+                label: "cleanup-only",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error else {
+                return XCTFail("Expected ambiguous launch, got \(error)")
+            }
+            creatingID = record.id
+        }
+
+        let id = try XCTUnwrap(creatingID)
+        runtime.createError = nil
+        runtime.listedSessionIDs = [id]
+        runtime.statusError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id)
+
+        XCTAssertEqual(try coordinator.reattachableSessions(), [])
+        XCTAssertTrue(runtime.events.contains(.markErrored(id)))
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .stale)
+    }
+
+    func testDiscoveryPropagatesCreatingSessionTransportFailure() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        runtime.createError = BrokerSessionHostClientRuntime.ClientError.transportFailed("response lost")
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 604.75) })
+        var creatingID: BrokerSessionID?
+
+        XCTAssertThrowsError(
+            try coordinator.start(
+                launchRequest(workingDirectory: "/tmp/discovery-outage"),
+                channelType: .shell,
+                label: "discovery-outage",
+                attachedChannelID: nil
+            )
+        ) { error in
+            guard case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error else {
+                return XCTFail("Expected ambiguous launch, got \(error)")
+            }
+            creatingID = record.id
+        }
+
+        let id = try XCTUnwrap(creatingID)
+        runtime.createError = nil
+        runtime.listedSessionIDs = [id]
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.transportFailed("host unavailable")
+
+        XCTAssertThrowsError(try coordinator.reattachableSessions()) { error in
+            guard case BrokerSessionHostClientRuntime.ClientError.transportFailed = error else {
+                return XCTFail("Expected transport failure, got \(error)")
+            }
+        }
+        XCTAssertEqual(try XCTUnwrap(coordinator.loadAll().first).lifecycle, .creating)
     }
 
     func testDiscoveryFinalizesMissingCreatingIdentityAsStale() throws {
