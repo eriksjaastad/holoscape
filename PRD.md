@@ -593,7 +593,7 @@ distribution without treating the existing engine as unimplemented.
 - Optional external-agent MCP client channel (`MCPClient` actor + `MCPChannelController`)
 - Group chat channel (Agent Chat API via HTTP polling, custom NSTextView, auto-scroll)
 - Running process indicator with elapsed time on tabs (green/yellow/red dots + "2h 15m")
-- Timestamps on terminal output (toggle via Cmd+T, [HH:MM:SS] prefix)
+- Timestamp menu toggle and persisted setting; output rendering is not wired
 - Color theme presets (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) with override support
 - Cmd+1-9 keyboard shortcuts for channel switching via NSEvent local monitor
 
@@ -612,6 +612,7 @@ distribution without treating the existing engine as unimplemented.
 **V3 — Remaining product surface:**
 - Complete notification preferences and click-through focus behavior
 - Window splitting polish and persistence follow-up, if the current implementation lacks any intended UX behavior
+- Wire the timestamp setting into channel output without double-prefixing channel-native timestamps
 - Search across channel output (Cmd+F to search scrollback in active channel)
 - Skin/chrome polish on top of the existing shaped-window, Metal/shader, MercuryDeck, and reactive-uniform substrate
 
@@ -657,7 +658,7 @@ distribution without treating the existing engine as unimplemented.
 4. ~~SSH key management?~~ **ANSWERED:** System SSH agent.
 5. ~~Project directory discovery?~~ **ANSWERED:** SSH ls with cache.
 6. ~~Group chat: WebSocket or HTTP polling?~~ **ANSWERED (V2):** HTTP polling, 3-second interval.
-7. ~~Timestamps: intercept or overlay?~~ **ANSWERED (V2):** Intercept via output delegate for PTY, appendMessage for NSTextView.
+7. **Timestamp rendering:** the intended design is output-delegate interception for PTY channels and `appendMessage` integration for text channels, but neither production path is wired yet.
 8. Should the fixed bug-report endpoint become operator-configurable for public builds?
 9. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
 10. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
