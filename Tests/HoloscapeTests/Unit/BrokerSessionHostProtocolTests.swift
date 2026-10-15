@@ -3035,6 +3035,25 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(configService.load().channels.count, 1)
         XCTAssertEqual(configService.load().channels.first?.brokerSessionID, brokerSessionID)
 
+        let unreadMarker = "hosted-shell-unread-generation"
+        try firstCoordinator.sendInput(
+            brokerSessionID,
+            bytes: Array("printf 'aG9zdGVkLXNoZWxsLXVucmVhZC1nZW5lcmF0aW9uCg==' | base64 -D\n".utf8)
+        )
+        let persistedOutputDeadline = Date().addingTimeInterval(3)
+        while Date() < persistedOutputDeadline {
+            let tail = try firstCoordinator.readScrollbackTail(brokerSessionID, maxBytes: 4096)
+            if String(decoding: tail, as: UTF8.self).contains(unreadMarker) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(
+            String(
+                decoding: try firstCoordinator.readScrollbackTail(brokerSessionID, maxBytes: 4096),
+                as: UTF8.self
+            ).contains(unreadMarker),
+            "Detached output must be durable before the relaunched controller claims its unread generation"
+        )
+
         let secondCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_201))
         let secondLaunchManager = ChannelManager(
             configService: configService,
@@ -3060,14 +3079,18 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(restoredShell.brokerSessionID, brokerSessionID)
         XCTAssertEqual(restoredShell.workingDirectory, tempDirectory.path)
         XCTAssertTrue(try secondCoordinator.isRunning(brokerSessionID))
-        try secondCoordinator.sendInput(brokerSessionID, bytes: Array("hosted-shell-relaunch-reattach\n".utf8))
         let outputDeadline = Date().addingTimeInterval(3)
         while Date() < outputDeadline,
-              !restoredShell.lastLines(20).joined(separator: "\n").contains("hosted-shell-relaunch-reattach") {
+              !restoredShell.lastLines(20).joined(separator: "\n").contains(unreadMarker) {
             try await Task.sleep(for: .milliseconds(10))
         }
         let output = restoredShell.lastLines(20).joined(separator: "\n")
-        XCTAssertTrue(output.contains("hosted-shell-relaunch-reattach"), output)
+        XCTAssertTrue(output.contains(unreadMarker), output)
+        XCTAssertEqual(
+            output.components(separatedBy: unreadMarker).count - 1,
+            1,
+            "The restored controller must present the detached unread generation exactly once"
+        )
 
         let records = try registry.load()
         XCTAssertEqual(records.count, 1)

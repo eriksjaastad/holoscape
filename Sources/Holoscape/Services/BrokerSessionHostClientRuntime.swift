@@ -28,7 +28,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     let supportsOutputAvailabilityMonitoring: Bool
     private let startsOutputAvailabilityMonitor: Bool
     private let outputMonitor = BrokerSessionHostClientOutputMonitor()
-    private let outputTransactions = BrokerSessionHostClientOutputTransactions()
+    private let outputTransactions = BrokerOutputTransactions()
 
     init(
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
@@ -249,12 +249,12 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         guard let generation else { return }
         do {
             try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
-            outputTransactions.clearPending(id: id, through: generation)
+            outputTransactions.clearAcknowledgment(id: id, through: generation)
         } catch {
             // The bytes are already safely present in this process. Preserve the
             // idempotent acknowledgement for the next read instead of turning an
             // ambiguous ack response into output loss or duplicate delivery.
-            outputTransactions.setPending(id: id, generation: generation)
+            outputTransactions.deferAcknowledgment(id: id, generation: generation)
             NSLog("Broker output acknowledgement deferred for \(id.rawValue): \(error)")
             throw error
         }
@@ -272,9 +272,9 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     private func flushPendingOutputAcknowledgment(id: BrokerSessionID) throws {
-        guard let generation = outputTransactions.pendingGeneration(id: id) else { return }
+        guard let generation = outputTransactions.pendingAcknowledgment(id: id) else { return }
         try expectOK(.acknowledgeOutput(id: id, throughGeneration: generation))
-        outputTransactions.clearPending(id: id, through: generation)
+        outputTransactions.clearAcknowledgment(id: id, through: generation)
     }
 
     func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
@@ -363,55 +363,6 @@ extension BrokerSessionHostClientRuntime.ClientError {
         case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
             return nil
         }
-    }
-}
-
-private final class BrokerSessionHostClientOutputTransactions: @unchecked Sendable {
-    private let stateLock = NSLock()
-    private var sessionLocks: [BrokerSessionID: NSRecursiveLock] = [:]
-    private var pendingAcknowledgments: [BrokerSessionID: UInt64] = [:]
-    private var legacyReplayPresented: Set<BrokerSessionID> = []
-
-    func withSession<T>(_ id: BrokerSessionID, operation: () throws -> T) rethrows -> T {
-        stateLock.lock()
-        let lock = sessionLocks[id] ?? NSRecursiveLock()
-        sessionLocks[id] = lock
-        stateLock.unlock()
-        lock.lock()
-        defer { lock.unlock() }
-        return try operation()
-    }
-
-    func pendingGeneration(id: BrokerSessionID) -> UInt64? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return pendingAcknowledgments[id]
-    }
-
-    func setPending(id: BrokerSessionID, generation: UInt64) {
-        stateLock.lock()
-        pendingAcknowledgments[id] = max(pendingAcknowledgments[id] ?? 0, generation)
-        stateLock.unlock()
-    }
-
-    func clearPending(id: BrokerSessionID, through generation: UInt64) {
-        stateLock.lock()
-        if let pending = pendingAcknowledgments[id], pending <= generation {
-            pendingAcknowledgments.removeValue(forKey: id)
-        }
-        stateLock.unlock()
-    }
-
-    func claimLegacyReplay(id: BrokerSessionID, hasNewGeneration: Bool, hasData: Bool) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        if !hasNewGeneration, legacyReplayPresented.contains(id) {
-            return false
-        }
-        if hasData {
-            legacyReplayPresented.insert(id)
-        }
-        return true
     }
 }
 
