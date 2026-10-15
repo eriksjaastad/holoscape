@@ -1308,6 +1308,29 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(replacementAcceptance.wasAccepted)
     }
 
+    func testOutputPresentationOwnsReplayRenderingAndNotification() {
+        let terminalView = HoloscapeTerminalView(frame: .zero)
+        let presentation = BrokerTerminalOutputPresentation(
+            terminalView: terminalView,
+            deliveryTimeout: 1
+        )
+        var notificationCount = 0
+        presentation.setOutputHandler { notificationCount += 1 }
+        let replay = ScrollbackReplay(
+            data: Data("restored-output".utf8),
+            source: .persistedDiskTail,
+            maxBytes: 4_096
+        )
+
+        presentation.presentReplay(replay)
+
+        let rendered = terminalView.lastLines(10).joined(separator: "\n")
+        XCTAssertEqual(presentation.lastScrollbackReplay, replay)
+        XCTAssertTrue(rendered.contains("persisted disk scrollback"))
+        XCTAssertTrue(rendered.contains("restored-output"))
+        XCTAssertEqual(notificationCount, 1)
+    }
+
     func testOutputDeliveryTimeoutDoesNotAcknowledgeOrDiscardPendingOutput() throws {
         let coordinator = BlockingReattachCoordinator()
         coordinator.blockOutputSnapshot()

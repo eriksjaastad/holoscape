@@ -36,9 +36,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private let outputCoordinator: BrokerOutputCoordinator
     private let failureRecoveryCoordinator: BrokerFailureRecoveryCoordinator
     private let teardownRetryDelay: (Int) -> TimeInterval
-    private let outputDeliveryTimeout: TimeInterval
     private let terminalView: HoloscapeTerminalView
-    private var outputHandler: (() -> Void)?
+    private let outputPresentation: BrokerTerminalOutputPresentation
     private var sessionFailureHandler: ((TerminalSessionFailure) -> Void)?
     private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
     private var hostCurrentDirectoryHandler: ((String?) -> Void)?
@@ -70,14 +69,6 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     /// instead of independently stopping its output lane.
     private var closeRetirementInFlight = false
     private var closeRetirementCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
-    /// Identifies the terminal-view ownership window allowed to consume broker
-    /// output. A queued main-actor delivery must still hold this exact lease;
-    /// matching the broker ID alone is insufficient because teardown deliberately
-    /// preserves that ID for later reattach.
-    private var nextOutputDeliveryGeneration: UInt = 0
-    private var activeOutputDeliveryGeneration: UInt?
-    private var activeOutputHandoffGeneration: UInt?
-    private let outputDeliveryGate = BrokerOutputDeliveryGate()
     private let outputReadLane = BrokerOutputReadLane()
     private let inputWriteLane = BrokerInputWriteLane()
     private let exitedOutputResolutionClaim = BrokerExitResolutionClaim()
@@ -97,13 +88,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     private(set) var startFailureDescription: String?
     private(set) var startFailureKind: TerminalStartFailureKind?
     private(set) var untrackedBrokerSessionID: BrokerSessionID?
-    private(set) var lastScrollbackReplay: ScrollbackReplay?
-    /// The broker generation already represented by this terminal view.
-    private var presentedBrokerSessionID: BrokerSessionID?
-    /// Bytes rendered before their broker acknowledgement failed. A retry strips
-    /// this exact prefix from the next transactional snapshot, acknowledges the
-    /// full generation, and renders only genuinely new suffix bytes.
-    private var presentedUnacknowledgedOutput: (sessionID: BrokerSessionID, data: Data)?
+    var lastScrollbackReplay: ScrollbackReplay? { outputPresentation.lastScrollbackReplay }
     /// Cleanup authority survives presentation-lease revocation. A retry resumes
     /// retirement instead of rendering unacknowledged final bytes again.
     private(set) var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
@@ -149,8 +134,11 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         self.outputCoordinator = BrokerOutputCoordinator(coordinator)
         self.failureRecoveryCoordinator = BrokerFailureRecoveryCoordinator(coordinator)
         self.teardownRetryDelay = teardownRetryDelay
-        self.outputDeliveryTimeout = outputDeliveryTimeout
         self.terminalView = terminalView
+        self.outputPresentation = BrokerTerminalOutputPresentation(
+            terminalView: terminalView,
+            deliveryTimeout: outputDeliveryTimeout
+        )
         self.brokerSessionID = existingBrokerSessionID
         self.pendingExitedOutputRetirement = pendingExitedOutputRetirement
 
@@ -297,7 +285,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         inputWriteLane.close()
         startFailureDescription = nil
         startFailureKind = nil
-        lastScrollbackReplay = nil
+        outputPresentation.clearReplay()
         staleBrokerSessionID = nil
         sessionFailure = nil
         revokeOutputDeliveryOwnership()
@@ -319,7 +307,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         startFailureDescription = nil
         startFailureKind = nil
         untrackedBrokerSessionID = nil
-        lastScrollbackReplay = nil
+        outputPresentation.clearReplay()
         staleBrokerSessionID = nil
         sessionFailure = nil
         revokeOutputDeliveryOwnership()
@@ -381,13 +369,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         do {
             let record = try result.get()
             brokerSessionID = record.id
-            presentedBrokerSessionID = record.id
+            outputPresentation.presentedBrokerSessionID = record.id
             agentStatusOwnerToken = record.agentStatusOwnerToken
             didNotifyTermination = false
             inputWriteLane.open(for: record.id)
             beginOutputDeliveryOwnership()
             sessionIOReady = true
-            if outputHandler != nil {
+            if outputPresentation.hasOutputHandler {
                 startOutputPump()
             }
         } catch {
@@ -396,7 +384,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // that exact generation so retry reattaches instead of creating
                 // a duplicate, while still surfacing the durability failure.
                 brokerSessionID = record.id
-                presentedBrokerSessionID = record.id
+                outputPresentation.presentedBrokerSessionID = record.id
                 agentStatusOwnerToken = record.agentStatusOwnerToken
             } else if case let BrokerSessionCoordinator.CoordinatorError.launchOutcomeUnknown(record, _) = error {
                 // Creation may have committed at the broker. Preserve the
@@ -528,12 +516,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     ) {
         startFailureDescription = nil
         startFailureKind = nil
-        lastScrollbackReplay = nil
+        outputPresentation.clearReplay()
         staleBrokerSessionID = nil
         sessionFailure = nil
         let coordinator = self.coordinator
         let channelID = self.channelID
-        let shouldReplayScrollback = explicitReplayPolicy ?? (presentedBrokerSessionID != sessionID)
+        let shouldReplayScrollback = explicitReplayPolicy ?? (outputPresentation.presentedBrokerSessionID != sessionID)
         reattachGeneration &+= 1
         let generation = reattachGeneration
         guard coordinator.requiresOffMainBrokerWork else {
@@ -622,7 +610,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // warning), teardown must not let a same-object retry render it
                 // again merely because the asynchronous acknowledgement callback
                 // lost authority before it completed.
-                presentedBrokerSessionID = record.id
+                outputPresentation.presentedBrokerSessionID = record.id
             }
             if let generation = replay?.generation {
                 if record.lifecycle == .exited {
@@ -655,7 +643,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 self.retireExitedSession(
                                     record,
                                     exitCode: exitCode,
-                                    deliveryGeneration: self.activeOutputDeliveryGeneration ?? 0,
+                                    deliveryGeneration: self.outputPresentation.activeDeliveryGeneration ?? 0,
                                     notifyStartCompletion: false
                                 )
                             } else {
@@ -680,7 +668,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         notifyStartCompletion: Bool
     ) {
         inputWriteLane.open(for: record.id)
-        presentedBrokerSessionID = record.id
+        outputPresentation.presentedBrokerSessionID = record.id
         if record.lifecycle == .exited {
             beginOutputDeliveryOwnership()
             sessionIOReady = false
@@ -694,7 +682,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // never reopen input writes to a process that may already be gone.
             sessionIOReady = true
             inputWriteLane.close()
-            if outputHandler != nil {
+            if outputPresentation.hasOutputHandler {
                 startOutputPump()
             }
             completeReattachStartIfNeeded(notifyStartCompletion)
@@ -702,7 +690,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         beginOutputDeliveryOwnership()
         sessionIOReady = true
-        if outputHandler != nil {
+        if outputPresentation.hasOutputHandler {
             startOutputPump()
         }
         completeReattachStartIfNeeded(notifyStartCompletion)
@@ -736,7 +724,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             completeReattachStartIfNeeded(notifyStartCompletion)
             return
         }
-        guard let deliveryGeneration = activeOutputDeliveryGeneration else {
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else {
             completeReattachStartIfNeeded(notifyStartCompletion)
             return
         }
@@ -763,7 +751,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // Successful output belongs to the presentation lease and must
                 // not be rendered after teardown. A failed read, however, owns
                 // completed-session retirement independently of that lease.
-                guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
+                guard self.outputPresentation.activeDeliveryGeneration == deliveryGeneration else {
                     if self.preservesUnreadOutputForTermination {
                         // Quit owns a non-consuming detach. The snapshot remains
                         // broker-owned and unacknowledged for replay next launch.
@@ -802,7 +790,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                     }
                     return
                 }
-                self.handleOutputPumpSample(snapshot.data, for: record.id)
+                self.outputPresentation.render(snapshot.data)
                 if let generation = snapshot.generation {
                     // A nominally synchronous coordinator still acknowledges on
                     // the recovery worker. Delay controller activation until the
@@ -821,7 +809,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                                 )
                                 return
                             }
-                            guard self.activeOutputDeliveryGeneration == deliveryGeneration else {
+                            guard self.outputPresentation.activeDeliveryGeneration == deliveryGeneration else {
                                 self.retireExitedSession(
                                     record,
                                     exitCode: exitCode,
@@ -891,7 +879,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         let completion: @Sendable (Error?) -> Void = { [self] error in
             DispatchQueue.main.async {
                 guard self.brokerSessionID == record.id else { return }
-                let presentationLeaseIsActive = self.activeOutputDeliveryGeneration == deliveryGeneration
+                let presentationLeaseIsActive = self.outputPresentation.activeDeliveryGeneration == deliveryGeneration
                 let completionWarning = error.flatMap { self.isCompletedRetirementWarning($0) ? $0 : nil }
                 if let error, completionWarning == nil {
                     if let mismatchDescription {
@@ -1152,56 +1140,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 sessionID,
                 maxBytes: ScrollbackPersistencePolicy.maxReplayBytesOnReattach
             )
-            lastScrollbackReplay = replay
-            guard !replay.data.isEmpty else { return }
-            feedStatusLine(scrollbackReplayStatus(for: replay))
-            let bytes = Array(replay.data)
-            terminalView.feed(byteArray: bytes[...])
-            outputHandler?()
+            outputPresentation.presentReplay(replay)
         } catch {
             // Scrollback corruption must not turn a successfully reattached live
             // process into a stale tab. Surface the recovery plainly in the
             // terminal, then continue with live output from the broker.
-            lastScrollbackReplay = nil
-            feedStatusLine(
-                "Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally."
-            )
-            outputHandler?()
-            NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
+            outputPresentation.presentReplayFailure(String(describing: error), sessionID: sessionID)
         }
     }
 
     private func applyScrollbackReplay(_ result: ScrollbackReplayResult, for sessionID: BrokerSessionID) {
         if let replay = result.replay {
-            lastScrollbackReplay = replay
-            guard !replay.data.isEmpty else { return }
-            feedStatusLine(scrollbackReplayStatus(for: replay))
-            terminalView.feed(byteArray: Array(replay.data)[...])
-            outputHandler?()
+            outputPresentation.presentReplay(replay)
         } else if let error = result.error {
-            lastScrollbackReplay = nil
-            feedStatusLine("Holoscape reattached the live session, but could not restore its persisted scrollback (\(error)). The corrupted tail was skipped; new output will continue normally.")
-            outputHandler?()
-            NSLog("Broker-backed terminal scrollback replay failed for \(sessionID.rawValue): \(error)")
+            outputPresentation.presentReplayFailure(error, sessionID: sessionID)
         }
-    }
-
-    private func scrollbackReplayStatus(for replay: ScrollbackReplay) -> String {
-        let source: String
-        switch replay.source {
-        case .liveBrokerMemory:
-            source = "live broker memory"
-        case .persistedDiskTail:
-            source = "persisted disk scrollback"
-        case .unknown:
-            source = "broker scrollback"
-        }
-        return "Holoscape restored \(replay.data.count) bytes from \(source). Older output beyond the \(replay.maxBytes)-byte replay cap is not retained."
-    }
-
-    private func feedStatusLine(_ message: String) {
-        let bytes = Array("\r\n[\(message)]\r\n".utf8)
-        terminalView.feed(byteArray: bytes[...])
     }
 
     func send(_ bytes: [UInt8]) {
@@ -1217,7 +1170,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             // which is showing its recovery guidance; late keystrokes are inert.
             return
         }
-        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else { return }
         inputWriteLane.enqueue(
             sessionID: brokerSessionID,
             bytes: bytes,
@@ -1239,7 +1192,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func setOutputHandler(_ handler: (() -> Void)?) {
-        outputHandler = handler
+        outputPresentation.setOutputHandler(handler)
         if handler == nil {
             stopOutputPump()
         } else if brokerSessionID != nil, sessionIOReady, sessionFailure == nil {
@@ -1561,7 +1514,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
         startCompletionPending = false
         if let brokerSessionID, !didNotifyTermination, sessionIOReady,
-           activeOutputDeliveryGeneration != nil {
+           outputPresentation.activeDeliveryGeneration != nil {
             // Quiesce ordinary reads before probing on the same serial lane. A
             // running child remains non-consuming and detaches normally. A child
             // that already stopped is drained, acknowledged, finalized, and
@@ -1727,8 +1680,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     func pollOutputOnce() {
         guard sessionIOReady, sessionFailure == nil else { return }
         guard let brokerSessionID else { return }
-        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
-        let handoffGeneration = activeOutputHandoffGeneration ?? beginOutputHandoff()
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else { return }
+        let handoffGeneration = outputPresentation.activeHandoffGeneration ?? beginOutputHandoff()
         outputReadLane.pollOnce(
             sessionID: brokerSessionID,
             read: { [outputCoordinator] id in
@@ -1759,7 +1712,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             NSLog("Broker-backed terminal resize ignored: no live broker session")
             return
         }
-        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else { return }
         let size = currentGridSize
         if coordinator.requiresOffMainBrokerWork {
             failureRecoveryCoordinator.resize(brokerSessionID, size: size) { [weak self] error in
@@ -1787,7 +1740,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     private func startOutputPump() {
         guard sessionIOReady, let brokerSessionID else { return }
-        guard let deliveryGeneration = activeOutputDeliveryGeneration else { return }
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else { return }
         let supportsOutputAvailabilityMonitoring: Bool
         do {
             supportsOutputAvailabilityMonitoring = try coordinator.supportsOutputAvailabilityMonitoring(brokerSessionID)
@@ -1828,71 +1781,27 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         }
     }
 
-    private func handleOutputPumpSample(_ data: Data, for brokerSessionID: BrokerSessionID) {
-        if !data.isEmpty {
-            let bytes = Array(data)
-            terminalView.feed(byteArray: bytes[...])
-            outputHandler?()
-        }
-    }
-
     private func outputSampleHandler(
         deliveryGeneration: UInt,
         handoffGeneration: UInt
     ) -> @Sendable (BrokerSessionID, Data) -> Bool {
-        let outputDeliveryTimeout = self.outputDeliveryTimeout
-        let outputDeliveryGate = self.outputDeliveryGate
-        return { [weak self] id, data in
-            // Empty polls carry no terminal work or transactional generation.
-            // Accept them on the output lane so an unavailable main actor cannot
-            // turn an otherwise healthy idle session into a delivery failure;
-            // the caller still proceeds to its termination-status check.
-            guard !data.isEmpty else { return true }
-            // The serial lane does not perform liveness/exit RPCs until the main
-            // actor has consumed this sample, preserving final-byte ordering
-            // without making the main actor call the broker.
-            let acceptance = BrokerOutputDeliveryAcceptance()
-            guard outputDeliveryGate.install(acceptance, generation: handoffGeneration) else {
-                return false
+        outputPresentation.makeSampleHandler(
+            deliveryGeneration: deliveryGeneration,
+            handoffGeneration: handoffGeneration,
+            isAuthorized: { [weak self] id in
+                guard let self else { return false }
+                return self.brokerSessionID == id
+                    && self.sessionIOReady
+                    && self.sessionFailure == nil
+            },
+            onFailure: { [weak self] id, error in
+                self?.reportSessionFailure(
+                    error,
+                    for: id,
+                    deliveryGeneration: deliveryGeneration
+                )
             }
-            defer { outputDeliveryGate.remove(acceptance) }
-            DispatchQueue.main.async { [weak self] in
-                defer { acceptance.signalCompletion() }
-                guard let self,
-                      self.activeOutputDeliveryGeneration == deliveryGeneration,
-                      self.brokerSessionID == id,
-                      self.sessionIOReady,
-                      self.sessionFailure == nil,
-                      acceptance.beginDelivery() else { return }
-                var dataToRender = data
-                if let presented = self.presentedUnacknowledgedOutput,
-                   presented.sessionID == id {
-                    if data.starts(with: presented.data) {
-                        dataToRender = Data(data.dropFirst(presented.data.count))
-                    }
-                    self.presentedUnacknowledgedOutput = nil
-                }
-                self.handleOutputPumpSample(dataToRender, for: id)
-                acceptance.finishDelivery()
-            }
-            if acceptance.wait(timeout: outputDeliveryTimeout) == .timedOut,
-               acceptance.cancelIfPending() {
-                DispatchQueue.main.async { [weak self] in
-                    self?.reportSessionFailure(
-                        BrokerOutputDeliveryFailure.timedOut,
-                        for: id,
-                        deliveryGeneration: deliveryGeneration
-                    )
-                }
-                return false
-            }
-            // Once the main actor has claimed the sample it owns completion;
-            // cancellation after that point could replay bytes already rendered.
-            if acceptance.isDelivering {
-                acceptance.wait()
-            }
-            return acceptance.wasAccepted
-        }
+        )
     }
 
     private func outputTerminationHandler(deliveryGeneration: UInt) -> @Sendable (BrokerSessionID, Int32, Error?) -> Void {
@@ -2066,7 +1975,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let presentedUnacknowledgedData, !presentedUnacknowledgedData.isEmpty {
-                    self.presentedUnacknowledgedOutput = (id, presentedUnacknowledgedData)
+                    self.outputPresentation.retainPresentedUnacknowledgedOutput(
+                        presentedUnacknowledgedData,
+                        for: id
+                    )
                 }
                 if self.exitedOutputResolutionClaim.consume(for: id) {
                     guard self.brokerSessionID == id, !self.didNotifyTermination else {
@@ -2224,8 +2136,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     private func stopOutputPump() {
-        activeOutputHandoffGeneration = nil
-        outputDeliveryGate.close()
+        outputPresentation.stopHandoff()
         if let brokerSessionID {
             try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
         }
@@ -2246,7 +2157,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
         deliveryGeneration: UInt
     ) {
         guard brokerSessionID == sessionID,
-              activeOutputDeliveryGeneration == deliveryGeneration else {
+              outputPresentation.activeDeliveryGeneration == deliveryGeneration else {
             NSLog("Ignoring delayed broker failure for inactive session \(sessionID.rawValue): \(error)")
             return
         }
@@ -2329,21 +2240,15 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
 
     @discardableResult
     private func beginOutputDeliveryOwnership() -> UInt {
-        nextOutputDeliveryGeneration &+= 1
-        activeOutputDeliveryGeneration = nextOutputDeliveryGeneration
-        return nextOutputDeliveryGeneration
+        outputPresentation.beginDeliveryOwnership()
     }
 
     private func revokeOutputDeliveryOwnership() {
-        activeOutputDeliveryGeneration = nil
-        activeOutputHandoffGeneration = nil
-        outputDeliveryGate.close()
+        outputPresentation.revokeDeliveryOwnership()
     }
 
     private func beginOutputHandoff() -> UInt {
-        let generation = outputDeliveryGate.open()
-        activeOutputHandoffGeneration = generation
-        return generation
+        outputPresentation.beginHandoff()
     }
 
     private func isScrollbackPersistenceFailure(_ error: Error) -> Bool {
@@ -2691,590 +2596,6 @@ private final class BrokerFailureRecoveryCoordinator: @unchecked Sendable {
     }
 }
 
-final class BrokerOutputDeliveryAcceptance: @unchecked Sendable {
-    private enum State {
-        case pending
-        case delivering
-        case accepted
-        case cancelled
-    }
-
-    private let lock = NSLock()
-    private let completion = DispatchSemaphore(value: 0)
-    private var state = State.pending
-    private var completionSignaled = false
-
-    func beginDelivery() -> Bool {
-        lock.withLock {
-            guard state == .pending else { return false }
-            state = .delivering
-            return true
-        }
-    }
-
-    func finishDelivery() {
-        lock.withLock {
-            if state == .delivering {
-                state = .accepted
-            }
-        }
-    }
-
-    func cancelIfPending() -> Bool {
-        let cancelled = lock.withLock { () -> Bool in
-            guard state == .pending else { return false }
-            state = .cancelled
-            return true
-        }
-        if cancelled { signalCompletion() }
-        return cancelled
-    }
-
-    func signalCompletion() {
-        let shouldSignal = lock.withLock { () -> Bool in
-            guard !completionSignaled else { return false }
-            completionSignaled = true
-            return true
-        }
-        if shouldSignal { completion.signal() }
-    }
-
-    func wait(timeout: TimeInterval) -> DispatchTimeoutResult {
-        completion.wait(timeout: .now() + timeout)
-    }
-
-    func wait() {
-        completion.wait()
-    }
-
-    var isDelivering: Bool {
-        lock.withLock { state == .delivering }
-    }
-
-    var wasAccepted: Bool {
-        lock.withLock { state == .accepted }
-    }
-}
-
-final class BrokerOutputDeliveryGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var nextGeneration: UInt = 0
-    private var activeGeneration: UInt?
-    private var current: BrokerOutputDeliveryAcceptance?
-
-    func open() -> UInt {
-        let result = lock.withLock { () -> (generation: UInt, previous: BrokerOutputDeliveryAcceptance?) in
-            nextGeneration &+= 1
-            let previous = current
-            activeGeneration = nextGeneration
-            current = nil
-            return (nextGeneration, previous)
-        }
-        _ = result.previous?.cancelIfPending()
-        return result.generation
-    }
-
-    func install(_ acceptance: BrokerOutputDeliveryAcceptance, generation: UInt) -> Bool {
-        let result = lock.withLock { () -> (installed: Bool, previous: BrokerOutputDeliveryAcceptance?) in
-            guard activeGeneration == generation else { return (false, nil) }
-            let previous = current
-            current = acceptance
-            return (true, previous)
-        }
-        guard result.installed else {
-            _ = acceptance.cancelIfPending()
-            return false
-        }
-        _ = result.previous?.cancelIfPending()
-        return true
-    }
-
-    func remove(_ acceptance: BrokerOutputDeliveryAcceptance) {
-        lock.withLock {
-            if current === acceptance {
-                current = nil
-            }
-        }
-    }
-
-    func close() {
-        let acceptance = lock.withLock { () -> BrokerOutputDeliveryAcceptance? in
-            activeGeneration = nil
-            let acceptance = current
-            current = nil
-            return acceptance
-        }
-        _ = acceptance?.cancelIfPending()
-    }
-}
-
-private enum BrokerOutputDeliveryFailure: Error, CustomStringConvertible {
-    case timedOut
-
-    var description: String {
-        "Broker output delivery to the terminal timed out"
-    }
-}
-
-private struct BrokerSessionCompositeFailure: Error, CustomStringConvertible, Sendable {
-    let description: String
-}
-
-/// Bridges the output lane's exit observation to main-actor publication without
-/// leaving a teardown window where both lanes can claim finalization authority.
-private final class BrokerExitResolutionClaim: @unchecked Sendable {
-    private let lock = NSLock()
-    private var claimedSessionID: BrokerSessionID?
-
-    func claimIfCurrent(
-        _ sessionID: BrokerSessionID,
-        closeCurrent: () -> Bool
-    ) -> Bool {
-        lock.withLock {
-            guard claimedSessionID == nil, closeCurrent() else { return false }
-            claimedSessionID = sessionID
-            return true
-        }
-    }
-
-    func joinOrStop(_ sessionID: BrokerSessionID, stop: () -> Void) -> Bool {
-        lock.withLock {
-            if claimedSessionID == sessionID { return true }
-            stop()
-            return false
-        }
-    }
-
-    func consume(for sessionID: BrokerSessionID) -> Bool {
-        lock.withLock {
-            guard claimedSessionID == sessionID else { return false }
-            claimedSessionID = nil
-            return true
-        }
-    }
-}
-
-private final class BrokerOutputReadLane: @unchecked Sendable {
-    enum Mode {
-        case outputAvailabilitySignal
-        case periodicPolling
-    }
-
-    private let queue = DispatchQueue(label: "holoscape.broker.output.read-lane", qos: .userInteractive)
-    private let signalTerminationCheckInterval: TimeInterval
-    private let pollingInterval: TimeInterval
-    private let lock = NSLock()
-    private var openSessionID: BrokerSessionID?
-    private var nextRunGeneration: UInt = 0
-    private var openRunGeneration: UInt?
-    private var closeAfterCurrentRunGeneration: UInt?
-    private var semaphore: DispatchSemaphore?
-
-    init(signalTerminationCheckInterval: TimeInterval = 1.0, pollingInterval: TimeInterval = 0.02) {
-        self.signalTerminationCheckInterval = signalTerminationCheckInterval
-        self.pollingInterval = pollingInterval
-    }
-
-    func start(
-        sessionID: BrokerSessionID,
-        mode: Mode,
-        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
-        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
-        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
-        exitResolutionClaim: BrokerExitResolutionClaim,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onFailure: @escaping @Sendable (BrokerSessionID, Int32?, Error, Data?) -> Void
-    ) {
-        stop()
-        let semaphore = DispatchSemaphore(value: 0)
-        let runGeneration = lock.withLock { () -> UInt in
-            nextRunGeneration &+= 1
-            openSessionID = sessionID
-            openRunGeneration = nextRunGeneration
-            closeAfterCurrentRunGeneration = nil
-            self.semaphore = semaphore
-            return nextRunGeneration
-        }
-
-        queue.async { [weak self] in
-            semaphore.signal()
-            while true {
-                guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                switch mode {
-                case .outputAvailabilitySignal:
-                    _ = semaphore.wait(timeout: .now() + self.signalTerminationCheckInterval)
-                case .periodicPolling:
-                    _ = semaphore.wait(timeout: .now() + self.pollingInterval)
-                }
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                if self.closeWasRequested(for: sessionID, runGeneration: runGeneration) {
-                    self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                    return
-                }
-                var observedExitCode: Int32?
-                var presentedUnacknowledgedData: Data?
-                do {
-                    let snapshot = try read(sessionID)
-                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                    guard onSample(sessionID, snapshot.data) else {
-                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        return
-                    }
-                    if let generation = snapshot.generation {
-                        presentedUnacknowledgedData = snapshot.data
-                        try acknowledge(sessionID, generation)
-                        presentedUnacknowledgedData = nil
-                    }
-                    guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                    if let exitCode = try terminationStatus(sessionID) {
-                        observedExitCode = exitCode
-                        // Termination observation and the PTY readability callback
-                        // can race. Once termination is observable, monitoring is
-                        // complete, so one final drain captures bytes appended
-                        // after the first read and before exit authority.
-                        guard try self.drainRemainingOutput(
-                            sessionID: sessionID,
-                            runGeneration: runGeneration,
-                            read: read,
-                            acknowledge: acknowledge,
-                            onSample: onSample
-                        ) else { return }
-                        // The final sample is synchronously consumed by the main
-                        // actor before durable exit authority is published.
-                        let completionWarning = try finishTermination(sessionID, exitCode)
-                        if exitResolutionClaim.claimIfCurrent(
-                            sessionID,
-                            closeCurrent: {
-                                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                            }
-                        ) {
-                            onTermination(sessionID, exitCode, completionWarning)
-                        }
-                        return
-                    }
-                    if self.closeWasRequested(for: sessionID, runGeneration: runGeneration) {
-                        self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        return
-                    }
-                } catch {
-                    let classified = self.classifyOutputFailure(
-                        error,
-                        observedExitCode: observedExitCode,
-                        sessionID: sessionID,
-                        terminationStatus: terminationStatus,
-                        finishTermination: finishTermination
-                    )
-                    observedExitCode = classified.exitCode
-                    let ownsOutcome: Bool
-                    if observedExitCode != nil {
-                        ownsOutcome = exitResolutionClaim.claimIfCurrent(
-                            sessionID,
-                            closeCurrent: {
-                                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                            }
-                        )
-                    } else {
-                        ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                    }
-                    if ownsOutcome {
-                        onFailure(sessionID, observedExitCode, classified.error, presentedUnacknowledgedData)
-                    }
-                    return
-                }
-            }
-        }
-    }
-
-    func pollOnce(
-        sessionID: BrokerSessionID,
-        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
-        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
-        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
-        exitResolutionClaim: BrokerExitResolutionClaim,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onFailure: @escaping @Sendable (BrokerSessionID, Int32?, Error, Data?) -> Void
-    ) {
-        if isOpen(for: sessionID) {
-            wake(sessionID: sessionID)
-            return
-        }
-        let runGeneration = lock.withLock { () -> UInt in
-            nextRunGeneration &+= 1
-            openSessionID = sessionID
-            openRunGeneration = nextRunGeneration
-            closeAfterCurrentRunGeneration = nil
-            semaphore = nil
-            return nextRunGeneration
-        }
-        queue.async {
-            var observedExitCode: Int32?
-            var presentedUnacknowledgedData: Data?
-            do {
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                let snapshot = try read(sessionID)
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                guard onSample(sessionID, snapshot.data) else {
-                    self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                    return
-                }
-                if let generation = snapshot.generation {
-                    presentedUnacknowledgedData = snapshot.data
-                    try acknowledge(sessionID, generation)
-                    presentedUnacknowledgedData = nil
-                }
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
-                if let exitCode = try terminationStatus(sessionID) {
-                    observedExitCode = exitCode
-                    guard try self.drainRemainingOutput(
-                        sessionID: sessionID,
-                        runGeneration: runGeneration,
-                        read: read,
-                        acknowledge: acknowledge,
-                        onSample: onSample
-                    ) else { return }
-                    let completionWarning = try finishTermination(sessionID, exitCode)
-                    if exitResolutionClaim.claimIfCurrent(
-                        sessionID,
-                        closeCurrent: {
-                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        }
-                    ) {
-                        onTermination(sessionID, exitCode, completionWarning)
-                    }
-                    return
-                }
-                self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-            } catch {
-                let classified = self.classifyOutputFailure(
-                    error,
-                    observedExitCode: observedExitCode,
-                    sessionID: sessionID,
-                    terminationStatus: terminationStatus,
-                    finishTermination: finishTermination
-                )
-                observedExitCode = classified.exitCode
-                let ownsOutcome: Bool
-                if observedExitCode != nil {
-                    ownsOutcome = exitResolutionClaim.claimIfCurrent(
-                        sessionID,
-                        closeCurrent: {
-                            self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                        }
-                    )
-                } else {
-                    ownsOutcome = self.closeIfCurrent(sessionID, runGeneration: runGeneration)
-                }
-                if ownsOutcome {
-                    onFailure(sessionID, observedExitCode, classified.error, presentedUnacknowledgedData)
-                }
-            }
-        }
-    }
-
-    private func classifyOutputFailure(
-        _ originalError: Error,
-        observedExitCode: Int32?,
-        sessionID: BrokerSessionID,
-        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?
-    ) -> (exitCode: Int32?, error: Error) {
-        guard observedExitCode == nil else { return (observedExitCode, originalError) }
-        do {
-            guard let exitCode = try terminationStatus(sessionID) else {
-                return (nil, originalError)
-            }
-            do {
-                if let warning = try finishTermination(sessionID, exitCode) {
-                    return (
-                        exitCode,
-                        BrokerSessionCompositeFailure(
-                            description: "\(originalError); exit finalized with warning: \(warning)"
-                        )
-                    )
-                }
-                return (exitCode, originalError)
-            } catch {
-                return (
-                    exitCode,
-                    BrokerSessionCompositeFailure(
-                        description: "\(originalError); failed to finalize observed exit: \(error)"
-                    )
-                )
-            }
-        } catch {
-            // Status classification is best-effort when the broker itself is
-            // unavailable. Preserve the original typed failure so controller
-            // recovery guidance remains host-unavailable instead of degrading to
-            // an unclassified composite.
-            return (nil, originalError)
-        }
-    }
-
-    /// Stop the ordinary pump and, on the same serial lane, determine whether
-    /// teardown raced an already-completed child. Running sessions are left
-    /// unread for later reattach; stopped sessions are fully drained and
-    /// finalized before teardown can release its owner.
-    func finishForTeardown(
-        sessionID: BrokerSessionID,
-        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
-        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
-        terminationStatus: @escaping @Sendable (BrokerSessionID) throws -> Int32?,
-        finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?,
-        onTermination: @escaping @Sendable (BrokerSessionID, Int32, Error?) -> Void,
-        onStoppedFailure: @escaping @Sendable (BrokerSessionID, Int32, Error) -> Void,
-        onStillRunningOrStatusFailure: @escaping @Sendable (Error?) -> Void
-    ) {
-        stop()
-        queue.async {
-            let exitCode: Int32
-            do {
-                guard let observedExitCode = try terminationStatus(sessionID) else {
-                    onStillRunningOrStatusFailure(nil)
-                    return
-                }
-                exitCode = observedExitCode
-            } catch {
-                onStillRunningOrStatusFailure(error)
-                return
-            }
-
-            do {
-                while true {
-                    let snapshot = try read(sessionID)
-                    guard let generation = snapshot.generation else { break }
-                    try acknowledge(sessionID, generation)
-                }
-            } catch {
-                let outputFailure = error
-                do {
-                    let completionWarning = try finishTermination(sessionID, exitCode)
-                    if let completionWarning {
-                        onStoppedFailure(
-                            sessionID,
-                            exitCode,
-                            BrokerSessionCompositeFailure(
-                                description: "\(outputFailure); exit finalized with warning: \(completionWarning)"
-                            )
-                        )
-                    } else {
-                        onStoppedFailure(sessionID, exitCode, outputFailure)
-                    }
-                } catch {
-                    onStoppedFailure(
-                        sessionID,
-                        exitCode,
-                        BrokerSessionCompositeFailure(
-                            description: "\(outputFailure); failed to finalize observed exit: \(error)"
-                        )
-                    )
-                }
-                return
-            }
-
-            do {
-                let completionWarning = try finishTermination(sessionID, exitCode)
-                onTermination(sessionID, exitCode, completionWarning)
-            } catch {
-                onStoppedFailure(sessionID, exitCode, error)
-            }
-        }
-    }
-
-    /// Stop polling and run a barrier after any in-flight read/delivery has
-    /// returned. Because `stop()` revokes the lane generation first, unread
-    /// snapshots cannot be acknowledged while app termination detaches.
-    func finishWithoutConsuming(completion: @escaping @Sendable () -> Void) {
-        stop()
-        queue.async(execute: completion)
-    }
-
-    /// Let the operation already executing on the lane classify and publish an
-    /// exit failure before closing. This differs from app-termination teardown,
-    /// which must revoke the generation immediately to preserve unread output.
-    func finishForClose(completion: @escaping @Sendable () -> Void) {
-        let semaphore = lock.withLock { () -> DispatchSemaphore? in
-            guard openSessionID != nil, let openRunGeneration else { return nil }
-            closeAfterCurrentRunGeneration = openRunGeneration
-            return self.semaphore
-        }
-        semaphore?.signal()
-        queue.async(execute: completion)
-    }
-
-    func wake(sessionID: BrokerSessionID) {
-        guard isOpen(for: sessionID) else { return }
-        lock.withLock { semaphore }?.signal()
-    }
-
-    func stop() {
-        let semaphore = lock.withLock { () -> DispatchSemaphore? in
-            openSessionID = nil
-            openRunGeneration = nil
-            closeAfterCurrentRunGeneration = nil
-            let current = self.semaphore
-            self.semaphore = nil
-            return current
-        }
-        semaphore?.signal()
-    }
-
-    private func drainRemainingOutput(
-        sessionID: BrokerSessionID,
-        runGeneration: UInt,
-        read: @escaping @Sendable (BrokerSessionID) throws -> BrokerOutputSnapshot,
-        acknowledge: @escaping @Sendable (BrokerSessionID, UInt64) throws -> Void,
-        onSample: @escaping @Sendable (BrokerSessionID, Data) -> Bool
-    ) throws -> Bool {
-        while isOpen(for: sessionID, runGeneration: runGeneration) {
-            let snapshot = try read(sessionID)
-            guard isOpen(for: sessionID, runGeneration: runGeneration) else { return false }
-            guard onSample(sessionID, snapshot.data) else {
-                closeIfCurrent(sessionID, runGeneration: runGeneration)
-                return false
-            }
-            guard let generation = snapshot.generation else { return true }
-            try acknowledge(sessionID, generation)
-        }
-        return false
-    }
-
-    private func isOpen(for sessionID: BrokerSessionID) -> Bool {
-        lock.withLock { openSessionID == sessionID }
-    }
-
-    private func isOpen(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
-        lock.withLock { openSessionID == sessionID && openRunGeneration == runGeneration }
-    }
-
-    private func closeWasRequested(for sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
-        lock.withLock {
-            openSessionID == sessionID
-                && openRunGeneration == runGeneration
-                && closeAfterCurrentRunGeneration == runGeneration
-        }
-    }
-
-
-    @discardableResult
-    private func closeIfCurrent(_ sessionID: BrokerSessionID, runGeneration: UInt) -> Bool {
-        lock.withLock {
-            if openSessionID == sessionID, openRunGeneration == runGeneration {
-                openSessionID = nil
-                openRunGeneration = nil
-                closeAfterCurrentRunGeneration = nil
-                semaphore?.signal()
-                semaphore = nil
-                return true
-            }
-            return false
-        }
-    }
-}
-
 private final class BrokerInputWriteLane: @unchecked Sendable {
     private let queue = DispatchQueue(label: "holoscape.broker.input.write-lane", qos: .userInteractive)
     private let lock = NSLock()
@@ -3337,13 +2658,5 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
             }
             return false
         }
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () throws -> T) rethrows -> T {
-        lock()
-        defer { unlock() }
-        return try body()
     }
 }
