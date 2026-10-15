@@ -1666,6 +1666,28 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try secondClient.listSessions(), [])
     }
 
+    @MainActor
+    func testUnixSocketBrokerFixtureCleansArtifactsWhenStartupTimesOut() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UnixSocketBrokerFixtureStartupFailure-")
+            .appendingPathComponent(UUID().uuidString)
+        let socketPath = "/tmp/hs-fixture-startup-timeout-\(UUID().uuidString).sock"
+
+        XCTAssertThrowsError(
+            try UnixSocketBrokerFixture(
+                directory: directory,
+                socketPath: socketPath,
+                serverStartDelay: 0.1,
+                readinessTimeout: 0.01
+            )
+        ) { error in
+            XCTAssertTrue(error is UnixSocketBrokerFixtureError, String(describing: error))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+    }
+
     func testUnixSocketServerCanBeStoppedWhileWaitingForConnections() throws {
         let socketPath = "/tmp/hs-stop-signal-\(UUID().uuidString).sock"
         let server = BrokerSessionHostUnixSocketServer(
@@ -1689,7 +1711,9 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertNil(serverError.value.map(String.init(describing:)))
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
         XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
-        unlink(socketPath + ".lock")
+        if FileManager.default.fileExists(atPath: socketPath + ".lock") {
+            XCTAssertNoThrow(try FileManager.default.removeItem(atPath: socketPath + ".lock"))
+        }
     }
 
     func testUnixSocketServerShutsDownRuntimeBeforeReleasingLockOnSetupError() throws {
