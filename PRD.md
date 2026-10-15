@@ -193,13 +193,13 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 - Unread indicator when new messages arrive while viewing another channel
 
 ### Bug Reporting
-- Cmd+B opens one-line input overlay
-- User types description, Enter to submit
-- Auto-attaches: channel name, channel type, last 20 lines of output, timestamp, macOS version
-- POSTs to Synth Insight Labs API endpoint
+- Cmd+B opens the Report Bug panel: a description field, a context preview, and
+  an optional screenshot
+- Submission attaches what the Bug reports section above lists and POSTs to the
+  Synth Insight Labs API endpoint
 - On launch: scan ~/Library/Logs/DiagnosticReports/ for Holoscape crash logs since last launch
-- If crash found: prompt "Holoscape crashed. File a report?" with one-click submit
-- Crash report includes full crash trace + last channel state before crash
+- If crash found: prompt to submit or dismiss; the report carries up to 10,000
+  characters of the trace, saved channel state, and a history snapshot
 
 ### Appearance
 - Background color picker
@@ -573,7 +573,7 @@ Fully customizable window chrome and UI elements via skin packages.
 - Optional external-agent MCP client channel (`MCPClient` actor + `MCPChannelController`)
 - Group chat channel (Agent Chat API via HTTP polling, custom NSTextView, auto-scroll)
 - Running process indicator with elapsed time on tabs (green/yellow/red dots + "2h 15m")
-- Timestamps on terminal output (toggle via Cmd+T, [HH:MM:SS] prefix)
+- Show Timestamps setting (Cmd+T); output rendering remains, see Timestamps on Terminal Output
 - Color theme presets (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) with override support
 - Cmd+1-9 keyboard shortcuts for channel switching via NSEvent local monitor
 
@@ -638,7 +638,7 @@ Fully customizable window chrome and UI elements via skin packages.
 4. ~~SSH key management?~~ **ANSWERED:** System SSH agent.
 5. ~~Project directory discovery?~~ **ANSWERED:** SSH ls with cache.
 6. ~~Group chat: WebSocket or HTTP polling?~~ **ANSWERED (V2):** HTTP polling, 3-second interval.
-7. ~~Timestamps: intercept or overlay?~~ **ANSWERED (V2):** Intercept via output delegate for PTY, appendMessage for NSTextView.
+7. ~~Timestamps: intercept or overlay?~~ **DECIDED (V2), not yet built:** Intercept via output delegate for PTY, appendMessage for NSTextView.
 8. Should the fixed bug-report endpoint become operator-configurable for public builds?
 9. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
 10. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
