@@ -71,8 +71,10 @@ The secondary problem: existing terminals are someone else's product. They can't
 service endpoint (`https://api.synthinsightlabs.com/reports`):
 - The payload can include channel identity, recent terminal output, user
   description, app/system context, history metadata, and an optional screenshot.
-  This context may contain sensitive terminal or conversation data; users must
-  review it before submission.
+  This context may contain sensitive terminal or conversation data. The dialog
+  previews core context and the last 50 output lines, but the submitted payload
+  can include up to 100 output lines and command/error history not shown in the
+  preview; explicit Submit authorizes that documented payload.
 - Failed submissions are stored locally and retried automatically after launch;
   pending reports older than 30 days are deleted.
 - Crash traces are read from `~/Library/Logs/DiagnosticReports/` for explicit
@@ -205,7 +207,7 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 - Unread indicator when new messages arrive while viewing another channel
 
 ### Bug Reporting
-- Cmd+B opens a review dialog with the active channel, system/app context, recent output, and an optional screenshot
+- Cmd+B opens a partial context preview with the active channel, system/app context, the last 50 output lines, and an optional screenshot
 - The user enters a description and explicitly submits or dismisses the report
 - The submitted payload includes active channel identity, up to 100 recent output lines, all-channel state, appearance/split context, uptime, history metadata, and the optional screenshot
 - Reports go to the fixed HoloScape report-service endpoint; failed submissions are saved locally for the bounded retry policy described above
@@ -259,7 +261,7 @@ Keep this separate from optional MCP-client channels: HoloscapeMCP is external-t
 ## Success Metrics
 
 - Erik stops mixing up agent windows (primary — qualitative, self-reported)
-- Bug reports expose their attached context, submit only after user action, and
+- Bug reports disclose their payload scope, submit only after user action, and
   retry failed deliveries automatically for up to 30 days
 - Channel switching is instant and identity is unambiguous
 - Text input feels like a normal text editor, not a 1970s terminal
