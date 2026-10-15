@@ -61,8 +61,8 @@ lifecycle transition.
 | `exiting` | Coordinator intent; broker runtime drains/finalizes | Exit was requested; final output/status still have authority to settle. |
 | `exited` | Broker runtime reports; coordinator persists | The process has ended and its exit metadata is durable. |
 | `terminating` | Coordinator intent; broker runtime cleanup owner | Retirement/termination is in progress and must not be replaced concurrently. |
-| `errored` | Coordinator persists authoritative failure | The session operation failed; the failure remains visible rather than becoming an empty success. |
-| `stale` | Coordinator persists loss of runtime ownership | The broker can no longer verify the session; recovery must not silently spawn a replacement. |
+| `errored` | Coordinator persists completed runtime retirement | The broker runtime session has been retired after an explicit retirement request or an unrecoverable runtime failure; terminal metadata remains durable for observability and retention. |
+| `stale` | Coordinator persists an explicitly missing runtime identity | The runtime reports that the recorded session no longer exists. The durable identity remains non-attachable so callers can present stale/recreate truth without treating a transport outage as session loss. |
 
 Source contracts:
 
