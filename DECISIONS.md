@@ -199,9 +199,10 @@ types. They must not become startup dependencies; new service-specific workflow
 integration belongs behind the plugin seam rather than adding another core
 dependency.
 
-Current detail: `docs/plugin-architecture.md`. Tests: `PluginManifestTests`, and
-`SetupDiagnosticsServiceTests` for a plugin configuration failure that leaves core
-available. Plugin storage, manager, and command routing have no direct tests yet.
+Current detail: `docs/plugin-architecture.md`. `PluginManifestTests` covers the
+manifest, `PluginManager`, `PluginStorageService`, `PluginCommandRouter`, and the
+Project Tracker plugin; `SetupDiagnosticsServiceTests` covers a plugin
+configuration failure that leaves core available.
 
 ## Setup and permissions
 
