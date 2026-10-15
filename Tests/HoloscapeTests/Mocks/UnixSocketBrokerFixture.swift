@@ -1,12 +1,13 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Holoscape
 
 /// Test-only broker host with a real Unix socket and native PTY runtime.
 ///
-/// The bounded server lifetime keeps the fixture deterministic: cleanup drains
-/// the remaining request budget, allowing the server to shut down its runtime
-/// and remove the socket without touching AppKit windows or animations.
+/// The fixture owns the server thread, socket, and native sessions. Cleanup
+/// retires sessions before asking the server to stop, then reports every
+/// failure instead of leaving a background broker to contaminate later tests.
 @MainActor
 final class UnixSocketBrokerFixture {
     let directory: URL
@@ -15,7 +16,7 @@ final class UnixSocketBrokerFixture {
     let coordinator: BrokerSessionCoordinator
 
     private let client: BrokerSessionHostClientRuntime
-    private let requestBudget = 128
+    private let stopSignal: BrokerSessionHostUnixSocketServer.StopSignal
     private let serverFinished = DispatchSemaphore(value: 0)
     private let serverFailure = UnixSocketBrokerServerFailure()
 
@@ -27,15 +28,17 @@ final class UnixSocketBrokerFixture {
         socketPath = "/tmp/hs-unix-fixture-\(UUID().uuidString).sock"
         registry = BrokerSessionRegistry(fileURL: directory.appendingPathComponent("sessions.json"))
 
+        stopSignal = BrokerSessionHostUnixSocketServer.StopSignal()
         let server = BrokerSessionHostUnixSocketServer(
             socketPath: socketPath,
             host: BrokerSessionHost(runtime: NativePTYBrokerSessionRuntime())
         )
         let finished = serverFinished
         let failure = serverFailure
+        let signal = stopSignal
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try server.run(maxConnections: 128)
+                try server.run(maxConnections: 128, stopSignal: signal)
             } catch {
                 failure.record(error)
             }
@@ -47,7 +50,15 @@ final class UnixSocketBrokerFixture {
             Thread.sleep(forTimeInterval: 0.01)
         }
         guard BrokerSessionHostUnixSocketServer.socketPathHasReachableBroker(socketPath) else {
-            throw UnixSocketBrokerFixtureError.serverDidNotStart
+            stopSignal.requestStop()
+            guard serverFinished.wait(timeout: .now() + 2) == .success else {
+                try? FileManager.default.removeItem(at: directory)
+                throw UnixSocketBrokerFixtureError.serverDidNotStop
+            }
+            try? FileManager.default.removeItem(at: directory)
+            throw UnixSocketBrokerFixtureError.serverDidNotStart(
+                serverFailure.message ?? "the broker socket did not become reachable"
+            )
         }
 
         let transport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath)
@@ -76,17 +87,49 @@ final class UnixSocketBrokerFixture {
     }
 
     func cleanup() {
-        for _ in 0..<requestBudget {
-            guard (try? client.listSessions()) != nil else { break }
+        var failures: [String] = []
+        do {
+            let sessionIDs = try client.listSessions()
+            for id in sessionIDs {
+                do {
+                    try client.markSessionErrored(id: id)
+                } catch {
+                    failures.append("failed to retire \(id.rawValue): \(error)")
+                }
+            }
+        } catch {
+            failures.append("failed to enumerate sessions: \(error)")
         }
-        XCTAssertEqual(serverFinished.wait(timeout: .now() + 2), .success)
-        XCTAssertNil(serverFailure.message)
-        XCTAssertNoThrow(try FileManager.default.removeItem(at: directory))
+        stopSignal.requestStop()
+        let serverJoined = serverFinished.wait(timeout: .now() + 3) == .success
+        if !serverJoined {
+            failures.append("server did not stop within 3 seconds")
+        }
+        if let message = serverFailure.message {
+            failures.append("server failed: \(message)")
+        }
+        if FileManager.default.fileExists(atPath: socketPath) {
+            failures.append("server socket remained after shutdown")
+        }
+        if BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) {
+            failures.append("server lock remained active after shutdown")
+        } else if unlink(socketPath + ".lock") != 0, errno != ENOENT {
+            failures.append("failed to remove inactive server lock: \(String(cString: strerror(errno)))")
+        }
+        if serverJoined {
+            do {
+                try FileManager.default.removeItem(at: directory)
+            } catch {
+                failures.append("failed to remove fixture directory: \(error)")
+            }
+        }
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "; "))
     }
 }
 
 enum UnixSocketBrokerFixtureError: Error {
-    case serverDidNotStart
+    case serverDidNotStart(String)
+    case serverDidNotStop
 }
 
 private final class UnixSocketBrokerServerFailure: @unchecked Sendable {

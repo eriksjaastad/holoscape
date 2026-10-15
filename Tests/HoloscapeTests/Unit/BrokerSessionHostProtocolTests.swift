@@ -1666,6 +1666,32 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try secondClient.listSessions(), [])
     }
 
+    func testUnixSocketServerCanBeStoppedWhileWaitingForConnections() throws {
+        let socketPath = "/tmp/hs-stop-signal-\(UUID().uuidString).sock"
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: RecordingBrokerSessionRuntime())
+        )
+        let stopSignal = BrokerSessionHostUnixSocketServer.StopSignal()
+        let serverFinished = expectation(description: "socket broker stops without request budget")
+        let serverError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run(stopSignal: stopSignal)
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+        stopSignal.requestStop()
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
+        unlink(socketPath + ".lock")
+    }
+
     func testUnixSocketServerShutsDownRuntimeBeforeReleasingLockOnSetupError() throws {
         let socketPath = "/tmp/" + String(repeating: "s", count: 160)
         var observedLockDuringShutdown = false
