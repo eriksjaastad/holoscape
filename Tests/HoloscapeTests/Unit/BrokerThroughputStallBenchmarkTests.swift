@@ -192,11 +192,9 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             cleanupMarker: cleanupMarker
         )
         var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
-        let ownershipTransferred = LockedFlag()
         addTeardownBlock {
             try Self.stopLazySocketBenchmarkHost(
                 launchedChild,
-                ownershipTransferred: ownershipTransferred.value,
                 socketPath: socketPath,
                 cleanupMarker: cleanupMarker,
                 helperDirectory: helperDirectory,
@@ -234,7 +232,6 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
                     initialSize: TerminalGridSize(columns: 80, rows: 24)
                 )
             )
-            ownershipTransferred.set()
             try waitForProcessGroupMarker(processGroupMarker)
 
             let host = SocketTerminationHost(
@@ -259,6 +256,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertNil(releasedClient)
         XCTAssertNil(releasedTransport)
         let brokerChild = try XCTUnwrap(launchedChild)
+        XCTAssertTrue(brokerChild.hasTransferredOwnership)
         XCTAssertFalse(brokerChild.isReaped)
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, requestTimeoutMilliseconds: 2_000)
         let secondClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
@@ -407,7 +405,6 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
     private static func stopLazySocketBenchmarkHost(
         _ child: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?,
-        ownershipTransferred: Bool,
         socketPath: String,
         cleanupMarker: URL,
         helperDirectory: URL,
@@ -416,7 +413,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         var failures: [String] = []
 
         if let child, !child.isReaped {
-            if ownershipTransferred {
+            if child.hasTransferredOwnership {
                 if Darwin.kill(child.pid, SIGTERM) != 0, errno != ESRCH {
                     failures.append("could not terminate lazy socket benchmark host: \(String(cString: strerror(errno)))")
                 }
@@ -854,18 +851,5 @@ private final class SocketTerminationHost: TerminationCoordinatorHost {
         } catch {
             onDetachFailure(error)
         }
-    }
-}
-
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isSet = false
-
-    var value: Bool {
-        lock.withLock { isSet }
-    }
-
-    func set() {
-        lock.withLock { isSet = true }
     }
 }
