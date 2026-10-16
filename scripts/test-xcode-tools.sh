@@ -127,6 +127,19 @@ fi
 if [[ -n "${FAKE_SLEEP_SECONDS:-}" ]]; then
     sleep "$FAKE_SLEEP_SECONDS"
 fi
+if [[ -n "${FAKE_REQUIRE_ARGUMENT:-}" ]]; then
+    found_argument=0
+    for argument in "$@"; do
+        if [[ "$argument" == "$FAKE_REQUIRE_ARGUMENT" ]]; then
+            found_argument=1
+            break
+        fi
+    done
+    if [[ "$found_argument" -ne 1 ]]; then
+        echo "missing required synthetic argument: $FAKE_REQUIRE_ARGUMENT" >&2
+        exit 64
+    fi
+fi
 if [[ -n "${FAKE_SUCCESS_NO_TESTS:-}" ]]; then
     echo "** TEST SUCCEEDED **"
     exit 0
@@ -301,6 +314,47 @@ if ! FAKE_SUCCESS_ONE_TEST=1 PATH="$work_dir/bin:$PATH" \
    UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-one.out" 2>&1; then
     echo "error: test-ui-fast rejected a successful xcodebuild that executed a test" >&2
     cat "$work_dir/test-ui-fast-one.out" >&2
+    exit 1
+fi
+
+failing_invocation_marker="$work_dir/failing-xcodebuild-invoked"
+if FAKE_STATUS_PATH="$failing_invocation_marker" FAKE_SUCCESS_ONE_TEST=1 \
+   HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/missing-failing-results.txt" \
+   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   >"$work_dir/failing-missing.out" 2>&1; then
+    echo "error: failing UI mode accepted a missing results input" >&2
+    exit 1
+fi
+if [[ -e "$failing_invocation_marker" ]] || \
+   ! grep -q 'cannot read failing-test results' "$work_dir/failing-missing.out"; then
+    echo "error: missing failing-test results did not fail before xcodebuild" >&2
+    cat "$work_dir/failing-missing.out" >&2
+    exit 1
+fi
+
+printf '** TEST SUCCEEDED **\n' >"$work_dir/empty-failing-results.txt"
+if FAKE_SUCCESS_ONE_TEST=1 HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/empty-failing-results.txt" \
+   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   >"$work_dir/failing-empty.out" 2>&1; then
+    echo "error: failing UI mode accepted results with no failing classes" >&2
+    exit 1
+fi
+if ! grep -q 'no failing Holoscape UI test classes found' "$work_dir/failing-empty.out"; then
+    echo "error: empty failing-test results lacked a diagnostic" >&2
+    cat "$work_dir/failing-empty.out" >&2
+    exit 1
+fi
+
+cat >"$work_dir/one-failing-result.txt" <<'EOF'
+Test Case '-[HoloscapeUITests.NotificationSystemUITests testExample]' failed (0.001 seconds).
+EOF
+if ! FAKE_SUCCESS_ONE_TEST=1 \
+   FAKE_REQUIRE_ARGUMENT='-only-testing:HoloscapeUITests/NotificationSystemUITests' \
+   HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/one-failing-result.txt" \
+   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   >"$work_dir/failing-one.out" 2>&1; then
+    echo "error: failing UI mode rejected a valid failing-class input" >&2
+    cat "$work_dir/failing-one.out" >&2
     exit 1
 fi
 

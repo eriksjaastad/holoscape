@@ -9,6 +9,7 @@
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
 # Results: /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}
 # Override the one-hour xcodebuild limit with HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS.
+# Override the failing-mode source log with HOLOSCAPE_UI_FAILING_RESULTS_FILE.
 # UI execution requires macOS Accessibility/Automation permission for the runner.
 
 set -euo pipefail
@@ -21,6 +22,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
 TEST_OUTPUT_VALIDATOR="$SCRIPT_DIR/validate-xcode-test-output.sh"
 UI_TEST_TIMEOUT_SECONDS="${HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS:-3600}"
+FAILING_RESULTS_FILE="${HOLOSCAPE_UI_FAILING_RESULTS_FILE:-/tmp/test-results-full-2.txt}"
 
 mkdir -p "$RESULTS_DIR"
 declare -a SHARD_RUN_STATUS=()
@@ -224,7 +226,18 @@ case "${1:-all}" in
         ;;
     failing)
         echo "Running only currently-failing test classes..."
-        FAILING_CLASSES=$(grep "Test Case.*failed" /tmp/test-results-full-2.txt 2>/dev/null | sed "s/.*-\[HoloscapeUITests\.\([^ ]*\) .*/\1/" | sort -u)
+        if [[ ! -r "$FAILING_RESULTS_FILE" ]]; then
+            echo "error: cannot read failing-test results: $FAILING_RESULTS_FILE" >&2
+            exit 1
+        fi
+        if ! FAILING_CLASSES=$(sed -n "s/.*-\[HoloscapeUITests\.\([^ ]*\) .*\]' failed.*/\1/p" "$FAILING_RESULTS_FILE" | sort -u); then
+            echo "error: failed to parse failing-test results: $FAILING_RESULTS_FILE" >&2
+            exit 1
+        fi
+        if [[ -z "$FAILING_CLASSES" ]]; then
+            echo "error: no failing Holoscape UI test classes found in $FAILING_RESULTS_FILE" >&2
+            exit 1
+        fi
         args=""
         for class in $FAILING_CLASSES; do
             args="$args -only-testing:HoloscapeUITests/$class"
