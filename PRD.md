@@ -625,10 +625,9 @@ Remaining: decide which parts become a public skin authoring contract (Open Ques
 4. ~~SSH key management?~~ **ANSWERED:** System SSH agent.
 5. ~~Project directory discovery?~~ **ANSWERED:** SSH ls with cache.
 6. ~~Group chat: WebSocket or HTTP polling?~~ **ANSWERED (V2):** HTTP polling, 3-second interval.
-7. ~~Timestamps: intercept or overlay?~~ **DECIDED (V2), not yet built:** Intercept via output delegate for PTY, appendMessage for NSTextView.
-8. Should the fixed bug-report endpoint become operator-configurable for public builds?
-9. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
-10. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
-11. **V3:** For the bridge channel, should responses from agents be echoed back into the bridge view, or only in individual channels?
-12. **V3:** For the skin engine, which parts of the existing shaped-window/Metal/MercuryDeck substrate should become public skin authoring contract versus Erik-only art direction?
-13. Should public builds ship bug-report submission enabled or disabled by default?
+7. Should the fixed bug-report endpoint become operator-configurable for public builds?
+8. **V3:** Should desktop notifications use notification categories (actionable notifications with "Switch to Channel" button)?
+9. **V3:** For window splitting, should the split state be per-workspace or global? (i.e., can different "layouts" be saved and restored?)
+10. **V3:** For the bridge channel, should responses from agents be echoed back into the bridge view, or only in individual channels?
+11. **V3:** For the skin engine, which parts of the existing shaped-window/Metal/MercuryDeck substrate should become public skin authoring contract versus Erik-only art direction?
+12. Should public builds ship bug-report submission enabled or disabled by default?

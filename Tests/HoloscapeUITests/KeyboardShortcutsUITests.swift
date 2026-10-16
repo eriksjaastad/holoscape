@@ -155,9 +155,6 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         // Run through all shortcuts in sequence
         app.typeKey("n", modifierFlags: [.command, .shift])
 
-        app.typeKey("t", modifierFlags: .command)
-        app.typeKey("t", modifierFlags: .command)
-
         app.typeKey("d", modifierFlags: .command)
         app.typeKey("w", modifierFlags: [.command, .shift])
 
@@ -166,25 +163,6 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
 
         // Window should still be functional
         assertActiveChannelResponsive(message: "Channel should be responsive after rapid shortcut sequence")
-    }
-
-    func testShortcutsWorkFromInputBox() throws {
-        // Need non-PTY channel for input box
-        createChannel(type: "Bridge")
-        Thread.sleep(forTimeInterval: 0.5)
-
-        let inputBox = app.textViews["input-box"]
-        XCTAssertTrue(inputBox.waitForExistence(timeout: 3))
-        inputBox.click()
-
-        app.typeKey("t", modifierFlags: .command)
-        app.typeKey("t", modifierFlags: .command)
-    }
-
-    func testShortcutsWorkFromOutputView() throws {
-        // Verify shortcut works when focus is on the terminal/output area
-        app.typeKey("t", modifierFlags: .command)
-        app.typeKey("t", modifierFlags: .command)
     }
 
     func testEnterSubmitsInput() throws {
