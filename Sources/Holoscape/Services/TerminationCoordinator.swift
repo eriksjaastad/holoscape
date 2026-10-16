@@ -142,10 +142,8 @@ final class TerminationCoordinator {
             pendingReply = nil
             phase = .idle
             NSLog("Final broker cleanup state could not be saved; keeping Holoscape open")
-            if let reply {
-                host.terminationSetInteractionEnabled(true)
-                reply(false)
-            }
+            host.terminationSetInteractionEnabled(true)
+            reply?(false)
             return
         }
 

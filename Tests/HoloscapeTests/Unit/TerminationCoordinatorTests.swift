@@ -93,6 +93,30 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.blocksExternalChannelCreation)
     }
 
+    func testLateFinalSaveFailureAfterTimeoutRestoresInteraction() {
+        let host = RecordingTerminationHost(saveResults: [true, false])
+        host.defersDetach = true
+        let coordinator = TerminationCoordinator(host: host, timeout: 0.01)
+        var replies: [Bool] = []
+
+        coordinator.begin { replies.append($0) }
+        let deadline = Date().addingTimeInterval(1)
+        while replies.isEmpty, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(replies, [false])
+        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
+
+        host.finishDetach()
+
+        XCTAssertEqual(
+            host.events,
+            ["interaction:false", "save", "detach", "save", "interaction:true"]
+        )
+        XCTAssertFalse(coordinator.hasStarted)
+        XCTAssertFalse(coordinator.blocksExternalChannelCreation)
+    }
+
     func testApplicationWillTerminateFallbackOnlyPersistsSynchronousSnapshot() {
         let host = RecordingTerminationHost(saveResults: [true])
         let coordinator = TerminationCoordinator(host: host)
