@@ -2,6 +2,7 @@
 
 UI_TEST_TIMEOUT_SECONDS ?= 3600
 UI_TEST_RUNNER = ./scripts/run-with-timeout.py $(UI_TEST_TIMEOUT_SECONDS)
+UI_TEST_OUTPUT_VALIDATOR = ./scripts/validate-xcode-test-output.sh
 
 help:
 	@echo "Holoscape — common ops"
@@ -71,7 +72,9 @@ test-ui-failing: bundle
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
-	@set -o pipefail; $(UI_TEST_RUNNER) xcodebuild test \
+	@output=$$(mktemp "$${TMPDIR:-/tmp}/holoscape-ui-fast.XXXXXX"); \
+	trap 'rm -f "$$output"' EXIT; \
+	set -o pipefail; status=0; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
@@ -80,16 +83,22 @@ test-ui-fast: bundle
 		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
 		-only-testing:HoloscapeUITests/SidebarUITests \
 		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST|error: command timed out"
+		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out" || status=$$?; \
+	$(UI_TEST_OUTPUT_VALIDATOR) "$$output" || status=$$?; \
+	exit $$status
 
 # Run notification UI tests
 test-ui-notifications: bundle
-	@set -o pipefail; $(UI_TEST_RUNNER) xcodebuild test \
+	@output=$$(mktemp "$${TMPDIR:-/tmp}/holoscape-ui-notifications.XXXXXX"); \
+	trap 'rm -f "$$output"' EXIT; \
+	set -o pipefail; status=0; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
 		-only-testing:HoloscapeUITests/NotificationSystemUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST|error: command timed out"
+		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out" || status=$$?; \
+	$(UI_TEST_OUTPUT_VALIDATOR) "$$output" || status=$$?; \
+	exit $$status
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:

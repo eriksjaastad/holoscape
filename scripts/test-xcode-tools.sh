@@ -127,13 +127,23 @@ fi
 if [[ -n "${FAKE_SLEEP_SECONDS:-}" ]]; then
     sleep "$FAKE_SLEEP_SECONDS"
 fi
+if [[ -n "${FAKE_SUCCESS_NO_TESTS:-}" ]]; then
+    echo "** TEST SUCCEEDED **"
+    exit 0
+fi
+if [[ -n "${FAKE_SUCCESS_ONE_TEST:-}" ]]; then
+    echo "Test Case '-[SyntheticUITests testExample]' passed (0.001 seconds)."
+    echo "** TEST SUCCEEDED **"
+    exit 0
+fi
 echo "** TEST FAILED **"
 exit 42
 EOF
 chmod +x "$work_dir/bin/xcodebuild"
 cp "$script_dir/test-ui-shards.sh" "$work_dir/test-ui-shards.sh"
 cp "$script_dir/run-with-timeout.py" "$work_dir/run-with-timeout.py"
-chmod +x "$work_dir/run-with-timeout.py"
+cp "$script_dir/validate-xcode-test-output.sh" "$work_dir/validate-xcode-test-output.sh"
+chmod +x "$work_dir/run-with-timeout.py" "$work_dir/validate-xcode-test-output.sh"
 python3 - "$work_dir/test-ui-shards.sh" "$work_dir/results" <<'PY'
 from pathlib import Path
 import sys
@@ -237,6 +247,60 @@ if ! grep -q 'command timed out after 0.1 seconds: xcodebuild' "$work_dir/timeou
    [[ $(<"$status_path") != "FAIL" ]]; then
     echo "error: UI shard timeout was not reported and recorded as failure" >&2
     cat "$work_dir/timeout.out" >&2
+    exit 1
+fi
+
+/bin/rm -rf "$status_path"
+if FAKE_SUCCESS_NO_TESTS=1 PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/zero-tests.out" 2>&1; then
+    echo "error: UI shard accepted a successful xcodebuild that executed no tests" >&2
+    exit 1
+fi
+if ! grep -q 'no test cases executed' "$work_dir/zero-tests.out" || \
+   [[ $(<"$status_path") != "FAIL" ]]; then
+    echo "error: zero-test UI shard failure was not diagnosed and recorded" >&2
+    cat "$work_dir/zero-tests.out" >&2
+    exit 1
+fi
+
+cat >"$work_dir/one-test.txt" <<'EOF'
+Test Case '-[SyntheticUITests testExample]' passed (0.001 seconds).
+Test Suite 'SyntheticUITests' passed at 2026-10-16 00:00:00.000.
+EOF
+"$script_dir/validate-xcode-test-output.sh" "$work_dir/one-test.txt"
+printf '** TEST SUCCEEDED **\n' >"$work_dir/no-tests.txt"
+if "$script_dir/validate-xcode-test-output.sh" "$work_dir/no-tests.txt" >"$work_dir/no-tests-validator.out" 2>&1; then
+    echo "error: Xcode test-output validator accepted output with no test cases" >&2
+    exit 1
+fi
+if ! grep -q 'no test cases executed' "$work_dir/no-tests-validator.out"; then
+    echo "error: Xcode test-output validator lacked a zero-test diagnostic" >&2
+    cat "$work_dir/no-tests-validator.out" >&2
+    exit 1
+fi
+
+cat >"$work_dir/make-overrides.mk" <<'EOF'
+bundle:
+	@:
+EOF
+for target in test-ui-fast test-ui-notifications; do
+    if FAKE_SUCCESS_NO_TESTS=1 PATH="$work_dir/bin:$PATH" \
+       make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
+       UI_TEST_RUNNER= "$target" >"$work_dir/$target-zero.out" 2>&1; then
+        echo "error: $target accepted a successful xcodebuild that executed no tests" >&2
+        exit 1
+    fi
+    if ! grep -q 'no test cases executed' "$work_dir/$target-zero.out"; then
+        echo "error: $target lacked a zero-test diagnostic" >&2
+        cat "$work_dir/$target-zero.out" >&2
+        exit 1
+    fi
+done
+if ! FAKE_SUCCESS_ONE_TEST=1 PATH="$work_dir/bin:$PATH" \
+   make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
+   UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-one.out" 2>&1; then
+    echo "error: test-ui-fast rejected a successful xcodebuild that executed a test" >&2
+    cat "$work_dir/test-ui-fast-one.out" >&2
     exit 1
 fi
 

@@ -19,6 +19,7 @@ RESULTS_DIR="/tmp/holoscape-test-shards"
 RESUME_FILE="$RESULTS_DIR/last-failed-shard"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
+TEST_OUTPUT_VALIDATOR="$SCRIPT_DIR/validate-xcode-test-output.sh"
 UI_TEST_TIMEOUT_SECONDS="${HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS:-3600}"
 
 mkdir -p "$RESULTS_DIR"
@@ -120,13 +121,15 @@ run_shard() {
     failed=$(count_matches "^Test Case .* failed" "$outfile") || return 1
     SHARD_RUN_PASSED[$n]="$passed"
     SHARD_RUN_FAILED[$n]="$failed"
+    local output_status=0
+    "$TEST_OUTPUT_VALIDATOR" "$outfile" || output_status=$?
 
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
     echo "  Bundle:  $bundle"
 
-    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$failed" -gt 0 ]; then
+    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
         if ! printf 'FAIL\n' > "$status_file"; then
             echo "error: cannot record failed shard status: $status_file" >&2
             return 1
@@ -228,14 +231,23 @@ case "${1:-all}" in
         done
         failing_bundle="$RESULTS_DIR/failing.xcresult"
         rm -rf "$failing_bundle"
+        failing_output="$RESULTS_DIR/failing-only.txt"
+        set +e
         "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
             -scheme "$SCHEME" \
             -destination "$DEST" \
             -skipPackagePluginValidation \
             -resultBundlePath "$failing_bundle" \
             $args \
-            2>&1 | tee "$RESULTS_DIR/failing-only.txt" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
+            2>&1 | tee "$failing_output" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
+        failing_pipeline_status=("${PIPESTATUS[@]}")
+        set -e
+        failing_output_status=0
+        "$TEST_OUTPUT_VALIDATOR" "$failing_output" || failing_output_status=$?
         echo "  Bundle:  $failing_bundle"
+        if [ "${failing_pipeline_status[0]}" -ne 0 ] || [ "${failing_pipeline_status[1]}" -ne 0 ] || [ "${failing_pipeline_status[2]}" -gt 1 ] || [ "$failing_output_status" -ne 0 ]; then
+            exit 1
+        fi
         ;;
     *-*)
         # Range like 3-5
