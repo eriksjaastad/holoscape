@@ -1260,6 +1260,8 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         let appDelegate = AppDelegate()
         appDelegate.channelManagerRef = manager
 
+        let recoveryPrepared = await manager.prepareBrokerRecovery()
+        XCTAssertTrue(recoveryPrepared)
         XCTAssertEqual(appDelegate.restoreUnmatchedBrokerBackedSessionsAsTabs(), 1)
         let restoredShell = try XCTUnwrap(manager.allChannels().first as? ShellChannelController)
         let activeDeadline = Date().addingTimeInterval(2)

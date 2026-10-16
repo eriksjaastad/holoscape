@@ -22,6 +22,7 @@ final class ChannelManagerTests: XCTestCase {
 
         var startCalls: [StartCall] = []
         var detachCalls: [BrokerSessionID] = []
+        var requiresOffMainBrokerWork = false
         var reattachableSessionRecords: [BrokerSessionRecord] = []
         var reattachableSessionsError: Error?
         private(set) var reattachableSessionsCallCount = 0
@@ -2070,6 +2071,35 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNil(manager.firstUnmatchedBrokerBackedShellSessionToRestore())
         XCTAssertNotNil(manager.brokerRegistryReadFailure)
         XCTAssertEqual(manager.unmatchedBrokerBackedSessionsToRestore(), [])
+    }
+
+    func testRestoreLookupRequiresPreparedBrokerInventoryWithoutCallingCoordinator() {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.requiresOffMainBrokerWork = true
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "must-not-load-on-main-actor"),
+                channelType: .shell,
+                label: nil,
+                command: "/bin/zsh",
+                arguments: ["--login"],
+                workingDirectory: "/tmp",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+
+        XCTAssertNil(manager.firstUnmatchedBrokerBackedShellSessionToRestore())
+        XCTAssertEqual(coordinator.reattachableSessionsCallCount, 0)
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
     }
 
     func testPrepareBrokerRecoveryRetriesTransientInventoryFailureBeforeUsingSurvivors() async {
