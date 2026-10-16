@@ -5,6 +5,7 @@ import XCTest
 
 final class BrokerThroughputStallBenchmarkTests: XCTestCase {
     private static let socketBenchmarkChildEnvironmentKey = "HOLOSCAPE_SOCKET_BENCHMARK_CHILD"
+    private static let socketBenchmarkCleanupMarkerEnvironmentKey = "HOLOSCAPE_SOCKET_BENCHMARK_CLEANUP_MARKER"
 
     private struct SocketBenchmarkChild {
         let process: Process
@@ -180,18 +181,33 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         let socketPath = "/tmp/hs-termination-lifetime-\(UUID().uuidString).sock"
         let helperDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HoloscapeTerminationBrokerHelper-\(UUID().uuidString)")
+        let processGroupDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HoloscapeTerminationBrokerPGroup-\(UUID().uuidString)")
+        let cleanupMarker = helperDirectory.appendingPathComponent("cleanup-result")
+        let processGroupMarker = processGroupDirectory.appendingPathComponent("surviving-session")
         try FileManager.default.createDirectory(at: helperDirectory, withIntermediateDirectories: true)
-        let helperURL = try makeSocketBenchmarkLazyLauncher(in: helperDirectory)
+        try FileManager.default.createDirectory(at: processGroupDirectory, withIntermediateDirectories: true)
+        let helperURL = try makeSocketBenchmarkLazyLauncher(
+            in: helperDirectory,
+            cleanupMarker: cleanupMarker
+        )
         var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
+        let ownershipTransferred = LockedFlag()
         addTeardownBlock {
             try Self.stopLazySocketBenchmarkHost(
                 launchedChild,
+                ownershipTransferred: ownershipTransferred.value,
                 socketPath: socketPath,
-                helperDirectory: helperDirectory
+                cleanupMarker: cleanupMarker,
+                helperDirectory: helperDirectory,
+                processGroupDirectory: processGroupDirectory
             )
         }
 
         let sessionID = BrokerSessionID(rawValue: "termination-process-lifetime-\(UUID().uuidString)")
+        let preDetachMarker = "pre-detach-\(UUID().uuidString)"
+        weak var releasedClient: BrokerSessionHostClientRuntime?
+        weak var releasedTransport: LazyBrokerSessionHostUnixSocketTransport?
         do {
             let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
                 executableURL: helperURL,
@@ -200,20 +216,32 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
                 requestTimeoutMilliseconds: 2_000,
                 launchedChildObserver: { launchedChild = $0 }
             )
+            releasedTransport = lazyTransport
             let firstClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
                 try lazyTransport.sendFrame(frame)
             }
+            releasedClient = firstClient
             try firstClient.createSession(
                 id: sessionID,
                 request: BrokerSessionLaunchRequest(
-                    command: "/bin/cat",
+                    command: "/bin/sh",
+                    arguments: [
+                        "-c",
+                        "printf '\(preDetachMarker)\\n'; printf '%d\\n' $$ > \(shellQuoted(processGroupMarker.path)); exec /bin/cat",
+                    ],
                     workingDirectory: "/tmp",
                     environmentProfile: .shell,
                     initialSize: TerminalGridSize(columns: 80, rows: 24)
                 )
             )
+            ownershipTransferred.set()
+            try waitForProcessGroupMarker(processGroupMarker)
 
-            let host = SocketTerminationHost(client: firstClient, sessionID: sessionID)
+            let host = SocketTerminationHost(
+                client: firstClient,
+                sessionID: sessionID,
+                onDetachFailure: { XCTFail("termination test detach failed: \($0)") }
+            )
             let coordinator = TerminationCoordinator(host: host, timeout: 2)
             var replies: [Bool] = []
             coordinator.begin { replies.append($0) }
@@ -222,11 +250,14 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
                 RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             }
             XCTAssertEqual(replies, [true])
+            XCTAssertEqual(host.saveCallCount, 2)
         }
 
         // The production lazy launcher transferred child-reaping authority and
         // is gone with the first app client. Its teardown must not kill the
         // broker host or the detached PTY that a later app client reattaches.
+        XCTAssertNil(releasedClient)
+        XCTAssertNil(releasedTransport)
         let brokerChild = try XCTUnwrap(launchedChild)
         XCTAssertFalse(brokerChild.isReaped)
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, requestTimeoutMilliseconds: 2_000)
@@ -235,8 +266,14 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         }
         XCTAssertTrue(try secondClient.isRunning(id: sessionID))
         try secondClient.attachSession(id: sessionID, channelID: UUID())
-        try secondClient.sendInput(id: sessionID, bytes: Array("termination-survived-app-teardown\\n".utf8))
         var output = ""
+        let replayDeadline = Date().addingTimeInterval(3)
+        while !output.contains(preDetachMarker), Date() < replayDeadline {
+            output += String(decoding: try secondClient.readAvailableOutput(id: sessionID), as: UTF8.self)
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(output.contains(preDetachMarker), output)
+        try secondClient.sendInput(id: sessionID, bytes: Array("termination-survived-app-teardown\\n".utf8))
         let outputDeadline = Date().addingTimeInterval(3)
         while !output.contains("termination-survived-app-teardown"), Date() < outputDeadline {
             output += String(decoding: try secondClient.readAvailableOutput(id: sessionID), as: UTF8.self)
@@ -252,6 +289,7 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         }
 
         let runtime = NativePTYBrokerSessionRuntime()
+        let cleanupMarker = ProcessInfo.processInfo.environment[Self.socketBenchmarkCleanupMarkerEnvironmentKey]
         signal(SIGTERM, SIG_IGN)
         let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM)
         terminationSource.setEventHandler {
@@ -267,6 +305,15 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             } catch {
                 cleanupFailed = true
             }
+            if let cleanupMarker {
+                // The parent treats a missing marker as teardown failure, so a
+                // marker write error remains observable after this signal path.
+                try? (cleanupFailed ? "failure" : "success").write(
+                    toFile: cleanupMarker,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
             Darwin.exit(cleanupFailed ? EXIT_FAILURE : EXIT_SUCCESS)
         }
         terminationSource.resume()
@@ -280,13 +327,14 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         }
     }
 
-    private func makeSocketBenchmarkLazyLauncher(in directory: URL) throws -> URL {
+    private func makeSocketBenchmarkLazyLauncher(in directory: URL, cleanupMarker: URL) throws -> URL {
         let helperURL = directory.appendingPathComponent("lazy-broker-launcher")
         let testExecutable = URL(fileURLWithPath: CommandLine.arguments[0]).path
         let testBundle = Bundle(for: Self.self).bundleURL.path
         try """
         #!/bin/sh
         export \(Self.socketBenchmarkChildEnvironmentKey)="$2"
+        export \(Self.socketBenchmarkCleanupMarkerEnvironmentKey)=\(shellQuoted(cleanupMarker.path))
         exec \(shellQuoted(testExecutable)) -XCTest HoloscapeTests.BrokerThroughputStallBenchmarkTests/testSocketBenchmarkChildHost \(shellQuoted(testBundle))
         """.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
@@ -359,30 +407,74 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
     private static func stopLazySocketBenchmarkHost(
         _ child: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?,
+        ownershipTransferred: Bool,
         socketPath: String,
-        helperDirectory: URL
+        cleanupMarker: URL,
+        helperDirectory: URL,
+        processGroupDirectory: URL
     ) throws {
         var failures: [String] = []
 
         if let child, !child.isReaped {
-            if Darwin.kill(child.pid, SIGTERM) != 0, errno != ESRCH {
-                failures.append("could not terminate lazy socket benchmark host: \(String(cString: strerror(errno)))")
-            }
-            let deadline = Date().addingTimeInterval(10)
-            while !child.isReaped, Date() < deadline {
-                usleep(10_000)
-            }
-            if !child.isReaped {
-                if Darwin.kill(child.pid, SIGKILL) != 0, errno != ESRCH {
-                    failures.append("could not kill lazy socket benchmark host: \(String(cString: strerror(errno)))")
+            if ownershipTransferred {
+                if Darwin.kill(child.pid, SIGTERM) != 0, errno != ESRCH {
+                    failures.append("could not terminate lazy socket benchmark host: \(String(cString: strerror(errno)))")
                 }
-                let killDeadline = Date().addingTimeInterval(1)
-                while !child.isReaped, Date() < killDeadline {
+                let deadline = Date().addingTimeInterval(10)
+                while !child.isReaped, Date() < deadline {
                     usleep(10_000)
                 }
+                if !child.isReaped {
+                    failures.append("lazy socket benchmark host required SIGKILL after cleanup timeout")
+                    if Darwin.kill(child.pid, SIGKILL) != 0, errno != ESRCH {
+                        failures.append("could not kill lazy socket benchmark host: \(String(cString: strerror(errno)))")
+                    }
+                    let killDeadline = Date().addingTimeInterval(1)
+                    while !child.isReaped, Date() < killDeadline {
+                        usleep(10_000)
+                    }
+                }
+                if !child.isReaped {
+                    failures.append("lazy socket benchmark host was not reaped after bounded teardown")
+                }
+            } else {
+                do {
+                    try child.terminateAndReap(graceMilliseconds: 250)
+                } catch {
+                    failures.append("could not retire lazy socket benchmark host before ownership transfer: \(error)")
+                }
             }
-            if !child.isReaped {
-                failures.append("lazy socket benchmark host was not reaped after bounded teardown")
+        }
+
+        if child != nil {
+            let cleanupResult = try? String(contentsOf: cleanupMarker, encoding: .utf8)
+            if cleanupResult != "success" {
+                failures.append("lazy socket benchmark host did not confirm successful PTY cleanup")
+            }
+        }
+
+        if FileManager.default.fileExists(atPath: processGroupDirectory.path) {
+            do {
+                let markers = try FileManager.default.contentsOfDirectory(
+                    at: processGroupDirectory,
+                    includingPropertiesForKeys: nil
+                )
+                for marker in markers {
+                    guard let value = try? String(contentsOf: marker, encoding: .utf8),
+                          let processGroup = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        failures.append("invalid process-group marker at \(marker.path)")
+                        continue
+                    }
+                    errno = 0
+                    if Darwin.kill(-processGroup, 0) == 0 || errno == EPERM {
+                        if Darwin.kill(-processGroup, SIGKILL) != 0, errno != ESRCH {
+                            failures.append("could not kill leaked PTY process group \(processGroup)")
+                        }
+                        failures.append("lazy socket benchmark host leaked PTY process group \(processGroup)")
+                    }
+                }
+            } catch {
+                failures.append("could not inspect lazy socket benchmark PTY markers: \(error)")
             }
         }
 
@@ -391,12 +483,14 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
                 failures.append("could not remove lazy socket benchmark artifact at \(path): \(String(cString: strerror(errno)))")
             }
         }
-        do {
-            if FileManager.default.fileExists(atPath: helperDirectory.path) {
-                try FileManager.default.removeItem(at: helperDirectory)
+        for directory in [helperDirectory, processGroupDirectory] {
+            do {
+                if FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                }
+            } catch {
+                failures.append("could not remove test directory at \(directory.path): \(error)")
             }
-        } catch {
-            failures.append("could not remove test directory at \(helperDirectory.path): \(error)")
         }
 
         if !failures.isEmpty {
@@ -735,20 +829,43 @@ private struct BrokerThroughputStallReport: CustomStringConvertible {
 private final class SocketTerminationHost: TerminationCoordinatorHost {
     private let client: BrokerSessionHostClientRuntime
     private let sessionID: BrokerSessionID
+    private let onDetachFailure: (Error) -> Void
+    private(set) var saveCallCount = 0
 
-    init(client: BrokerSessionHostClientRuntime, sessionID: BrokerSessionID) {
+    init(
+        client: BrokerSessionHostClientRuntime,
+        sessionID: BrokerSessionID,
+        onDetachFailure: @escaping (Error) -> Void
+    ) {
         self.client = client
         self.sessionID = sessionID
+        self.onDetachFailure = onDetachFailure
     }
 
     func terminationSetInteractionEnabled(_ enabled: Bool) {}
-    func terminationSaveChannelState() -> Bool { true }
+    func terminationSaveChannelState() -> Bool {
+        saveCallCount += 1
+        return true
+    }
     func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
         do {
             try client.detachSession(id: sessionID)
             completion()
         } catch {
-            fatalError("termination test detach failed: \(error)")
+            onDetachFailure(error)
         }
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSet = false
+
+    var value: Bool {
+        lock.withLock { isSet }
+    }
+
+    func set() {
+        lock.withLock { isSet = true }
     }
 }
