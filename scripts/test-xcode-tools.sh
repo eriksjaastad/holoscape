@@ -33,6 +33,14 @@ if mode == "missing":
 elif mode == "stale":
     marker = "\t\t\t);\n"
     phase = phase.replace(marker, "\t\t\t\tFFFFFFFFFFFFFFFFFFFFFFFF /* StaleSource.swift in Sources */,\n" + marker, 1)
+elif mode == "moved":
+    source = source.replace(
+        "path = AgentStatusNotificationRoutingTests.swift;",
+        "path = Legacy/AgentStatusNotificationRoutingTests.swift;",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 
@@ -40,7 +48,7 @@ destination.write_text(source[:start] + phase + source[end:])
 PY
 }
 
-for mutation in missing stale; do
+for mutation in missing stale moved; do
     mutated_project="$work_dir/$mutation.pbxproj"
     mutate_source_phase "$project" "$mutated_project" "$mutation"
     if "$validator" "$mutated_project" >"$work_dir/$mutation.out" 2>&1; then
@@ -48,6 +56,11 @@ for mutation in missing stale; do
         exit 1
     fi
 done
+if ! grep -q '^+Tests/HoloscapeTests/Unit/Legacy/AgentStatusNotificationRoutingTests.swift$' "$work_dir/moved.out"; then
+    echo "error: moved-source regression did not compare the resolved stale path" >&2
+    cat "$work_dir/moved.out" >&2
+    exit 1
+fi
 
 mkdir -p "$work_dir/bin"
 cat >"$work_dir/bin/xcodebuild" <<'EOF'
@@ -69,6 +82,30 @@ PY
 
 if PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
     echo "error: aggregate UI shards hid an xcodebuild failure" >&2
+    exit 1
+fi
+if [[ $(grep -c '\[FAIL\]' "$work_dir/shards.out") -ne 2 ]] || grep -q '\[OK\]' "$work_dir/shards.out"; then
+    echo "error: aggregate UI shard summary did not report both failed shards truthfully" >&2
+    cat "$work_dir/shards.out" >&2
+    exit 1
+fi
+
+definitions="$work_dir/test-ui-shard-definitions.sh"
+sed '/^# Parse arguments$/,$d' "$work_dir/test-ui-shards.sh" >"$definitions"
+if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
+    source "$1"
+    mkdir -p "$RESULTS_DIR"
+    printf "Test Case passed\n" >"$RESULTS_DIR/shard-1.txt"
+    chmod 000 "$RESULTS_DIR/shard-1.txt"
+    print_summary
+' _ "$definitions" >"$work_dir/unreadable.out" 2>&1; then
+    if ! grep -q 'cannot read test output' "$work_dir/unreadable.out"; then
+        echo "error: unreadable UI shard output failed without a diagnostic" >&2
+        cat "$work_dir/unreadable.out" >&2
+        exit 1
+    fi
+else
+    echo "error: aggregate UI shard summary accepted unreadable output" >&2
     exit 1
 fi
 

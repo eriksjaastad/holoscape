@@ -17,6 +17,28 @@ RESUME_FILE="$RESULTS_DIR/last-failed-shard"
 
 mkdir -p "$RESULTS_DIR"
 
+count_matches() {
+    local pattern="$1"
+    local file="$2"
+    local count
+    local grep_status
+
+    if [[ ! -r "$file" ]]; then
+        echo "error: cannot read test output: $file" >&2
+        return 1
+    fi
+
+    set +e
+    count=$(grep -c "$pattern" "$file")
+    grep_status=$?
+    set -e
+    if [[ "$grep_status" -gt 1 ]]; then
+        echo "error: failed to count '$pattern' in $file" >&2
+        return "$grep_status"
+    fi
+    printf '%s\n' "$count"
+}
+
 # Balanced shards — ~38 tests each, heavy classes spread across shards
 SHARD_1="IntegrityUITests"                                                    # 41
 SHARD_2="KeyboardShortcutsUITests WindowManagementUITests"                    # 34
@@ -52,10 +74,12 @@ run_shard() {
 
     local outfile="$RESULTS_DIR/shard-${n}.txt"
     local bundle="$RESULTS_DIR/shard-${n}.xcresult"
+    local status_file="$RESULTS_DIR/shard-${n}.status"
 
     # xcodebuild refuses to write to an existing .xcresult bundle.
     # Remove any prior bundle for this shard before the run.
     rm -rf "$bundle"
+    rm -f "$status_file"
 
     xcodebuild test \
         -scheme "$SCHEME" \
@@ -66,18 +90,22 @@ run_shard() {
         2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
     local pipeline_status=("${PIPESTATUS[@]}")
 
-    local passed=$(grep -c "passed" "$outfile" 2>/dev/null || :)
-    local failed=$(grep -c "failed" "$outfile" 2>/dev/null || :)
+    local passed
+    local failed
+    passed=$(count_matches "passed" "$outfile") || return 1
+    failed=$(count_matches "failed" "$outfile") || return 1
 
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
     echo "  Bundle:  $bundle"
 
-    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "$failed" -gt 0 ]; then
+    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$failed" -gt 0 ]; then
+        echo "FAIL" > "$status_file"
         echo "$n" > "$RESUME_FILE"
         return 1
     fi
+    echo "PASS" > "$status_file"
     return 0
 }
 
@@ -93,12 +121,23 @@ print_summary() {
     for i in $(seq 1 10); do
         local outfile="$RESULTS_DIR/shard-${i}.txt"
         if [ -f "$outfile" ]; then
-            local p=$(grep -c "passed" "$outfile" 2>/dev/null || :)
-            local f=$(grep -c "failed" "$outfile" 2>/dev/null || :)
+            local status_file="$RESULTS_DIR/shard-${i}.status"
+            local p
+            local f
+            p=$(count_matches "passed" "$outfile") || return 1
+            f=$(count_matches "failed" "$outfile") || return 1
             total_passed=$((total_passed + p))
             total_failed=$((total_failed + f))
-            local status="OK"
-            [ "$f" -gt 0 ] && status="FAIL"
+            local status="UNKNOWN"
+            if [[ -r "$status_file" ]]; then
+                status=$(<"$status_file")
+                if [[ "$status" != "PASS" && "$status" != "FAIL" ]]; then
+                    echo "error: invalid shard status in $status_file: $status" >&2
+                    return 1
+                fi
+            elif [[ "$f" -gt 0 ]]; then
+                status="FAIL"
+            fi
             printf "  Shard %2d: %3d passed, %3d failed  [%s]\n" "$i" "$p" "$f" "$status"
         else
             printf "  Shard %2d: not run\n" "$i"

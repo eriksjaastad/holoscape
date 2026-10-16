@@ -86,21 +86,101 @@ validate_source_phase() {
         if [[ "$root" == "Tests/HoloscapeTests" ]] && is_swiftpm_only_unit_test "$source_file"; then
             continue
         fi
-        basename "$source_file"
+        printf '%s\n' "$source_file"
     done <"$paths" | sort >"$expected"
-
-    if [[ -n $(uniq -d "$expected") ]]; then
-        echo "error: duplicate Swift basenames make $description validation ambiguous" >&2
-        uniq -d "$expected" >&2
-        exit 1
-    fi
 
     phase=$(object_block "$phase_id")
     if [[ -z "$phase" ]]; then
         echo "error: Xcode project is missing the $description source phase" >&2
         exit 1
     fi
-    sed -nE 's/.*\/\* (.*\.swift) in Sources \*\/.*/\1/p' <<<"$phase" | sort >"$actual"
+    python3 - "$project_file" "$phase_id" >"$actual" <<'PY'
+from pathlib import PurePosixPath
+import re
+import sys
+
+project_file, phase_id = sys.argv[1:]
+lines = open(project_file).read().splitlines()
+header = re.compile(r"^\t\t([A-F0-9]{24})(?: /\*.*\*/)? = \{$")
+inline_header = re.compile(r"^\t\t([A-F0-9]{24})(?: /\*.*\*/)? = \{.*\};$")
+objects = {}
+
+index = 0
+while index < len(lines):
+    inline_match = inline_header.match(lines[index])
+    if inline_match:
+        objects[inline_match.group(1)] = lines[index]
+        index += 1
+        continue
+    match = header.match(lines[index])
+    if not match:
+        index += 1
+        continue
+    end = index + 1
+    while end < len(lines) and lines[end] != "\t\t};":
+        end += 1
+    objects[match.group(1)] = "\n".join(lines[index:end + 1])
+    index = end + 1
+
+def value(block, key):
+    match = re.search(rf"(?:^|[;{{])\s*{key} = ([^;]*);", block, re.MULTILINE)
+    if not match:
+        return None
+    result = match.group(1)
+    if result.startswith('"') and result.endswith('"'):
+        result = result[1:-1].replace(r'\"', '"').replace(r'\\', '\\')
+    return result
+
+def references(block, key):
+    match = re.search(
+        rf"^\t\t\t{key} = \(\n(.*?)^\t\t\t\);$",
+        block,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return []
+    return re.findall(r"^\t\t\t\t([A-F0-9]{24})", match.group(1), re.MULTILINE)
+
+parents = {}
+for object_id, block in objects.items():
+    if value(block, "isa") == "PBXGroup":
+        for child_id in references(block, "children"):
+            parents[child_id] = object_id
+
+def source_path(file_id):
+    file_block = objects.get(file_id, "")
+    path = value(file_block, "path")
+    if path is None:
+        raise SystemExit(f"error: PBX file reference {file_id} has no path")
+    components = [path]
+    current = file_id
+    seen = set()
+    while current in parents:
+        if current in seen:
+            raise SystemExit(f"error: PBX group cycle while resolving {file_id}")
+        seen.add(current)
+        current = parents[current]
+        group_path = value(objects[current], "path")
+        if group_path:
+            components.insert(0, group_path)
+    return str(PurePosixPath(*components))
+
+phase = objects.get(phase_id)
+if phase is None:
+    raise SystemExit(f"error: Xcode project is missing source phase {phase_id}")
+
+paths = []
+for build_id in references(phase, "files"):
+    build_file = objects.get(build_id, "")
+    match = re.search(r"fileRef = ([A-F0-9]{24})", build_file)
+    if not match:
+        raise SystemExit(f"error: PBX build file {build_id} has no file reference")
+    resolved = source_path(match.group(1))
+    if resolved.endswith(".swift"):
+        paths.append(resolved)
+
+print("\n".join(sorted(paths)))
+PY
 
     if ! diff -u "$expected" "$actual" >"$work_dir/$phase_id.diff"; then
         echo "error: Xcode project $description source phase differs from tracked sources" >&2
