@@ -366,6 +366,65 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(channel.deactivateCallCount, 0)
     }
 
+    func testRecoveredBrokerSessionSaveKeepsSavedChannelThatCouldNotBeConstructed() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegatePartialRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let skipped = ChannelMetadata(
+            id: UUID(),
+            type: .agentAPI,
+            role: "API Agent",
+            workingDirectory: "/tmp/partial-restore-api",
+            command: "claude"
+        )
+        let saved = ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP", endpoint: "http://127.0.0.1:9/mcp")
+        var config = configService.load()
+        config.channels = [skipped, saved]
+        XCTAssertTrue(configService.save(config))
+
+        let broker = RecordingBrokerSessionCoordinator()
+        broker.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "partial-restore-survivor"),
+                channelType: .shell,
+                label: "Survivor",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/partial-restore-survivor",
+                environmentProfile: .shell,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 10),
+                updatedAt: Date(timeIntervalSince1970: 11),
+                lastAttachedChannelID: nil
+            )
+        ]
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: broker,
+            launchRecoveryState: LaunchRecoveryState(phase: .restoring)
+        )
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        // A missing Keychain credential is temporary: the API agent cannot be
+        // constructed now but must still be restorable on a later launch.
+        appDelegate.agentAPIAuthTypeResolver = {
+            throw AgentAPIKeyResolver.ResolveError.missingKey(service: "test", account: "missing")
+        }
+
+        appDelegate.restoreSavedChannelsAndRecoveredBrokerSessions()
+
+        XCTAssertEqual(manager.allChannels().count, 2, "The saved MCP tab and the recovered shell are registered")
+        let persisted = configService.load().channels
+        XCTAssertEqual(persisted.first, skipped, "The skipped saved entry keeps its metadata and position")
+        XCTAssertEqual(persisted.dropFirst().first?.id, saved.id)
+        XCTAssertEqual(persisted.count, 3)
+        XCTAssertEqual(persisted.last?.brokerSessionID, BrokerSessionID(rawValue: "partial-restore-survivor"))
+    }
+
     func testQuitDuringLaunchRecoveryDisablesMutationsAndAbandonsRecovery() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateLaunchRecoveryQuitTests-")

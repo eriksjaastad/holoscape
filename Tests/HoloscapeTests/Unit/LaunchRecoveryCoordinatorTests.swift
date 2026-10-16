@@ -42,12 +42,31 @@ final class LaunchRecoveryCoordinatorTests: XCTestCase {
         func launchRecoveryDidComplete() { events.append("complete") }
     }
 
-    private func waitForInventoryRequest(_ host: SuspendedHost) async throws {
-        let deadline = Date().addingTimeInterval(2)
-        while !host.isAwaitingInventory {
-            XCTAssertLessThan(Date(), deadline, "recovery never requested the broker inventory")
+    /// Polls until `condition` holds. A missed condition fails the test and
+    /// returns, so a regression cannot hang the suite.
+    private func waitUntil(
+        _ message: String,
+        timeout: TimeInterval = 2,
+        condition: () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("Timed out waiting for \(message)", file: file, line: line)
+                return
+            }
             try await Task.sleep(for: .milliseconds(1))
         }
+    }
+
+    private func waitForInventoryRequest(
+        _ host: SuspendedHost,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        try await waitUntil("the broker inventory request", condition: { host.isAwaitingInventory }, file: file, line: line)
     }
 
     /// Bounded wait so a coordinator that never stops fails instead of hanging the suite.
@@ -122,9 +141,7 @@ final class LaunchRecoveryCoordinatorTests: XCTestCase {
         coordinator.begin(restoringSavedChannels: true)
         try await waitForInventoryRequest(host)
         host.resolveInventory(false)
-        while host.events.filter({ $0 == "inventory" }).count < 2 {
-            try await Task.sleep(for: .milliseconds(1))
-        }
+        try await waitUntil("the inventory retry") { host.events.filter { $0 == "inventory" }.count >= 2 }
         XCTAssertFalse(host.events.contains("restore"), "An unknown inventory must never be treated as empty")
         try await waitForInventoryRequest(host)
         host.resolveInventory(true)

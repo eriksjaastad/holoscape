@@ -19,6 +19,12 @@ class ChannelManager {
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
+    /// Saved entries the restore factory could not construct (for example an API
+    /// agent whose Keychain credential is unavailable), with their saved
+    /// position. They are not tabs, but they are still the user's configuration,
+    /// so every save writes them back instead of replacing the saved list with
+    /// only the channels that happened to restore.
+    private var unrestoredSavedChannels: [(index: Int, metadata: ChannelMetadata)] = []
     /// Last failure hit while reading the broker registry during restore. Non-nil
     /// means Holoscape could not tell whether broker sessions survived, so tabs
     /// were restored from saved metadata alone. Cleared by the next successful read.
@@ -374,6 +380,9 @@ class ChannelManager {
                 closeTombstone: closingChannelIDs.contains(id) ? true : nil
             )
         }
+        for (index, metadata) in unrestoredSavedChannels {
+            config.channels.insert(metadata, at: min(index, config.channels.count))
+        }
         config.channelInstanceHighWaterMarks = highWaterMarks
         let didSave = configService.save(config)
         if didSave {
@@ -394,7 +403,8 @@ class ChannelManager {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
-        for metadata in config.channels {
+        unrestoredSavedChannels = []
+        for (index, metadata) in config.channels.enumerated() {
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
@@ -402,7 +412,11 @@ class ChannelManager {
             if let brokerSessionID = metadata.brokerSessionID {
                 guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
             }
-            if let controller = factory(metadata), channels[controller.channelId] == nil {
+            guard let controller = factory(metadata) else {
+                unrestoredSavedChannels.append((index, metadata))
+                continue
+            }
+            if channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
