@@ -50,61 +50,6 @@ final class V2UtilityTests: XCTestCase {
         XCTAssertEqual(result.ansiColors?["red"], "#ff5555")
     }
 
-    // MARK: - TimestampInjector
-
-    func testPrefixFormat() {
-        var calendar = Calendar.current
-        calendar.timeZone = TimeZone.current
-        var components = DateComponents()
-        components.hour = 14
-        components.minute = 30
-        components.second = 45
-        components.year = 2026
-        components.month = 4
-        components.day = 4
-        let date = calendar.date(from: components)!
-        let prefix = TimestampInjector.prefix(for: date)
-        XCTAssertEqual(prefix, "[14:30:45] ")
-    }
-
-    func testPrefixMidnight() {
-        var calendar = Calendar.current
-        calendar.timeZone = TimeZone.current
-        var components = DateComponents()
-        components.hour = 0
-        components.minute = 0
-        components.second = 0
-        components.year = 2026
-        components.month = 1
-        components.day = 1
-        let date = calendar.date(from: components)!
-        let prefix = TimestampInjector.prefix(for: date)
-        XCTAssertEqual(prefix, "[00:00:00] ")
-    }
-
-    func testAddSecondsToGroupChatMessage() {
-        var calendar = Calendar.current
-        calendar.timeZone = TimeZone.current
-        var components = DateComponents()
-        components.hour = 14
-        components.minute = 30
-        components.second = 45
-        components.year = 2026
-        components.month = 4
-        components.day = 4
-        let date = calendar.date(from: components)!
-
-        let message = "[2:30 PM] erik: hello world"
-        let result = TimestampInjector.addSeconds(to: message, date: date)
-        XCTAssertEqual(result, "[2:30:45 PM] erik: hello world")
-    }
-
-    func testAddSecondsNoMatchReturnsOriginal() {
-        let message = "no timestamp here"
-        let result = TimestampInjector.addSeconds(to: message)
-        XCTAssertEqual(result, "no timestamp here")
-    }
-
     // MARK: - ElapsedTimeFormatter
 
     func testFormatNilReturnsNil() {

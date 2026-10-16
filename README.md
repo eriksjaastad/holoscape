@@ -48,7 +48,6 @@ This registers the MCP server and notification hooks so Claude Code can open tab
 | Cmd+Shift+D | Split pane vertical |
 | Cmd+Shift+W | Close split pane |
 | Cmd+Shift+S | Toggle sidebar |
-| Cmd+T | Toggle timestamps |
 | Cmd+, | Settings |
 
 Right-click any sidebar entry for: Close, Rename, Duplicate, Reconnect, Pin/Unpin, Copy Session Info.

@@ -332,18 +332,6 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         }
     }
 
-    // MARK: - View Menu Completeness
-
-    func testViewMenuShowTimestamps() throws {
-        app.menuBars.firstMatch.menuBarItems["View"].click()
-
-        let timestampItem = app.menuItems["Show Timestamps"]
-        XCTAssertTrue(timestampItem.waitForExistence(timeout: 2), "Show Timestamps should be in View menu")
-        XCTAssertTrue(timestampItem.isEnabled, "Show Timestamps should be enabled")
-
-        app.typeKey(.escape, modifierFlags: [])
-    }
-
     private func relaunchWithPersistedSkin(_ skinName: String) throws -> URL {
         let configDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-window-management-\(UUID().uuidString)")
