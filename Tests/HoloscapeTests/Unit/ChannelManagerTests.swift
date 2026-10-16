@@ -602,19 +602,22 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNil(manager.channel(matchingLaunchLabel: "Build"))
     }
 
-    func testCreateLocalShellProfileUsesProfileDirectory() {
+    func testCreateLocalShellProfileUsesProfileDirectory() throws {
+        let profileDirectory = temporaryConfigDirectory
+            .appendingPathComponent("profile-projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: profileDirectory, withIntermediateDirectories: true)
         let profile = SessionProfile(
             label: "Shell",
             connection: .local,
             command: "/bin/zsh",
-            directory: DefaultWorkingDirectory.preferredPath
+            directory: profileDirectory.path
         )
 
         let channel = manager.createChannel(from: profile)
         let shell = channel as? ShellChannelController
 
-        XCTAssertEqual(shell?.workingDirectory, DefaultWorkingDirectory.preferredPath)
-        XCTAssertEqual(channel.displayLabel, DefaultWorkingDirectory.preferredURL.lastPathComponent)
+        XCTAssertEqual(shell?.workingDirectory, profileDirectory.path)
+        XCTAssertEqual(channel.displayLabel, profileDirectory.lastPathComponent)
     }
 
     func testCreateLocalShellProfileUsesInjectedBrokerBackedShellCoordinator() {
