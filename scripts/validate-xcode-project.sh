@@ -194,10 +194,13 @@ unit_target=$(object_block 6D1C4365B7B34EC1185722E9)
 app_frameworks=$(object_block 17800BD5018258B2F8301A01)
 unit_frameworks=$(object_block 982D1B0759F34671CF2E01A8)
 native_target=$(object_block 6C329224BFDF298222AD54F2)
+project_object=$(object_block A8536900B627C2D00527ABA0)
+products_group=$(object_block BC2B4CEB52F4413B92874773)
 native_sources=$(object_block 29DF915F0B0E35021A07F00C)
 native_headers=$(object_block 01340CE64B6CB3BB8355E6E3)
 native_debug=$(object_block E4CDB2C39667C59F185B7CAE)
 native_release=$(object_block C3DC0F1EF6A90CEF16955202)
+native_configurations=$(object_block 95F26503BABD4AD324729427)
 
 require_exact_count 'name = CNativePTY;' 2 'the CNativePTY target and source group names'
 require_exact_count 'path = Sources/CNativePTY;' 1 'the CNativePTY source group'
@@ -215,6 +218,13 @@ require_in_block "$unit_frameworks" '440A44BB465227FF25586C6C /\* libCNativePTY\
 require_in_block "$unit_frameworks" '18A4681DF2204A32A91C6E67 /\* SwiftTerm in Frameworks \*/' 'the unit-test SwiftTerm link'
 require_in_block "$native_target" '01340CE64B6CB3BB8355E6E3 /\* CopyFiles \*/' 'the CNativePTY header phase'
 require_in_block "$native_target" '29DF915F0B0E35021A07F00C /\* Sources \*/' 'the CNativePTY source phase'
+require_in_block "$native_target" 'buildConfigurationList = 95F26503BABD4AD324729427 ' 'the CNativePTY configuration list'
+require_in_block "$native_target" 'productReference = C8599FAC0805093E678DF085 ' 'the CNativePTY product reference'
+require_in_block "$native_target" 'productType = "com\.apple\.product-type\.library\.static";' 'the CNativePTY static-library product type'
+require_in_block "$project_object" '6C329224BFDF298222AD54F2 /\* CNativePTY \*/' 'CNativePTY in the project target list'
+require_in_block "$products_group" 'C8599FAC0805093E678DF085 /\* libCNativePTY\.a \*/' 'the CNativePTY product in the Products group'
+require_in_block "$native_configurations" 'E4CDB2C39667C59F185B7CAE /\* Debug \*/' 'the CNativePTY Debug configuration'
+require_in_block "$native_configurations" 'C3DC0F1EF6A90CEF16955202 /\* Release \*/' 'the CNativePTY Release configuration'
 require_in_block "$native_sources" '7FF4689172A66A84831BE365 /\* HoloscapeNativePTY\.c in Sources \*/' 'the native PTY C source'
 require_in_block "$native_headers" '674AF628153281874D3C6D2C /\* HoloscapeNativePTY\.h in CopyFiles \*/' 'the native PTY public header'
 require_in_block "$native_headers" '4165D103000290B221C35508 /\* module\.modulemap in CopyFiles \*/' 'the native PTY module map'

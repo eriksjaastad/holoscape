@@ -10,7 +10,7 @@ trap 'rm -rf "$work_dir"' EXIT
 
 "$validator" "$project" >/dev/null
 
-mutate_source_phase() {
+mutate_project() {
     local source="$1"
     local destination="$2"
     local mode="$3"
@@ -41,6 +41,30 @@ elif mode == "moved":
     )
     destination.write_text(source)
     raise SystemExit(0)
+elif mode == "target-config":
+    source = source.replace(
+        "buildConfigurationList = 95F26503BABD4AD324729427 /* Build configuration list for PBXNativeTarget \"CNativePTY\" */;",
+        "buildConfigurationList = FFFFFFFFFFFFFFFFFFFFFFFF /* stale CNativePTY configuration list */;",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
+elif mode == "target-product":
+    source = source.replace(
+        "productReference = C8599FAC0805093E678DF085 /* libCNativePTY.a */;",
+        "productReference = 212041D5FDF1C8CE4CA3DEA1 /* libCglslang.a */;",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
+elif mode == "target-membership":
+    source = source.replace(
+        "\t\t\t\t6C329224BFDF298222AD54F2 /* CNativePTY */,\n",
+        "",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 
@@ -48,17 +72,25 @@ destination.write_text(source[:start] + phase + source[end:])
 PY
 }
 
-for mutation in missing stale moved; do
+for mutation in missing stale moved target-config target-product target-membership; do
     mutated_project="$work_dir/$mutation.pbxproj"
-    mutate_source_phase "$project" "$mutated_project" "$mutation"
+    mutate_project "$project" "$mutated_project" "$mutation"
     if "$validator" "$mutated_project" >"$work_dir/$mutation.out" 2>&1; then
-        echo "error: Xcode validator accepted a $mutation unit-test source phase" >&2
+        echo "error: Xcode validator accepted the $mutation project mutation" >&2
         exit 1
     fi
 done
 if ! grep -q '^+Tests/HoloscapeTests/Unit/Legacy/AgentStatusNotificationRoutingTests.swift$' "$work_dir/moved.out"; then
     echo "error: moved-source regression did not compare the resolved stale path" >&2
     cat "$work_dir/moved.out" >&2
+    exit 1
+fi
+if make -n -C "$repo_root" clean | grep -q 'Holoscape\.xcodeproj'; then
+    echo "error: make clean still removes the checked-in Xcode project" >&2
+    exit 1
+fi
+if make -n -C "$repo_root" xcode | grep -q 'generate-xcodeproj'; then
+    echo "error: make xcode still regenerates the authoritative checked-in project" >&2
     exit 1
 fi
 
@@ -68,11 +100,16 @@ cat >"$work_dir/bin/xcodebuild" <<'EOF'
 if [[ -n "${FAKE_STATUS_PATH:-}" ]]; then
     mkdir -p "$FAKE_STATUS_PATH"
 fi
+if [[ -n "${FAKE_SLEEP_SECONDS:-}" ]]; then
+    sleep "$FAKE_SLEEP_SECONDS"
+fi
 echo "** TEST FAILED **"
 exit 42
 EOF
 chmod +x "$work_dir/bin/xcodebuild"
 cp "$script_dir/test-ui-shards.sh" "$work_dir/test-ui-shards.sh"
+cp "$script_dir/run-with-timeout.py" "$work_dir/run-with-timeout.py"
+chmod +x "$work_dir/run-with-timeout.py"
 python3 - "$work_dir/test-ui-shards.sh" "$work_dir/results" <<'PY'
 from pathlib import Path
 import sys
@@ -133,8 +170,49 @@ if ! grep -q 'cannot record failed shard status' "$work_dir/status-write.out"; t
     exit 1
 fi
 
+/bin/rm -rf "$status_path"
+printf 'PASS\n' >"$status_path"
+printf 'Test Case passed\n' >"$work_dir/single-results/shard-1.txt"
+bundle_path="$work_dir/single-results/shard-1.xcresult"
+mkdir -p "$bundle_path"
+cat >"$work_dir/bin/rm" <<'EOF'
+#!/bin/bash
+for argument in "$@"; do
+    if [[ -n "${FAKE_RM_FAIL_PATH:-}" && "$argument" == "$FAKE_RM_FAIL_PATH" ]]; then
+        echo "synthetic rm failure: $argument" >&2
+        exit 73
+    fi
+done
+exec /bin/rm "$@"
+EOF
+chmod +x "$work_dir/bin/rm"
+if FAKE_RM_FAIL_PATH="$bundle_path" PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1-1 >"$work_dir/cleanup.out" 2>&1; then
+    echo "error: UI shard accepted result-bundle cleanup failure" >&2
+    exit 1
+fi
+if ! grep -Eq 'Shard[[:space:]]+1:.*0 passed,.*0 failed.*\[FAIL\]' "$work_dir/cleanup.out" || \
+   grep -Eq 'Shard[[:space:]]+1:.*\[PASS\]' "$work_dir/cleanup.out"; then
+    echo "error: UI shard cleanup failure reused a stale PASS status" >&2
+    cat "$work_dir/cleanup.out" >&2
+    exit 1
+fi
+
+/bin/rm -rf "$bundle_path" "$status_path"
+if FAKE_SLEEP_SECONDS=2 HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then
+    echo "error: UI shard accepted a timed-out xcodebuild" >&2
+    exit 1
+fi
+if ! grep -q 'command timed out after 0.1 seconds: xcodebuild' "$work_dir/timeout.out" || \
+   [[ $(<"$status_path") != "FAIL" ]]; then
+    echo "error: UI shard timeout was not reported and recorded as failure" >&2
+    cat "$work_dir/timeout.out" >&2
+    exit 1
+fi
+
 definitions="$work_dir/test-ui-shard-definitions.sh"
-sed -n '20,/^# Parse arguments$/p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
+sed -n '/^count_matches() {$/,/^# Parse arguments$/p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
 if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
     source "$1"
     mkdir -p "$RESULTS_DIR"

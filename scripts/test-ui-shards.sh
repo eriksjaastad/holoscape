@@ -7,6 +7,9 @@
 #   ./scripts/test-ui-shards.sh 3-5          # Run shards 3 through 5
 #   ./scripts/test-ui-shards.sh failing      # Run only currently-failing classes
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
+# Results: /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}
+# Override the one-hour xcodebuild limit with HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS.
+# UI execution requires macOS Accessibility/Automation permission for the runner.
 
 set -euo pipefail
 
@@ -14,8 +17,14 @@ SCHEME="Holoscape"
 DEST="platform=macOS"
 RESULTS_DIR="/tmp/holoscape-test-shards"
 RESUME_FILE="$RESULTS_DIR/last-failed-shard"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
+UI_TEST_TIMEOUT_SECONDS="${HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS:-3600}"
 
 mkdir -p "$RESULTS_DIR"
+declare -a SHARD_RUN_STATUS=()
+declare -a SHARD_RUN_PASSED=()
+declare -a SHARD_RUN_FAILED=()
 
 count_matches() {
     local pattern="$1"
@@ -75,11 +84,18 @@ run_shard() {
     local outfile="$RESULTS_DIR/shard-${n}.txt"
     local bundle="$RESULTS_DIR/shard-${n}.xcresult"
     local status_file="$RESULTS_DIR/shard-${n}.status"
+    SHARD_RUN_STATUS[$n]="FAIL"
+    SHARD_RUN_PASSED[$n]=0
+    SHARD_RUN_FAILED[$n]=0
 
     # xcodebuild refuses to write to an existing .xcresult bundle.
-    # Remove any prior bundle for this shard before the run.
+    # Remove prior outputs so the current invocation cannot report stale data.
     if ! rm -rf "$bundle"; then
         echo "error: cannot remove prior result bundle: $bundle" >&2
+        return 1
+    fi
+    if ! rm -f "$outfile"; then
+        echo "error: cannot remove prior shard output: $outfile" >&2
         return 1
     fi
     if ! rm -f "$status_file"; then
@@ -88,13 +104,13 @@ run_shard() {
     fi
 
     set +e
-    xcodebuild test \
+    "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
         -skipPackagePluginValidation \
         -resultBundlePath "$bundle" \
         $args \
-        2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
+        2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
     local pipeline_status=("${PIPESTATUS[@]}")
     set -e
 
@@ -102,6 +118,8 @@ run_shard() {
     local failed
     passed=$(count_matches "passed" "$outfile") || return 1
     failed=$(count_matches "failed" "$outfile") || return 1
+    SHARD_RUN_PASSED[$n]="$passed"
+    SHARD_RUN_FAILED[$n]="$failed"
 
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
@@ -123,6 +141,7 @@ run_shard() {
         echo "error: cannot record passed shard status: $status_file" >&2
         return 1
     fi
+    SHARD_RUN_STATUS[$n]="PASS"
     return 0
 }
 
@@ -137,16 +156,23 @@ print_summary() {
 
     for i in $(seq 1 10); do
         local outfile="$RESULTS_DIR/shard-${i}.txt"
-        if [ -f "$outfile" ]; then
+        if [[ -n "${SHARD_RUN_STATUS[$i]+set}" || -f "$outfile" ]]; then
             local status_file="$RESULTS_DIR/shard-${i}.status"
             local p
             local f
-            p=$(count_matches "passed" "$outfile") || return 1
-            f=$(count_matches "failed" "$outfile") || return 1
+            if [[ -n "${SHARD_RUN_STATUS[$i]+set}" ]]; then
+                p="${SHARD_RUN_PASSED[$i]}"
+                f="${SHARD_RUN_FAILED[$i]}"
+            else
+                p=$(count_matches "passed" "$outfile") || return 1
+                f=$(count_matches "failed" "$outfile") || return 1
+            fi
             total_passed=$((total_passed + p))
             total_failed=$((total_failed + f))
             local status="UNKNOWN"
-            if [[ -r "$status_file" ]]; then
+            if [[ -n "${SHARD_RUN_STATUS[$i]+set}" ]]; then
+                status="${SHARD_RUN_STATUS[$i]}"
+            elif [[ -r "$status_file" ]]; then
                 status=$(<"$status_file")
                 if [[ "$status" != "PASS" && "$status" != "FAIL" ]]; then
                     echo "error: invalid shard status in $status_file: $status" >&2
@@ -202,13 +228,13 @@ case "${1:-all}" in
         done
         failing_bundle="$RESULTS_DIR/failing.xcresult"
         rm -rf "$failing_bundle"
-        xcodebuild test \
+        "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
             -scheme "$SCHEME" \
             -destination "$DEST" \
             -skipPackagePluginValidation \
             -resultBundlePath "$failing_bundle" \
             $args \
-            2>&1 | tee "$RESULTS_DIR/failing-only.txt" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
+            2>&1 | tee "$RESULTS_DIR/failing-only.txt" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
         echo "  Bundle:  $failing_bundle"
         ;;
     *-*)

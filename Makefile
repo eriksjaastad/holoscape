@@ -1,4 +1,7 @@
-.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume validate-tools xcode bundle clean run setup check-submodules
+.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-range test-ui-failing test-ui-resume test-ui-notifications validate-tools xcode bundle clean run setup check-submodules
+
+UI_TEST_TIMEOUT_SECONDS ?= 3600
+UI_TEST_RUNNER = ./scripts/run-with-timeout.py $(UI_TEST_TIMEOUT_SECONDS)
 
 help:
 	@echo "Holoscape — common ops"
@@ -7,6 +10,12 @@ help:
 	@echo "  make test             Unit + property tests"
 	@echo "  make test-unit        Unit tests only"
 	@echo "  make test-property    Property tests only"
+	@echo "  make test-ui          Full sharded UI suite (Accessibility/Automation permission required)"
+	@echo "  make test-ui-fast     Core UI smoke tests"
+	@echo "  make test-ui-shard SHARD=3    Run one UI shard"
+	@echo "  make test-ui-range RANGE=3-5  Run a UI shard range"
+	@echo "  make test-ui-resume   Resume at the last failed shard"
+	@echo "  make xcode            Open the checked-in Xcode project"
 	@echo "  make validate-tools   Check shell syntax and bundled skin archives"
 	@echo "  make bundle           Build debug .app bundle"
 	@echo "  make run              Build and open debug .app bundle"
@@ -62,7 +71,7 @@ test-ui-failing: bundle
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
-	@set -o pipefail; xcodebuild test \
+	@set -o pipefail; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
@@ -71,31 +80,23 @@ test-ui-fast: bundle
 		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
 		-only-testing:HoloscapeUITests/SidebarUITests \
 		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST"
+		2>&1 | grep -E "Test Case|Executed|TEST|error: command timed out"
 
 # Run notification UI tests
 test-ui-notifications: bundle
-	@set -o pipefail; xcodebuild test \
+	@set -o pipefail; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
 		-only-testing:HoloscapeUITests/NotificationSystemUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST"
+		2>&1 | grep -E "Test Case|Executed|TEST|error: command timed out"
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:
 	swift test --filter $(CLASS)
 
-# Generate Xcode project and open it
+# Open the authoritative checked-in Xcode project
 xcode: check-submodules
-	swift package generate-xcodeproj
-	@echo ""
-	@echo "Xcode project generated. Opening..."
-	@echo "NOTE: After opening, manually add the UI test target:"
-	@echo "  1. File > New > Target > UI Testing Bundle"
-	@echo "  2. Drag Tests/HoloscapeUITests/HoloscapeUITests.swift into it"
-	@echo "  3. Set the target application to Holoscape"
-	@echo ""
 	open Holoscape.xcodeproj
 
 # Build and assemble .app bundle
@@ -117,4 +118,3 @@ setup:
 clean:
 	swift package clean
 	rm -rf build/
-	rm -rf Holoscape.xcodeproj
