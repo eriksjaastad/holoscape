@@ -238,17 +238,92 @@ done
 exec /bin/rm "$@"
 EOF
 chmod +x "$work_dir/bin/rm"
+printf '7\n' >"$work_dir/single-results/last-failed-shard"
 if FAKE_RM_FAIL_PATH="$bundle_path" PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1-1 >"$work_dir/cleanup.out" 2>&1; then
     echo "error: UI shard accepted result-bundle cleanup failure" >&2
     exit 1
 fi
 if ! grep -Eq 'Shard[[:space:]]+1:.*0 passed,.*0 failed.*\[FAIL\]' "$work_dir/cleanup.out" || \
-   grep -Eq 'Shard[[:space:]]+1:.*\[PASS\]' "$work_dir/cleanup.out"; then
-    echo "error: UI shard cleanup failure reused a stale PASS status" >&2
+   grep -Eq 'Shard[[:space:]]+1:.*\[PASS\]' "$work_dir/cleanup.out" || \
+   [[ $(<"$work_dir/single-results/last-failed-shard") != "1" ]] || \
+   [[ $(<"$status_path") != "FAIL" ]]; then
+    echo "error: UI shard cleanup failure reused stale status or resume state" >&2
     cat "$work_dir/cleanup.out" >&2
     exit 1
 fi
+
+for invalid_timeout in nan inf -inf; do
+    if "$script_dir/run-with-timeout.py" "$invalid_timeout" /usr/bin/true \
+       >"$work_dir/timeout-$invalid_timeout.out" 2>&1; then
+        echo "error: timeout runner accepted non-finite timeout: $invalid_timeout" >&2
+        exit 1
+    fi
+    if ! grep -q 'timeout must be a finite value greater than zero' \
+       "$work_dir/timeout-$invalid_timeout.out"; then
+        echo "error: non-finite timeout lacked a diagnostic: $invalid_timeout" >&2
+        cat "$work_dir/timeout-$invalid_timeout.out" >&2
+        exit 1
+    fi
+done
+
+cat >"$work_dir/signal-child.py" <<'PY'
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+ready = Path(sys.argv[1])
+received = Path(sys.argv[2])
+pid_file = Path(sys.argv[3])
+
+def handle(signum, _frame):
+    received.write_text(signal.Signals(signum).name)
+    raise SystemExit(0)
+
+signal.signal(signal.SIGHUP, handle)
+signal.signal(signal.SIGTERM, handle)
+pid_file.write_text(str(os.getpid()))
+ready.write_text("ready")
+while True:
+    time.sleep(1)
+PY
+for forwarded_signal in HUP TERM; do
+    ready_path="$work_dir/signal-$forwarded_signal.ready"
+    received_path="$work_dir/signal-$forwarded_signal.received"
+    child_pid_path="$work_dir/signal-$forwarded_signal.pid"
+    "$script_dir/run-with-timeout.py" 30 python3 "$work_dir/signal-child.py" \
+        "$ready_path" "$received_path" "$child_pid_path" &
+    wrapper_pid=$!
+    ready_attempts=0
+    while [[ ! -f "$ready_path" && "$ready_attempts" -lt 100 ]]; do
+        sleep 0.02
+        ready_attempts=$((ready_attempts + 1))
+    done
+    if [[ ! -f "$ready_path" ]]; then
+        echo "error: timeout-runner signal fixture did not become ready" >&2
+        kill -KILL "$wrapper_pid" 2>/dev/null || true
+        wait "$wrapper_pid" 2>/dev/null || true
+        exit 1
+    fi
+    kill -"$forwarded_signal" "$wrapper_pid"
+    set +e
+    wait "$wrapper_pid"
+    wrapper_status=$?
+    set -e
+    expected_status=129
+    if [[ "$forwarded_signal" == "TERM" ]]; then
+        expected_status=143
+    fi
+    child_pid=$(<"$child_pid_path")
+    if [[ "$wrapper_status" -ne "$expected_status" ]] || \
+       [[ $(<"$received_path") != "SIG$forwarded_signal" ]] || \
+       kill -0 "$child_pid" 2>/dev/null; then
+        echo "error: timeout runner did not forward and reap SIG$forwarded_signal" >&2
+        exit 1
+    fi
+done
 
 /bin/rm -rf "$bundle_path" "$status_path"
 if FAKE_SLEEP_SECONDS=2 HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \

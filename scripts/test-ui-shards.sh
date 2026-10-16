@@ -51,6 +51,22 @@ count_matches() {
     printf '%s\n' "$count"
 }
 
+record_failed_shard() {
+    local n="$1"
+    local status_file="$2"
+    local recording_failed=0
+
+    if ! printf 'FAIL\n' > "$status_file"; then
+        echo "error: cannot record failed shard status: $status_file" >&2
+        recording_failed=1
+    fi
+    if ! printf '%s\n' "$n" > "$RESUME_FILE"; then
+        echo "error: cannot record failed shard resume point: $RESUME_FILE" >&2
+        recording_failed=1
+    fi
+    return "$recording_failed"
+}
+
 # Balanced shards — ~38 tests each, heavy classes spread across shards
 SHARD_1="IntegrityUITests"                                                    # 41
 SHARD_2="KeyboardShortcutsUITests WindowManagementUITests"                    # 34
@@ -95,14 +111,17 @@ run_shard() {
     # Remove prior outputs so the current invocation cannot report stale data.
     if ! rm -rf "$bundle"; then
         echo "error: cannot remove prior result bundle: $bundle" >&2
+        record_failed_shard "$n" "$status_file" || true
         return 1
     fi
     if ! rm -f "$outfile"; then
         echo "error: cannot remove prior shard output: $outfile" >&2
+        record_failed_shard "$n" "$status_file" || true
         return 1
     fi
     if ! rm -f "$status_file"; then
         echo "error: cannot remove prior shard status: $status_file" >&2
+        record_failed_shard "$n" "$status_file" || true
         return 1
     fi
 
@@ -132,14 +151,7 @@ run_shard() {
     echo "  Bundle:  $bundle"
 
     if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
-        if ! printf 'FAIL\n' > "$status_file"; then
-            echo "error: cannot record failed shard status: $status_file" >&2
-            return 1
-        fi
-        if ! printf '%s\n' "$n" > "$RESUME_FILE"; then
-            echo "error: cannot record failed shard resume point: $RESUME_FILE" >&2
-            return 1
-        fi
+        record_failed_shard "$n" "$status_file" || return 1
         return 1
     fi
     if ! printf 'PASS\n' > "$status_file"; then
