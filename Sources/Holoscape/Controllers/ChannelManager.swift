@@ -19,6 +19,12 @@ class ChannelManager {
     private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
     private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
+    /// Saved entries the restore factory could not construct (for example an API
+    /// agent whose Keychain credential is unavailable), with their saved
+    /// position. They are not tabs, but they are still the user's configuration,
+    /// so every save writes them back instead of replacing the saved list with
+    /// only the channels that happened to restore.
+    private var unrestoredSavedChannels: [(index: Int, metadata: ChannelMetadata)] = []
     /// Last failure hit while reading the broker registry during restore. Non-nil
     /// means Holoscape could not tell whether broker sessions survived, so tabs
     /// were restored from saved metadata alone. Cleared by the next successful read.
@@ -29,6 +35,7 @@ class ChannelManager {
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
     private let brokerRecoveryCoordinator: BrokerRecoveryCoordinator
+    private let launchRecoveryState: LaunchRecoveryState
     private var didPrepareBrokerRecovery = false
     private var preparedBrokerRecoverySessions: [BrokerSessionRecord]?
 
@@ -39,9 +46,11 @@ class ChannelManager {
     init(
         configService: ConfigService,
         brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(),
-        brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil,
+        launchRecoveryState: LaunchRecoveryState = LaunchRecoveryState(phase: .completed)
     ) {
         self.configService = configService
+        self.launchRecoveryState = launchRecoveryState
         self.brokerSessionCoordinator = brokerSessionCoordinator
         let shellCoordinator = brokerBackedShellCoordinator
             ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
@@ -286,6 +295,10 @@ class ChannelManager {
     /// Save current channel state to config.
     @discardableResult
     func saveState() -> Bool {
+        guard launchRecoveryState.allowsChannelPersistence else {
+            NSLog("ChannelManager refused to save channels during launch recovery (\(launchRecoveryState.phase))")
+            return false
+        }
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
             guard !completedClosingChannelIDs.contains(id) else { return nil }
@@ -367,6 +380,9 @@ class ChannelManager {
                 closeTombstone: closingChannelIDs.contains(id) ? true : nil
             )
         }
+        for (index, metadata) in unrestoredSavedChannels {
+            config.channels.insert(metadata, at: min(index, config.channels.count))
+        }
         config.channelInstanceHighWaterMarks = highWaterMarks
         let didSave = configService.save(config)
         if didSave {
@@ -387,15 +403,25 @@ class ChannelManager {
             let key = label.lowercased()
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
-        for metadata in config.channels {
+        unrestoredSavedChannels = []
+        for (index, metadata) in config.channels.enumerated() {
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
-            guard channels[metadata.id] == nil else { continue }
+            guard channels[metadata.id] == nil,
+                  !unrestoredSavedChannels.contains(where: { $0.metadata.id == metadata.id }) else { continue }
             if let brokerSessionID = metadata.brokerSessionID {
                 guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
             }
-            if let controller = factory(metadata), channels[controller.channelId] == nil {
+            guard let controller = factory(metadata) else {
+                // The entry stays saved, so its ordinal stays reserved: a new
+                // same-role tab must not reuse its number. It is not a live tab,
+                // so it claims no channel or broker identity.
+                unrestoredSavedChannels.append((index, metadata))
+                recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
+                continue
+            }
+            if channels[controller.channelId] == nil {
                 controller.setCustomDisplayLabel(metadata.customLabel)
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
