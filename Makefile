@@ -38,6 +38,7 @@ test-property: check-submodules
 validate-tools:
 	@./scripts/validate-tools.sh
 	@./scripts/test-package-tools.sh
+	@./scripts/validate-xcode-project.sh
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle
@@ -61,9 +62,10 @@ test-ui-failing: bundle
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
-	xcodebuild test \
+	@set -o pipefail; xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
+		-skipPackagePluginValidation \
 		-only-testing:HoloscapeUITests/HoloscapeUITests \
 		-only-testing:HoloscapeUITests/SettingsUITests \
 		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
@@ -73,9 +75,10 @@ test-ui-fast: bundle
 
 # Run notification UI tests
 test-ui-notifications: bundle
-	xcodebuild test \
+	@set -o pipefail; xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
+		-skipPackagePluginValidation \
 		-only-testing:HoloscapeUITests/NotificationSystemUITests \
 		2>&1 | grep -E "Test Case|Executed|TEST"
 

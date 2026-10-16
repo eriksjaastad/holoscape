@@ -60,6 +60,7 @@ run_shard() {
     xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
+        -skipPackagePluginValidation \
         -resultBundlePath "$bundle" \
         $args \
         2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
@@ -143,6 +144,7 @@ case "${1:-all}" in
         xcodebuild test \
             -scheme "$SCHEME" \
             -destination "$DEST" \
+            -skipPackagePluginValidation \
             -resultBundlePath "$failing_bundle" \
             $args \
             2>&1 | tee "$RESULTS_DIR/failing-only.txt" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
