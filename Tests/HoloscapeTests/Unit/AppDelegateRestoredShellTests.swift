@@ -229,7 +229,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(manager.count, 0)
     }
 
-    func testTerminationDeadlineRestartsSameAPIServerWithMuteStateIntact() throws {
+    func testTerminationDeadlineKeepsAPIServerStoppedUntilDetachAuthorityCompletes() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateAPIRestartTests-")
             .appendingPathComponent(UUID().uuidString)
@@ -265,13 +265,22 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         appDelegate.terminationTeardownTimeout = 0.01
 
         XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
-        XCTAssertFalse(windowController.channelMutationEnabled)
-        let deadline = Date().addingTimeInterval(1)
-        while apiServer.startCallCount == 0, Date() < deadline {
+        let timeoutDeadline = Date().addingTimeInterval(1)
+        while appDelegate.terminationCoordinator.isInProgress, Date() < timeoutDeadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
 
+        XCTAssertFalse(appDelegate.terminationCoordinator.isInProgress)
+        XCTAssertTrue(appDelegate.terminationCoordinator.hasStarted)
+        XCTAssertFalse(windowController.channelMutationEnabled)
         XCTAssertEqual(apiServer.stopCallCount, 1)
+        XCTAssertEqual(apiServer.startCallCount, 0)
+        XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
+        XCTAssertTrue(appDelegate.apiServer === apiServer)
+
+        channel.finishDeactivation()
+
+        XCTAssertFalse(appDelegate.terminationCoordinator.hasStarted)
         XCTAssertEqual(apiServer.startCallCount, 1)
         XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
         XCTAssertTrue(appDelegate.apiServer === apiServer)
@@ -294,10 +303,11 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         } as! MockChannelController
         channel.defersDeactivationCompletion = true
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         appDelegate.terminationTeardownTimeout = 0.01
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
         let deadline = Date().addingTimeInterval(1)
         while replies.isEmpty, Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
@@ -305,6 +315,39 @@ final class AppDelegateRestoredShellTests: XCTestCase {
 
         XCTAssertEqual(replies, [false])
         XCTAssertEqual(channel.deactivateCallCount, 1)
+    }
+
+    func testSecondQuitJoinsActiveTerminationTransactionWithoutStartingAnotherDetach() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationJoinTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.windowControllerRef = windowController
+        appDelegate.launchRecovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .completed),
+            host: appDelegate
+        )
+
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(channel.deactivateCallCount, 1)
+
+        channel.finishDeactivation()
+        XCTAssertTrue(appDelegate.terminationCoordinator.isComplete)
     }
 
     func testTerminationTeardownDeniesQuitWhenFinalSnapshotCannotBePersisted() throws {
@@ -323,9 +366,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         } as! MockChannelController
         channel.defersDeactivationCompletion = true
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
         XCTAssertTrue(replies.isEmpty)
 
         try FileManager.default.removeItem(at: tempDirectory)
@@ -337,9 +381,33 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         try FileManager.default.removeItem(at: tempDirectory)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         channel.defersDeactivationCompletion = false
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
 
         XCTAssertEqual(replies, [false, true])
+    }
+
+    func testApplicationWillTerminateUsesSynchronousCoordinatorFallbackWithoutClaimingDetach() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateWillTerminateFallbackTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let channel = manager.createChannel(type: .shell, role: "Fallback", workingDirectory: nil) { id, type, label, number, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: number)
+        } as! MockChannelController
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.launchRecovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .completed),
+            host: appDelegate
+        )
+
+        appDelegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        XCTAssertEqual(channel.deactivateCallCount, 0)
+        XCTAssertTrue(configService.load().channels.contains(where: { $0.id == channel.channelId }))
     }
 
     func testTerminationTeardownDoesNotDetachWhenInitialSnapshotCannotBePersisted() throws {
@@ -358,9 +426,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
         } as! MockChannelController
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
 
         XCTAssertEqual(replies, [false])
         XCTAssertEqual(channel.deactivateCallCount, 0)

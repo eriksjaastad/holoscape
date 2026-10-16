@@ -17,8 +17,17 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
 
     final class LaunchedChild: @unchecked Sendable {
         let pid: pid_t
+        private let stateLock = NSLock()
         private var reaped = false
-        var isReaped: Bool { reaped }
+        private var ownershipTransferred = false
+
+        var isReaped: Bool {
+            stateLock.withLock { reaped }
+        }
+
+        var hasTransferredOwnership: Bool {
+            stateLock.withLock { ownershipTransferred }
+        }
 
         init(pid: pid_t) {
             self.pid = pid
@@ -37,18 +46,21 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
 
         func reapAfterOwnershipTransfer() {
+            stateLock.withLock {
+                ownershipTransferred = true
+            }
             DispatchQueue.global(qos: .utility).async { [self] in
                 var status: Int32 = 0
-                while !reaped {
+                while !isReaped {
                     let result = waitpid(pid, &status, 0)
                     if result == pid {
-                        reaped = true
+                        markReaped()
                         return
                     }
                     if result == -1, errno == EINTR { continue }
                     if result == -1, errno == ECHILD {
                         NSLog("Broker helper reaper lost child authority for PID %d", pid)
-                        reaped = true
+                        markReaped()
                         return
                     }
                     if result == -1 {
@@ -83,13 +95,13 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
 
         private func isRunning() throws -> Bool {
-            guard !reaped else { return false }
+            guard !isReaped else { return false }
             var status: Int32 = 0
             while true {
                 let result = waitpid(pid, &status, WNOHANG)
                 if result == 0 { return true }
                 if result == pid {
-                    reaped = true
+                    markReaped()
                     return false
                 }
                 if result == -1, errno == EINTR { continue }
@@ -97,6 +109,12 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
                     throw POSIXError(.ECHILD)
                 }
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+
+        private func markReaped() {
+            stateLock.withLock {
+                reaped = true
             }
         }
     }

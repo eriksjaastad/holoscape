@@ -27,14 +27,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         state: LaunchRecoveryState(phase: .awaitingInventory),
         host: self
     )
+    /// Owns the bounded save/detach/final-save transaction for AppKit quit.
+    lazy var terminationCoordinator = TerminationCoordinator(host: self)
     private var previousLaunchTimestamp: Date?
-    private var terminationTeardownStarted = false
-    private var terminationTeardownComplete = false
-    private var terminationTeardownGeneration: UInt = 0
-    private var terminationTeardownTimeoutWorkItem: DispatchWorkItem?
     /// Test seam and hard upper bound for app-owned teardown authority. A timed
-    /// out quit is denied while the live app keeps retrying cleanup.
-    var terminationTeardownTimeout: TimeInterval = 30
+    /// out quit is denied while the live app retains the original cleanup.
+    var terminationTeardownTimeout: TimeInterval {
+        get { terminationCoordinator.timeout }
+        set { terminationCoordinator.timeout = newValue }
+    }
     private var pendingExternalURLs: [URL] = []
     private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
 
@@ -153,7 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     private func handleURL(_ url: URL) {
-        guard !terminationTeardownStarted else {
+        guard !terminationCoordinator.blocksExternalChannelCreation else {
             NSLog("Ignored external URL while application termination is pending")
             return
         }
@@ -182,9 +183,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldSave && launchRecovery.state.isCompleted {
-            if !terminationTeardownStarted {
-                windowController?.channelManager.saveState()
-                windowController?.channelManager.detachAllChannelsForAppTermination()
+            if !terminationCoordinator.hasStarted {
+                _ = terminationCoordinator.finalizeAtApplicationWillTerminate()
             }
         } else if shouldSave {
             NSLog("Skipping channel save during incomplete launch recovery")
@@ -200,91 +200,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         launchRecovery.abandonIfIncomplete()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         guard shouldSave, launchRecovery.state.isCompleted,
-              let channelManager = windowController?.channelManager ?? channelManagerRef else {
+              windowController?.channelManager != nil || channelManagerRef != nil else {
             return .terminateNow
         }
-        if terminationTeardownComplete {
+        if terminationCoordinator.isComplete {
             return .terminateNow
         }
-        if terminationTeardownStarted {
-            return .terminateLater
-        }
-
-        stopAPIServerForTermination()
-        setLaunchRecoveryInteractionEnabled(false)
-        windowController?.setChannelMutationEnabled(false)
-        beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
+        beginTerminationTeardown { [weak sender] shouldTerminate in
             sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
     }
 
-    /// Start a bounded quit transaction. Broker cleanup may keep retrying after
-    /// the deadline, but the application denies that quit request instead of
-    /// remaining in AppKit's `.terminateLater` state forever. A later quit joins
-    /// the still-live controllers and can succeed once cleanup finishes.
+    /// Compatibility seam for AppDelegate integration tests. Transaction state
+    /// and completion authority live in `TerminationCoordinator`.
     func beginTerminationTeardown(
-        using channelManager: ChannelManager,
         reply: @escaping @MainActor (Bool) -> Void
     ) {
-        terminationTeardownStarted = true
-        terminationTeardownGeneration &+= 1
-        let generation = terminationTeardownGeneration
-        terminationTeardownTimeoutWorkItem?.cancel()
-
-        let timeoutWorkItem = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.terminationTeardownStarted,
-                  !self.terminationTeardownComplete,
-                  self.terminationTeardownGeneration == generation else { return }
-            self.terminationTeardownStarted = false
-            self.terminationTeardownGeneration &+= 1
-            NSLog("Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost")
-            self.apiServer?.start()
-            self.setLaunchRecoveryInteractionEnabled(true)
-            self.windowController?.setChannelMutationEnabled(true)
-            reply(false)
-        }
-        terminationTeardownTimeoutWorkItem = timeoutWorkItem
-
-        guard channelManager.saveState() else {
-            terminationTeardownTimeoutWorkItem?.cancel()
-            terminationTeardownTimeoutWorkItem = nil
-            terminationTeardownStarted = false
-            terminationTeardownGeneration &+= 1
-            NSLog("Channel state could not be saved before broker cleanup; keeping Holoscape open")
-            apiServer?.start()
-            setLaunchRecoveryInteractionEnabled(true)
-            windowController?.setChannelMutationEnabled(true)
-            reply(false)
-            return
-        }
-        channelManager.detachAllChannelsForAppTermination { [weak self] in
-            guard let self,
-                  self.terminationTeardownStarted,
-                  self.terminationTeardownGeneration == generation else { return }
-            self.terminationTeardownTimeoutWorkItem?.cancel()
-            self.terminationTeardownTimeoutWorkItem = nil
-            // Final-output cleanup can create or clear durable retirement-only
-            // authority after the initial quit snapshot. Persist the resolved
-            // broker truth before allowing AppKit to terminate.
-            guard channelManager.saveState() else {
-                self.terminationTeardownStarted = false
-                self.terminationTeardownGeneration &+= 1
-                NSLog("Final broker cleanup state could not be saved; keeping Holoscape open")
-                self.apiServer?.start()
-                self.setLaunchRecoveryInteractionEnabled(true)
-                self.windowController?.setChannelMutationEnabled(true)
-                reply(false)
-                return
-            }
-            self.terminationTeardownComplete = true
-            reply(true)
-        }
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + terminationTeardownTimeout,
-            execute: timeoutWorkItem
-        )
+        terminationCoordinator.begin(reply: reply)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -920,6 +853,32 @@ extension AppDelegate: LaunchRecoveryHost {
         }
         showMainWindow()
         drainPendingExternalURLs()
+    }
+}
+
+// MARK: - Termination coordinator host
+
+extension AppDelegate: TerminationCoordinatorHost {
+    func terminationSetInteractionEnabled(_ enabled: Bool) {
+        if enabled {
+            apiServer?.start()
+        } else {
+            stopAPIServerForTermination()
+        }
+        setLaunchRecoveryInteractionEnabled(enabled)
+        windowController?.setChannelMutationEnabled(enabled)
+    }
+
+    func terminationSaveChannelState() -> Bool {
+        (windowController?.channelManager ?? channelManagerRef)?.saveState() ?? false
+    }
+
+    func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
+        guard let channelManager = windowController?.channelManager ?? channelManagerRef else {
+            completion()
+            return
+        }
+        channelManager.detachAllChannelsForAppTermination(completion: completion)
     }
 }
 
