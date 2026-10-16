@@ -454,6 +454,81 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(next.instanceNumber, 3)
     }
 
+    func testUnconstructedSavedChannelsKeepTheirOrdinalsReservedWithoutHighWaterMarks() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerPreservedOrdinalTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let firstShell = ChannelMetadata(id: UUID(), type: .shell, role: "Shell", workingDirectory: "/tmp/first")
+        let numberedBuild = ChannelMetadata(
+            id: UUID(), type: .shell, role: "Build", instanceNumber: 2, workingDirectory: "/tmp/build"
+        )
+        var config = configService.load()
+        config.channels = [firstShell, numberedBuild]
+        config.channelInstanceHighWaterMarks = nil  // legacy config
+        XCTAssertTrue(configService.save(config))
+
+        func shellFactory(_ metadata: ChannelMetadata) -> (any ChannelController)? {
+            ShellChannelController(
+                id: metadata.id,
+                instanceNumber: metadata.instanceNumber,
+                label: metadata.role,
+                workingDirectory: metadata.workingDirectory,
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+
+        let manager = ChannelManager(configService: configService)
+        manager.restoreState { _ in nil }  // Both entries are saved but cannot be built yet.
+        var created: [any ChannelController] = []
+        for role in ["Shell", "Build"] {
+            created.append(manager.createChannel(type: .shell, role: role, workingDirectory: nil) { id, _, _, instanceNumber, _ in
+                ShellChannelController(
+                    id: id,
+                    instanceNumber: instanceNumber,
+                    label: role,
+                    workingDirectory: "/tmp/new-\(role)",
+                    terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+                )
+            })
+        }
+        XCTAssertEqual(created.map(\.instanceNumber), [2, 3])
+        XCTAssertTrue(manager.saveState())
+
+        let relaunched = ChannelManager(configService: configService)
+        relaunched.restoreState(factory: shellFactory)
+        let identities = relaunched.allChannels().map { "\($0.displayLabel)" }
+        XCTAssertEqual(identities.count, 4)
+        XCTAssertEqual(Set(identities).count, 4, "Restored channels must have distinct identities: \(identities)")
+    }
+
+    func testDuplicateOfUnconstructedSavedChannelIsNotRestoredSecondTime() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerPreservedDuplicateTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let configService = ConfigService(configDir: tempDirectory)
+        let metadata = ChannelMetadata(id: UUID(), type: .shell, role: "Shell", workingDirectory: "/tmp/dup")
+        var config = configService.load()
+        config.channels = [metadata, metadata]
+        XCTAssertTrue(configService.save(config))
+
+        let manager = ChannelManager(configService: configService)
+        var factoryCalls = 0
+        manager.restoreState { _ in
+            factoryCalls += 1
+            return nil
+        }
+        XCTAssertEqual(factoryCalls, 1, "A repeated saved ID must not reach the factory again")
+        XCTAssertTrue(manager.saveState())
+        XCTAssertEqual(configService.load().channels.map(\.id), [metadata.id])
+    }
+
     func testClosedHighestInstanceNumberIsNotReusedAfterRelaunch() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerDurableHighWaterTests-")

@@ -408,12 +408,17 @@ class ChannelManager {
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
-            guard channels[metadata.id] == nil else { continue }
+            guard channels[metadata.id] == nil,
+                  !unrestoredSavedChannels.contains(where: { $0.metadata.id == metadata.id }) else { continue }
             if let brokerSessionID = metadata.brokerSessionID {
                 guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
             }
             guard let controller = factory(metadata) else {
+                // The entry stays saved, so its ordinal stays reserved: a new
+                // same-role tab must not reuse its number. It is not a live tab,
+                // so it claims no channel or broker identity.
                 unrestoredSavedChannels.append((index, metadata))
+                recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 continue
             }
             if channels[controller.channelId] == nil {
