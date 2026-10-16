@@ -858,30 +858,6 @@ final class IntegrityUITests: HoloscapeUITestCase {
         assertActiveChannelResponsive(message: "Terminal should be responsive after Select All + Copy")
     }
 
-    // MARK: - Timestamp Toggle Integrity
-
-    /// Cmd+T should toggle timestamps without breaking the terminal.
-    func testTimestampToggle() throws {
-        // Toggle timestamps on
-        app.typeKey("t", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        // Send a command to see if output still works. Use UUID (not label)
-        // because OSC 7 may rename the default shell's label after launch.
-        let defaultChannel = try apiListChannels().first
-        if let channelRef = defaultChannel?["id"] as? String {
-            try apiSendInput(channelRef: channelRef, text: "echo TIMESTAMP-TEST")
-            let found = try waitForAPIOutput(channelRef: channelRef, containing: "TIMESTAMP-TEST", timeout: 5)
-            XCTAssertTrue(found, "Output should work with timestamps enabled")
-        }
-
-        // Toggle timestamps off
-        app.typeKey("t", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.3)
-
-        assertActiveChannelResponsive(message: "Terminal should be responsive after timestamp toggle")
-    }
-
     // MARK: - Notification State Integrity
 
     /// Idle prompt and permission prompt must set correct accessibility values.

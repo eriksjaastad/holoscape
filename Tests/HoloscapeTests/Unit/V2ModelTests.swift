@@ -43,13 +43,12 @@ final class V2ModelTests: XCTestCase {
         XCTAssertEqual(decoded.endpoint, "http://localhost:8080/mcp/ceo")
     }
 
-    // MARK: - Config V2 Fields
+    // MARK: - Appearance Config V2 Fields
 
     func testAppearanceConfigThemeFields() throws {
         var config = HoloscapeConfig.default
         config.appearance.themeName = "Dracula"
         config.appearance.themeOverrides = ["backgroundColor": "#000000"]
-        config.showTimestamps = true
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -61,7 +60,6 @@ final class V2ModelTests: XCTestCase {
 
         XCTAssertEqual(decoded.appearance.themeName, "Dracula")
         XCTAssertEqual(decoded.appearance.themeOverrides?["backgroundColor"], "#000000")
-        XCTAssertEqual(decoded.showTimestamps, true)
     }
 
     func testV15ConfigBackwardCompat() throws {
@@ -74,7 +72,6 @@ final class V2ModelTests: XCTestCase {
         }
         """.data(using: .utf8)!
         let config = try JSONDecoder().decode(HoloscapeConfig.self, from: json)
-        XCTAssertNil(config.showTimestamps)
         XCTAssertNil(config.appearance.themeName)
         XCTAssertNil(config.appearance.themeOverrides)
         XCTAssertEqual(config.sidebarExpanded, true)

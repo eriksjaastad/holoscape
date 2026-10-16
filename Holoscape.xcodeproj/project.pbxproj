@@ -142,7 +142,6 @@
 		6D3B7E7D7E49A1C3AB20C611 /* AgentAPIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3B7E7C7E49A1C3AB20C611 /* AgentAPIKeyStore.swift */; };
 		6D3B7E7F7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3B7E7E7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift */; };
 		5D24C888DB5E8C8B9AE019AE /* AgentStatusAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34E7A23F23DEADA68A374CCC /* AgentStatusAdapter.swift */; };
-		5D656CACA515C91C259CA4EE /* TimestampInjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FA9C478B7E3E49C78A56786 /* TimestampInjector.swift */; };
 		5DC474AAAD2D2122CA1AE1B3 /* SessionProfileManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AACCB148A27764966AF71824 /* SessionProfileManagerTests.swift */; };
 		5DD812B8AFE96AD54F5D19C8 /* doc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B15F50DAA96314B01A524FD /* doc.cpp */; };
 		5FAEED863C6FE19E494EC298 /* HistoryBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F01B123B9D8C7328EF8FE01 /* HistoryBuffer.swift */; };
@@ -625,7 +624,6 @@
 		5DC033E3C78E7BF4E4890A19 /* StateDeterminismPropertyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateDeterminismPropertyTests.swift; sourceTree = "<group>"; };
 		5E71E35AF780B5D3663D0681 /* RoleDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoleDetector.swift; sourceTree = "<group>"; };
 		5F036C7BB957D398369075BA /* InstanceNumberingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstanceNumberingTests.swift; sourceTree = "<group>"; };
-		5FA9C478B7E3E49C78A56786 /* TimestampInjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimestampInjector.swift; sourceTree = "<group>"; };
 		5FE986273196A75F98AB5156 /* ChromeBackwardCompatIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeBackwardCompatIntegrationTests.swift; sourceTree = "<group>"; };
 		60135DD5BB4FA168DD5E0C1F /* TerminalProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalProcess.swift; sourceTree = "<group>"; };
 		60B9FEBCF3526BB4962E1681 /* DragRegionTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragRegionTrackerTests.swift; sourceTree = "<group>"; };
@@ -1230,7 +1228,6 @@
 				7A0B82703D4F0B843A854F2B /* SkinContext.swift */,
 				C5EA8D24CC5869B2C2BB215A /* SkinEngine.swift */,
 				2824D8DD4CD94BF2F8DF3E76 /* SpriteAnimLayerRenderer.swift */,
-				5FA9C478B7E3E49C78A56786 /* TimestampInjector.swift */,
 				BC4729FFED20676CC99E5E11 /* WampBundleLoader.swift */,
 			);
 			path = Services;
@@ -2019,7 +2016,6 @@
 				16C8C00158661C73ECDE40B5 /* SurfaceKey.swift in Sources */,
 				D06A9CAD35859D4AFCF287D4 /* TabBarView.swift in Sources */,
 				12C7E336C1D694B4E50D4EAB /* TerminalProcess.swift in Sources */,
-				5D656CACA515C91C259CA4EE /* TimestampInjector.swift in Sources */,
 				25CDCAD2C65DA3BCDC1A335B /* VesselSeamView.swift in Sources */,
 				F30709272B9675FD6B5466CE /* WampBundleLoader.swift in Sources */,
 				247DE8C15BDD31BB5D8E6674 /* main.swift in Sources */,

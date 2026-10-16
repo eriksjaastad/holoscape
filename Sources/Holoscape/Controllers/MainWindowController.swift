@@ -698,17 +698,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             fileMenu.addItem(toggleSidebarItem)
         }
 
-        // View menu: timestamp toggle + four chrome region toggles.
+        // View menu: reader mode + four chrome region toggles.
         // Building these here (not in AppDelegate) lets us set
         // `target = self` explicitly, which is consistent with every other
         // MainWindowController-owned menu item. Responder-chain dispatch
         // would otherwise silently fail to fire under certain focused-view
         // conditions (sheets, popovers, text field focus).
         if let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu {
-            let timestampItem = NSMenuItem(title: "Show Timestamps", action: #selector(toggleTimestamps), keyEquivalent: "t")
-            timestampItem.target = self
-            viewMenu.addItem(timestampItem)
-
             // Reader Mode — floating NSPanel with the active channel's
             // scrollback as plain text (ANSI stripped). ⌘⇧R rather than
             // ⌘R because ⌘R is too commonly "reload" in dev tools; the
@@ -827,13 +823,6 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         guard let activeChannelId,
               let channel = channelManager.channel(for: activeChannelId) else { return }
         channel.recordUserInteraction(at: Date())
-    }
-
-    @objc func toggleTimestamps() {
-        var config = configService.load()
-        let current = config.showTimestamps ?? false
-        config.showTimestamps = !current
-        configService.save(config)
     }
 
     /// View menu "Reader Mode" action (⌘⇧R). Toggles the floating

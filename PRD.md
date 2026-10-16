@@ -397,16 +397,6 @@ Each tab shows durable backend/agent state without relying on a hidden timer as 
 - **Stale** channels refer to a missing or unverifiable saved external session
 - Supplemental plugin metadata may be displayed, but must not mask higher-priority terminal/agent states
 
-### Timestamps on Terminal Output — setting shipped; rendering remaining
-
-Shipped: View > Show Timestamps (Cmd+T) toggles `showTimestamps`, which persists
-to config. No channel reads the setting yet, so no output is timestamped.
-
-Remaining:
-- When enabled, each line of output gets a `[HH:MM:SS]` local-time prefix in a dimmed color
-- Applies to all channel types (shell, agent, SSH, group chat, MCP, bridge)
-- For group chat, the existing `[HH:MM PM] sender:` format remains — the timestamp toggle adds seconds precision
-
 ### Color Theme Presets
 
 Pre-built color themes that set background color, text color, and ANSI color palette in one click.
@@ -572,7 +562,6 @@ Remaining: decide which parts become a public skin authoring contract (Open Ques
 - Optional external-agent MCP client channel (`MCPClient` actor + `MCPChannelController`)
 - Group chat channel (Agent Chat API via HTTP polling, custom NSTextView, auto-scroll)
 - Running process indicator with elapsed time on tabs (green/yellow/red dots + "2h 15m")
-- Show Timestamps setting (Cmd+T); output rendering remains, see Timestamps on Terminal Output
 - Color theme presets (Dark, Monokai, Solarized Dark/Light, Dracula, Nord) with override support
 - Cmd+1-9 keyboard shortcuts for channel switching via NSEvent local monitor
 

@@ -116,7 +116,7 @@ final class V3ModelTests: XCTestCase {
         XCTAssertEqual(decoded.splitLayout?.panes.count, 1)
     }
 
-    func testV2ConfigBackwardCompatNoV3Fields() throws {
+    func testLegacyTimestampSettingIsIgnored() throws {
         let json = """
         {
             "appearance": {"backgroundColor":"#1a1a2e","transparency":1.0,"fontFamily":"SF Mono","fontSize":13.0},
@@ -128,6 +128,9 @@ final class V3ModelTests: XCTestCase {
         XCTAssertNil(config.notifications)
         XCTAssertNil(config.splitLayout)
         XCTAssertNil(config.appearance.skinName)
-        XCTAssertEqual(config.showTimestamps, true)
+
+        let encoded = try JSONEncoder().encode(config)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["showTimestamps"])
     }
 }

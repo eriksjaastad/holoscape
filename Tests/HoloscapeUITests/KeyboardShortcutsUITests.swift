@@ -57,19 +57,6 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("s", modifierFlags: [.command, .shift])
     }
 
-    func testCmdT() throws {
-        app.typeKey("t", modifierFlags: .command)
-
-        // Verify menu item is still interactable (toggle worked without crash)
-        app.menuBars.firstMatch.menuBarItems["View"].click()
-        let timestampItem = app.menuItems["Show Timestamps"]
-        XCTAssertTrue(timestampItem.waitForExistence(timeout: 2), "Show Timestamps menu item should still be interactable after Cmd+T")
-        app.typeKey(.escape, modifierFlags: [])
-
-        // Toggle back
-        app.typeKey("t", modifierFlags: .command)
-    }
-
     func testCmdD() throws {
         app.typeKey("d", modifierFlags: .command)
 
