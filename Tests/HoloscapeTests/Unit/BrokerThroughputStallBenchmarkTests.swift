@@ -176,23 +176,33 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
     }
 
     @MainActor
-    func testTerminationCoordinatorKeepsBrokerOwnedChildAliveAcrossAppClientTeardown() throws {
+    func testTerminationCoordinatorKeepsLazilyLaunchedBrokerChildAliveAcrossAppClientTeardown() throws {
         let socketPath = "/tmp/hs-termination-lifetime-\(UUID().uuidString).sock"
-        let child = try launchSocketBenchmarkHost(at: socketPath)
+        let helperDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HoloscapeTerminationBrokerHelper-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: helperDirectory, withIntermediateDirectories: true)
+        let helperURL = try makeSocketBenchmarkLazyLauncher(in: helperDirectory)
+        var launchedChild: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?
         addTeardownBlock {
-            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+            try Self.stopLazySocketBenchmarkHost(
+                launchedChild,
+                socketPath: socketPath,
+                helperDirectory: helperDirectory
+            )
         }
 
         let sessionID = BrokerSessionID(rawValue: "termination-process-lifetime-\(UUID().uuidString)")
         do {
-            let firstTransport = BrokerSessionHostUnixSocketTransport(
+            let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
+                executableURL: helperURL,
                 socketPath: socketPath,
-                requestTimeoutMilliseconds: 2_000
+                socketWaitTimeoutMilliseconds: 2_000,
+                requestTimeoutMilliseconds: 2_000,
+                launchedChildObserver: { launchedChild = $0 }
             )
             let firstClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
-                try firstTransport.sendFrame(frame)
+                try lazyTransport.sendFrame(frame)
             }
-            try waitForSocketBenchmarkHost(firstClient)
             try firstClient.createSession(
                 id: sessionID,
                 request: BrokerSessionLaunchRequest(
@@ -214,8 +224,11 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
             XCTAssertEqual(replies, [true])
         }
 
-        // The first production client, transport, host adapter, and coordinator
-        // are gone here. Only the spawned broker host owns the child.
+        // The production lazy launcher transferred child-reaping authority and
+        // is gone with the first app client. Its teardown must not kill the
+        // broker host or the detached PTY that a later app client reattaches.
+        let brokerChild = try XCTUnwrap(launchedChild)
+        XCTAssertFalse(brokerChild.isReaped)
         let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, requestTimeoutMilliseconds: 2_000)
         let secondClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
             try secondTransport.sendFrame(frame)
@@ -265,6 +278,19 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         try withExtendedLifetime(terminationSource) {
             try server.run()
         }
+    }
+
+    private func makeSocketBenchmarkLazyLauncher(in directory: URL) throws -> URL {
+        let helperURL = directory.appendingPathComponent("lazy-broker-launcher")
+        let testExecutable = URL(fileURLWithPath: CommandLine.arguments[0]).path
+        let testBundle = Bundle(for: Self.self).bundleURL.path
+        try """
+        #!/bin/sh
+        export \(Self.socketBenchmarkChildEnvironmentKey)="$2"
+        exec \(shellQuoted(testExecutable)) -XCTest HoloscapeTests.BrokerThroughputStallBenchmarkTests/testSocketBenchmarkChildHost \(shellQuoted(testBundle))
+        """.write(to: helperURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+        return helperURL
     }
 
     private func launchSocketBenchmarkHost(at socketPath: String) throws -> SocketBenchmarkChild {
@@ -329,6 +355,57 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
 
     private func shellQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func stopLazySocketBenchmarkHost(
+        _ child: LazyBrokerSessionHostUnixSocketTransport.LaunchedChild?,
+        socketPath: String,
+        helperDirectory: URL
+    ) throws {
+        var failures: [String] = []
+
+        if let child, !child.isReaped {
+            if Darwin.kill(child.pid, SIGTERM) != 0, errno != ESRCH {
+                failures.append("could not terminate lazy socket benchmark host: \(String(cString: strerror(errno)))")
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while !child.isReaped, Date() < deadline {
+                usleep(10_000)
+            }
+            if !child.isReaped {
+                if Darwin.kill(child.pid, SIGKILL) != 0, errno != ESRCH {
+                    failures.append("could not kill lazy socket benchmark host: \(String(cString: strerror(errno)))")
+                }
+                let killDeadline = Date().addingTimeInterval(1)
+                while !child.isReaped, Date() < killDeadline {
+                    usleep(10_000)
+                }
+            }
+            if !child.isReaped {
+                failures.append("lazy socket benchmark host was not reaped after bounded teardown")
+            }
+        }
+
+        for path in [socketPath, socketPath + ".lock"] {
+            if unlink(path) != 0, errno != ENOENT {
+                failures.append("could not remove lazy socket benchmark artifact at \(path): \(String(cString: strerror(errno)))")
+            }
+        }
+        do {
+            if FileManager.default.fileExists(atPath: helperDirectory.path) {
+                try FileManager.default.removeItem(at: helperDirectory)
+            }
+        } catch {
+            failures.append("could not remove test directory at \(helperDirectory.path): \(error)")
+        }
+
+        if !failures.isEmpty {
+            throw NSError(
+                domain: "BrokerThroughputStallBenchmarkTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "; ")]
+            )
+        }
     }
 
     private static func stopSocketBenchmarkHost(_ child: SocketBenchmarkChild, socketPath: String) throws {
