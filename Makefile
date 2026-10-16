@@ -38,7 +38,7 @@ test-property: check-submodules
 validate-tools:
 	@./scripts/validate-tools.sh
 	@./scripts/test-package-tools.sh
-	@./scripts/validate-xcode-project.sh
+	@./scripts/test-xcode-tools.sh
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle

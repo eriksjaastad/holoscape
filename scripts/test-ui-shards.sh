@@ -64,16 +64,17 @@ run_shard() {
         -resultBundlePath "$bundle" \
         $args \
         2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
+    local pipeline_status=("${PIPESTATUS[@]}")
 
-    local passed=$(grep -c "passed" "$outfile" 2>/dev/null || echo 0)
-    local failed=$(grep -c "failed" "$outfile" 2>/dev/null || echo 0)
+    local passed=$(grep -c "passed" "$outfile" 2>/dev/null || :)
+    local failed=$(grep -c "failed" "$outfile" 2>/dev/null || :)
 
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
     echo "  Bundle:  $bundle"
 
-    if [ "$failed" -gt 0 ]; then
+    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "$failed" -gt 0 ]; then
         echo "$n" > "$RESUME_FILE"
         return 1
     fi
@@ -92,8 +93,8 @@ print_summary() {
     for i in $(seq 1 10); do
         local outfile="$RESULTS_DIR/shard-${i}.txt"
         if [ -f "$outfile" ]; then
-            local p=$(grep -c "passed" "$outfile" 2>/dev/null || echo 0)
-            local f=$(grep -c "failed" "$outfile" 2>/dev/null || echo 0)
+            local p=$(grep -c "passed" "$outfile" 2>/dev/null || :)
+            local f=$(grep -c "failed" "$outfile" 2>/dev/null || :)
             total_passed=$((total_passed + p))
             total_failed=$((total_failed + f))
             local status="OK"
@@ -112,25 +113,29 @@ print_summary() {
 # Parse arguments
 case "${1:-all}" in
     all)
+        overall_status=0
         for i in $(seq 1 10); do
-            run_shard "$i" || true
+            run_shard "$i" || overall_status=1
         done
         print_summary
+        exit "$overall_status"
         ;;
     resume)
+        overall_status=0
         if [ -f "$RESUME_FILE" ]; then
             start=$(cat "$RESUME_FILE")
             echo "Resuming from shard $start"
             for i in $(seq "$start" 10); do
-                run_shard "$i" || true
+                run_shard "$i" || overall_status=1
             done
         else
             echo "No resume point found. Run all."
             for i in $(seq 1 10); do
-                run_shard "$i" || true
+                run_shard "$i" || overall_status=1
             done
         fi
         print_summary
+        exit "$overall_status"
         ;;
     failing)
         echo "Running only currently-failing test classes..."
@@ -154,10 +159,12 @@ case "${1:-all}" in
         # Range like 3-5
         start="${1%-*}"
         end="${1#*-}"
+        overall_status=0
         for i in $(seq "$start" "$end"); do
-            run_shard "$i" || true
+            run_shard "$i" || overall_status=1
         done
         print_summary
+        exit "$overall_status"
         ;;
     *)
         # Single shard number
