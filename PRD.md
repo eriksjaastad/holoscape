@@ -534,7 +534,7 @@ loading from `~/.holoscape/skins/<skin-name>/`, and the Settings skin picker shi
 - Default skin is the built-in Dark theme
 - Community skins can be shared as zip files
 
-Remaining: decide which parts become a public skin authoring contract (Open Question 12).
+Remaining: decide which parts become a public skin authoring contract (Open Question 11).
 
 ## MVP Scope
 
