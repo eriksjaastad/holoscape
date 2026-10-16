@@ -393,6 +393,12 @@ class ChannelManager {
         if didPrepareBrokerRecovery {
             return preparedBrokerRecoverySessions
         }
+        guard !brokerBackedShellCoordinator.requiresOffMainBrokerWork else {
+            let failure = "Broker recovery inventory was not prepared before \(context)"
+            brokerRegistryReadFailure = failure
+            NSLog("ChannelManager cannot classify broker sessions during \(context): \(failure)")
+            return nil
+        }
         do {
             let sessions = try brokerBackedShellCoordinator.reattachableSessions()
             brokerRegistryReadFailure = nil
