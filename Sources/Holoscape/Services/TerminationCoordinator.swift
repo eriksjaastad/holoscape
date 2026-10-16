@@ -44,8 +44,7 @@ final class TerminationCoordinator {
     }
 
     var blocksExternalChannelCreation: Bool {
-        if case .idle = phase { return false }
-        return true
+        hasStarted
     }
 
     /// AppKit calls `applicationWillTerminate` only after admission, so a

@@ -68,33 +68,32 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isComplete)
     }
 
-    func testRetryAfterTimeoutKeepsMutationsBlockedUntilOriginalDetachCompletes() {
-        let host = RecordingTerminationHost(saveResults: [true, true, true])
-        host.defersDetach = true
-        let coordinator = TerminationCoordinator(host: host, timeout: 0.01)
-        var firstReplies: [Bool] = []
-        var retryReplies: [Bool] = []
-
-        coordinator.begin { firstReplies.append($0) }
-        let deadline = Date().addingTimeInterval(1)
-        while firstReplies.isEmpty, Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertEqual(firstReplies, [false])
-        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
-
-        coordinator.begin { retryReplies.append($0) }
-        XCTAssertTrue(retryReplies.isEmpty)
-        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
-        XCTAssertEqual(host.events.filter { $0 == "detach" }.count, 1)
-
-        host.finishDetach()
-        XCTAssertEqual(retryReplies, [true])
-        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
-    }
-
     func testLateFinalSaveFailureAfterTimeoutRestoresInteraction() {
         let host = RecordingTerminationHost(saveResults: [true, false])
+        host.defersDetach = true
+        let coordinator = TerminationCoordinator(host: host, timeout: 0.01)
+        var replies: [Bool] = []
+
+        coordinator.begin { replies.append($0) }
+        let deadline = Date().addingTimeInterval(1)
+        while replies.isEmpty, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(replies, [false])
+        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
+
+        host.finishDetach()
+
+        XCTAssertEqual(
+            host.events,
+            ["interaction:false", "save", "detach", "save", "interaction:true"]
+        )
+        XCTAssertFalse(coordinator.hasStarted)
+        XCTAssertFalse(coordinator.blocksExternalChannelCreation)
+    }
+
+    func testLateSuccessfulDetachAfterTimeoutRestoresInteractionWithoutAdmittingQuit() {
+        let host = RecordingTerminationHost(saveResults: [true, true])
         host.defersDetach = true
         let coordinator = TerminationCoordinator(host: host, timeout: 0.01)
         var replies: [Bool] = []

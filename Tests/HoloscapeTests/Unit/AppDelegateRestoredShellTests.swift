@@ -265,12 +265,26 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         appDelegate.terminationTeardownTimeout = 0.01
 
         XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        let timeoutDeadline = Date().addingTimeInterval(1)
+        while appDelegate.terminationCoordinator.isInProgress, Date() < timeoutDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertFalse(appDelegate.terminationCoordinator.isInProgress)
+        XCTAssertTrue(appDelegate.terminationCoordinator.hasStarted)
         XCTAssertFalse(windowController.channelMutationEnabled)
         XCTAssertEqual(apiServer.stopCallCount, 1)
         XCTAssertEqual(apiServer.startCallCount, 0)
         XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
         XCTAssertTrue(appDelegate.apiServer === apiServer)
-        XCTAssertFalse(windowController.channelMutationEnabled)
+
+        channel.finishDeactivation()
+
+        XCTAssertFalse(appDelegate.terminationCoordinator.hasStarted)
+        XCTAssertEqual(apiServer.startCallCount, 1)
+        XCTAssertTrue(apiServer.isNotificationMuted(for: channel.channelId))
+        XCTAssertTrue(appDelegate.apiServer === apiServer)
+        XCTAssertTrue(windowController.channelMutationEnabled)
     }
 
     func testTerminationTeardownDeadlineDeniesQuitInsteadOfWaitingForever() throws {

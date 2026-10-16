@@ -31,7 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     lazy var terminationCoordinator = TerminationCoordinator(host: self)
     private var previousLaunchTimestamp: Date?
     /// Test seam and hard upper bound for app-owned teardown authority. A timed
-    /// out quit is denied while the live app keeps retrying cleanup.
+    /// out quit is denied while the live app retains the original cleanup.
     var terminationTeardownTimeout: TimeInterval {
         get { terminationCoordinator.timeout }
         set { terminationCoordinator.timeout = newValue }
