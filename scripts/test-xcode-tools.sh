@@ -65,6 +65,9 @@ fi
 mkdir -p "$work_dir/bin"
 cat >"$work_dir/bin/xcodebuild" <<'EOF'
 #!/bin/bash
+if [[ -n "${FAKE_STATUS_PATH:-}" ]]; then
+    mkdir -p "$FAKE_STATUS_PATH"
+fi
 echo "** TEST FAILED **"
 exit 42
 EOF
@@ -90,8 +93,48 @@ if [[ $(grep -c '\[FAIL\]' "$work_dir/shards.out") -ne 2 ]] || grep -q '\[OK\]' 
     exit 1
 fi
 
+python3 - "$work_dir/test-ui-shards.sh" "$work_dir/single-results" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+script = Path(sys.argv[1])
+text = script.read_text()
+text, count = re.subn(
+    r'^RESULTS_DIR="[^"]*"$',
+    f'RESULTS_DIR="{sys.argv[2]}"',
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if count != 1:
+    raise SystemExit("failed to redirect single-shard results")
+script.write_text(text)
+PY
+if PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/single.out" 2>&1; then
+    echo "error: single UI shard hid an xcodebuild failure" >&2
+    exit 1
+fi
+if [[ $(<"$work_dir/single-results/shard-1.status") != "FAIL" ]] || \
+   [[ $(<"$work_dir/single-results/last-failed-shard") != "1" ]]; then
+    echo "error: single UI shard did not record failure and resume state" >&2
+    exit 1
+fi
+
+status_path="$work_dir/single-results/shard-1.status"
+if FAKE_STATUS_PATH="$status_path" PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/status-write.out" 2>&1; then
+    echo "error: UI shard accepted a failed status write" >&2
+    exit 1
+fi
+if ! grep -q 'cannot record failed shard status' "$work_dir/status-write.out"; then
+    echo "error: failed UI shard status write lacked a diagnostic" >&2
+    cat "$work_dir/status-write.out" >&2
+    exit 1
+fi
+
 definitions="$work_dir/test-ui-shard-definitions.sh"
-sed '/^# Parse arguments$/,$d' "$work_dir/test-ui-shards.sh" >"$definitions"
+sed -n '20,/^# Parse arguments$/p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
 if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
     source "$1"
     mkdir -p "$RESULTS_DIR"

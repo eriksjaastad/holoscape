@@ -78,9 +78,16 @@ run_shard() {
 
     # xcodebuild refuses to write to an existing .xcresult bundle.
     # Remove any prior bundle for this shard before the run.
-    rm -rf "$bundle"
-    rm -f "$status_file"
+    if ! rm -rf "$bundle"; then
+        echo "error: cannot remove prior result bundle: $bundle" >&2
+        return 1
+    fi
+    if ! rm -f "$status_file"; then
+        echo "error: cannot remove prior shard status: $status_file" >&2
+        return 1
+    fi
 
+    set +e
     xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
@@ -89,6 +96,7 @@ run_shard() {
         $args \
         2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST"
     local pipeline_status=("${PIPESTATUS[@]}")
+    set -e
 
     local passed
     local failed
@@ -101,11 +109,20 @@ run_shard() {
     echo "  Bundle:  $bundle"
 
     if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$failed" -gt 0 ]; then
-        echo "FAIL" > "$status_file"
-        echo "$n" > "$RESUME_FILE"
+        if ! printf 'FAIL\n' > "$status_file"; then
+            echo "error: cannot record failed shard status: $status_file" >&2
+            return 1
+        fi
+        if ! printf '%s\n' "$n" > "$RESUME_FILE"; then
+            echo "error: cannot record failed shard resume point: $RESUME_FILE" >&2
+            return 1
+        fi
         return 1
     fi
-    echo "PASS" > "$status_file"
+    if ! printf 'PASS\n' > "$status_file"; then
+        echo "error: cannot record passed shard status: $status_file" >&2
+        return 1
+    fi
     return 0
 }
 
