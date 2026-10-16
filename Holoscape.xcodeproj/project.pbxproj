@@ -268,6 +268,7 @@
 		AD814C838D7F73F3D41B3A47 /* CommandHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA5FFDAFB51961AC644C79FE /* CommandHistory.swift */; };
 		ADCBC2B9AE042DE7ADD89547 /* LazyBrokerSessionHostProcessTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7AA9A071FEF2B6EA52BDD67 /* LazyBrokerSessionHostProcessTransport.swift */; };
 		E7F8A9B20123456789ABCDEF /* LaunchRecoveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F8A9B10123456789ABCDEF /* LaunchRecoveryCoordinator.swift */; };
+		C9A1B2C30123456789ABCDEF /* ChannelPersistenceTransactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A1B2C20123456789ABCDEF /* ChannelPersistenceTransactions.swift */; };
 		F8A9B10123456789ABCDEF01 /* TerminationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8A9B00123456789ABCDEF01 /* TerminationCoordinator.swift */; };
 		AE1D9FC4379A69780FD1547F /* Initialize.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BC91D29517325EA15C879A9F /* Initialize.cpp */; };
 		AEA8C94A4F2EAB769CB9A53C /* MainWindowController+ChromeMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = B297D1A513E44F127685608B /* MainWindowController+ChromeMode.swift */; };
@@ -741,6 +742,7 @@
 		B775F41E40076C80B9FDAECB /* GroupChatChannelUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupChatChannelUITests.swift; sourceTree = "<group>"; };
 		B7AA9A071FEF2B6EA52BDD67 /* LazyBrokerSessionHostProcessTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LazyBrokerSessionHostProcessTransport.swift; sourceTree = "<group>"; };
 		E7F8A9B10123456789ABCDEF /* LaunchRecoveryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchRecoveryCoordinator.swift; sourceTree = "<group>"; };
+		C9A1B2C20123456789ABCDEF /* ChannelPersistenceTransactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelPersistenceTransactions.swift; sourceTree = "<group>"; };
 		F8A9B00123456789ABCDEF01 /* TerminationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminationCoordinator.swift; sourceTree = "<group>"; };
 		B88A363CF2DA6EFFF1A1CF04 /* spirv_cfg.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = spirv_cfg.cpp; sourceTree = "<group>"; };
 		B8EEDF6528E9C32738A88EEF /* ShellDirectoryTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellDirectoryTracker.swift; sourceTree = "<group>"; };
@@ -1203,6 +1205,7 @@
 				4F998B99ECBC04227D6497E2 /* LazyBrokerSessionHostUnixSocketTransport.swift */,
 				4B757C1538B1EB62FB0890EF /* LEDArrayLayerRenderer.swift */,
 				E7F8A9B10123456789ABCDEF /* LaunchRecoveryCoordinator.swift */,
+				C9A1B2C20123456789ABCDEF /* ChannelPersistenceTransactions.swift */,
 				F8A9B00123456789ABCDEF01 /* TerminationCoordinator.swift */,
 				0A85BA3A27AD3E0680FC6466 /* MCPClient.swift */,
 				E5A2C11D0AE052DD7D6EA92A /* MetalCompositor.swift */,
@@ -1958,6 +1961,7 @@
 				C094823EA87D33F0B56EC1F7 /* LEDArrayLayerRenderer.swift in Sources */,
 				ADCBC2B9AE042DE7ADD89547 /* LazyBrokerSessionHostProcessTransport.swift in Sources */,
 				E7F8A9B20123456789ABCDEF /* LaunchRecoveryCoordinator.swift in Sources */,
+				C9A1B2C30123456789ABCDEF /* ChannelPersistenceTransactions.swift in Sources */,
 				F8A9B10123456789ABCDEF01 /* TerminationCoordinator.swift in Sources */,
 				170F9B92F750591E2D4747E4 /* LazyBrokerSessionHostUnixSocketTransport.swift in Sources */,
 				538D70F9D4C5675454B5A95D /* MCPChannelController.swift in Sources */,

@@ -4,43 +4,27 @@ import Foundation
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
     private var channelOrder: [UUID] = []
-    /// Closing tabs disappear from public lookup immediately but remain in the
-    /// persistence graph until asynchronous broker teardown publishes whether
-    /// retryable retirement authority must survive relaunch.
-    private var closingChannelIDs: Set<UUID> = []
-    /// Closures whose lifecycle work finished but whose removal has not yet been
-    /// durably saved. Keep their controllers hidden and retained until a later
-    /// successful save commits the deletion.
-    private var completedClosingChannelIDs: Set<UUID> = []
-    /// Broker identities represented by restored close tombstones remain claimed
-    /// for the whole restore pass even if synchronous cleanup removes the model.
-    private var suppressedRecoveredBrokerSessionIDs: Set<BrokerSessionID> = []
-    private(set) var closePersistenceFailure: String?
-    private var highWaterMarks: [String: Int] = [:]
     private var channelLabels: [UUID: String] = [:]
-    private var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
-    /// Saved entries the restore factory could not construct (for example an API
-    /// agent whose Keychain credential is unavailable), with their saved
-    /// position. They are not tabs, but they are still the user's configuration,
-    /// so every save writes them back instead of replacing the saved list with
-    /// only the channels that happened to restore.
-    private var unrestoredSavedChannels: [(index: Int, metadata: ChannelMetadata)] = []
     /// Last failure hit while reading the broker registry during restore. Non-nil
     /// means Holoscape could not tell whether broker sessions survived, so tabs
     /// were restored from saved metadata alone. Cleared by the next successful read.
     private(set) var brokerRegistryReadFailure: String?
     private(set) var pinnedChannelIds: Set<UUID> = []
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
-    private let configService: ConfigService
+    private let persistence: ChannelPersistenceTransactions
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
     private let brokerRecoveryCoordinator: BrokerRecoveryCoordinator
-    private let launchRecoveryState: LaunchRecoveryState
+
     private var didPrepareBrokerRecovery = false
     private var preparedBrokerRecoverySessions: [BrokerSessionRecord]?
 
     var brokerBackedTerminalCoordinator: any BrokerSessionCoordinating {
         brokerBackedShellCoordinator
+    }
+
+    var closePersistenceFailure: String? {
+        persistence.closePersistenceFailure
     }
 
     init(
@@ -49,8 +33,10 @@ class ChannelManager {
         brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil,
         launchRecoveryState: LaunchRecoveryState = LaunchRecoveryState(phase: .completed)
     ) {
-        self.configService = configService
-        self.launchRecoveryState = launchRecoveryState
+        self.persistence = ChannelPersistenceTransactions(
+            configService: configService,
+            launchRecoveryState: launchRecoveryState
+        )
         self.brokerSessionCoordinator = brokerSessionCoordinator
         let shellCoordinator = brokerBackedShellCoordinator
             ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
@@ -154,11 +140,10 @@ class ChannelManager {
 
     /// Remove a channel from the registry.
     func closeChannel(id: UUID) {
-        guard let channel = channels[id], !closingChannelIDs.contains(id) else { return }
+        guard let channel = channels[id], persistence.beginClosing(id) else { return }
         // Presentation removal and lifecycle ownership are separate. Keep this
         // controller in the saved order until teardown has serialized behind the
         // output lane and published any retirement-only broker authority.
-        closingChannelIDs.insert(id)
         channel.deactivateForClose { [weak self] outcome in
             self?.handleClosingOutcome(outcome, id: id)
         }
@@ -166,7 +151,7 @@ class ChannelManager {
     }
 
     private func finishClosingChannel(id: UUID) {
-        guard closingChannelIDs.contains(id), let channel = channels[id] else { return }
+        guard persistence.closingChannelIDs.contains(id), let channel = channels[id] else { return }
         let ownsPendingRetirement = (channel as? ShellChannelController)?.pendingExitedOutputRetirement != nil
             || (channel as? AgentChannelController)?.pendingExitedOutputRetirement != nil
         if ownsPendingRetirement {
@@ -176,7 +161,7 @@ class ChannelManager {
             persistClosingState(context: "retirement authority")
             return
         }
-        completedClosingChannelIDs.insert(id)
+        persistence.markClosingCompleted(id)
         persistClosingState(context: "completed removal")
     }
 
@@ -186,34 +171,25 @@ class ChannelManager {
             finishClosingChannel(id: id)
         case .retryableFailure(let failure):
             let didSave = saveState()
-            closePersistenceFailure = didSave
+            let message = didSave
                 ? failure.description
-                : configService.lastDiagnostic?.message
-                    ?? "Channel state save failed while persisting retryable cleanup failure"
-            NSLog("ChannelManager retained closed-channel cleanup authority: \(closePersistenceFailure!)")
+                : persistence.persistenceFailure(
+                    fallback: "Channel state save failed while persisting retryable cleanup failure"
+                )
+            persistence.retainCleanupFailure(message)
+            NSLog("ChannelManager retained closed-channel cleanup authority: \(message)")
         }
     }
 
     private func persistClosingState(context: String) {
         guard saveState() else {
-            closePersistenceFailure = configService.lastDiagnostic?.message
-                ?? "Channel state save failed while persisting \(context)"
-            NSLog("ChannelManager could not persist closed-channel \(context): \(closePersistenceFailure!)")
+            let message = persistence.persistenceFailure(
+                fallback: "Channel state save failed while persisting \(context)"
+            )
+            persistence.retainCleanupFailure(message)
+            NSLog("ChannelManager could not persist closed-channel \(context): \(message)")
             return
         }
-        closePersistenceFailure = nil
-    }
-
-    private func finalizePersistedClosures() {
-        guard !completedClosingChannelIDs.isEmpty else { return }
-        for id in completedClosingChannelIDs {
-            closingChannelIDs.remove(id)
-            channels.removeValue(forKey: id)
-            channelOrder.removeAll { $0 == id }
-            channelLabels.removeValue(forKey: id)
-            restoredBrokerSessionIDs.removeValue(forKey: id)
-        }
-        completedClosingChannelIDs.removeAll()
     }
 
     /// Detach live channel views during app termination without mutating the
@@ -246,7 +222,7 @@ class ChannelManager {
 
     /// Get a channel by ID.
     func channel(for id: UUID) -> (any ChannelController)? {
-        guard !closingChannelIDs.contains(id) else { return nil }
+        guard !persistence.closingChannelIDs.contains(id) else { return nil }
         return channels[id]
     }
 
@@ -265,7 +241,7 @@ class ChannelManager {
     /// Return all channels in tab order.
     func allChannels() -> [any ChannelController] {
         return channelOrder.compactMap { id in
-            closingChannelIDs.contains(id) ? nil : channels[id]
+            persistence.closingChannelIDs.contains(id) ? nil : channels[id]
         }
     }
 
@@ -295,121 +271,36 @@ class ChannelManager {
     /// Save current channel state to config.
     @discardableResult
     func saveState() -> Bool {
-        guard launchRecoveryState.allowsChannelPersistence else {
-            NSLog("ChannelManager refused to save channels during launch recovery (\(launchRecoveryState.phase))")
-            return false
-        }
-        var config = configService.load()
-        config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
-            guard !completedClosingChannelIDs.contains(id) else { return nil }
-            guard let channel = channels[id] else { return nil }
-
-            // Extract type-specific fields for persistence
-            var host: String?
-            var user: String?
-            var command: String?
-            var endpoint: String?
-            var apiURL: String?
-            var apiKeyEnv: String?
-            var useRawLabel: Bool?
-
-            var workingDir: String?
-            var staleBrokerSessionID: BrokerSessionID?
-            var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
-
-            if let shellChannel = channel as? ShellChannelController {
-                workingDir = shellChannel.persistedWorkingDirectory
-                staleBrokerSessionID = shellChannel.staleBrokerSessionID
-                pendingExitedOutputRetirement = shellChannel.pendingExitedOutputRetirement
-            } else if let agentChannel = channel as? AgentChannelController {
-                workingDir = agentChannel.persistedWorkingDirectory
-                command = agentChannel.persistedCommand
-                useRawLabel = agentChannel.persistedUseRawLabel
-                staleBrokerSessionID = agentChannel.staleBrokerSessionID
-                pendingExitedOutputRetirement = agentChannel.pendingExitedOutputRetirement
-            } else if let sshChannel = channel as? SSHChannelController {
-                host = sshChannel.profile.host
-                user = sshChannel.profile.user
-                command = sshChannel.profile.command
-            } else if let mcpChannel = channel as? MCPChannelController {
-                endpoint = mcpChannel.endpoint.absoluteString
-            } else if let chatChannel = channel as? GroupChatChannelController {
-                apiURL = chatChannel.apiURL
-                apiKeyEnv = chatChannel.apiKeyEnv
+        let result = persistence.save(.init(
+            channelOrder: channelOrder,
+            channels: channels,
+            channelLabels: channelLabels,
+            pinnedTimestamps: pinnedTimestamps
+        ))
+        if result.didSave {
+            for id in result.finalizedClosureIDs {
+                channels.removeValue(forKey: id)
+                channelOrder.removeAll { $0 == id }
+                channelLabels.removeValue(forKey: id)
             }
-
-            // A stale tab has no live broker handle to reattach; its dead session
-            // identity is the only durable truth. Keeping the two mutually
-            // exclusive stops the next launch from offering a dead session for
-            // reattach while the tab reports recreate guidance.
-            let brokerSessionID: BrokerSessionID?
-            if staleBrokerSessionID != nil {
-                brokerSessionID = nil
-            } else if let shellChannel = channel as? ShellChannelController,
-                      shellChannel.brokerSessionPersistenceIsAuthoritative {
-                brokerSessionID = shellChannel.brokerSessionID
-            } else if let agentChannel = channel as? AgentChannelController,
-                      agentChannel.brokerSessionPersistenceIsAuthoritative {
-                brokerSessionID = agentChannel.brokerSessionID
-            } else {
-                brokerSessionID = (channel as? ShellChannelController)?.brokerSessionID
-                    ?? (channel as? AgentChannelController)?.brokerSessionID
-                    ?? restoredBrokerSessionIDs[id]
-            }
-
-            return ChannelMetadata(
-                id: channel.channelId,
-                type: channel.channelType,
-                role: channelLabels[id] ?? channel.displayLabel,
-                context: nil,
-                instanceNumber: channel.instanceNumber,
-                useRawLabel: useRawLabel,
-                workingDirectory: workingDir,
-                customLabel: channel.customDisplayLabel,
-                host: host,
-                user: user,
-                command: command,
-                endpoint: endpoint,
-                apiURL: apiURL,
-                apiKeyEnv: apiKeyEnv,
-                pinnedAt: pinnedTimestamps[id],
-                persistentState: channel.persistentState,
-                brokerSessionID: brokerSessionID,
-                staleBrokerSessionID: staleBrokerSessionID,
-                pendingExitedOutputRetirement: pendingExitedOutputRetirement,
-                closeTombstone: closingChannelIDs.contains(id) ? true : nil
-            )
         }
-        for (index, metadata) in unrestoredSavedChannels {
-            config.channels.insert(metadata, at: min(index, config.channels.count))
-        }
-        config.channelInstanceHighWaterMarks = highWaterMarks
-        let didSave = configService.save(config)
-        if didSave {
-            closePersistenceFailure = nil
-            finalizePersistedClosures()
-        }
-        return didSave
+        return result.didSave
     }
 
     /// Restore channels from saved config.
     func restoreState(
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) {
-        let config = configService.load()
+        let config = persistence.load()
         var claimedBrokerSessionIDs: Set<BrokerSessionID> = []
         var restoredCloseCleanupControllers: [any ChannelController] = []
-        for (label, highWaterMark) in config.channelInstanceHighWaterMarks ?? [:] {
-            let key = label.lowercased()
-            highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
-        }
-        unrestoredSavedChannels = []
+        persistence.beginRestore(config)
         for (index, metadata) in config.channels.enumerated() {
             // The factory may activate a controller and mutate broker ownership.
             // Reject duplicate persisted identities before invoking it so a
             // discarded duplicate cannot launch or reattach a hidden process.
             guard channels[metadata.id] == nil,
-                  !unrestoredSavedChannels.contains(where: { $0.metadata.id == metadata.id }) else { continue }
+                  !persistence.hasUnrestoredChannel(id: metadata.id) else { continue }
             if let brokerSessionID = metadata.brokerSessionID {
                 guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
             }
@@ -417,8 +308,7 @@ class ChannelManager {
                 // The entry stays saved, so its ordinal stays reserved: a new
                 // same-role tab must not reuse its number. It is not a live tab,
                 // so it claims no channel or broker identity.
-                unrestoredSavedChannels.append((index, metadata))
-                recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
+                persistence.recordUnrestored(metadata, at: index)
                 continue
             }
             if channels[controller.channelId] == nil {
@@ -426,13 +316,14 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
-                recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
+                persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
                     claimedBrokerSessionIDs.insert(brokerSessionID)
-                    restoredBrokerSessionIDs[controller.channelId] = brokerSessionID
-                    if metadata.closeTombstone == true {
-                        suppressedRecoveredBrokerSessionIDs.insert(brokerSessionID)
-                    }
+                    persistence.recordRestoredBrokerSession(
+                        brokerSessionID,
+                        for: controller.channelId,
+                        suppressRecovery: metadata.closeTombstone == true
+                    )
                 }
                 if let pinnedAt = metadata.pinnedAt {
                     pinnedChannelIds.insert(controller.channelId)
@@ -443,7 +334,7 @@ class ChannelManager {
                     // A synchronous missing-session result may save immediately;
                     // deferring the callback prevents that save from dropping tabs
                     // that appear later in the persisted order.
-                    closingChannelIDs.insert(controller.channelId)
+                    _ = persistence.beginClosing(controller.channelId)
                     restoredCloseCleanupControllers.append(controller)
                 }
             }
@@ -466,7 +357,7 @@ class ChannelManager {
         }
     }
 
-    var count: Int { channels.count - closingChannelIDs.count }
+    var count: Int { channels.count - persistence.closingChannelIDs.count }
 
     /// Reattachable broker sessions, or `nil` when the broker registry cannot be
     /// read during restore.
@@ -585,8 +476,8 @@ class ChannelManager {
             channels[controller.channelId] = controller
             channelOrder.append(controller.channelId)
             channelLabels[controller.channelId] = metadata.role
-            recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
-            restoredBrokerSessionIDs[controller.channelId] = record.id
+            persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
+            persistence.recordRestoredBrokerSession(record.id, for: controller.channelId, suppressRecovery: false)
             restoredCount += 1
         }
         if restoredCount > 0 {
@@ -609,27 +500,10 @@ class ChannelManager {
 
     // MARK: - Private
 
-    private func recordRestoredInstanceNumber(_ instanceNumber: Int?, for label: String) {
-        let key = label.lowercased()
-        highWaterMarks[key] = max(highWaterMarks[key, default: 0], instanceNumber ?? 1)
-    }
-
     private func nextInstanceNumber(for label: String) -> Int? {
         let key = label.lowercased()
         let activeCount = channelLabels.values.filter { $0.lowercased() == key }.count
-        let hwm = highWaterMarks[key, default: 0]
-
-        if activeCount == 0 && hwm == 0 {
-            // First channel ever created with this label — no number.
-            highWaterMarks[key] = 1
-            return nil
-        } else {
-            // Additional channel, including the first live channel after all
-            // earlier siblings closed — never reuse a durable ordinal.
-            let next = max(hwm, activeCount) + 1
-            highWaterMarks[key] = next
-            return next
-        }
+        return persistence.nextInstanceNumber(for: label, activeCount: activeCount)
     }
 
     private func defaultRole(for type: ChannelType) -> String {
@@ -651,7 +525,7 @@ class ChannelManager {
         // session it went stale on. Both count as known so a dead session is
         // never resurrected as an extra "recovered" tab next to the tab that
         // already reports its recreate guidance.
-        let restoredBrokerSessionIdentities = Set(restoredBrokerSessionIDs.values)
+        let restoredBrokerSessionIdentities = Set(persistence.restoredBrokerSessionIDs.values)
         let liveBrokerSessionIDs = Set(allChannels().flatMap { channel -> [BrokerSessionID] in
             switch channel {
             case let shell as ShellChannelController:
@@ -664,7 +538,7 @@ class ChannelManager {
         })
         let knownBrokerSessionIDs = restoredBrokerSessionIdentities
             .union(liveBrokerSessionIDs)
-            .union(suppressedRecoveredBrokerSessionIDs)
+            .union(persistence.suppressedRecoveredBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {
