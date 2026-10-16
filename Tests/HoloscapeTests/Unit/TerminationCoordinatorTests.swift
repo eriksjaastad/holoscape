@@ -13,6 +13,7 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertEqual(replies, [false])
         XCTAssertEqual(host.events, ["interaction:false", "save", "interaction:true"])
         XCTAssertFalse(coordinator.hasStarted)
+        XCTAssertFalse(coordinator.blocksExternalChannelCreation)
         XCTAssertFalse(coordinator.isComplete)
     }
 
@@ -31,25 +32,41 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertEqual(replies, [true])
         XCTAssertEqual(host.events, ["interaction:false", "save", "detach", "save"])
         XCTAssertTrue(coordinator.hasStarted)
+        XCTAssertTrue(coordinator.blocksExternalChannelCreation)
         XCTAssertTrue(coordinator.isComplete)
     }
 
-    func testTimeoutDeniesQuitAndIgnoresLateDetachCompletion() {
-        let host = RecordingTerminationHost(saveResults: [true])
+    func testQuitAfterTimeoutJoinsExistingDetachAndUsesItsCompletion() {
+        let host = RecordingTerminationHost(saveResults: [true, true, true])
         host.defersDetach = true
         let coordinator = TerminationCoordinator(host: host, timeout: 0.01)
-        var replies: [Bool] = []
+        var firstReplies: [Bool] = []
+        var retryReplies: [Bool] = []
 
-        coordinator.begin { replies.append($0) }
+        coordinator.begin { firstReplies.append($0) }
         let deadline = Date().addingTimeInterval(1)
-        while replies.isEmpty, Date() < deadline {
+        while firstReplies.isEmpty, Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
+
+        XCTAssertEqual(firstReplies, [false])
+        XCTAssertTrue(coordinator.hasStarted, "The timed-out detach retains cleanup authority")
+        XCTAssertFalse(coordinator.isInProgress)
+        XCTAssertFalse(coordinator.blocksExternalChannelCreation)
+
+        coordinator.begin { retryReplies.append($0) }
         host.finishDetach()
 
-        XCTAssertEqual(replies, [false])
-        XCTAssertEqual(host.events, ["interaction:false", "save", "detach", "interaction:true"])
-        XCTAssertFalse(coordinator.hasStarted)
+        XCTAssertEqual(retryReplies, [true])
+        XCTAssertEqual(
+            host.events,
+            [
+                "interaction:false", "save", "detach", "interaction:true",
+                "interaction:false", "save", "save",
+            ]
+        )
+        XCTAssertEqual(host.events.filter { $0 == "detach" }.count, 1)
+        XCTAssertTrue(coordinator.isComplete)
     }
 
     func testRealBrokerProcessSurvivesCoordinatorDetachAndReattaches() throws {
@@ -59,17 +76,33 @@ final class TerminationCoordinatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
 
+        let configService = ConfigService(configDir: tempDirectory.appendingPathComponent("config"))
+        let manager = ChannelManager(configService: configService)
         let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
         let runtime = NativePTYBrokerSessionRuntime()
         let broker = BrokerSessionCoordinator(registry: registry, runtime: runtime)
-        let originalChannelID = UUID()
-        let terminal = BrokerBackedTerminalProcess(
-            channelID: originalChannelID,
-            channelType: .shell,
-            label: "termination-cat",
-            environmentProfile: .shell,
-            coordinator: broker
-        )
+        var createdTerminal: BrokerBackedTerminalProcess?
+        _ = manager.createChannel(
+            type: .shell,
+            role: "termination-cat",
+            workingDirectory: nil
+        ) { id, _, label, instanceNumber, _ in
+            let process = BrokerBackedTerminalProcess(
+                channelID: id,
+                channelType: .shell,
+                label: label,
+                environmentProfile: .shell,
+                coordinator: broker
+            )
+            createdTerminal = process
+            return ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: label,
+                terminal: process
+            )
+        }
+        let terminal = try XCTUnwrap(createdTerminal)
         terminal.startProcess(
             executable: "/bin/cat",
             args: [],
@@ -80,7 +113,7 @@ final class TerminationCoordinatorTests: XCTestCase {
         let sessionID = try XCTUnwrap(terminal.brokerSessionID)
         defer { try? runtime.terminateSession(id: sessionID, exitCode: nil) }
 
-        let host = BrokerTerminationHost(terminal: terminal)
+        let host = ChannelManagerTerminationHost(manager: manager)
         let coordinator = TerminationCoordinator(host: host, timeout: 2)
         var replies: [Bool] = []
         coordinator.begin { replies.append($0) }
@@ -90,6 +123,12 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertEqual(detachedRecords.count, 1)
         XCTAssertEqual(detachedRecords.first?.lifecycle, .detached)
         XCTAssertTrue(try broker.isRunning(sessionID), "App termination must detach, not kill, the broker-owned child")
+
+        try runtime.sendInput(id: sessionID, bytes: Array("same-process-after-quit\n".utf8))
+        try waitUntil {
+            let tail = try runtime.readScrollbackTail(id: sessionID, maxBytes: 4_096)
+            return String(decoding: tail, as: UTF8.self).contains("same-process-after-quit")
+        }
 
         let restored = BrokerBackedTerminalProcess(
             channelID: UUID(),
@@ -108,7 +147,6 @@ final class TerminationCoordinatorTests: XCTestCase {
             execName: "false",
             currentDirectory: "/tmp"
         )
-        restored.send(Array("same-process-after-quit\n".utf8))
         try waitUntil {
             restored.pollOutputOnce()
             return outputCount > 0
@@ -168,17 +206,17 @@ private final class RecordingTerminationHost: TerminationCoordinatorHost {
 }
 
 @MainActor
-private final class BrokerTerminationHost: TerminationCoordinatorHost {
-    private let terminal: BrokerBackedTerminalProcess
+private final class ChannelManagerTerminationHost: TerminationCoordinatorHost {
+    private let manager: ChannelManager
 
-    init(terminal: BrokerBackedTerminalProcess) {
-        self.terminal = terminal
+    init(manager: ChannelManager) {
+        self.manager = manager
     }
 
     func terminationSetInteractionEnabled(_ enabled: Bool) {}
-    func terminationSaveChannelState() -> Bool { true }
+    func terminationSaveChannelState() -> Bool { manager.saveState() }
 
     func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
-        terminal.detachBrokerSessionPreservingOutput(completion: completion)
+        manager.detachAllChannelsForAppTermination(completion: completion)
     }
 }

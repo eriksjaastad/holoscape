@@ -24,6 +24,7 @@ final class TerminationCoordinator {
     private weak var host: (any TerminationCoordinatorHost)?
     private var phase: Phase = .idle
     private var generation: UInt = 0
+    private var pendingReply: (@MainActor (Bool) -> Void)?
     private var timeoutWorkItem: DispatchWorkItem?
 
     var timeout: TimeInterval
@@ -39,8 +40,11 @@ final class TerminationCoordinator {
     }
 
     var isInProgress: Bool {
-        if case .detaching = phase { return true }
-        return false
+        pendingReply != nil
+    }
+
+    var blocksExternalChannelCreation: Bool {
+        isInProgress || isComplete
     }
 
     var isComplete: Bool {
@@ -49,46 +53,56 @@ final class TerminationCoordinator {
     }
 
     func begin(reply: @escaping @MainActor (Bool) -> Void) {
-        guard case .idle = phase, let host else { return }
+        guard let host else {
+            reply(false)
+            return
+        }
 
-        generation &+= 1
-        let admittedGeneration = generation
-        phase = .detaching(generation: admittedGeneration)
+        switch phase {
+        case .completed:
+            reply(true)
+        case .detaching:
+            guard pendingReply == nil else { return }
+            beginAttempt(host: host, reply: reply, startsDetach: false)
+        case .idle:
+            generation &+= 1
+            phase = .detaching(generation: generation)
+            beginAttempt(host: host, reply: reply, startsDetach: true)
+        }
+    }
+
+    private func beginAttempt(
+        host: any TerminationCoordinatorHost,
+        reply: @escaping @MainActor (Bool) -> Void,
+        startsDetach: Bool
+    ) {
+        guard case let .detaching(activeGeneration) = phase else { return }
+        pendingReply = reply
         timeoutWorkItem?.cancel()
         host.terminationSetInteractionEnabled(false)
 
         guard host.terminationSaveChannelState() else {
-            deny(
-                generation: admittedGeneration,
-                message: "Channel state could not be saved before broker cleanup; keeping Holoscape open",
-                reply: reply
+            denyPendingAttempt(
+                generation: activeGeneration,
+                keepDetachAuthority: !startsDetach,
+                message: "Channel state could not be saved before broker cleanup; keeping Holoscape open"
             )
             return
         }
 
         let timeoutWorkItem = DispatchWorkItem { [weak self] in
-            self?.deny(
-                generation: admittedGeneration,
-                message: "Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost",
-                reply: reply
+            self?.denyPendingAttempt(
+                generation: activeGeneration,
+                keepDetachAuthority: true,
+                message: "Broker session cleanup did not finish before the quit deadline; keeping Holoscape open so cleanup authority is not lost"
             )
         }
         self.timeoutWorkItem = timeoutWorkItem
 
-        host.terminationDetachChannels { [weak self] in
-            guard let self, self.isCurrent(admittedGeneration), let host = self.host else { return }
-            self.timeoutWorkItem?.cancel()
-            self.timeoutWorkItem = nil
-            guard host.terminationSaveChannelState() else {
-                self.deny(
-                    generation: admittedGeneration,
-                    message: "Final broker cleanup state could not be saved; keeping Holoscape open",
-                    reply: reply
-                )
-                return
+        if startsDetach {
+            host.terminationDetachChannels { [weak self] in
+                self?.finishDetach(generation: activeGeneration)
             }
-            self.phase = .completed
-            reply(true)
         }
 
         DispatchQueue.main.asyncAfter(
@@ -97,21 +111,52 @@ final class TerminationCoordinator {
         )
     }
 
+    private func finishDetach(generation expectedGeneration: UInt) {
+        guard isCurrent(expectedGeneration), let host else { return }
+        timeoutWorkItem?.cancel()
+        timeoutWorkItem = nil
+
+        guard host.terminationSaveChannelState() else {
+            let reply = pendingReply
+            pendingReply = nil
+            phase = .idle
+            NSLog("Final broker cleanup state could not be saved; keeping Holoscape open")
+            if let reply {
+                host.terminationSetInteractionEnabled(true)
+                reply(false)
+            }
+            return
+        }
+
+        if let reply = pendingReply {
+            pendingReply = nil
+            phase = .completed
+            reply(true)
+        } else {
+            // A timed-out request already kept the app open. The late completion
+            // still persists authoritative detach truth, then releases the
+            // transaction so a later quit can start from that truth.
+            phase = .idle
+        }
+    }
+
     private func isCurrent(_ expectedGeneration: UInt) -> Bool {
         guard case let .detaching(activeGeneration) = phase else { return false }
         return activeGeneration == expectedGeneration
     }
 
-    private func deny(
+    private func denyPendingAttempt(
         generation expectedGeneration: UInt,
-        message: String,
-        reply: @escaping @MainActor (Bool) -> Void
+        keepDetachAuthority: Bool,
+        message: String
     ) {
-        guard isCurrent(expectedGeneration), let host else { return }
+        guard isCurrent(expectedGeneration), let host, let reply = pendingReply else { return }
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
-        phase = .idle
-        generation &+= 1
+        pendingReply = nil
+        if !keepDetachAuthority {
+            phase = .idle
+        }
         NSLog("%@", message)
         host.terminationSetInteractionEnabled(true)
         reply(false)

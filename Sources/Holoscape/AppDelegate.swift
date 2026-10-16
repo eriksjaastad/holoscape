@@ -154,7 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     private func handleURL(_ url: URL) {
-        guard !terminationCoordinator.isInProgress else {
+        guard !terminationCoordinator.blocksExternalChannelCreation else {
             NSLog("Ignored external URL while application termination is pending")
             return
         }
@@ -201,17 +201,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         launchRecovery.abandonIfIncomplete()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         guard shouldSave, launchRecovery.state.isCompleted,
-              let channelManager = windowController?.channelManager ?? channelManagerRef else {
+              windowController?.channelManager != nil || channelManagerRef != nil else {
             return .terminateNow
         }
         if terminationCoordinator.isComplete {
             return .terminateNow
         }
-        if terminationCoordinator.isInProgress {
-            return .terminateLater
-        }
-
-        beginTerminationTeardown(using: channelManager) { [weak sender] shouldTerminate in
+        beginTerminationTeardown { [weak sender] shouldTerminate in
             sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
@@ -220,10 +216,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     /// Compatibility seam for AppDelegate integration tests. Transaction state
     /// and completion authority live in `TerminationCoordinator`.
     func beginTerminationTeardown(
-        using channelManager: ChannelManager,
         reply: @escaping @MainActor (Bool) -> Void
     ) {
-        channelManagerRef = channelManager
         terminationCoordinator.begin(reply: reply)
     }
 

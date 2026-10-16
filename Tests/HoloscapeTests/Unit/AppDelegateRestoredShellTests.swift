@@ -294,10 +294,11 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         } as! MockChannelController
         channel.defersDeactivationCompletion = true
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         appDelegate.terminationTeardownTimeout = 0.01
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
         let deadline = Date().addingTimeInterval(1)
         while replies.isEmpty, Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
@@ -356,9 +357,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         } as! MockChannelController
         channel.defersDeactivationCompletion = true
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
         XCTAssertTrue(replies.isEmpty)
 
         try FileManager.default.removeItem(at: tempDirectory)
@@ -370,7 +372,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         try FileManager.default.removeItem(at: tempDirectory)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         channel.defersDeactivationCompletion = false
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
 
         XCTAssertEqual(replies, [false, true])
     }
@@ -391,9 +393,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
         } as! MockChannelController
         let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
         var replies: [Bool] = []
 
-        appDelegate.beginTerminationTeardown(using: manager) { replies.append($0) }
+        appDelegate.beginTerminationTeardown { replies.append($0) }
 
         XCTAssertEqual(replies, [false])
         XCTAssertEqual(channel.deactivateCallCount, 0)
