@@ -175,6 +175,64 @@ final class BrokerThroughputStallBenchmarkTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
     }
 
+    @MainActor
+    func testTerminationCoordinatorKeepsBrokerOwnedChildAliveAcrossAppClientTeardown() throws {
+        let socketPath = "/tmp/hs-termination-lifetime-\(UUID().uuidString).sock"
+        let child = try launchSocketBenchmarkHost(at: socketPath)
+        addTeardownBlock {
+            try Self.stopSocketBenchmarkHost(child, socketPath: socketPath)
+        }
+
+        let sessionID = BrokerSessionID(rawValue: "termination-process-lifetime-\(UUID().uuidString)")
+        do {
+            let firstTransport = BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: 2_000
+            )
+            let firstClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+                try firstTransport.sendFrame(frame)
+            }
+            try waitForSocketBenchmarkHost(firstClient)
+            try firstClient.createSession(
+                id: sessionID,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/cat",
+                    workingDirectory: "/tmp",
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+
+            let host = SocketTerminationHost(client: firstClient, sessionID: sessionID)
+            let coordinator = TerminationCoordinator(host: host, timeout: 2)
+            var replies: [Bool] = []
+            coordinator.begin { replies.append($0) }
+            let deadline = Date().addingTimeInterval(3)
+            while replies.isEmpty, Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            XCTAssertEqual(replies, [true])
+        }
+
+        // The first production client, transport, host adapter, and coordinator
+        // are gone here. Only the spawned broker host owns the child.
+        let secondTransport = BrokerSessionHostUnixSocketTransport(socketPath: socketPath, requestTimeoutMilliseconds: 2_000)
+        let secondClient = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+            try secondTransport.sendFrame(frame)
+        }
+        XCTAssertTrue(try secondClient.isRunning(id: sessionID))
+        try secondClient.attachSession(id: sessionID, channelID: UUID())
+        try secondClient.sendInput(id: sessionID, bytes: Array("termination-survived-app-teardown\\n".utf8))
+        var output = ""
+        let outputDeadline = Date().addingTimeInterval(3)
+        while !output.contains("termination-survived-app-teardown"), Date() < outputDeadline {
+            output += String(decoding: try secondClient.readAvailableOutput(id: sessionID), as: UTF8.self)
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(output.contains("termination-survived-app-teardown"), output)
+        try secondClient.markSessionErrored(id: sessionID)
+    }
+
     func testSocketBenchmarkChildHost() throws {
         guard let socketPath = ProcessInfo.processInfo.environment[Self.socketBenchmarkChildEnvironmentKey] else {
             throw XCTSkip("Executed only by the spawned Unix-socket throughput benchmark host")
@@ -593,5 +651,27 @@ private struct BrokerThroughputStallReport: CustomStringConvertible {
 
     var description: String {
         "BrokerThroughputStallReport(outputSessionCount: \(outputSessionCount), outputLinesPerSession: \(outputLinesPerSession), inputProbeCount: \(inputProbeCount), outputBytesRead: \(outputBytesRead), expectedMinimumOutputBytes: \(expectedMinimumOutputBytes), maxInputSendLatency: \(maxInputSendLatency), maxInputEchoLatency: \(maxInputEchoLatency), maxRunLoopProbeGap: \(maxRunLoopProbeGap), duration: \(duration), echoedInputTokens: \(echoedInputTokens.sorted()), outputCompletionTokens: \(outputCompletionTokens.sorted()))"
+    }
+}
+
+@MainActor
+private final class SocketTerminationHost: TerminationCoordinatorHost {
+    private let client: BrokerSessionHostClientRuntime
+    private let sessionID: BrokerSessionID
+
+    init(client: BrokerSessionHostClientRuntime, sessionID: BrokerSessionID) {
+        self.client = client
+        self.sessionID = sessionID
+    }
+
+    func terminationSetInteractionEnabled(_ enabled: Bool) {}
+    func terminationSaveChannelState() -> Bool { true }
+    func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
+        do {
+            try client.detachSession(id: sessionID)
+            completion()
+        } catch {
+            fatalError("termination test detach failed: \(error)")
+        }
     }
 }

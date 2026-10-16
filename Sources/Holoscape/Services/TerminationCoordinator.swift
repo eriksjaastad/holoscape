@@ -44,7 +44,28 @@ final class TerminationCoordinator {
     }
 
     var blocksExternalChannelCreation: Bool {
-        isInProgress || isComplete
+        if case .idle = phase { return false }
+        return true
+    }
+
+    /// AppKit calls `applicationWillTerminate` only after admission, so a
+    /// coordinator that was never admitted cannot truthfully start asynchronous
+    /// cleanup at that point. Persist the latest synchronous snapshot and report
+    /// failure; channel detachment remains owned by `begin`.
+    @discardableResult
+    func finalizeAtApplicationWillTerminate() -> Bool {
+        guard case .idle = phase else { return true }
+        guard let host else {
+            NSLog("Termination final snapshot could not be saved: termination host is unavailable")
+            return false
+        }
+        let saved = host.terminationSaveChannelState()
+        if !saved {
+            NSLog("Termination final snapshot could not be saved before application exit")
+        } else {
+            NSLog("Application terminated without coordinator admission; no asynchronous channel detach was claimed")
+        }
+        return saved
     }
 
     var isComplete: Bool {
@@ -137,6 +158,7 @@ final class TerminationCoordinator {
             // still persists authoritative detach truth, then releases the
             // transaction so a later quit can start from that truth.
             phase = .idle
+            host.terminationSetInteractionEnabled(true)
         }
     }
 
@@ -158,7 +180,9 @@ final class TerminationCoordinator {
             phase = .idle
         }
         NSLog("%@", message)
-        host.terminationSetInteractionEnabled(true)
+        if !keepDetachAuthority {
+            host.terminationSetInteractionEnabled(true)
+        }
         reply(false)
     }
 }

@@ -184,8 +184,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         if shouldSave && launchRecovery.state.isCompleted {
             if !terminationCoordinator.hasStarted {
-                windowController?.channelManager.saveState()
-                windowController?.channelManager.detachAllChannelsForAppTermination()
+                _ = terminationCoordinator.finalizeAtApplicationWillTerminate()
             }
         } else if shouldSave {
             NSLog("Skipping channel save during incomplete launch recovery")
