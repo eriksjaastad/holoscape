@@ -65,6 +65,30 @@ elif mode == "target-membership":
     )
     destination.write_text(source)
     raise SystemExit(0)
+elif mode == "link-edge":
+    source = source.replace(
+        "33BBD496CD920CD4B74477AF /* libCNativePTY.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C8599FAC0805093E678DF085 /* libCNativePTY.a */; };",
+        "33BBD496CD920CD4B74477AF /* libCNativePTY.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 212041D5FDF1C8CE4CA3DEA1 /* libCglslang.a */; };",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
+elif mode == "native-path":
+    source = source.replace(
+        "path = HoloscapeNativePTY.c;",
+        "path = Legacy/HoloscapeNativePTY.c;",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
+elif mode == "proxy-target":
+    source = source.replace(
+        "remoteGlobalIDString = 6C329224BFDF298222AD54F2;",
+        "remoteGlobalIDString = 86341C541EA4BEB72A8EABF5;",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
 else:
     raise SystemExit(f"unknown mutation: {mode}")
 
@@ -72,7 +96,7 @@ destination.write_text(source[:start] + phase + source[end:])
 PY
 }
 
-for mutation in missing stale moved target-config target-product target-membership; do
+for mutation in missing stale moved target-config target-product target-membership link-edge native-path proxy-target; do
     mutated_project="$work_dir/$mutation.pbxproj"
     mutate_project "$project" "$mutated_project" "$mutation"
     if "$validator" "$mutated_project" >"$work_dir/$mutation.out" 2>&1; then
@@ -172,7 +196,12 @@ fi
 
 /bin/rm -rf "$status_path"
 printf 'PASS\n' >"$status_path"
-printf 'Test Case passed\n' >"$work_dir/single-results/shard-1.txt"
+cat >"$work_dir/single-results/shard-1.txt" <<'EOF'
+Test Case '-[SyntheticUITests testExample]' passed (0.001 seconds).
+Test Suite 'SyntheticUITests' passed at 2026-10-16 00:00:00.000.
+Test Suite 'Selected tests' passed at 2026-10-16 00:00:00.000.
+Test Suite 'All tests' passed at 2026-10-16 00:00:00.000.
+EOF
 bundle_path="$work_dir/single-results/shard-1.xcresult"
 mkdir -p "$bundle_path"
 cat >"$work_dir/bin/rm" <<'EOF'
@@ -213,10 +242,31 @@ fi
 
 definitions="$work_dir/test-ui-shard-definitions.sh"
 sed -n '/^count_matches() {$/,/^# Parse arguments$/p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
+if ! RESULTS_DIR="$work_dir/count-results" bash -c '
+    source "$1"
+    mkdir -p "$RESULTS_DIR"
+    cat >"$RESULTS_DIR/shard-1.txt" <<EOF
+Test Case SyntheticUITests.testPass passed (0.001 seconds).
+Test Case SyntheticUITests.testFail failed (0.001 seconds).
+Test Suite SyntheticUITests passed at 2026-10-16 00:00:00.000.
+Test Suite Selected tests failed at 2026-10-16 00:00:00.000.
+EOF
+    printf "FAIL\n" >"$RESULTS_DIR/shard-1.status"
+    print_summary
+' _ "$definitions" >"$work_dir/count.out" 2>&1; then
+    echo "error: aggregate UI shard summary failed for XCTest-style output" >&2
+    cat "$work_dir/count.out" >&2
+    exit 1
+fi
+if ! grep -Eq 'Shard[[:space:]]+1:.*1 passed,.*1 failed.*\[FAIL\]' "$work_dir/count.out"; then
+    echo "error: aggregate UI shard summary counted XCTest suite lines as test cases" >&2
+    cat "$work_dir/count.out" >&2
+    exit 1
+fi
 if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
     source "$1"
     mkdir -p "$RESULTS_DIR"
-    printf "Test Case passed\n" >"$RESULTS_DIR/shard-1.txt"
+    printf "Test Case SyntheticUITests.testExample passed (0.001 seconds).\n" >"$RESULTS_DIR/shard-1.txt"
     chmod 000 "$RESULTS_DIR/shard-1.txt"
     print_summary
 ' _ "$definitions" >"$work_dir/unreadable.out" 2>&1; then

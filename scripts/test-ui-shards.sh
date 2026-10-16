@@ -116,8 +116,8 @@ run_shard() {
 
     local passed
     local failed
-    passed=$(count_matches "passed" "$outfile") || return 1
-    failed=$(count_matches "failed" "$outfile") || return 1
+    passed=$(count_matches "^Test Case .* passed" "$outfile") || return 1
+    failed=$(count_matches "^Test Case .* failed" "$outfile") || return 1
     SHARD_RUN_PASSED[$n]="$passed"
     SHARD_RUN_FAILED[$n]="$failed"
 
@@ -164,8 +164,8 @@ print_summary() {
                 p="${SHARD_RUN_PASSED[$i]}"
                 f="${SHARD_RUN_FAILED[$i]}"
             else
-                p=$(count_matches "passed" "$outfile") || return 1
-                f=$(count_matches "failed" "$outfile") || return 1
+                p=$(count_matches "^Test Case .* passed" "$outfile") || return 1
+                f=$(count_matches "^Test Case .* failed" "$outfile") || return 1
             fi
             total_passed=$((total_passed + p))
             total_failed=$((total_failed + f))

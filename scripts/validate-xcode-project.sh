@@ -24,7 +24,12 @@ trap 'rm -rf "$work_dir"' EXIT
 object_block() {
     local object_id="$1"
     awk -v object_id="$object_id" '
-        $0 ~ "^\\t\\t" object_id " .* = \\{$" { in_object = 1 }
+        $0 ~ "^\\t\\t" object_id " .* = \\{" {
+            in_object = 1
+            print
+            if ($0 ~ /};$/) exit
+            next
+        }
         in_object { print }
         in_object && $0 == "\t\t};" { exit }
     ' "$project_file"
@@ -201,6 +206,21 @@ native_headers=$(object_block 01340CE64B6CB3BB8355E6E3)
 native_debug=$(object_block E4CDB2C39667C59F185B7CAE)
 native_release=$(object_block C3DC0F1EF6A90CEF16955202)
 native_configurations=$(object_block 95F26503BABD4AD324729427)
+app_native_link=$(object_block 33BBD496CD920CD4B74477AF)
+unit_native_link=$(object_block 440A44BB465227FF25586C6C)
+native_source_build=$(object_block 7FF4689172A66A84831BE365)
+native_header_build=$(object_block 674AF628153281874D3C6D2C)
+native_module_build=$(object_block 4165D103000290B221C35508)
+native_product=$(object_block C8599FAC0805093E678DF085)
+native_source_ref=$(object_block 42DEDE3141991410446F206A)
+native_header_ref=$(object_block AF97B2AFE4D21485034B278A)
+native_module_ref=$(object_block F8BD4621F6772CF38A9DE45B)
+native_group=$(object_block 3ED4E029EC99572AF65368CA)
+native_include_group=$(object_block D88E88EECB894BC217A19A93)
+app_native_dependency=$(object_block DAC48B5DA795A81287A82366)
+unit_native_dependency=$(object_block 580BFB81F52809995A063812)
+app_native_proxy=$(object_block 20095555BFCC93C30B1A015B)
+unit_native_proxy=$(object_block 95E0086FA1877F094D42DB97)
 
 require_exact_count 'name = CNativePTY;' 2 'the CNativePTY target and source group names'
 require_exact_count 'path = Sources/CNativePTY;' 1 'the CNativePTY source group'
@@ -228,6 +248,32 @@ require_in_block "$native_configurations" 'C3DC0F1EF6A90CEF16955202 /\* Release 
 require_in_block "$native_sources" '7FF4689172A66A84831BE365 /\* HoloscapeNativePTY\.c in Sources \*/' 'the native PTY C source'
 require_in_block "$native_headers" '674AF628153281874D3C6D2C /\* HoloscapeNativePTY\.h in CopyFiles \*/' 'the native PTY public header'
 require_in_block "$native_headers" '4165D103000290B221C35508 /\* module\.modulemap in CopyFiles \*/' 'the native PTY module map'
+require_in_block "$app_native_link" 'fileRef = C8599FAC0805093E678DF085 ' 'the app CNativePTY product edge'
+require_in_block "$unit_native_link" 'fileRef = C8599FAC0805093E678DF085 ' 'the unit-test CNativePTY product edge'
+require_in_block "$native_source_build" 'fileRef = 42DEDE3141991410446F206A ' 'the native PTY source edge'
+require_in_block "$native_header_build" 'fileRef = AF97B2AFE4D21485034B278A ' 'the native PTY header edge'
+require_in_block "$native_module_build" 'fileRef = F8BD4621F6772CF38A9DE45B ' 'the native PTY module-map edge'
+require_in_block "$native_product" 'explicitFileType = archive\.ar;' 'the CNativePTY archive product type'
+require_in_block "$native_product" 'path = libCNativePTY\.a;' 'the CNativePTY archive product path'
+require_in_block "$native_product" 'sourceTree = BUILT_PRODUCTS_DIR;' 'the CNativePTY archive product source tree'
+require_in_block "$native_source_ref" 'path = HoloscapeNativePTY\.c;' 'the native PTY C file path'
+require_in_block "$native_header_ref" 'path = HoloscapeNativePTY\.h;' 'the native PTY header path'
+require_in_block "$native_module_ref" 'path = module\.modulemap;' 'the native PTY module-map path'
+require_in_block "$native_group" '42DEDE3141991410446F206A /\* HoloscapeNativePTY\.c \*/' 'the native PTY C file in its source group'
+require_in_block "$native_group" 'D88E88EECB894BC217A19A93 /\* include \*/' 'the native PTY include group'
+require_in_block "$native_group" 'path = Sources/CNativePTY;' 'the native PTY source-group path'
+require_in_block "$native_include_group" 'AF97B2AFE4D21485034B278A /\* HoloscapeNativePTY\.h \*/' 'the native PTY header in its include group'
+require_in_block "$native_include_group" 'F8BD4621F6772CF38A9DE45B /\* module\.modulemap \*/' 'the native PTY module map in its include group'
+require_in_block "$native_include_group" 'path = include;' 'the native PTY include-group path'
+require_in_block "$app_native_dependency" 'target = 6C329224BFDF298222AD54F2 ' 'the app dependency target edge to CNativePTY'
+require_in_block "$app_native_dependency" 'targetProxy = 20095555BFCC93C30B1A015B ' 'the app dependency proxy edge to CNativePTY'
+require_in_block "$unit_native_dependency" 'target = 6C329224BFDF298222AD54F2 ' 'the unit-test dependency target edge to CNativePTY'
+require_in_block "$unit_native_dependency" 'targetProxy = 95E0086FA1877F094D42DB97 ' 'the unit-test dependency proxy edge to CNativePTY'
+for proxy in "$app_native_proxy" "$unit_native_proxy"; do
+    require_in_block "$proxy" 'containerPortal = A8536900B627C2D00527ABA0 ' 'the CNativePTY dependency project portal'
+    require_in_block "$proxy" 'remoteGlobalIDString = 6C329224BFDF298222AD54F2;' 'the CNativePTY dependency proxy target'
+    require_in_block "$proxy" 'remoteInfo = CNativePTY;' 'the CNativePTY dependency proxy identity'
+done
 for configuration in "$native_debug" "$native_release"; do
     require_in_block "$configuration" 'DEFINES_MODULE = YES;' 'CNativePTY module generation in Debug and Release'
     require_in_block "$configuration" 'HEADER_SEARCH_PATHS = "\$\(SRCROOT\)/Sources/CNativePTY/include";' 'CNativePTY header search path in Debug and Release'
