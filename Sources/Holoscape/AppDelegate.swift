@@ -21,7 +21,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     private var setupDiagnosticsWindowController: SetupDiagnosticsWindowController?
     private var scrollbackStorageWindowController: ScrollbackMaintenanceWindowController?
     var apiServer: HoloscapeAPIServer?
-    var launchRecoveryComplete = false
+    /// Owns launch-recovery orchestration. Test seam: replace it with a
+    /// coordinator over a completed state to exercise post-launch behavior.
+    lazy var launchRecovery = LaunchRecoveryCoordinator(
+        state: LaunchRecoveryState(phase: .awaitingInventory),
+        host: self
+    )
+    private var previousLaunchTimestamp: Date?
     private var terminationTeardownStarted = false
     private var terminationTeardownComplete = false
     private var terminationTeardownGeneration: UInt = 0
@@ -48,7 +54,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let config = configService.load()
 
         // Create channel manager and window
-        let channelManager = ChannelManager(configService: configService)
+        let channelManager = ChannelManager(
+            configService: configService,
+            launchRecoveryState: launchRecovery.state
+        )
         self.channelManagerRef = channelManager
         windowController = MainWindowController(channelManager: channelManager, configService: configService)
 
@@ -70,36 +79,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         // Apply appearance
         applyAppearance(config.appearance)
 
-        let shouldRestore = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldRestore {
-            setLaunchRecoveryInteractionEnabled(false)
-            // Broker discovery can include bounded Unix-socket RPCs. Prepare it
-            // off-main before restore classification and initial tab creation.
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // A failed inventory is unknown, never empty. Do not create a
-                // default process until discovery succeeds, or a transient host
-                // outage could hide a survivor and launch a duplicate.
-                while await channelManagerRef?.prepareBrokerRecovery() == false {
-                    try? await Task.sleep(for: .milliseconds(500))
-                    guard !terminationTeardownStarted else { return }
-                }
-                restoreSavedChannelsAndRecoveredBrokerSessions()
-                ensureInitialChannelIfNeeded()
-                windowController?.refreshAllTabs()
-                launchRecoveryComplete = true
-                setLaunchRecoveryInteractionEnabled(true)
-                runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
-                startAPIServerIfNeeded(channelManager: channelManager)
-                showMainWindow()
-                drainPendingExternalURLs()
-            }
-        } else {
-            ensureInitialChannelIfNeeded()
-            launchRecoveryComplete = true
-            runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: config.lastLaunchTimestamp)
-            startAPIServerIfNeeded(channelManager: channelManager)
-        }
+        previousLaunchTimestamp = config.lastLaunchTimestamp
+        launchRecovery.begin(
+            restoringSavedChannels: !isUITesting || CommandLine.arguments.contains("--restore-channels")
+        )
 
         windowController?.refreshAllTabs()
 
@@ -107,8 +90,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         if isUITesting, let window = windowController?.window, let screen = NSScreen.main {
             window.setFrame(screen.visibleFrame, display: true)
         }
-        if launchRecoveryComplete { showMainWindow() }
-
     }
 
     /// Keep launch-time restoration authoritative by disabling every mutating
@@ -161,7 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard launchRecoveryComplete else {
+        guard launchRecovery.state.isCompleted else {
             pendingExternalURLs.append(contentsOf: urls)
             NSLog("Queued \(urls.count) external URL(s) until launch recovery completes")
             return
@@ -197,9 +178,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        launchRecovery.abandonIfIncomplete()
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        if shouldSave && launchRecoveryComplete {
+        if shouldSave && launchRecovery.state.isCompleted {
             if !terminationTeardownStarted {
                 windowController?.channelManager.saveState()
                 windowController?.channelManager.detachAllChannelsForAppTermination()
@@ -215,8 +197,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        launchRecovery.abandonIfIncomplete()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        guard shouldSave, launchRecoveryComplete,
+        guard shouldSave, launchRecovery.state.isCompleted,
               let channelManager = windowController?.channelManager ?? channelManagerRef else {
             return .terminateNow
         }
@@ -906,6 +889,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         mainMenu.addItem(helpMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+}
+
+// MARK: - Launch recovery host
+
+extension AppDelegate: LaunchRecoveryHost {
+    func launchRecoverySetInteractionEnabled(_ enabled: Bool) {
+        setLaunchRecoveryInteractionEnabled(enabled)
+        windowController?.setChannelMutationEnabled(enabled)
+    }
+
+    func launchRecoveryPrepareBrokerInventory() async -> Bool {
+        await channelManagerRef?.prepareBrokerRecovery() != false
+    }
+
+    func launchRecoveryRestoreChannels() {
+        restoreSavedChannelsAndRecoveredBrokerSessions()
+    }
+
+    func launchRecoveryEnsureInitialChannel() {
+        ensureInitialChannelIfNeeded()
+    }
+
+    func launchRecoveryDidComplete() {
+        windowController?.refreshAllTabs()
+        runPostRecoveryLaunchMaintenance(previousLaunchTimestamp: previousLaunchTimestamp)
+        if let channelManager = channelManagerRef {
+            startAPIServerIfNeeded(channelManager: channelManager)
+        }
+        showMainWindow()
+        drainPendingExternalURLs()
     }
 }
 

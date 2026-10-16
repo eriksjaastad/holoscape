@@ -29,6 +29,7 @@ class ChannelManager {
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
     private let brokerRecoveryCoordinator: BrokerRecoveryCoordinator
+    private let launchRecoveryState: LaunchRecoveryState
     private var didPrepareBrokerRecovery = false
     private var preparedBrokerRecoverySessions: [BrokerSessionRecord]?
 
@@ -39,9 +40,11 @@ class ChannelManager {
     init(
         configService: ConfigService,
         brokerSessionCoordinator: any BrokerSessionCoordinating = BrokerSessionCoordinator(),
-        brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerBackedShellCoordinator: (any BrokerSessionCoordinating)? = nil,
+        launchRecoveryState: LaunchRecoveryState = LaunchRecoveryState(phase: .completed)
     ) {
         self.configService = configService
+        self.launchRecoveryState = launchRecoveryState
         self.brokerSessionCoordinator = brokerSessionCoordinator
         let shellCoordinator = brokerBackedShellCoordinator
             ?? BrokerSessionCoordinator(runtime: BrokerSessionHostClientRuntime.currentExecutableHostRuntime())
@@ -286,6 +289,10 @@ class ChannelManager {
     /// Save current channel state to config.
     @discardableResult
     func saveState() -> Bool {
+        guard launchRecoveryState.allowsChannelPersistence else {
+            NSLog("ChannelManager refused to save channels during launch recovery (\(launchRecoveryState.phase))")
+            return false
+        }
         var config = configService.load()
         config.channels = channelOrder.compactMap { id -> ChannelMetadata? in
             guard !completedClosingChannelIDs.contains(id) else { return nil }

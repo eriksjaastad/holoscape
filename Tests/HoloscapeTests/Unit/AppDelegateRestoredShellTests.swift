@@ -257,7 +257,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         let appDelegate = AppDelegate()
         appDelegate.channelManagerRef = manager
         appDelegate.windowControllerRef = windowController
-        appDelegate.launchRecoveryComplete = true
+        appDelegate.launchRecovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .completed),
+            host: appDelegate
+        )
         appDelegate.apiServer = apiServer
         appDelegate.terminationTeardownTimeout = 0.01
 
@@ -363,6 +366,62 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(channel.deactivateCallCount, 0)
     }
 
+    func testQuitDuringLaunchRecoveryDisablesMutationsAndAbandonsRecovery() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateLaunchRecoveryQuitTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let seed = ChannelManager(configService: configService)
+        _ = seed.createChannel(type: .shell, role: "Saved", workingDirectory: nil) { id, type, label, number, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: number)
+        }
+        XCTAssertTrue(seed.saveState())
+
+        // An unreadable broker inventory parks recovery in its retry wait.
+        let broker = RecordingBrokerSessionCoordinator()
+        broker.reattachableSessionsError = RecordingError.registryUnreadable
+        let appDelegate = AppDelegate()
+        let recovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .awaitingInventory),
+            host: appDelegate,
+            inventoryRetryDelay: .seconds(60)
+        )
+        appDelegate.launchRecovery = recovery
+        let manager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: broker,
+            launchRecoveryState: recovery.state
+        )
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+        appDelegate.channelManagerRef = manager
+        appDelegate.windowControllerRef = windowController
+
+        recovery.begin(restoringSavedChannels: true)
+        let parkedDeadline = Date().addingTimeInterval(2)
+        while manager.brokerRegistryReadFailure == nil, Date() < parkedDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertNotNil(manager.brokerRegistryReadFailure)
+
+        XCTAssertFalse(windowController.channelMutationEnabled)
+        XCTAssertEqual(windowController.openChannel(type: "shell", directory: nil, label: nil), .mutationsDisabled)
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateNow)
+
+        XCTAssertEqual(recovery.state.phase, .abandoned)
+        var recoveryEnded = false
+        let recoveryTask = recovery.recoveryTask
+        Task { await recoveryTask?.value; recoveryEnded = true }
+        let endedDeadline = Date().addingTimeInterval(2)
+        while !recoveryEnded, Date() < endedDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(recoveryEnded, "Quit must end the pending recovery instead of leaving it to finish later")
+        XCTAssertEqual(manager.count, 0)
+        XCTAssertEqual(configService.load().channels.map(\.role), ["Saved"])
+    }
+
     func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
         let mainMenu = NSMenu(title: "Main")
         let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")
@@ -420,6 +479,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         var reattachableSessionRecords: [BrokerSessionRecord] = []
         var nextStartRecord: BrokerSessionRecord?
         var reattachError: Error?
+        var reattachableSessionsError: Error?
         var startCallCount = 0
         var reattachCalls: [(id: BrokerSessionID, attachedChannelID: UUID)] = []
         var readScrollbackTailCalls: [(id: BrokerSessionID, maxBytes: Int)] = []
@@ -484,7 +544,10 @@ final class AppDelegateRestoredShellTests: XCTestCase {
             )
         }
 
-        func reattachableSessions() throws -> [BrokerSessionRecord] { reattachableSessionRecords }
+        func reattachableSessions() throws -> [BrokerSessionRecord] {
+            if let reattachableSessionsError { throw reattachableSessionsError }
+            return reattachableSessionRecords
+        }
         func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
         func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw RecordingError.missingSession }
