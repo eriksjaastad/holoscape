@@ -307,6 +307,39 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(channel.deactivateCallCount, 1)
     }
 
+    func testSecondQuitJoinsActiveTerminationTransactionWithoutStartingAnotherDetach() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppDelegateTerminationJoinTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let configService = ConfigService(configDir: tempDirectory)
+        let manager = ChannelManager(configService: configService)
+        let channel = manager.createChannel(
+            type: .shell,
+            role: "Deferred",
+            workingDirectory: nil
+        ) { id, type, label, instanceNumber, _ in
+            MockChannelController(id: id, type: type, label: label, instanceNumber: instanceNumber)
+        } as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.windowControllerRef = windowController
+        appDelegate.launchRecovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .completed),
+            host: appDelegate
+        )
+
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(channel.deactivateCallCount, 1)
+
+        channel.finishDeactivation()
+        XCTAssertTrue(appDelegate.terminationCoordinator.isComplete)
+    }
+
     func testTerminationTeardownDeniesQuitWhenFinalSnapshotCannotBePersisted() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AppDelegateTerminationSaveFailureTests-")
