@@ -396,9 +396,25 @@ struct BrokerSessionRegistry {
         if let closeError { throw closeError }
     }
 
-    private static func defaultFileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+    static func defaultFileURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        applicationSupportDirectory: URL? = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+    ) -> URL {
+        if let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            return ConfigService.defaultConfigDirectory(
+                environment: environment,
+                homeDirectory: homeDirectory
+            )
+            .appendingPathComponent("BrokerSessions", isDirectory: true)
+            .appendingPathComponent("sessions.json")
+        }
+
+        let base = applicationSupportDirectory
+            ?? homeDirectory.appendingPathComponent("Library/Application Support")
         return base
             .appendingPathComponent("Holoscape", isDirectory: true)
             .appendingPathComponent("BrokerSessions", isDirectory: true)

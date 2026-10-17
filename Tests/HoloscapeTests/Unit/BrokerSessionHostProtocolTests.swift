@@ -4,6 +4,28 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerSessionHostProtocolTests: XCTestCase {
+    func testDefaultBrokerSocketPathIsStableAndScopedToConfigDirectory() {
+        let firstConfig = URL(fileURLWithPath: "/tmp/holoscape-profile-one")
+        let secondConfig = URL(fileURLWithPath: "/tmp/holoscape-profile-two")
+
+        let firstPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: ["HOLOSCAPE_CONFIG_DIR": firstConfig.path]
+        )
+        let repeatedFirstPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: ["HOLOSCAPE_CONFIG_DIR": firstConfig.path]
+        )
+        let secondPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: ["HOLOSCAPE_CONFIG_DIR": secondConfig.path]
+        )
+        let productionPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: [:])
+
+        XCTAssertEqual(firstPath, repeatedFirstPath)
+        XCTAssertNotEqual(firstPath, secondPath)
+        XCTAssertNotEqual(firstPath, productionPath)
+        XCTAssertFalse(firstPath.contains(firstConfig.path))
+        XCTAssertTrue(firstPath.hasSuffix(".sock"))
+    }
+
     func testRequestFramesRoundTripAndEndWithNewlineDelimiter() throws {
         let codec = BrokerSessionHostCodec()
         let sessionID = BrokerSessionID(rawValue: "session-host-protocol-test")

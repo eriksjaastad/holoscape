@@ -30,6 +30,43 @@ final class BrokerSessionRegistryTests: XCTestCase {
         tempDirectory = nil
     }
 
+    func testDefaultFileURLUsesConfigDirectoryOverride() {
+        let configDirectory = tempDirectory.appendingPathComponent("isolated-config")
+
+        let fileURL = BrokerSessionRegistry.defaultFileURL(
+            environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path],
+            homeDirectory: tempDirectory.appendingPathComponent("home"),
+            applicationSupportDirectory: tempDirectory.appendingPathComponent("application-support")
+        )
+
+        XCTAssertEqual(
+            fileURL,
+            configDirectory
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+        )
+    }
+
+    func testDefaultFileURLPreservesApplicationSupportLocationWithoutOverride() {
+        let applicationSupportDirectory = tempDirectory.appendingPathComponent("application-support")
+
+        let fileURL = BrokerSessionRegistry.defaultFileURL(
+            environment: [:],
+            homeDirectory: tempDirectory.appendingPathComponent("home"),
+            applicationSupportDirectory: applicationSupportDirectory
+        )
+
+        XCTAssertEqual(
+            fileURL,
+            applicationSupportDirectory
+                .appendingPathComponent("Holoscape", isDirectory: true)
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
+        )
+    }
+
     func testSaveAndLoadRoundTripsBrokerSessionRecords() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         let registry = BrokerSessionRegistry(fileURL: registryURL)

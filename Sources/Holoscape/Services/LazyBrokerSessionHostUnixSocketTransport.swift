@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// Lazily ensures a Unix-socket broker host is running, then sends one frame per
@@ -402,10 +403,24 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     }
 
-    static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {
+    static func defaultSocketPath(
+        processInfo: ProcessInfo = .processInfo,
+        environment: [String: String]? = nil
+    ) -> String {
+        let environment = environment ?? processInfo.environment
         let uid = getuid()
         let bundleID = Bundle.main.bundleIdentifier ?? "holoscape"
         let safeBundleID = bundleID.replacingOccurrences(of: "/", with: "-")
-        return NSTemporaryDirectory() + "\(safeBundleID)-broker-\(uid).sock"
+        let baseName = "\(safeBundleID)-broker-\(uid)"
+        guard let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty else {
+            return NSTemporaryDirectory() + "\(baseName).sock"
+        }
+
+        let configDirectory = ConfigService.defaultConfigDirectory(environment: environment)
+        let digest = SHA256.hash(data: Data(configDirectory.path.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return NSTemporaryDirectory() + "\(baseName)-\(digest).sock"
     }
 }
