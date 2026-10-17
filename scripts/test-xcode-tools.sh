@@ -143,6 +143,8 @@ elif mode == "unit-buildable":
     entries["HoloscapeTests"][1].set("BuildableName", "HoloscapePropertyTests.xctest")
 elif mode == "unit-container":
     entries["HoloscapeTests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
+elif mode == "unit-selected-tests":
+    ET.SubElement(entries["HoloscapeTests"][0], "SelectedTests")
 elif mode == "ui-blueprint":
     entries["HoloscapeUITests"][1].set("BlueprintIdentifier", "FFFFFFFFFFFFFFFFFFFFFFFF")
 elif mode == "ui-skipped":
@@ -151,6 +153,8 @@ elif mode == "ui-buildable":
     entries["HoloscapeUITests"][1].set("BuildableName", "HoloscapeTests.xctest")
 elif mode == "ui-container":
     entries["HoloscapeUITests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
+elif mode == "ui-skipped-tests":
+    ET.SubElement(entries["HoloscapeUITests"][0], "SkippedTests")
 elif mode == "ui-membership":
     testables.remove(entries["HoloscapeUITests"][0])
 elif mode == "duplicate-unit":
@@ -167,8 +171,8 @@ PY
 }
 
 for mutation in missing-property property-blueprint property-skipped property-buildable property-container \
-    unit-blueprint unit-skipped unit-buildable unit-container \
-    ui-blueprint ui-skipped ui-buildable ui-container ui-membership \
+    unit-blueprint unit-skipped unit-buildable unit-container unit-selected-tests \
+    ui-blueprint ui-skipped ui-buildable ui-container ui-skipped-tests ui-membership \
     duplicate-unit extra-entry; do
     mutated_scheme="$work_dir/$mutation.xcscheme"
     mutate_scheme "$mutated_scheme" "$mutation"
@@ -180,7 +184,7 @@ for mutation in missing-property property-blueprint property-skipped property-bu
     case "$mutation" in
         property-*) expected_diagnostic='invalid HoloscapePropertyTests test entry' ;;
         unit-*) expected_diagnostic='invalid HoloscapeTests test entry' ;;
-        ui-blueprint|ui-skipped|ui-buildable|ui-container) expected_diagnostic='invalid HoloscapeUITests test entry' ;;
+        ui-blueprint|ui-skipped|ui-buildable|ui-container|ui-skipped-tests) expected_diagnostic='invalid HoloscapeUITests test entry' ;;
         duplicate-unit) expected_diagnostic='missing or duplicate test target name' ;;
     esac
     if ! grep -q "$expected_diagnostic" "$work_dir/$mutation.out"; then
@@ -279,17 +283,21 @@ if selected_counts != compiled_counts:
         f"UI shard class inventory differs from compiled tests; missing={missing}, stale={stale}"
     )
 PY
-python3 - "$work_dir/test-ui-shards.sh" "$work_dir/results" <<'PY'
+python3 - "$work_dir/test-ui-shards.sh" "$work_dir/unexpected-default-results" <<'PY'
 from pathlib import Path
 import sys
 
 script = Path(sys.argv[1])
 text = script.read_text()
-text = text.replace('RESULTS_DIR="/tmp/holoscape-test-shards"', f'RESULTS_DIR="{sys.argv[2]}"')
-script.write_text(text)
+needle = 'RESULTS_DIR="${HOLOSCAPE_UI_TEST_RESULTS_DIR:-/tmp/holoscape-test-shards}"'
+replacement = f'RESULTS_DIR="${{HOLOSCAPE_UI_TEST_RESULTS_DIR:-{sys.argv[2]}}}"'
+if text.count(needle) != 1:
+    raise SystemExit("expected one default UI results assignment")
+script.write_text(text.replace(needle, replacement, 1))
 PY
 
-if PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
+if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/results" PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
     echo "error: aggregate UI shards hid an xcodebuild failure" >&2
     exit 1
 fi
@@ -298,26 +306,15 @@ if [[ $(grep -c '\[FAIL\]' "$work_dir/shards.out") -ne 2 ]] || grep -q '\[OK\]' 
     cat "$work_dir/shards.out" >&2
     exit 1
 fi
+if [[ ! -f "$work_dir/results/shard-1.status" || ! -f "$work_dir/results/shard-2.status" || \
+      -e "$work_dir/unexpected-default-results" ]]; then
+    echo "error: aggregate UI shards did not honor the results-directory override" >&2
+    exit 1
+fi
 
-python3 - "$work_dir/test-ui-shards.sh" "$work_dir/single-results" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-script = Path(sys.argv[1])
-text = script.read_text()
-text, count = re.subn(
-    r'^RESULTS_DIR="[^"]*"$',
-    f'RESULTS_DIR="{sys.argv[2]}"',
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if count != 1:
-    raise SystemExit("failed to redirect single-shard results")
-script.write_text(text)
-PY
-if PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/single.out" 2>&1; then
+export HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results"
+if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/single.out" 2>&1; then
     echo "error: single UI shard hid an xcodebuild failure" >&2
     exit 1
 fi
@@ -328,7 +325,7 @@ if [[ $(<"$work_dir/single-results/shard-1.status") != "FAIL" ]] || \
 fi
 
 status_path="$work_dir/single-results/shard-1.status"
-if FAKE_STATUS_PATH="$status_path" PATH="$work_dir/bin:$PATH" \
+if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" FAKE_STATUS_PATH="$status_path" PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/status-write.out" 2>&1; then
     echo "error: UI shard accepted a failed status write" >&2
     exit 1
@@ -361,7 +358,7 @@ exec /bin/rm "$@"
 EOF
 chmod +x "$work_dir/bin/rm"
 printf '7\n' >"$work_dir/single-results/last-failed-shard"
-if FAKE_RM_FAIL_PATH="$bundle_path" PATH="$work_dir/bin:$PATH" \
+if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" FAKE_RM_FAIL_PATH="$bundle_path" PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1-1 >"$work_dir/cleanup.out" 2>&1; then
     echo "error: UI shard accepted result-bundle cleanup failure" >&2
     exit 1

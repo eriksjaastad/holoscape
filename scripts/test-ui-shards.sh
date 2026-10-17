@@ -5,6 +5,8 @@
 #   ./scripts/test-ui-shards.sh              # Run all shards sequentially
 #   ./scripts/test-ui-shards.sh 3            # Run shard 3 only
 #   ./scripts/test-ui-shards.sh 3-5          # Run shards 3 through 5
+#   ./scripts/test-ui-shards.sh fast         # Run core UI smoke tests
+#   ./scripts/test-ui-shards.sh notifications # Run notification UI tests
 #   ./scripts/test-ui-shards.sh failing      # Run only currently-failing classes
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
 # Results default to /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}.
@@ -128,10 +130,10 @@ run_selected_tests() {
 run_shard() {
     local n=$1
     local classes=$(get_shard "$n")
-    local args=""
+    local args=()
 
     for class in $classes; do
-        args="$args -only-testing:HoloscapeUITests/$class"
+        args+=("-only-testing:HoloscapeUITests/$class")
     done
 
     echo ""
@@ -147,13 +149,6 @@ run_shard() {
     SHARD_RUN_PASSED[$n]=0
     SHARD_RUN_FAILED[$n]=0
 
-    # xcodebuild refuses to write to an existing .xcresult bundle.
-    # Remove prior outputs so the current invocation cannot report stale data.
-    if ! rm -rf "$bundle"; then
-        echo "error: cannot remove prior result bundle: $bundle" >&2
-        record_failed_shard "$n" "$status_file" || true
-        return 1
-    fi
     if ! rm -f "$outfile"; then
         echo "error: cannot remove prior shard output: $outfile" >&2
         record_failed_shard "$n" "$status_file" || true
@@ -165,16 +160,8 @@ run_shard() {
         return 1
     fi
 
-    set +e
-    "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
-        -scheme "$SCHEME" \
-        -destination "$DEST" \
-        -skipPackagePluginValidation \
-        -resultBundlePath "$bundle" \
-        $args \
-        2>&1 | tee "$outfile" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
-    local pipeline_status=("${PIPESTATUS[@]}")
-    set -e
+    local command_status=0
+    run_selected_tests "Shard $n" "$outfile" "$bundle" "${args[@]}" || command_status=$?
 
     local passed=0
     local failed=0
@@ -185,24 +172,21 @@ run_shard() {
     fi
     SHARD_RUN_PASSED[$n]="$passed"
     SHARD_RUN_FAILED[$n]="$failed"
-    local output_status=0
-    "$TEST_OUTPUT_VALIDATOR" "$outfile" || output_status=$?
 
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
-    echo "  Bundle:  $bundle"
 
-    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$count_status" -ne 0 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
+    if [ "$command_status" -ne 0 ] || [ "$count_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
         record_failed_shard "$n" "$status_file" || true
-        if is_terminal_status "${pipeline_status[0]}"; then
-            return "${pipeline_status[0]}"
+        if is_terminal_status "$command_status"; then
+            return "$command_status"
         fi
         if [ "$count_status" -ne 0 ]; then
             return "$count_status"
         fi
-        if [ "${pipeline_status[0]}" -ne 0 ]; then
-            return "${pipeline_status[0]}"
+        if [ "$command_status" -ne 0 ]; then
+            return "$command_status"
         fi
         return 1
     fi

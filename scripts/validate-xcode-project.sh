@@ -333,6 +333,8 @@ for name, (blueprint_id, buildable_name) in expected.items():
     testable, buildable = found[name]
     if (
         testable.get("skipped") != "NO"
+        or testable.find("SkippedTests") is not None
+        or testable.find("SelectedTests") is not None
         or buildable.get("BuildableIdentifier") != "primary"
         or buildable.get("BlueprintIdentifier") != blueprint_id
         or buildable.get("BuildableName") != buildable_name

@@ -1,7 +1,5 @@
 .PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-range test-ui-failing test-ui-resume test-ui-notifications validate-tools xcode bundle clean run setup check-submodules
 
-UI_TEST_TIMEOUT_SECONDS ?= 3600
-
 help:
 	@echo "Holoscape — common ops"
 	@echo "  make auth-check       verify Doppler project/config visibility (DOPPLER_PROJECT_NAME/DOPPLER_CONFIG_NAME override)"
@@ -11,9 +9,12 @@ help:
 	@echo "  make test-property    Property tests only"
 	@echo "  make test-ui          Full sharded UI suite (Accessibility/Automation permission required)"
 	@echo "  make test-ui-fast     Core UI smoke tests"
+	@echo "  make test-ui-notifications  Notification UI tests"
 	@echo "  make test-ui-shard SHARD=3    Run one UI shard"
 	@echo "  make test-ui-range RANGE=3-5  Run a UI shard range"
+	@echo "  make test-ui-failing  Run classes from the failing-results log"
 	@echo "  make test-ui-resume   Resume at the last failed shard"
+	@echo "  make test-class CLASS=Name    Run one Swift test class"
 	@echo "  make xcode            Open the checked-in Xcode project"
 	@echo "  make validate-tools   Check scripts, skin archives, and Xcode tooling"
 	@echo "  make bundle           Build debug .app bundle"
@@ -70,11 +71,11 @@ test-ui-failing: bundle
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
-	UI_TEST_TIMEOUT_SECONDS="$(UI_TEST_TIMEOUT_SECONDS)" ./scripts/test-ui-shards.sh fast
+	./scripts/test-ui-shards.sh fast
 
 # Run notification UI tests
 test-ui-notifications: bundle
-	UI_TEST_TIMEOUT_SECONDS="$(UI_TEST_TIMEOUT_SECONDS)" ./scripts/test-ui-shards.sh notifications
+	./scripts/test-ui-shards.sh notifications
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:
