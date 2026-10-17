@@ -2366,12 +2366,20 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private func launchSession(from profile: SessionProfile) {
         guard channelMutationEnabled else { return }
         let resolved = profile.resolved(with: configService.load().sshDefaults)
-        let channel = channelManager.createChannel(from: resolved)
-        channel.delegate = self
-        channel.activate()
-        profileManager?.recordRecentSession(label: profile.label)
-        refreshLauncher()
-        switchToChannel(channel.channelId)
+        do {
+            let channel = try channelManager.createChannel(from: resolved)
+            channel.delegate = self
+            channel.activate()
+            profileManager?.recordRecentSession(label: profile.label)
+            refreshLauncher()
+            switchToChannel(channel.channelId)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Session Not Configured"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.beginSheetModal(for: window)
+        }
     }
 
     @objc func closeActiveChannel() {

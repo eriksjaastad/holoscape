@@ -613,7 +613,7 @@ final class ChannelManagerTests: XCTestCase {
             directory: profileDirectory.path
         )
 
-        let channel = manager.createChannel(from: profile)
+        let channel = try manager.createChannel(from: profile)
         let shell = channel as? ShellChannelController
 
         XCTAssertEqual(shell?.workingDirectory, profileDirectory.path)
@@ -633,7 +633,7 @@ final class ChannelManagerTests: XCTestCase {
             directory: "/tmp/channel-manager-broker"
         )
 
-        let channel = manager.createChannel(from: profile)
+        let channel = try! manager.createChannel(from: profile)
         channel.activate()
         defer { channel.deactivate() }
 
@@ -644,6 +644,54 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(call.request.command, "/bin/zsh")
         XCTAssertEqual(call.request.workingDirectory, "/tmp/channel-manager-broker")
         XCTAssertEqual(call.request.environmentProfile, .shell)
+    }
+
+    func testInvalidMCPProfileDoesNotCreateFallbackChannel() {
+        let profile = SessionProfile(
+            label: "Broken MCP",
+            connection: .mcp,
+            command: "",
+            directory: ""
+        )
+
+        XCTAssertThrowsError(try manager.createChannel(from: profile)) { error in
+            XCTAssertEqual(error as? SessionProfileLaunchError, .invalidMCPEndpoint(label: "Broken MCP"))
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testInvalidAgentChatProfileDoesNotCreateFallbackChannel() {
+        let profile = SessionProfile(
+            label: "Broken Chat",
+            connection: .agentChat,
+            command: "",
+            directory: ""
+        )
+
+        XCTAssertThrowsError(try manager.createChannel(from: profile)) { error in
+            XCTAssertEqual(error as? SessionProfileLaunchError, .missingAgentChatAPIURL(label: "Broken Chat"))
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testValidExternalProfilesCreateRequestedChannelTypes() throws {
+        let mcp = try manager.createChannel(from: SessionProfile(
+            label: "MCP",
+            connection: .mcp,
+            command: "",
+            directory: "",
+            endpoint: "http://127.0.0.1:8765"
+        ))
+        let chat = try manager.createChannel(from: SessionProfile(
+            label: "Chat",
+            connection: .agentChat,
+            command: "",
+            directory: "",
+            apiURL: "http://127.0.0.1:8766"
+        ))
+
+        XCTAssertEqual(mcp.channelType, .mcp)
+        XCTAssertEqual(chat.channelType, .groupChat)
     }
 
     func testBrokerBackedShellSessionToRestoreMatchesShellRecordByLastAttachedChannel() {
@@ -1316,7 +1364,7 @@ final class ChannelManagerTests: XCTestCase {
             command: "/bin/cat",
             directory: tempDirectory.path
         )
-        let original = firstManager.createChannel(from: profile)
+        let original = try firstManager.createChannel(from: profile)
         original.activate()
         guard let originalAgent = original as? AgentChannelController,
               let brokerSessionID = originalAgent.brokerSessionID else {
