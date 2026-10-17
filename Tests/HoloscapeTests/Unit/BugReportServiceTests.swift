@@ -193,6 +193,27 @@ final class BugReportServiceTests: XCTestCase {
         XCTAssertThrowsError(try service.savePendingBugReport(makeBugReport()))
     }
 
+    func testDefaultPendingDirectoryUsesConfiguredRootAndPreservesLegacyDefault() {
+        let homeDirectory = URL(fileURLWithPath: "/Users/test", isDirectory: true)
+        let configuredRoot = URL(fileURLWithPath: "/tmp/holoscape-profile", isDirectory: true)
+
+        XCTAssertEqual(
+            BugReportService.defaultPendingDirectory(
+                environment: ["HOLOSCAPE_CONFIG_DIR": configuredRoot.path],
+                homeDirectory: homeDirectory
+            ),
+            configuredRoot.standardizedFileURL.resolvingSymlinksInPath()
+                .appendingPathComponent("pending-reports")
+        )
+        XCTAssertEqual(
+            BugReportService.defaultPendingDirectory(
+                environment: [:],
+                homeDirectory: homeDirectory
+            ),
+            homeDirectory.appendingPathComponent(".holoscape/pending-reports")
+        )
+    }
+
     func testSavePendingBugReport() throws {
         let service = BugReportService(pendingDirectory: pendingDir)
         try service.savePendingBugReport(makeBugReport())
