@@ -13,6 +13,7 @@ import time
 TERMINATION_GRACE_SECONDS = 5
 TIMEOUT_EXIT_STATUS = 124
 TERMINATION_FAILURE_EXIT_STATUS = 125
+INTERRUPT_EXIT_STATUS = 130
 
 
 def stop_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
@@ -89,12 +90,14 @@ def main() -> int:
         return 127
 
     def forward_termination(signum: int, _frame: object) -> None:
-        for forwarded_signal in (signal.SIGHUP, signal.SIGTERM):
+        for forwarded_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
             signal.signal(forwarded_signal, signal.SIG_IGN)
-        stop_and_reap_process_group(process, signal.Signals(signum))
-        raise SystemExit(128 + signum)
+        if stop_and_reap_process_group(process, signal.Signals(signum)):
+            raise SystemExit(128 + signum)
+        raise SystemExit(TERMINATION_FAILURE_EXIT_STATUS)
 
     signal.signal(signal.SIGHUP, forward_termination)
+    signal.signal(signal.SIGINT, forward_termination)
     signal.signal(signal.SIGTERM, forward_termination)
 
     try:
@@ -109,7 +112,7 @@ def main() -> int:
         return TERMINATION_FAILURE_EXIT_STATUS
     except KeyboardInterrupt:
         if stop_and_reap_process_group(process, signal.SIGINT):
-            return process.returncode
+            return INTERRUPT_EXIT_STATUS
         return TERMINATION_FAILURE_EXIT_STATUS
 
 

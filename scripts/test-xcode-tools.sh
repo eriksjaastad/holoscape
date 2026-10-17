@@ -283,13 +283,14 @@ def handle(signum, _frame):
     raise SystemExit(0)
 
 signal.signal(signal.SIGHUP, handle)
+signal.signal(signal.SIGINT, handle)
 signal.signal(signal.SIGTERM, handle)
 pid_file.write_text(str(os.getpid()))
 ready.write_text("ready")
 while True:
     time.sleep(1)
 PY
-for forwarded_signal in HUP TERM; do
+for forwarded_signal in HUP INT TERM; do
     ready_path="$work_dir/signal-$forwarded_signal.ready"
     received_path="$work_dir/signal-$forwarded_signal.received"
     child_pid_path="$work_dir/signal-$forwarded_signal.pid"
@@ -313,7 +314,9 @@ for forwarded_signal in HUP TERM; do
     wrapper_status=$?
     set -e
     expected_status=129
-    if [[ "$forwarded_signal" == "TERM" ]]; then
+    if [[ "$forwarded_signal" == "INT" ]]; then
+        expected_status=130
+    elif [[ "$forwarded_signal" == "TERM" ]]; then
         expected_status=143
     fi
     child_pid=$(<"$child_pid_path")
@@ -321,6 +324,22 @@ for forwarded_signal in HUP TERM; do
        [[ $(<"$received_path") != "SIG$forwarded_signal" ]] || \
        kill -0 "$child_pid" 2>/dev/null; then
         echo "error: timeout runner did not forward and reap SIG$forwarded_signal" >&2
+        exit 1
+    fi
+done
+
+for invalid_shards in 5-3 0-1 1-11 11 invalid-range; do
+    invalid_marker="$work_dir/invalid-$invalid_shards-xcodebuild-invoked"
+    if FAKE_STATUS_PATH="$invalid_marker" PATH="$work_dir/bin:$PATH" \
+       bash "$work_dir/test-ui-shards.sh" "$invalid_shards" \
+       >"$work_dir/invalid-$invalid_shards.out" 2>&1; then
+        echo "error: UI shard runner accepted invalid selection: $invalid_shards" >&2
+        exit 1
+    fi
+    if [[ -e "$invalid_marker" ]] || \
+       ! grep -Eq 'shard (range|number) must (be|contain)' "$work_dir/invalid-$invalid_shards.out"; then
+        echo "error: invalid shard selection did not fail before xcodebuild: $invalid_shards" >&2
+        cat "$work_dir/invalid-$invalid_shards.out" >&2
         exit 1
     fi
 done

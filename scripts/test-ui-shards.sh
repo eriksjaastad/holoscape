@@ -276,8 +276,16 @@ case "${1:-all}" in
         ;;
     *-*)
         # Range like 3-5
-        start="${1%-*}"
-        end="${1#*-}"
+        if ! [[ "$1" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "error: shard range must contain two numeric bounds: $1" >&2
+            exit 2
+        fi
+        start=$((10#${1%-*}))
+        end=$((10#${1#*-}))
+        if (( start < 1 || start > 10 || end < 1 || end > 10 || start > end )); then
+            echo "error: shard range must be ascending and within 1 through 10: $1" >&2
+            exit 2
+        fi
         overall_status=0
         for i in $(seq "$start" "$end"); do
             run_shard "$i" || overall_status=1
@@ -287,6 +295,15 @@ case "${1:-all}" in
         ;;
     *)
         # Single shard number
-        run_shard "$1"
+        if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+            echo "error: shard number must be numeric: $1" >&2
+            exit 2
+        fi
+        shard_number=$((10#$1))
+        if (( shard_number < 1 || shard_number > 10 )); then
+            echo "error: shard number must be from 1 through 10: $1" >&2
+            exit 2
+        fi
+        run_shard "$shard_number"
         ;;
 esac
