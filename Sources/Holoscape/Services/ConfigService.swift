@@ -32,13 +32,23 @@ class ConfigService {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        let directory: URL
-        if let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            directory = URL(fileURLWithPath: override)
-        } else {
-            directory = homeDirectory.appendingPathComponent(".holoscape")
-        }
+        let directory = explicitConfigDirectory(
+            environment: environment,
+            homeDirectory: homeDirectory
+        ) ?? homeDirectory.appendingPathComponent(".holoscape")
         return directory.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    static func explicitConfigDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL? {
+        guard let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: override)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
     }
 
     init() {

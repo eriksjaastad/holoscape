@@ -412,11 +412,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         let bundleID = Bundle.main.bundleIdentifier ?? "holoscape"
         let safeBundleID = bundleID.replacingOccurrences(of: "/", with: "-")
         let baseName = "\(safeBundleID)-broker-\(uid)"
-        guard let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty else {
+        guard let configDirectory = ConfigService.explicitConfigDirectory(environment: environment) else {
             return NSTemporaryDirectory() + "\(baseName).sock"
         }
 
-        let configDirectory = ConfigService.defaultConfigDirectory(environment: environment)
         let digest = SHA256.hash(data: Data(configDirectory.path.utf8))
             .prefix(8)
             .map { String(format: "%02x", $0) }

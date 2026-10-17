@@ -18,10 +18,19 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             environment: ["HOLOSCAPE_CONFIG_DIR": secondConfig.path]
         )
         let productionPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: [:])
+        let emptyOverridePath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: ["HOLOSCAPE_CONFIG_DIR": ""]
+        )
+        let safeBundleID = (Bundle.main.bundleIdentifier ?? "holoscape")
+            .replacingOccurrences(of: "/", with: "-")
+        let expectedProductionPath = NSTemporaryDirectory()
+            + "\(safeBundleID)-broker-\(getuid()).sock"
 
         XCTAssertEqual(firstPath, repeatedFirstPath)
         XCTAssertNotEqual(firstPath, secondPath)
         XCTAssertNotEqual(firstPath, productionPath)
+        XCTAssertEqual(productionPath, expectedProductionPath)
+        XCTAssertEqual(emptyOverridePath, productionPath)
         XCTAssertFalse(firstPath.contains(firstConfig.path))
         XCTAssertTrue(firstPath.hasSuffix(".sock"))
     }

@@ -404,13 +404,13 @@ struct BrokerSessionRegistry {
             in: .userDomainMask
         ).first
     ) -> URL {
-        if let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            return ConfigService.defaultConfigDirectory(
-                environment: environment,
-                homeDirectory: homeDirectory
-            )
-            .appendingPathComponent("BrokerSessions", isDirectory: true)
-            .appendingPathComponent("sessions.json")
+        if let configDirectory = ConfigService.explicitConfigDirectory(
+            environment: environment,
+            homeDirectory: homeDirectory
+        ) {
+            return configDirectory
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
         }
 
         let base = applicationSupportDirectory
