@@ -38,11 +38,14 @@ struct PluginStorageService {
         return storageURL
     }
 
-    private static func defaultRootDirectory() -> URL {
-        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".holoscape")
+    static func defaultRootDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        ConfigService.defaultConfigDirectory(
+            environment: environment,
+            homeDirectory: homeDirectory
+        )
     }
 
     private func isValidStorageNamespace(_ namespace: String) -> Bool {
