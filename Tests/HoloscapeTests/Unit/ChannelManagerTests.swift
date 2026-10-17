@@ -613,7 +613,7 @@ final class ChannelManagerTests: XCTestCase {
             directory: profileDirectory.path
         )
 
-        let channel = manager.createChannel(from: profile)
+        let channel = try manager.createChannel(from: profile)
         let shell = channel as? ShellChannelController
 
         XCTAssertEqual(shell?.workingDirectory, profileDirectory.path)
@@ -633,7 +633,7 @@ final class ChannelManagerTests: XCTestCase {
             directory: "/tmp/channel-manager-broker"
         )
 
-        let channel = manager.createChannel(from: profile)
+        let channel = try! manager.createChannel(from: profile)
         channel.activate()
         defer { channel.deactivate() }
 
@@ -644,6 +644,146 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(call.request.command, "/bin/zsh")
         XCTAssertEqual(call.request.workingDirectory, "/tmp/channel-manager-broker")
         XCTAssertEqual(call.request.environmentProfile, .shell)
+    }
+
+    func testInvalidMCPProfileDoesNotCreateFallbackChannel() {
+        let profile = SessionProfile(
+            label: "Broken MCP",
+            connection: .mcp,
+            command: "",
+            directory: ""
+        )
+
+        XCTAssertThrowsError(try manager.createChannel(from: profile)) { error in
+            XCTAssertEqual(error as? SessionProfileLaunchError, .invalidMCPEndpoint(label: "Broken MCP"))
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testInvalidAgentChatProfileDoesNotCreateFallbackChannel() {
+        let profile = SessionProfile(
+            label: "Broken Chat",
+            connection: .agentChat,
+            command: "",
+            directory: ""
+        )
+
+        XCTAssertThrowsError(try manager.createChannel(from: profile)) { error in
+            XCTAssertEqual(error as? SessionProfileLaunchError, .invalidAgentChatAPIURL(label: "Broken Chat"))
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testMalformedAndUnsupportedExternalProfileURLsDoNotCreateChannels() {
+        let profiles = [
+            SessionProfile(
+                label: "Malformed MCP",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "not a URL"
+            ),
+            SessionProfile(
+                label: "Unsupported MCP",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "file:///tmp/mcp.sock"
+            ),
+            SessionProfile(
+                label: "Malformed Chat",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "https://"
+            ),
+            SessionProfile(
+                label: "Unsupported Chat",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "ftp://chat.example.com"
+            ),
+            SessionProfile(
+                label: "Malformed MCP Percent Escape",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "https://mcp.example.com/%zz"
+            ),
+            SessionProfile(
+                label: "Truncated Chat Percent Escape",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "https://chat.example.com/%2"
+            ),
+        ]
+
+        for profile in profiles {
+            XCTAssertThrowsError(try manager.createChannel(from: profile), profile.label)
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testSessionLauncherFailureDoesNotActivateSwitchOrRecordRecentSession() throws {
+        let profile = SessionProfile(
+            label: "Group Chat",
+            connection: .agentChat,
+            command: "",
+            directory: ""
+        )
+        var config = configService.load()
+        config.sessionProfiles = [profile]
+        XCTAssertTrue(configService.save(config))
+
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let profileManager = SessionProfileManager(
+            configService: configService,
+            discoveryService: discoveryService
+        )
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: configService
+        )
+        windowController.setProfileManager(profileManager)
+        var presentedError: Error?
+        windowController.sessionLaunchErrorPresenter = { error, _ in
+            presentedError = error
+        }
+
+        windowController.sessionLauncher(
+            windowController.sessionLauncherForTesting,
+            didSelectProfile: profile
+        )
+
+        XCTAssertEqual(
+            presentedError as? SessionProfileLaunchError,
+            .invalidAgentChatAPIURL(label: "Group Chat")
+        )
+        XCTAssertTrue(manager.allChannels().isEmpty)
+        XCTAssertNil(windowController.activeChannelId)
+        XCTAssertEqual(configService.load().recentSessions ?? [], [])
+    }
+
+    func testValidExternalProfilesCreateRequestedChannelTypes() throws {
+        let mcp = try manager.createChannel(from: SessionProfile(
+            label: "MCP",
+            connection: .mcp,
+            command: "",
+            directory: "",
+            endpoint: "http://127.0.0.1:8765"
+        ))
+        let chat = try manager.createChannel(from: SessionProfile(
+            label: "Chat",
+            connection: .agentChat,
+            command: "",
+            directory: "",
+            apiURL: "http://127.0.0.1:8766"
+        ))
+
+        XCTAssertEqual(mcp.channelType, .mcp)
+        XCTAssertEqual(chat.channelType, .groupChat)
     }
 
     func testBrokerBackedShellSessionToRestoreMatchesShellRecordByLastAttachedChannel() {
@@ -1316,7 +1456,7 @@ final class ChannelManagerTests: XCTestCase {
             command: "/bin/cat",
             directory: tempDirectory.path
         )
-        let original = firstManager.createChannel(from: profile)
+        let original = try firstManager.createChannel(from: profile)
         original.activate()
         guard let originalAgent = original as? AgentChannelController,
               let brokerSessionID = originalAgent.brokerSessionID else {

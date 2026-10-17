@@ -1,5 +1,59 @@
 import Foundation
 
+enum SessionProfileLaunchError: LocalizedError, Equatable {
+    case invalidMCPEndpoint(label: String)
+    case invalidAgentChatAPIURL(label: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMCPEndpoint(let label):
+            return "The MCP session profile “\(label)” does not have a valid endpoint URL."
+        case .invalidAgentChatAPIURL(let label):
+            return "The Agent Chat session profile “\(label)” does not have a valid HTTP or HTTPS API URL."
+        }
+    }
+}
+
+enum ExternalServiceURLValidator {
+    static func url(from rawValue: String?) -> URL? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hasValidPercentEscapes(trimmed),
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return components.url
+    }
+
+    private static func hasValidPercentEscapes(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x25 else {
+                index += 1
+                continue
+            }
+            guard index + 2 < bytes.count,
+                  isASCIIHexDigit(bytes[index + 1]),
+                  isASCIIHexDigit(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        }
+        return true
+    }
+
+    private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte)
+            || (0x41...0x46).contains(byte)
+            || (0x61...0x66).contains(byte)
+    }
+}
+
 @MainActor
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
@@ -62,7 +116,27 @@ class ChannelManager {
     }
 
     /// Create a new channel from a SessionProfile (V1.5).
-    func createChannel(from profile: SessionProfile) -> any ChannelController {
+    func createChannel(from profile: SessionProfile) throws -> any ChannelController {
+        let mcpEndpoint: URL?
+        let agentChatAPIURL: String?
+        switch profile.connection {
+        case .mcp:
+            guard let endpoint = ExternalServiceURLValidator.url(from: profile.endpoint) else {
+                throw SessionProfileLaunchError.invalidMCPEndpoint(label: profile.label)
+            }
+            mcpEndpoint = endpoint
+            agentChatAPIURL = nil
+        case .agentChat:
+            guard let apiURL = ExternalServiceURLValidator.url(from: profile.apiURL) else {
+                throw SessionProfileLaunchError.invalidAgentChatAPIURL(label: profile.label)
+            }
+            mcpEndpoint = nil
+            agentChatAPIURL = apiURL.absoluteString
+        case .local, .ssh, .bridge:
+            mcpEndpoint = nil
+            agentChatAPIURL = nil
+        }
+
         let id = UUID()
         let instanceNumber = nextInstanceNumber(for: profile.label)
 
@@ -98,25 +172,15 @@ class ChannelManager {
                 brokerSessionCoordinator: brokerSessionCoordinator
             )
         case .mcp:
-            guard let endpointStr = profile.endpoint, let endpoint = URL(string: endpointStr) else {
-                NSLog("ChannelManager: MCP profile '\(profile.label)' missing valid endpoint, skipping")
-                controller = ShellChannelController.brokerBacked(
-                    id: id,
-                    instanceNumber: instanceNumber
-                )
-                break
+            guard let endpoint = mcpEndpoint else {
+                throw SessionProfileLaunchError.invalidMCPEndpoint(label: profile.label)
             }
             controller = MCPChannelController(id: id, endpoint: endpoint, label: profile.label, instanceNumber: instanceNumber)
         case .bridge:
             controller = BridgeChannelController(id: id, channelManager: self, instanceNumber: instanceNumber)
         case .agentChat:
-            guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
-                NSLog("ChannelManager: Agent-chat profile '\(profile.label)' missing apiURL, skipping")
-                controller = ShellChannelController.brokerBacked(
-                    id: id,
-                    instanceNumber: instanceNumber
-                )
-                break
+            guard let apiURL = agentChatAPIURL else {
+                throw SessionProfileLaunchError.invalidAgentChatAPIURL(label: profile.label)
             }
             let apiKey = loadAPIKey(envVarName: profile.apiKeyEnv)
             controller = GroupChatChannelController(

@@ -339,7 +339,7 @@ final class GroupChatV2Tests: XCTestCase {
     func testBuiltInGroupChatCreationPreservesAssignedInstanceNumber() {
         let controller = MainWindowController.builtInGroupChatController(
             id: UUID(),
-            apiURL: "https://chat.example.com",
+            apiURL: URL(string: "https://chat.example.com")!,
             apiKey: "key",
             label: "Chat",
             instanceNumber: 2

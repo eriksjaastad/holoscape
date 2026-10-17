@@ -32,6 +32,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     let channelManager: ChannelManager
     private let configService: ConfigService
     private var profileManager: SessionProfileManager?
+    internal var sessionLaunchErrorPresenter: (Error, NSWindow) -> Void = { error, window in
+        let alert = NSAlert()
+        alert.messageText = "Session Not Configured"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window)
+    }
     private(set) var channelMutationEnabled = true
 
     func setChannelMutationEnabled(_ enabled: Bool) {
@@ -2118,8 +2125,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     func refreshLauncher() {
         guard let profileManager else { return }
-        let (preconfigured, discovered, recent) = profileManager.allSessions()
-        sessionLauncher.updateItems(preconfigured: preconfigured, discovered: discovered, recent: recent)
+        let sessions = profileManager.allSessions()
+        sessionLauncher.updateItems(
+            configured: sessions.configured,
+            builtIn: sessions.builtIn,
+            discovered: sessions.discovered,
+            recent: sessions.recent
+        )
     }
 
     @objc func handleNewSession() {
@@ -2306,10 +2318,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             }
         }
 
-        guard !apiURL.isEmpty, !apiKey.isEmpty else {
+        guard let validatedAPIURL = ExternalServiceURLValidator.url(from: apiURL),
+              !apiKey.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "Chat Not Configured"
-            alert.informativeText = "~/.claude/agent-chat.env not found or missing AGENT_CHAT_URL/AGENT_CHAT_API_KEY"
+            alert.informativeText = "~/.claude/agent-chat.env is missing a valid HTTP(S) AGENT_CHAT_URL or AGENT_CHAT_API_KEY"
             alert.runModal()
             return
         }
@@ -2321,7 +2334,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         ) { id, _, role, instanceNum, _ in
             Self.builtInGroupChatController(
                 id: id,
-                apiURL: apiURL,
+                apiURL: validatedAPIURL,
                 apiKey: apiKey,
                 label: role,
                 instanceNumber: instanceNum
@@ -2334,14 +2347,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     static func builtInGroupChatController(
         id: UUID,
-        apiURL: String,
+        apiURL: URL,
         apiKey: String,
         label: String,
         instanceNumber: Int?
     ) -> GroupChatChannelController {
         GroupChatChannelController(
             id: id,
-            apiURL: apiURL,
+            apiURL: apiURL.absoluteString,
             apiKey: apiKey,
             label: label,
             instanceNumber: instanceNumber
@@ -2363,15 +2376,19 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         switchToChannel(channel.channelId)
     }
 
-    private func launchSession(from profile: SessionProfile) {
+    internal func launchSession(from profile: SessionProfile) {
         guard channelMutationEnabled else { return }
         let resolved = profile.resolved(with: configService.load().sshDefaults)
-        let channel = channelManager.createChannel(from: resolved)
-        channel.delegate = self
-        channel.activate()
-        profileManager?.recordRecentSession(label: profile.label)
-        refreshLauncher()
-        switchToChannel(channel.channelId)
+        do {
+            let channel = try channelManager.createChannel(from: resolved)
+            channel.delegate = self
+            channel.activate()
+            profileManager?.recordRecentSession(label: profile.label)
+            refreshLauncher()
+            switchToChannel(channel.channelId)
+        } catch {
+            sessionLaunchErrorPresenter(error, window)
+        }
     }
 
     @objc func closeActiveChannel() {
@@ -2668,8 +2685,17 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile label: String) {
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String) {
         performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
+    }
+
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile) {
+        launchSession(from: profile)
+    }
+
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String) {
+        guard let profileManager else { return }
+        launchSession(from: profileManager.resolve(label: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
