@@ -72,6 +72,9 @@ struct HTTPResponse {
     }
 }
 
+/// Result of parsing one bounded request from the local control API.
+/// Malformed syntax is a 400-class outcome; a request that cannot fit within
+/// the byte budget is a 413-class outcome; incomplete input may be read again.
 enum HTTPParseOutcome {
     case incomplete
     case request(HTTPRequest)
@@ -80,7 +83,9 @@ enum HTTPParseOutcome {
 }
 
 enum HTTPParser {
-    /// Parse a bounded HTTP request from raw bytes.
+    /// Parse one origin-form HTTP/1.0 or HTTP/1.1 request from raw bytes.
+    /// Transfer codings are unsupported. Content-Length must be decimal and
+    /// fit with the headers inside `maximumRequestBytes`.
     static func parse(_ data: Data, maximumRequestBytes: Int) -> HTTPParseOutcome {
         guard maximumRequestBytes >= 0, data.count <= maximumRequestBytes else {
             return .payloadTooLarge

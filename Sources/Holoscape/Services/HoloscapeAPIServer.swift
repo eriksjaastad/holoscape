@@ -56,6 +56,7 @@ final class SystemDockAttentionClient: DockAttentionClient {
 
 @MainActor
 class HoloscapeAPIServer {
+    /// Total request-line, header, and body bytes accepted from one local client.
     nonisolated static let maximumRequestBytes = 1_048_576
 
     enum RequestReceiveDecision {
@@ -76,6 +77,7 @@ class HoloscapeAPIServer {
     private(set) var mutedNotificationChannelIds: Set<UUID> = []
     private let agentStatusAdapter = AgentStatusAdapter()
     private let dockAttentionClient: DockAttentionClient
+    private let receiveErrorReporter: @Sendable (NWError) -> Void
     private let responseSendErrorReporter: @Sendable (NWError) -> Void
 
     init(
@@ -83,6 +85,9 @@ class HoloscapeAPIServer {
         windowController: MainWindowController,
         port: UInt16 = 7865,
         dockAttentionClient: DockAttentionClient = SystemDockAttentionClient(),
+        receiveErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
+            NSLog("HoloscapeAPI: Failed to receive request: \(error)")
+        },
         responseSendErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
             NSLog("HoloscapeAPI: Failed to send response: \(error)")
         }
@@ -91,6 +96,7 @@ class HoloscapeAPIServer {
         self.windowController = windowController
         self.port = port
         self.dockAttentionClient = dockAttentionClient
+        self.receiveErrorReporter = receiveErrorReporter
         self.responseSendErrorReporter = responseSendErrorReporter
     }
 
@@ -182,6 +188,7 @@ class HoloscapeAPIServer {
 
     /// Accumulate data until we have a complete HTTP request (headers + body).
     private nonisolated func receiveFullRequest(connection: HTTPServerConnection, accumulated: Data) {
+        let receiveErrorReporter = receiveErrorReporter
         let responseSendErrorReporter = responseSendErrorReporter
         connection.receive { [weak self] data, isComplete, error in
             switch Self.requestReceiveDecision(
@@ -206,10 +213,11 @@ class HoloscapeAPIServer {
                     reportError: responseSendErrorReporter
                 )
             case .receiveMore(let buffer):
-                if error == nil {
-                    self?.receiveFullRequest(connection: connection, accumulated: buffer)
-                } else {
+                if let error {
+                    receiveErrorReporter(error)
                     connection.cancel()
+                } else {
+                    self?.receiveFullRequest(connection: connection, accumulated: buffer)
                 }
             }
         }

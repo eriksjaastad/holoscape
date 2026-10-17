@@ -100,19 +100,20 @@ final class HTTPParserTests: XCTestCase {
     }
 
     func testMalformedContentLengthProducesBadRequestResponse() {
-        let request = Data("POST /channels HTTP/1.1\r\nContent-Length: nope\r\n\r\n".utf8)
+        for value in ["nope", "+2", "", "2, 2"] {
+            let request = Data("POST /channels HTTP/1.1\r\nContent-Length: \(value)\r\n\r\n".utf8)
+            let decision = HoloscapeAPIServer.requestReceiveDecision(
+                accumulated: Data(),
+                incoming: request,
+                isComplete: false,
+                maximumBytes: 128
+            )
 
-        let decision = HoloscapeAPIServer.requestReceiveDecision(
-            accumulated: Data(),
-            incoming: request,
-            isComplete: false,
-            maximumBytes: 128
-        )
-
-        guard case .respond(let response) = decision else {
-            return XCTFail("Expected response, got \(decision)")
+            guard case .respond(let response) = decision else {
+                return XCTFail("Expected response for \(value.debugDescription), got \(decision)")
+            }
+            XCTAssertEqual(response.status, 400)
         }
-        XCTAssertEqual(response.status, 400)
     }
 
     func testConflictingContentLengthsDoNotRouteRequest() {
@@ -135,7 +136,7 @@ final class HTTPParserTests: XCTestCase {
 
     func testIdenticalContentLengthsRouteRequest() throws {
         let request = Data(
-            "POST /channels HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}".utf8
+            "POST /channels HTTP/1.1\r\nContent-Length:\t2\t\r\nContent-Length: 2\r\n\r\n{}".utf8
         )
 
         let decision = HoloscapeAPIServer.requestReceiveDecision(
@@ -172,7 +173,10 @@ final class HTTPParserTests: XCTestCase {
     func testMalformedOrUnsupportedRequestLinesDoNotRouteRequest() {
         let requestLines = [
             "DELETE /channels/123",
-            "DELETE /channels/123 HTTP/9.9"
+            "DELETE /channels/123 HTTP/9.9",
+            "G@T /channels HTTP/1.1",
+            "GET  /channels HTTP/1.1",
+            "GET /channels HTTP/1.1 extra"
         ]
 
         for requestLine in requestLines {
@@ -210,7 +214,8 @@ final class HTTPParserTests: XCTestCase {
         let malformedHeaders = [
             "Content-Length 100",
             "Content-Length : 100",
-            "X-Test:\u{0}"
+            "X-Test:\u{0}",
+            "X-Test:\u{7f}"
         ]
 
         for header in malformedHeaders {
@@ -233,6 +238,7 @@ final class HTTPParserTests: XCTestCase {
             "?",
             "/channels?bad=\u{0}",
             "/channels?bad=%GG",
+            "/channels?bad=%4",
             "/channels#fragment",
             "/channels\\input"
         ]
@@ -266,6 +272,21 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(request.path, "/channels")
         XCTAssertEqual(request.queryParams["label"], "Agent One")
         XCTAssertEqual(request.queryParams["filter"], "ready?now")
+    }
+
+    func testRequestTargetWithEmptyQueryRoutes() {
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: Data("GET /channels? HTTP/1.1\r\n\r\n".utf8),
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .route(let request) = decision else {
+            return XCTFail("Expected route, got \(decision)")
+        }
+        XCTAssertEqual(request.path, "/channels")
+        XCTAssertTrue(request.queryParams.isEmpty)
     }
 
     func testHTTP10RequestRoutes() {
@@ -330,18 +351,22 @@ final class HTTPParserTests: XCTestCase {
 
     @MainActor
     func testIncompleteCallbackWithErrorCancelsWithoutAnotherReceive() {
-        let server = makeServer()
+        let events = OrderedEventRecorder()
+        let reportingServer = makeServer(receiveErrorReporter: { _ in
+            events.record("receiveError")
+        })
         let connection = RecordingHTTPServerConnection(
             data: Data("POST /channels HTTP/1.1\r\nContent-Length: 4\r\n\r\nab".utf8),
             isComplete: false,
             error: NWError.posix(.ECONNRESET)
         )
 
-        server.handleConnection(connection)
+        reportingServer.handleConnection(connection)
 
         XCTAssertNil(connection.sentContent)
         XCTAssertEqual(connection.receiveCallCount, 1)
         XCTAssertEqual(connection.cancelCallCount, 1)
+        XCTAssertEqual(events.values, ["receiveError"])
     }
 
     @MainActor
@@ -408,6 +433,7 @@ final class HTTPParserTests: XCTestCase {
 
     @MainActor
     private func makeServer(
+        receiveErrorReporter: @escaping @Sendable (NWError) -> Void = { _ in },
         responseSendErrorReporter: @escaping @Sendable (NWError) -> Void = { _ in }
     ) -> HoloscapeAPIServer {
         let configService = ConfigService(
@@ -424,6 +450,7 @@ final class HTTPParserTests: XCTestCase {
             channelManager: channelManager,
             windowController: windowController,
             port: 0,
+            receiveErrorReporter: receiveErrorReporter,
             responseSendErrorReporter: responseSendErrorReporter
         )
     }
