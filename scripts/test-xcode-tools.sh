@@ -135,8 +135,24 @@ elif mode == "property-buildable":
     entries["HoloscapePropertyTests"][1].set("BuildableName", "HoloscapeTests.xctest")
 elif mode == "property-container":
     entries["HoloscapePropertyTests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
+elif mode == "unit-blueprint":
+    entries["HoloscapeTests"][1].set("BlueprintIdentifier", "FFFFFFFFFFFFFFFFFFFFFFFF")
+elif mode == "unit-skipped":
+    entries["HoloscapeTests"][0].set("skipped", "YES")
+elif mode == "unit-buildable":
+    entries["HoloscapeTests"][1].set("BuildableName", "HoloscapePropertyTests.xctest")
+elif mode == "unit-container":
+    entries["HoloscapeTests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
+elif mode == "ui-blueprint":
+    entries["HoloscapeUITests"][1].set("BlueprintIdentifier", "FFFFFFFFFFFFFFFFFFFFFFFF")
 elif mode == "ui-membership":
     testables.remove(entries["HoloscapeUITests"][0])
+elif mode == "duplicate-unit":
+    testables.append(ET.fromstring(ET.tostring(entries["HoloscapeTests"][0])))
+elif mode == "extra-entry":
+    extra = ET.fromstring(ET.tostring(entries["HoloscapeTests"][0]))
+    extra.find("BuildableReference").set("BlueprintName", "UnexpectedTests")
+    testables.append(extra)
 else:
     raise SystemExit(f"unknown scheme mutation: {mode}")
 
@@ -144,11 +160,18 @@ tree.write(destination, encoding="UTF-8", xml_declaration=True)
 PY
 }
 
-for mutation in missing-property property-blueprint property-skipped property-buildable property-container ui-membership; do
+for mutation in missing-property property-blueprint property-skipped property-buildable property-container \
+    unit-blueprint unit-skipped unit-buildable unit-container ui-blueprint ui-membership \
+    duplicate-unit extra-entry; do
     mutated_scheme="$work_dir/$mutation.xcscheme"
     mutate_scheme "$mutated_scheme" "$mutation"
     if "$validator" "$project" "$mutated_scheme" >"$work_dir/$mutation.out" 2>&1; then
         echo "error: Xcode validator accepted the $mutation scheme mutation" >&2
+        exit 1
+    fi
+    if ! grep -q 'shared Holoscape scheme' "$work_dir/$mutation.out"; then
+        echo "error: the $mutation scheme mutation failed without a scheme diagnostic" >&2
+        cat "$work_dir/$mutation.out" >&2
         exit 1
     fi
 done
@@ -560,6 +583,40 @@ if [[ "$group_timeout_status" -ne 124 ]] || kill -0 "$descendant_pid" 2>/dev/nul
     exit 1
 fi
 
+cat >"$work_dir/normal-exit-group-leader.py" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+descendant_pid = Path(sys.argv[1])
+subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "time.sleep(30)",
+        str(descendant_pid),
+    ]
+)
+while not descendant_pid.exists():
+    time.sleep(0.01)
+PY
+normal_exit_descendant_pid_path="$work_dir/normal-exit-group-descendant.pid"
+if ! "$script_dir/run-with-timeout.py" 5 python3 "$work_dir/normal-exit-group-leader.py" \
+    "$normal_exit_descendant_pid_path" >"$work_dir/normal-exit-group.out" 2>&1; then
+    echo "error: timeout runner changed a successful leader exit while cleaning descendants" >&2
+    cat "$work_dir/normal-exit-group.out" >&2
+    exit 1
+fi
+normal_exit_descendant_pid=$(<"$normal_exit_descendant_pid_path")
+if kill -0 "$normal_exit_descendant_pid" 2>/dev/null; then
+    echo "error: timeout runner left a descendant after a successful leader exit" >&2
+    exit 1
+fi
+
 cat >"$work_dir/signaled-group-leader.py" <<'PY'
 from pathlib import Path
 import os
@@ -613,7 +670,7 @@ if [[ "$signaled_wrapper_status" -ne 143 ]] || kill -0 "$signaled_descendant_pid
 fi
 
 /bin/rm -rf "$bundle_path" "$status_path"
-if FAKE_SLEEP_SECONDS=2 HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
+if FAKE_SLEEP_SECONDS=2 UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then
     echo "error: UI shard accepted a timed-out xcodebuild" >&2
     exit 1

@@ -123,6 +123,10 @@ def main() -> int:
     try:
         status = process.wait(timeout=timeout_seconds)
         if status >= 0:
+            if process_group_exists(process.pid) and not stop_and_reap_process_group(
+                process, signal.SIGTERM
+            ):
+                return TERMINATION_FAILURE_EXIT_STATUS
             return status
         terminating_signal = signal.Signals(-status)
         if stop_and_reap_process_group(process, terminating_signal):

@@ -8,9 +8,10 @@
 #   ./scripts/test-ui-shards.sh failing      # Run only currently-failing classes
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
 # Results: /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}
-# Override the one-hour xcodebuild limit with HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS.
+# Override the one-hour xcodebuild limit with UI_TEST_TIMEOUT_SECONDS.
 # Override the failing-mode source log with HOLOSCAPE_UI_FAILING_RESULTS_FILE.
 # UI execution requires macOS Accessibility/Automation permission for the runner.
+# Each build-for-testing re-signs the runner and can require TCC re-approval.
 
 set -euo pipefail
 
@@ -21,7 +22,7 @@ RESUME_FILE="$RESULTS_DIR/last-failed-shard"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
 TEST_OUTPUT_VALIDATOR="$SCRIPT_DIR/validate-xcode-test-output.sh"
-UI_TEST_TIMEOUT_SECONDS="${HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS:-3600}"
+UI_TEST_TIMEOUT_SECONDS="${UI_TEST_TIMEOUT_SECONDS:-3600}"
 FAILING_RESULTS_FILE="${HOLOSCAPE_UI_FAILING_RESULTS_FILE:-/tmp/test-results-full-2.txt}"
 
 mkdir -p "$RESULTS_DIR"
