@@ -16,11 +16,18 @@ TERMINATION_FAILURE_EXIT_STATUS = 125
 INTERRUPT_EXIT_STATUS = 130
 
 
-def stop_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+def stop_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> bool:
     try:
         os.killpg(process.pid, sig)
+        return True
     except ProcessLookupError:
-        pass
+        return True
+    except OSError as error:
+        print(
+            f"error: cannot signal command group {process.pid} with {sig.name}: {error}",
+            file=sys.stderr,
+        )
+        return False
 
 
 def process_group_exists(process_group_id: int) -> bool:
@@ -52,10 +59,12 @@ def wait_for_process_group_exit(process: subprocess.Popen[bytes], timeout: float
 def stop_and_reap_process_group(
     process: subprocess.Popen[bytes], initial_signal: signal.Signals
 ) -> bool:
-    stop_process_group(process, initial_signal)
+    if not stop_process_group(process, initial_signal):
+        return False
     if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
         return True
-    stop_process_group(process, signal.SIGKILL)
+    if not stop_process_group(process, signal.SIGKILL):
+        return False
     if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
         return True
     command_name = (

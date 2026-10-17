@@ -56,11 +56,11 @@ test-ui: bundle
 
 # Run a single shard (usage: make test-ui-shard SHARD=3)
 test-ui-shard: bundle
-	./scripts/test-ui-shards.sh $(SHARD)
+	./scripts/test-ui-shards.sh "$(SHARD)"
 
 # Run a range of shards (usage: make test-ui-range RANGE=3-5)
 test-ui-range: bundle
-	./scripts/test-ui-shards.sh $(RANGE)
+	./scripts/test-ui-shards.sh "$(RANGE)"
 
 # Resume from last failed shard
 test-ui-resume: bundle

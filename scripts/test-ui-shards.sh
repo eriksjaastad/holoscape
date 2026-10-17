@@ -71,12 +71,12 @@ record_failed_shard() {
 SHARD_1="IntegrityUITests"                                                    # 41
 SHARD_2="KeyboardShortcutsUITests WindowManagementUITests"                    # 34
 SHARD_3="StressUITests ThemeSwitchingUITests"                                 # 31
-SHARD_4="SearchAdvancedUITests SettingsUITests SessionLauncherUITests"         # 41
+SHARD_4="GroupChatChannelUITests SettingsUITests SessionLauncherUITests"        # 41
 SHARD_5="FontSettingsUITests EditMenuUITests ContextMenuUITests"              # 39
 SHARD_6="BugReportUITests HTTPAPIUITests TransparencyColorWellUITests"        # 33
 SHARD_7="HoloscapeUITests TabBarUITests SplitPaneAdvancedUITests InputBoxUITests" # 37
 SHARD_8="ChannelOrderingUITests AgentChannelUITests SplitPaneUITests CloseConfirmationUITests" # 32
-SHARD_9="BridgeChannelUITests TerminalInputUITests TabBehaviorUITests SidebarUITests SearchBarUITests" # 32
+SHARD_9="BridgeChannelUITests TerminalInputUITests TabBehaviorUITests SidebarUITests ShaderVisualTests" # 32
 SHARD_10="URLSchemeUITests TerminalDisplayUITests SSHChannelUITests NotificationSystemUITests TimestampToggleUITests SkinEngineUITests ConfigPersistenceUITests ChannelStateIndicatorUITests ChannelRestorationUITests NotificationUITests DirectoryPersistenceUITests" # 44
 
 get_shard() {
@@ -209,8 +209,18 @@ print_summary() {
     echo ""
 }
 
-# Parse arguments
-case "${1:-all}" in
+# Parse arguments. No argument means all shards; an explicitly empty selection is invalid.
+if (( $# > 1 )); then
+    echo "error: expected at most one shard selection" >&2
+    exit 2
+fi
+selection="${1-all}"
+if [[ -z "$selection" ]]; then
+    echo "error: shard selection must not be empty" >&2
+    exit 2
+fi
+
+case "$selection" in
     all)
         overall_status=0
         for i in $(seq 1 10); do
@@ -276,13 +286,13 @@ case "${1:-all}" in
         ;;
     *-*)
         # Range like 3-5
-        if ! [[ "$1" =~ ^[0-9]+-[0-9]+$ ]]; then
-            echo "error: shard range must contain two numeric bounds: $1" >&2
+        if ! [[ "$selection" =~ ^([1-9]|10)-([1-9]|10)$ ]]; then
+            echo "error: shard range bounds must each be from 1 through 10: $1" >&2
             exit 2
         fi
-        start=$((10#${1%-*}))
-        end=$((10#${1#*-}))
-        if (( start < 1 || start > 10 || end < 1 || end > 10 || start > end )); then
+        start="${BASH_REMATCH[1]}"
+        end="${BASH_REMATCH[2]}"
+        if (( start > end )); then
             echo "error: shard range must be ascending and within 1 through 10: $1" >&2
             exit 2
         fi
@@ -295,15 +305,10 @@ case "${1:-all}" in
         ;;
     *)
         # Single shard number
-        if ! [[ "$1" =~ ^[0-9]+$ ]]; then
-            echo "error: shard number must be numeric: $1" >&2
-            exit 2
-        fi
-        shard_number=$((10#$1))
-        if (( shard_number < 1 || shard_number > 10 )); then
+        if ! [[ "$selection" =~ ^([1-9]|10)$ ]]; then
             echo "error: shard number must be from 1 through 10: $1" >&2
             exit 2
         fi
-        run_shard "$shard_number"
+        run_shard "$selection"
         ;;
 esac

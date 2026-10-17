@@ -157,6 +157,32 @@ cp "$script_dir/test-ui-shards.sh" "$work_dir/test-ui-shards.sh"
 cp "$script_dir/run-with-timeout.py" "$work_dir/run-with-timeout.py"
 cp "$script_dir/validate-xcode-test-output.sh" "$work_dir/validate-xcode-test-output.sh"
 chmod +x "$work_dir/run-with-timeout.py" "$work_dir/validate-xcode-test-output.sh"
+python3 - "$script_dir/test-ui-shards.sh" "$repo_root/Tests/HoloscapeUITests" <<'PY'
+from collections import Counter
+from pathlib import Path
+import re
+import sys
+
+shard_script = Path(sys.argv[1]).read_text()
+ui_test_root = Path(sys.argv[2])
+selected = []
+for match in re.finditer(r'^SHARD_[0-9]+="([^"]*)"', shard_script, re.MULTILINE):
+    selected.extend(match.group(1).split())
+
+compiled = []
+class_pattern = re.compile(r'final class ([A-Za-z0-9_]+): HoloscapeUITestCase')
+for source in ui_test_root.glob("*.swift"):
+    compiled.extend(class_pattern.findall(source.read_text()))
+
+selected_counts = Counter(selected)
+compiled_counts = Counter(compiled)
+if selected_counts != compiled_counts:
+    missing = sorted((compiled_counts - selected_counts).elements())
+    stale = sorted((selected_counts - compiled_counts).elements())
+    raise SystemExit(
+        f"UI shard class inventory differs from compiled tests; missing={missing}, stale={stale}"
+    )
+PY
 python3 - "$work_dir/test-ui-shards.sh" "$work_dir/results" <<'PY'
 from pathlib import Path
 import sys
@@ -267,6 +293,31 @@ for invalid_timeout in nan inf -inf; do
     fi
 done
 
+python3 - "$script_dir/run-with-timeout.py" <<'PY'
+import importlib.util
+import signal
+import sys
+
+module_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("run_with_timeout", module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class FakeProcess:
+    pid = 43210
+    args = ["synthetic-command"]
+
+    def wait(self, timeout=None):
+        raise KeyboardInterrupt
+
+module.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
+module.os.killpg = lambda pid, sig: (_ for _ in ()).throw(PermissionError("denied"))
+module.sys.argv = [module_path, "1", "synthetic-command"]
+status = module.main()
+if status != module.TERMINATION_FAILURE_EXIT_STATUS:
+    raise SystemExit(f"cleanup signaling failure returned {status}, expected 125")
+PY
+
 cat >"$work_dir/signal-child.py" <<'PY'
 import os
 from pathlib import Path
@@ -328,18 +379,21 @@ for forwarded_signal in HUP INT TERM; do
     fi
 done
 
-for invalid_shards in 5-3 0-1 1-11 11 invalid-range; do
-    invalid_marker="$work_dir/invalid-$invalid_shards-xcodebuild-invoked"
+invalid_shard_index=0
+for invalid_shards in "" 5-3 0-1 1-11 11 invalid-range 18446744073709551617 \
+    18446744073709551617-18446744073709551617; do
+    invalid_shard_index=$((invalid_shard_index + 1))
+    invalid_marker="$work_dir/invalid-$invalid_shard_index-xcodebuild-invoked"
     if FAKE_STATUS_PATH="$invalid_marker" PATH="$work_dir/bin:$PATH" \
        bash "$work_dir/test-ui-shards.sh" "$invalid_shards" \
-       >"$work_dir/invalid-$invalid_shards.out" 2>&1; then
+       >"$work_dir/invalid-$invalid_shard_index.out" 2>&1; then
         echo "error: UI shard runner accepted invalid selection: $invalid_shards" >&2
         exit 1
     fi
     if [[ -e "$invalid_marker" ]] || \
-       ! grep -Eq 'shard (range|number) must (be|contain)' "$work_dir/invalid-$invalid_shards.out"; then
+       ! grep -Eq 'shard (selection|range|number)' "$work_dir/invalid-$invalid_shard_index.out"; then
         echo "error: invalid shard selection did not fail before xcodebuild: $invalid_shards" >&2
-        cat "$work_dir/invalid-$invalid_shards.out" >&2
+        cat "$work_dir/invalid-$invalid_shard_index.out" >&2
         exit 1
     fi
 done
@@ -426,6 +480,21 @@ cat >"$work_dir/make-overrides.mk" <<'EOF'
 bundle:
 	@:
 EOF
+for target in test-ui-shard test-ui-range; do
+    missing_marker="$work_dir/$target-missing-xcodebuild-invoked"
+    if FAKE_STATUS_PATH="$missing_marker" PATH="$work_dir/bin:$PATH" \
+       make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" "$target" \
+       >"$work_dir/$target-missing.out" 2>&1; then
+        echo "error: $target accepted a missing shard selection" >&2
+        exit 1
+    fi
+    if [[ -e "$missing_marker" ]] || \
+       ! grep -q 'shard selection must not be empty' "$work_dir/$target-missing.out"; then
+        echo "error: $target did not reject its missing selection before xcodebuild" >&2
+        cat "$work_dir/$target-missing.out" >&2
+        exit 1
+    fi
+done
 for target in test-ui-fast test-ui-notifications; do
     if FAKE_SUCCESS_NO_TESTS=1 PATH="$work_dir/bin:$PATH" \
        make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
