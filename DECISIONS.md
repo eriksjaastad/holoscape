@@ -248,9 +248,10 @@ deterministic state; real display-link/window animation behavior belongs in
 app-hosted smoke tests because macOS 26 headless AppKit teardown is unstable.
 
 Split panes use the existing bounded flat layout model with at most four panes.
-Layout persistence and restore are not wired in production yet. When implemented,
-they must restore truthfully; documentation must not claim recursive layouts or
-orientation persistence that the runtime does not implement.
+The pane-to-channel assignments and active pane persist with the channel graph
+and restore only for channels that successfully return. Stale or duplicate pane
+entries are ignored. The runtime does not claim recursive layouts or orientation
+persistence because those semantics are absent from the model.
 
 External authoring contracts remain in `docs/amplify-format.md` and
 `docs/chrome-format.md`. MercuryDeck art direction remains under

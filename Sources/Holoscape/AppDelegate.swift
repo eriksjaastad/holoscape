@@ -843,6 +843,7 @@ extension AppDelegate: LaunchRecoveryHost {
 
     func launchRecoveryEnsureInitialChannel() {
         ensureInitialChannelIfNeeded()
+        windowController?.restoreSplitLayout()
     }
 
     func launchRecoveryDidComplete() {
@@ -870,7 +871,10 @@ extension AppDelegate: TerminationCoordinatorHost {
     }
 
     func terminationSaveChannelState() -> Bool {
-        (windowController?.channelManager ?? channelManagerRef)?.saveState() ?? false
+        if let windowController {
+            return windowController.saveChannelState()
+        }
+        return channelManagerRef?.saveState() ?? false
     }
 
     func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {

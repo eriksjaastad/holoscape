@@ -12,6 +12,7 @@ final class ChannelPersistenceTransactions {
         let channels: [UUID: any ChannelController]
         let channelLabels: [UUID: String]
         let pinnedTimestamps: [UUID: Date]
+        let splitLayout: SplitLayoutConfig?
     }
 
     private let configService: ConfigService
@@ -110,6 +111,9 @@ final class ChannelPersistenceTransactions {
             config.channels.insert(metadata, at: min(index, config.channels.count))
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
+        if let splitLayout = snapshot.splitLayout {
+            config.splitLayout = splitLayout
+        }
 
         guard configService.save(config) else { return (false, []) }
         closePersistenceFailure = nil

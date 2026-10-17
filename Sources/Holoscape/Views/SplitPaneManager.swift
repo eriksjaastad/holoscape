@@ -47,15 +47,7 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
             pane.showContent(view, compiledShader: compiledShader)
             pane.isActivePane = true
             activePaneId = pane.paneId
-
-            pane.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(pane)
-            NSLayoutConstraint.activate([
-                pane.topAnchor.constraint(equalTo: topAnchor),
-                pane.bottomAnchor.constraint(equalTo: bottomAnchor),
-                pane.leadingAnchor.constraint(equalTo: leadingAnchor),
-                pane.trailingAnchor.constraint(equalTo: trailingAnchor),
-            ])
+            installPaneHierarchy()
         } else if let existingPane = panes.first(where: { $0.channelId == channelId }) {
             // Channel already displayed — activate its pane, update compositor
             setActivePane(existingPane.paneId)
@@ -186,12 +178,84 @@ class SplitPaneManager: NSView, SplitPaneViewDelegate {
         return SplitLayoutConfig(panes: paneConfigs, activePaneId: activePaneId)
     }
 
-    private func createPane() -> SplitPaneView {
-        let pane = SplitPaneView(paneId: UUID())
+    /// Restore the persisted panes whose channels are still available.
+    ///
+    /// Persisted channel metadata and live controller registration are the
+    /// authority: stale or duplicate pane entries are ignored rather than
+    /// creating blank panes or moving one channel view between two panes.
+    @discardableResult
+    func restoreLayout(
+        _ layout: SplitLayoutConfig,
+        compiledShader: CompiledShader? = nil,
+        contentForChannel: (UUID) -> NSView?
+    ) -> Bool {
+        var restored: [(config: PaneConfig, content: NSView)] = []
+        var paneIDs: Set<UUID> = []
+        var channelIDs: Set<UUID> = []
+
+        for config in layout.panes where restored.count < 4 {
+            guard let content = contentForChannel(config.channelId),
+                  !paneIDs.contains(config.paneId),
+                  !channelIDs.contains(config.channelId) else { continue }
+            paneIDs.insert(config.paneId)
+            channelIDs.insert(config.channelId)
+            restored.append((config, content))
+        }
+        guard !restored.isEmpty else { return false }
+
+        clearContent()
+        for entry in restored {
+            let pane = createPane(id: entry.config.paneId)
+            pane.channelId = entry.config.channelId
+            pane.showContent(entry.content, compiledShader: compiledShader)
+        }
+        installPaneHierarchy()
+
+        let restoredPaneIDs = Set(restored.map { $0.config.paneId })
+        setActivePane(
+            layout.activePaneId.flatMap { restoredPaneIDs.contains($0) ? $0 : nil }
+                ?? restored[0].config.paneId
+        )
+        return true
+    }
+
+    private func createPane(id: UUID = UUID()) -> SplitPaneView {
+        let pane = SplitPaneView(paneId: id)
         pane.paneDelegate = self
         pane.skinContext = skinContext
         panes.append(pane)
         return pane
+    }
+
+    private func installPaneHierarchy() {
+        guard let first = panes.first else { return }
+        if panes.count == 1 {
+            first.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(first)
+            NSLayoutConstraint.activate([
+                first.topAnchor.constraint(equalTo: topAnchor),
+                first.bottomAnchor.constraint(equalTo: bottomAnchor),
+                first.leadingAnchor.constraint(equalTo: leadingAnchor),
+                first.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+            return
+        }
+
+        let splitView = NSSplitView()
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.translatesAutoresizingMaskIntoConstraints = false
+        for pane in panes {
+            splitView.addArrangedSubview(pane)
+        }
+        addSubview(splitView)
+        NSLayoutConstraint.activate([
+            splitView.topAnchor.constraint(equalTo: topAnchor),
+            splitView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            splitView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        rootSplitView = splitView
     }
 
     // MARK: - SplitPaneViewDelegate

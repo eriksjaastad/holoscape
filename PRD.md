@@ -455,7 +455,7 @@ When Holoscape is not the frontmost app and a channel receives eligible content 
 }
 ```
 
-### Window Splitting (Side-by-Side Channels) — shipped flat model; persistence remaining
+### Window Splitting (Side-by-Side Channels) — shipped flat model
 
 View two channels simultaneously in a split terminal area.
 
@@ -467,14 +467,8 @@ View two channels simultaneously in a split terminal area.
 - Click a pane to make it active — input goes to the active pane's channel
 - **Cmd+Shift+W** closes the current split pane (returns to single view)
 - Maximum 4 panes (2x2 grid)
-- Split state does not yet persist across restarts
-
-**Implementation:**
-- The shipped model is a bounded flat layout of at most four panes; it is not a
-  recursive split tree.
-- Each split pane wraps a channel's content view.
-- The active pane ID is tracked separately from the sidebar selection.
-- Layout export types exist, but production save/restore is not wired yet.
+- Pane assignments and the active pane persist across restarts; panes whose
+  channels cannot be restored are omitted safely
 
 ### Bridge Channel (Broadcast to All Agents) — shipped
 
@@ -611,7 +605,7 @@ Remaining: decide which parts become a public skin authoring contract (Open Ques
 | ~~SwiftTerm + group chat~~ | — | — | **RESOLVED (V2):** Group chat uses custom NSTextView, not SwiftTerm. Works cleanly. |
 | ~~SSH PTY latency~~ | — | — | **RESOLVED (V1.5):** SSH via system `ssh` binary + SwiftTerm PTY works well. |
 | UNUserNotificationCenter permission denied | Low | Medium | Request permission lazily on first eligible background notification. Gracefully degrade if denied — no notifications, no crash. |
-| Split-layout persistence is not implemented | Medium | Medium | Persist and restore the shipped bounded flat model (maximum four panes), including channel assignment and active-pane truth, without inventing recursive or orientation semantics absent from the model. |
+| Persisted split layout references a channel that cannot be restored | Low | Low | Ignore stale or duplicate pane entries, restore the remaining bounded flat layout, and fall back to the first valid pane without inventing recursive or orientation semantics absent from the model. |
 | Bridge channel message delivery order | Low | Medium | Send to all agents in tab order. No guarantee of simultaneous delivery — document this. |
 | Skin engine scope creep | High | High | Treat the existing shaped-window/Metal/MercuryDeck substrate as implementation evidence, but separately decide the public skin authoring contract before widening scope. |
 | Cmd+F search performance on large scrollback | Low | Medium | Limit search to last 10,000 lines. SwiftTerm buffer search may need custom implementation. |
