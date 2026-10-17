@@ -47,6 +47,16 @@ final class BugReportService: Sendable {
     private let dataReader: @Sendable (URL) throws -> Data
     private let fileRemover: @Sendable (URL) throws -> Void
 
+    static func defaultPendingDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        ConfigService.defaultConfigDirectory(
+            environment: environment,
+            homeDirectory: homeDirectory
+        ).appendingPathComponent("pending-reports")
+    }
+
     init(
         endpoint: URL = URL(string: "https://api.synthinsightlabs.com/reports")!,
         session: URLSession = .shared,
@@ -62,9 +72,7 @@ final class BugReportService: Sendable {
     ) {
         self.silAPIEndpoint = endpoint
         self.session = session
-        self.pendingDir = pendingDirectory
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".holoscape/pending-reports")
+        self.pendingDir = pendingDirectory ?? Self.defaultPendingDirectory()
         self.directoryContents = directoryContents
         self.creationDate = creationDate
         self.dataReader = dataReader
