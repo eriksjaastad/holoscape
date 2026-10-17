@@ -9,7 +9,7 @@ if [[ -z "$output_file" || ! -r "$output_file" ]]; then
 fi
 
 set +e
-test_case_count=$(grep -Ec '^Test Case .* (passed|failed)' "$output_file")
+test_case_count=$(grep -Ec '^Test Case .* (passed|failed|skipped)' "$output_file")
 grep_status=$?
 set -e
 

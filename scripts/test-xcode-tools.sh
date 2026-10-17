@@ -5,6 +5,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 validator="$script_dir/validate-xcode-project.sh"
 project="$repo_root/Holoscape.xcodeproj/project.pbxproj"
+scheme="$repo_root/Holoscape.xcodeproj/xcshareddata/xcschemes/Holoscape.xcscheme"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/holoscape-xcode-tools-test.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -104,6 +105,26 @@ for mutation in missing stale moved target-config target-product target-membersh
         exit 1
     fi
 done
+mutated_scheme="$work_dir/missing-property-tests.xcscheme"
+python3 - "$scheme" "$mutated_scheme" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+needle = '               BlueprintName = "HoloscapePropertyTests"\n'
+if source.count(needle) != 1:
+    raise SystemExit("expected one HoloscapePropertyTests scheme entry")
+Path(sys.argv[2]).write_text(source.replace(needle, '', 1))
+PY
+if "$validator" "$project" "$mutated_scheme" >"$work_dir/missing-property-tests.out" 2>&1; then
+    echo "error: Xcode validator accepted a scheme without property tests" >&2
+    exit 1
+fi
+if ! grep -q 'must include HoloscapePropertyTests exactly once' "$work_dir/missing-property-tests.out"; then
+    echo "error: missing property-test scheme entry lacked a diagnostic" >&2
+    cat "$work_dir/missing-property-tests.out" >&2
+    exit 1
+fi
 if ! grep -q '^+Tests/HoloscapeTests/Unit/Legacy/AgentStatusNotificationRoutingTests.swift$' "$work_dir/moved.out"; then
     echo "error: moved-source regression did not compare the resolved stale path" >&2
     cat "$work_dir/moved.out" >&2
@@ -152,6 +173,11 @@ if [[ -n "${FAKE_SUCCESS_NO_TESTS:-}" ]]; then
 fi
 if [[ -n "${FAKE_SUCCESS_ONE_TEST:-}" ]]; then
     echo "Test Case '-[SyntheticUITests testExample]' passed (0.001 seconds)."
+    echo "** TEST SUCCEEDED **"
+    exit 0
+fi
+if [[ -n "${FAKE_SUCCESS_SKIPPED_TEST:-}" ]]; then
+    echo "Test Case '-[SyntheticUITests testExample]' skipped (0.001 seconds)."
     echo "** TEST SUCCEEDED **"
     exit 0
 fi
@@ -455,6 +481,22 @@ if [[ "$shard_signal_status" -ne 130 ]] || \
     exit 1
 fi
 
+/bin/rm -rf "$status_path"
+signal_recording_invocations="$work_dir/shard-signal-recording-invocations"
+set +e
+FAKE_EXIT_STATUS=130 FAKE_STATUS_PATH="$status_path" \
+    FAKE_INVOCATION_LOG="$signal_recording_invocations" PATH="$work_dir/bin:$PATH" \
+    bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal-recording.out" 2>&1
+shard_signal_recording_status=$?
+set -e
+if [[ "$shard_signal_recording_status" -ne 130 ]] || \
+   [[ $(wc -l <"$signal_recording_invocations") -ne 1 ]] || \
+   ! grep -q 'cannot record failed shard status' "$work_dir/shard-signal-recording.out"; then
+    echo "error: UI shard bookkeeping failure masked cancellation or continued the range" >&2
+    cat "$work_dir/shard-signal-recording.out" >&2
+    exit 1
+fi
+
 cat >"$work_dir/group-leader.py" <<'PY'
 from pathlib import Path
 import subprocess
@@ -491,6 +533,57 @@ if [[ "$group_timeout_status" -ne 124 ]] || kill -0 "$descendant_pid" 2>/dev/nul
     exit 1
 fi
 
+cat >"$work_dir/signaled-group-leader.py" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+leader_pid = Path(sys.argv[1])
+descendant_pid = Path(sys.argv[2])
+subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "time.sleep(30)",
+        str(descendant_pid),
+    ]
+)
+leader_pid.write_text(str(os.getpid()))
+while not descendant_pid.exists():
+    time.sleep(0.01)
+time.sleep(30)
+PY
+leader_pid_path="$work_dir/signaled-group-leader.pid"
+signaled_descendant_pid_path="$work_dir/signaled-group-descendant.pid"
+"$script_dir/run-with-timeout.py" 30 python3 "$work_dir/signaled-group-leader.py" \
+    "$leader_pid_path" "$signaled_descendant_pid_path" &
+signaled_wrapper_pid=$!
+ready_attempts=0
+while [[ (! -f "$leader_pid_path" || ! -f "$signaled_descendant_pid_path") && "$ready_attempts" -lt 100 ]]; do
+    sleep 0.02
+    ready_attempts=$((ready_attempts + 1))
+done
+if [[ ! -f "$leader_pid_path" || ! -f "$signaled_descendant_pid_path" ]]; then
+    echo "error: signaled process-group fixture did not become ready" >&2
+    kill -KILL "$signaled_wrapper_pid" 2>/dev/null || true
+    wait "$signaled_wrapper_pid" 2>/dev/null || true
+    exit 1
+fi
+kill -TERM "$(<"$leader_pid_path")"
+set +e
+wait "$signaled_wrapper_pid"
+signaled_wrapper_status=$?
+set -e
+signaled_descendant_pid=$(<"$signaled_descendant_pid_path")
+if [[ "$signaled_wrapper_status" -ne 143 ]] || kill -0 "$signaled_descendant_pid" 2>/dev/null; then
+    echo "error: timeout runner did not normalize a signaled leader and reap its descendants" >&2
+    exit 1
+fi
+
 /bin/rm -rf "$bundle_path" "$status_path"
 if FAKE_SLEEP_SECONDS=2 HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then
@@ -522,6 +615,11 @@ Test Case '-[SyntheticUITests testExample]' passed (0.001 seconds).
 Test Suite 'SyntheticUITests' passed at 2026-10-16 00:00:00.000.
 EOF
 "$script_dir/validate-xcode-test-output.sh" "$work_dir/one-test.txt"
+cat >"$work_dir/skipped-test.txt" <<'EOF'
+Test Case '-[SyntheticUITests testExample]' skipped (0.001 seconds).
+Test Suite 'SyntheticUITests' passed at 2026-10-16 00:00:00.000.
+EOF
+"$script_dir/validate-xcode-test-output.sh" "$work_dir/skipped-test.txt"
 printf '** TEST SUCCEEDED **\n' >"$work_dir/no-tests.txt"
 if "$script_dir/validate-xcode-test-output.sh" "$work_dir/no-tests.txt" >"$work_dir/no-tests-validator.out" 2>&1; then
     echo "error: Xcode test-output validator accepted output with no test cases" >&2
@@ -584,6 +682,13 @@ if ! FAKE_SUCCESS_ONE_TEST=1 PATH="$work_dir/bin:$PATH" \
    UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-one.out" 2>&1; then
     echo "error: test-ui-fast rejected a successful xcodebuild that executed a test" >&2
     cat "$work_dir/test-ui-fast-one.out" >&2
+    exit 1
+fi
+if ! FAKE_SUCCESS_SKIPPED_TEST=1 PATH="$work_dir/bin:$PATH" \
+   make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
+   UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-skipped.out" 2>&1; then
+    echo "error: test-ui-fast rejected a successful skipped-only XCTest run" >&2
+    cat "$work_dir/test-ui-fast-skipped.out" >&2
     exit 1
 fi
 

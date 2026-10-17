@@ -11,7 +11,10 @@ if [[ "$project_file" != /* ]]; then
     project_file="$repo_root/$project_file"
 fi
 package_file="$repo_root/Package.swift"
-scheme_file="$repo_root/Holoscape.xcodeproj/xcshareddata/xcschemes/Holoscape.xcscheme"
+scheme_file="${2:-$repo_root/Holoscape.xcodeproj/xcshareddata/xcschemes/Holoscape.xcscheme}"
+if [[ "$scheme_file" != /* ]]; then
+    scheme_file="$repo_root/$scheme_file"
+fi
 
 if [[ ! -f "$project_file" ]]; then
     echo "error: Xcode project not found: $project_file" >&2
@@ -298,6 +301,10 @@ plutil -lint "$project_file" >/dev/null
 xmllint --noout "$scheme_file"
 if [[ $(grep -c 'BlueprintName = "HoloscapeTests"' "$scheme_file") -ne 1 ]]; then
     echo "error: the shared Holoscape scheme must include HoloscapeTests exactly once" >&2
+    exit 1
+fi
+if [[ $(grep -c 'BlueprintName = "HoloscapePropertyTests"' "$scheme_file") -ne 1 ]]; then
+    echo "error: the shared Holoscape scheme must include HoloscapePropertyTests exactly once" >&2
     exit 1
 fi
 

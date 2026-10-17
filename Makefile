@@ -17,7 +17,7 @@ help:
 	@echo "  make test-ui-range RANGE=3-5  Run a UI shard range"
 	@echo "  make test-ui-resume   Resume at the last failed shard"
 	@echo "  make xcode            Open the checked-in Xcode project"
-	@echo "  make validate-tools   Check shell syntax and bundled skin archives"
+	@echo "  make validate-tools   Check scripts, skin archives, and Xcode tooling"
 	@echo "  make bundle           Build debug .app bundle"
 	@echo "  make run              Build and open debug .app bundle"
 	@echo "  make setup            Install Claude Code MCP/hooks integration"

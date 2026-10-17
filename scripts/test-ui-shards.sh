@@ -1,6 +1,6 @@
 #!/bin/bash
 # UI Test Shard Runner for Holoscape
-# Splits 378 tests across 10 shards (~38 tests each, ~8 min per shard)
+# Splits the UI test classes across 10 balanced shards.
 # Usage:
 #   ./scripts/test-ui-shards.sh              # Run all shards sequentially
 #   ./scripts/test-ui-shards.sh 3            # Run shard 3 only
@@ -67,17 +67,17 @@ record_failed_shard() {
     return "$recording_failed"
 }
 
-# Balanced shards — ~38 tests each, heavy classes spread across shards
-SHARD_1="IntegrityUITests"                                                    # 41
-SHARD_2="KeyboardShortcutsUITests WindowManagementUITests"                    # 34
-SHARD_3="StressUITests ThemeSwitchingUITests"                                 # 31
-SHARD_4="GroupChatChannelUITests SettingsUITests SessionLauncherUITests"        # 41
-SHARD_5="FontSettingsUITests EditMenuUITests ContextMenuUITests"              # 39
-SHARD_6="BugReportUITests HTTPAPIUITests TransparencyColorWellUITests"        # 33
-SHARD_7="HoloscapeUITests TabBarUITests SplitPaneAdvancedUITests InputBoxUITests" # 37
-SHARD_8="ChannelOrderingUITests AgentChannelUITests SplitPaneUITests CloseConfirmationUITests" # 32
-SHARD_9="BridgeChannelUITests TerminalInputUITests TabBehaviorUITests SidebarUITests ShaderVisualTests" # 32
-SHARD_10="URLSchemeUITests TerminalDisplayUITests SSHChannelUITests NotificationSystemUITests TimestampToggleUITests SkinEngineUITests ConfigPersistenceUITests ChannelStateIndicatorUITests ChannelRestorationUITests NotificationUITests DirectoryPersistenceUITests" # 44
+# Balanced shards with heavy classes spread across shards.
+SHARD_1="IntegrityUITests"
+SHARD_2="KeyboardShortcutsUITests WindowManagementUITests"
+SHARD_3="StressUITests ThemeSwitchingUITests"
+SHARD_4="GroupChatChannelUITests SettingsUITests SessionLauncherUITests"
+SHARD_5="FontSettingsUITests EditMenuUITests ContextMenuUITests"
+SHARD_6="BugReportUITests HTTPAPIUITests TransparencyColorWellUITests"
+SHARD_7="HoloscapeUITests TabBarUITests SplitPaneAdvancedUITests InputBoxUITests"
+SHARD_8="ChannelOrderingUITests AgentChannelUITests SplitPaneUITests CloseConfirmationUITests"
+SHARD_9="BridgeChannelUITests TerminalInputUITests TabBehaviorUITests SidebarUITests ShaderVisualTests"
+SHARD_10="URLSchemeUITests TerminalDisplayUITests SSHChannelUITests NotificationSystemUITests TimestampToggleUITests SkinEngineUITests ConfigPersistenceUITests ChannelStateIndicatorUITests ChannelRestorationUITests NotificationUITests DirectoryPersistenceUITests"
 
 get_shard() {
     local n=$1
@@ -139,14 +139,17 @@ run_shard() {
         -skipPackagePluginValidation \
         -resultBundlePath "$bundle" \
         $args \
-        2>&1 | tee "$outfile" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
+        2>&1 | tee "$outfile" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
     local pipeline_status=("${PIPESTATUS[@]}")
     set -e
 
-    local passed
-    local failed
-    passed=$(count_matches "^Test Case .* passed" "$outfile") || return 1
-    failed=$(count_matches "^Test Case .* failed" "$outfile") || return 1
+    local passed=0
+    local failed=0
+    local count_status=0
+    passed=$(count_matches "^Test Case .* passed" "$outfile") || count_status=$?
+    if [[ "$count_status" -eq 0 ]]; then
+        failed=$(count_matches "^Test Case .* failed" "$outfile") || count_status=$?
+    fi
     SHARD_RUN_PASSED[$n]="$passed"
     SHARD_RUN_FAILED[$n]="$failed"
     local output_status=0
@@ -157,10 +160,20 @@ run_shard() {
     echo "  Results: $outfile"
     echo "  Bundle:  $bundle"
 
-    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
-        record_failed_shard "$n" "$status_file" || return 1
+    if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$count_status" -ne 0 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
+        local recording_status=0
+        record_failed_shard "$n" "$status_file" || recording_status=$?
+        if is_terminal_status "${pipeline_status[0]}"; then
+            return "${pipeline_status[0]}"
+        fi
+        if [ "$count_status" -ne 0 ]; then
+            return "$count_status"
+        fi
         if [ "${pipeline_status[0]}" -ne 0 ]; then
             return "${pipeline_status[0]}"
+        fi
+        if [ "$recording_status" -ne 0 ]; then
+            return 1
         fi
         return 1
     fi
@@ -312,7 +325,7 @@ case "$selection" in
             -skipPackagePluginValidation \
             -resultBundlePath "$failing_bundle" \
             $args \
-            2>&1 | tee "$failing_output" | grep -E "Test Case.*passed|Test Case.*failed|Executed|TEST|error: command timed out"
+            2>&1 | tee "$failing_output" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
         failing_pipeline_status=("${PIPESTATUS[@]}")
         set -e
         failing_output_status=0

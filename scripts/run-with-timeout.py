@@ -121,7 +121,13 @@ def main() -> int:
     signal.signal(signal.SIGTERM, forward_termination)
 
     try:
-        return process.wait(timeout=timeout_seconds)
+        status = process.wait(timeout=timeout_seconds)
+        if status >= 0:
+            return status
+        terminating_signal = signal.Signals(-status)
+        if stop_and_reap_process_group(process, terminating_signal):
+            return 128 + terminating_signal.value
+        return TERMINATION_FAILURE_EXIT_STATUS
     except subprocess.TimeoutExpired:
         print(
             f"error: command timed out after {timeout_seconds:g} seconds: {command[0]}",
