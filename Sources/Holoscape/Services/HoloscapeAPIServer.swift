@@ -3,6 +3,39 @@ import Foundation
 import Network
 import UserNotifications
 
+protocol HTTPServerConnection: AnyObject, Sendable {
+    func start(queue: DispatchQueue)
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void)
+    func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void)
+    func cancel()
+}
+
+private final class NetworkHTTPServerConnection: HTTPServerConnection {
+    private let connection: NWConnection
+
+    init(_ connection: NWConnection) {
+        self.connection = connection
+    }
+
+    func start(queue: DispatchQueue) {
+        connection.start(queue: queue)
+    }
+
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+            completion(data, isComplete, error)
+        }
+    }
+
+    func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void) {
+        connection.send(content: content, completion: .contentProcessed(completion))
+    }
+
+    func cancel() {
+        connection.cancel()
+    }
+}
+
 @MainActor
 protocol DockAttentionClient: AnyObject {
     var badgeLabel: String? { get set }
@@ -23,6 +56,15 @@ final class SystemDockAttentionClient: DockAttentionClient {
 
 @MainActor
 class HoloscapeAPIServer {
+    /// Total request-line, header, and body bytes accepted from one local client.
+    nonisolated static let maximumRequestBytes = 1_048_576
+
+    enum RequestReceiveDecision {
+        case receiveMore(Data)
+        case route(HTTPRequest)
+        case respond(HTTPResponse)
+    }
+
     private var listener: NWListener?
     private var acceptsRequests = false
     private weak var channelManager: ChannelManager?
@@ -35,17 +77,27 @@ class HoloscapeAPIServer {
     private(set) var mutedNotificationChannelIds: Set<UUID> = []
     private let agentStatusAdapter = AgentStatusAdapter()
     private let dockAttentionClient: DockAttentionClient
+    private let receiveErrorReporter: @Sendable (NWError) -> Void
+    private let responseSendErrorReporter: @Sendable (NWError) -> Void
 
     init(
         channelManager: ChannelManager,
         windowController: MainWindowController,
         port: UInt16 = 7865,
-        dockAttentionClient: DockAttentionClient = SystemDockAttentionClient()
+        dockAttentionClient: DockAttentionClient = SystemDockAttentionClient(),
+        receiveErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
+            NSLog("HoloscapeAPI: Failed to receive request: \(error)")
+        },
+        responseSendErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
+            NSLog("HoloscapeAPI: Failed to send response: \(error)")
+        }
     ) {
         self.channelManager = channelManager
         self.windowController = windowController
         self.port = port
         self.dockAttentionClient = dockAttentionClient
+        self.receiveErrorReporter = receiveErrorReporter
+        self.responseSendErrorReporter = responseSendErrorReporter
     }
 
     /// Suppress notifications for a grace period after launch (tabs start idle)
@@ -76,7 +128,7 @@ class HoloscapeAPIServer {
         acceptsRequests = true
 
         listener?.newConnectionHandler = { [weak self] connection in
-            self?.handleConnection(connection)
+            self?.handleConnection(NetworkHTTPServerConnection(connection))
         }
 
         listener?.stateUpdateHandler = { state in
@@ -101,37 +153,88 @@ class HoloscapeAPIServer {
         listener = nil
     }
 
-    private nonisolated func handleConnection(_ connection: NWConnection) {
+    nonisolated func handleConnection(_ connection: HTTPServerConnection) {
         connection.start(queue: .global(qos: .userInitiated))
         receiveFullRequest(connection: connection, accumulated: Data())
     }
 
-    /// Accumulate data until we have a complete HTTP request (headers + body).
-    private nonisolated func receiveFullRequest(connection: NWConnection, accumulated: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, _ in
-            var buffer = accumulated
-            if let data { buffer.append(data) }
+    nonisolated static func requestReceiveDecision(
+        accumulated: Data,
+        incoming: Data,
+        isComplete: Bool,
+        maximumBytes: Int = maximumRequestBytes
+    ) -> RequestReceiveDecision {
+        guard maximumBytes >= 0,
+              accumulated.count <= maximumBytes,
+              incoming.count <= maximumBytes - accumulated.count else {
+            return .respond(.error("Payload too large", status: 413))
+        }
+        var buffer = accumulated
+        buffer.append(incoming)
 
-            // HTTPParser.parse returns nil unless the full request (headers
-            // end marker + Content-Length worth of body bytes) has arrived,
-            // so the outer Content-Length recursion check is no longer needed.
-            if let request = HTTPParser.parse(buffer) {
+        switch HTTPParser.parse(buffer, maximumRequestBytes: maximumBytes) {
+        case .request(let request):
+            return .route(request)
+        case .payloadTooLarge:
+            return .respond(.error("Payload too large", status: 413))
+        case .badRequest:
+            return .respond(.error("Bad request"))
+        case .incomplete where isComplete:
+            return .respond(.error("Bad request"))
+        case .incomplete:
+            return .receiveMore(buffer)
+        }
+    }
+
+    /// Accumulate data until we have a complete HTTP request (headers + body).
+    private nonisolated func receiveFullRequest(connection: HTTPServerConnection, accumulated: Data) {
+        let receiveErrorReporter = receiveErrorReporter
+        let responseSendErrorReporter = responseSendErrorReporter
+        connection.receive { [weak self] data, isComplete, error in
+            if let error {
+                receiveErrorReporter(error)
+            }
+            switch Self.requestReceiveDecision(
+                accumulated: accumulated,
+                incoming: data ?? Data(),
+                isComplete: isComplete
+            ) {
+            case .route(let request):
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
-                    connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
-                        connection.cancel()
-                    }))
+                    Self.sendAndClose(
+                        response,
+                        connection: connection,
+                        reportError: responseSendErrorReporter
+                    )
                 }
-            } else if isComplete {
-                let resp = HTTPResponse.error("Bad request")
-                connection.send(content: resp.serialize(), completion: .contentProcessed({ _ in
+            case .respond(let response):
+                Self.sendAndClose(
+                    response,
+                    connection: connection,
+                    reportError: responseSendErrorReporter
+                )
+            case .receiveMore(let buffer):
+                if error != nil {
                     connection.cancel()
-                }))
-            } else {
-                // Incomplete (need more bytes), keep reading from the socket.
-                self?.receiveFullRequest(connection: connection, accumulated: buffer)
+                } else {
+                    self?.receiveFullRequest(connection: connection, accumulated: buffer)
+                }
             }
+        }
+    }
+
+    private nonisolated static func sendAndClose(
+        _ response: HTTPResponse,
+        connection: HTTPServerConnection,
+        reportError: @escaping @Sendable (NWError) -> Void
+    ) {
+        connection.send(content: response.serialize()) { error in
+            if let error {
+                reportError(error)
+            }
+            connection.cancel()
         }
     }
 

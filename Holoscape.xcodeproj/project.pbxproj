@@ -405,6 +405,7 @@
 		7BB4AE4C4C19984D2B762DC2 /* CrashReportScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B7E139F5565648E4A7D8FF3 /* CrashReportScannerTests.swift */; };
 		BA2DAD4D4FDEC2B39703E390 /* DisconnectedVsStaleBrokerTruthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6C85F869108791916DA564 /* DisconnectedVsStaleBrokerTruthTests.swift */; };
 		48FFF4930851143909F95B6B /* GitBranchResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0FC5ABCAB9A2372B5DD6262 /* GitBranchResolverTests.swift */; };
+		2A45185FAC5B46A8A0A0C57C /* HTTPParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF8AB1C497B450F90140DD0 /* HTTPParserTests.swift */; };
 		7EB41D6F75462C57DB04ECE8 /* HTTPResponseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1356409F831A21688828FECE /* HTTPResponseTests.swift */; };
 		04D682086B65FB24D48E4F75 /* HoloscapeAPIServerSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82123773F38352101EA6B41A /* HoloscapeAPIServerSecurityTests.swift */; };
 		DF2D84C637C2FAA0B97298C1 /* LastInteractionStaleTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90BF6CBF72FB86771B60CDE2 /* LastInteractionStaleTabTests.swift */; };
@@ -916,6 +917,7 @@
 		2B7E139F5565648E4A7D8FF3 /* CrashReportScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashReportScannerTests.swift; sourceTree = "<group>"; };
 		EF6C85F869108791916DA564 /* DisconnectedVsStaleBrokerTruthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisconnectedVsStaleBrokerTruthTests.swift; sourceTree = "<group>"; };
 		D0FC5ABCAB9A2372B5DD6262 /* GitBranchResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitBranchResolverTests.swift; sourceTree = "<group>"; };
+		3FF8AB1C497B450F90140DD0 /* HTTPParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPParserTests.swift; sourceTree = "<group>"; };
 		1356409F831A21688828FECE /* HTTPResponseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPResponseTests.swift; sourceTree = "<group>"; };
 		82123773F38352101EA6B41A /* HoloscapeAPIServerSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoloscapeAPIServerSecurityTests.swift; sourceTree = "<group>"; };
 		90BF6CBF72FB86771B60CDE2 /* LastInteractionStaleTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastInteractionStaleTabTests.swift; sourceTree = "<group>"; };
@@ -1151,6 +1153,7 @@
 				2B7E139F5565648E4A7D8FF3 /* CrashReportScannerTests.swift */,
 				EF6C85F869108791916DA564 /* DisconnectedVsStaleBrokerTruthTests.swift */,
 				D0FC5ABCAB9A2372B5DD6262 /* GitBranchResolverTests.swift */,
+				3FF8AB1C497B450F90140DD0 /* HTTPParserTests.swift */,
 				1356409F831A21688828FECE /* HTTPResponseTests.swift */,
 				82123773F38352101EA6B41A /* HoloscapeAPIServerSecurityTests.swift */,
 				90BF6CBF72FB86771B60CDE2 /* LastInteractionStaleTabTests.swift */,
@@ -1958,6 +1961,7 @@
 				7BB4AE4C4C19984D2B762DC2 /* CrashReportScannerTests.swift in Sources */,
 				BA2DAD4D4FDEC2B39703E390 /* DisconnectedVsStaleBrokerTruthTests.swift in Sources */,
 				48FFF4930851143909F95B6B /* GitBranchResolverTests.swift in Sources */,
+				2A45185FAC5B46A8A0A0C57C /* HTTPParserTests.swift in Sources */,
 				7EB41D6F75462C57DB04ECE8 /* HTTPResponseTests.swift in Sources */,
 				04D682086B65FB24D48E4F75 /* HoloscapeAPIServerSecurityTests.swift in Sources */,
 				DF2D84C637C2FAA0B97298C1 /* LastInteractionStaleTabTests.swift in Sources */,
