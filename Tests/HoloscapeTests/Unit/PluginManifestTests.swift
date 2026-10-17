@@ -660,6 +660,33 @@ final class PluginManifestTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("sessions").path))
     }
 
+    func testPluginStorageDefaultRootUsesCanonicalConfigDirectory() throws {
+        let realParent = temporaryDirectory(named: "plugin-storage-real-parent")
+        let linkedParent = realParent.deletingLastPathComponent()
+            .appendingPathComponent("plugin-storage-linked-parent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: realParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+        addTeardownBlock { try? FileManager.default.removeItem(at: linkedParent) }
+
+        let profile = linkedParent.appendingPathComponent("missing/profile", isDirectory: true)
+        let fallbackHome = temporaryDirectory(named: "plugin-storage-home")
+
+        XCTAssertEqual(
+            PluginStorageService.defaultRootDirectory(
+                environment: ["HOLOSCAPE_CONFIG_DIR": profile.path],
+                homeDirectory: fallbackHome
+            ),
+            realParent.appendingPathComponent("missing/profile", isDirectory: true)
+        )
+        XCTAssertEqual(
+            PluginStorageService.defaultRootDirectory(
+                environment: ["HOLOSCAPE_CONFIG_DIR": ""],
+                homeDirectory: fallbackHome
+            ),
+            fallbackHome.appendingPathComponent(".holoscape", isDirectory: true)
+        )
+    }
+
     func testPluginStorageServiceRequiresDeclaredPluginStoragePermissionBeforeCreatingDirectory() throws {
         let root = temporaryDirectory(named: "plugin-storage-no-permission")
         let service = PluginStorageService(rootDirectory: root)
