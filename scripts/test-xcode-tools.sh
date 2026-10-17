@@ -66,9 +66,16 @@ elif mode == "target-membership":
     )
     destination.write_text(source)
     raise SystemExit(0)
-elif mode == "source-phase-membership":
+elif mode.startswith("source-phase-membership-"):
+    target = mode.removeprefix("source-phase-membership-")
+    phases = {
+        "app": "DBDABAE51D6625081EA3C33F",
+        "unit": "588AC30E0A325E0EC23904A2",
+        "property": "D667E382F8A6AB7B28F95FC5",
+        "ui": "DF2F634F7655E0873CBF64BB",
+    }
     source = source.replace(
-        "\t\t\t\t588AC30E0A325E0EC23904A2 /* Sources */,\n",
+        f"\t\t\t\t{phases[target]} /* Sources */,\n",
         "",
         1,
     )
@@ -105,7 +112,10 @@ destination.write_text(source[:start] + phase + source[end:])
 PY
 }
 
-for mutation in missing stale moved target-config target-product target-membership source-phase-membership link-edge native-path proxy-target; do
+for mutation in missing stale moved target-config target-product target-membership \
+    source-phase-membership-app source-phase-membership-unit \
+    source-phase-membership-property source-phase-membership-ui \
+    link-edge native-path proxy-target; do
     mutated_project="$work_dir/$mutation.pbxproj"
     mutate_project "$project" "$mutated_project" "$mutation"
     if "$validator" "$mutated_project" >"$work_dir/$mutation.out" 2>&1; then
@@ -612,6 +622,46 @@ if [[ "$make_signal_status" -eq 0 ]] || \
    kill -0 "$fake_xcodebuild_pid" 2>/dev/null; then
     echo "error: test-ui-shard make recipe did not terminate and reap xcodebuild" >&2
     cat "$work_dir/make-signal.out" >&2
+    exit 1
+fi
+
+cat >"$work_dir/bin/grep" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "-c" && -n "${FAKE_COUNT_READY:-}" ]]; then
+    : >"$FAKE_COUNT_READY"
+    sleep 1
+fi
+exec /usr/bin/grep "$@"
+EOF
+chmod +x "$work_dir/bin/grep"
+between_shards_ready="$work_dir/between-shards.ready"
+between_shards_invocations="$work_dir/between-shards.invocations"
+FAKE_SUCCESS_ONE_TEST=1 FAKE_COUNT_READY="$between_shards_ready" \
+    FAKE_INVOCATION_LOG="$between_shards_invocations" \
+    HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/between-shards-results" \
+    PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1-2 \
+    >"$work_dir/between-shards.out" 2>&1 &
+between_shards_pid=$!
+signal_attempts=0
+while [[ ! -f "$between_shards_ready" && "$signal_attempts" -lt 100 ]]; do
+    sleep 0.02
+    signal_attempts=$((signal_attempts + 1))
+done
+if [[ ! -f "$between_shards_ready" ]]; then
+    echo "error: between-shards signal fixture did not reach result counting" >&2
+    kill -KILL "$between_shards_pid" 2>/dev/null || true
+    wait "$between_shards_pid" 2>/dev/null || true
+    exit 1
+fi
+kill -TERM "$between_shards_pid"
+set +e
+wait "$between_shards_pid"
+between_shards_status=$?
+set -e
+if [[ "$between_shards_status" -ne 143 ]] || \
+   [[ $(wc -l <"$between_shards_invocations") -ne 1 ]]; then
+    echo "error: UI shard range launched another shard after cancellation during result counting" >&2
+    cat "$work_dir/between-shards.out" >&2
     exit 1
 fi
 

@@ -102,6 +102,7 @@ validate_source_phase() {
         echo "error: Xcode project is missing the $description source phase" >&2
         exit 1
     fi
+    require_in_block "$phase" 'isa = PBXSourcesBuildPhase;' "the $description PBXSourcesBuildPhase type"
     python3 - "$project_file" "$phase_id" >"$actual" <<'PY'
 from pathlib import PurePosixPath
 import re

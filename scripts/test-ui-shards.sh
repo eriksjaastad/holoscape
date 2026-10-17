@@ -49,6 +49,15 @@ trap 'forward_active_signal HUP 129' HUP
 trap 'forward_active_signal INT 130' INT
 trap 'forward_active_signal TERM 143' TERM
 
+return_if_interrupted() {
+    local status="$INTERRUPTED_STATUS"
+    if [[ "$status" -eq 0 ]]; then
+        return 0
+    fi
+    INTERRUPTED_STATUS=0
+    return "$status"
+}
+
 count_matches() {
     local pattern="$1"
     local file="$2"
@@ -127,15 +136,23 @@ run_selected_tests() {
     local bundle="$3"
     shift 3
 
+    return_if_interrupted || return $?
     if ! rm -rf "$bundle"; then
         echo "error: cannot remove prior result bundle: $bundle" >&2
         return 1
     fi
+    return_if_interrupted || return $?
     local pipeline_fifo="$RESULTS_DIR/.xcodebuild-output.$$.$RANDOM"
     local pipeline_status="$RESULTS_DIR/.xcodebuild-status.$$.$RANDOM"
     if ! mkfifo "$pipeline_fifo"; then
         echo "error: cannot create xcodebuild output pipe: $pipeline_fifo" >&2
         return 1
+    fi
+    local setup_interrupt=0
+    return_if_interrupted || setup_interrupt=$?
+    if [[ "$setup_interrupt" -ne 0 ]]; then
+        rm -f "$pipeline_fifo" || true
+        return "$setup_interrupt"
     fi
     set +e
     (
@@ -236,6 +253,13 @@ run_shard() {
     SHARD_RUN_PASSED[$n]="$passed"
     SHARD_RUN_FAILED[$n]="$failed"
 
+    local pending_interrupt=0
+    return_if_interrupted || pending_interrupt=$?
+    if [[ "$pending_interrupt" -ne 0 ]]; then
+        record_failed_shard "$n" "$status_file" || true
+        return "$pending_interrupt"
+    fi
+
     echo ""
     echo "  Shard $n: $passed passed, $failed failed"
     echo "  Results: $outfile"
@@ -317,6 +341,7 @@ case "$selection" in
             fi
         done
         print_summary
+        return_if_interrupted || exit $?
         exit "$overall_status"
         ;;
     resume)
@@ -356,6 +381,7 @@ case "$selection" in
             done
         fi
         print_summary
+        return_if_interrupted || exit $?
         exit "$overall_status"
         ;;
     failing)
@@ -424,6 +450,7 @@ case "$selection" in
             fi
         done
         print_summary
+        return_if_interrupted || exit $?
         exit "$overall_status"
         ;;
     *)
