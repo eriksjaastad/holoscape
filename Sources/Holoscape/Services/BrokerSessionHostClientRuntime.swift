@@ -65,11 +65,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     }
 
     static func currentExecutableSocketHostRuntime(
-        socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath()
+        socketPath: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> BrokerSessionHostClientRuntime {
         let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
             socketPath: socketPath
+                ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment),
+            environment: environment
         )
         return BrokerSessionHostClientRuntime(
             supportsOutputAvailabilityMonitoring: false,

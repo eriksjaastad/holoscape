@@ -396,9 +396,26 @@ struct BrokerSessionRegistry {
         if let closeError { throw closeError }
     }
 
-    private static func defaultFileURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+    /// Keeps the production registry location unchanged, while explicit
+    /// config profiles receive an isolated registry under their canonical root.
+    static func defaultFileURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        applicationSupportDirectory: URL? = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+    ) -> URL {
+        if let configDirectory = ConfigService.explicitConfigDirectory(
+            environment: environment
+        ) {
+            return configDirectory
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
+        }
+
+        let base = applicationSupportDirectory
+            ?? homeDirectory.appendingPathComponent("Library/Application Support")
         return base
             .appendingPathComponent("Holoscape", isDirectory: true)
             .appendingPathComponent("BrokerSessions", isDirectory: true)

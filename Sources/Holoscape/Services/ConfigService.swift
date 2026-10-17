@@ -32,13 +32,45 @@ class ConfigService {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
-        let directory: URL
-        if let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            directory = URL(fileURLWithPath: override)
-        } else {
-            directory = homeDirectory.appendingPathComponent(".holoscape")
+        explicitConfigDirectory(environment: environment)
+            ?? canonicalDirectoryURL(homeDirectory.appendingPathComponent(".holoscape"))
+    }
+
+    /// Returns the canonical root selected by `HOLOSCAPE_CONFIG_DIR`.
+    ///
+    /// The same root namespaces app config, broker metadata, scrollback, and
+    /// the broker socket. Existing production sessions are not migrated into
+    /// an explicit profile.
+    static func explicitConfigDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        guard let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty else {
+            return nil
         }
-        return directory.standardizedFileURL.resolvingSymlinksInPath()
+        return canonicalDirectoryURL(URL(fileURLWithPath: override))
+    }
+
+    /// Resolves the deepest existing ancestor before restoring missing path
+    /// components. This keeps profile identity stable before and after its
+    /// config directory is first created, including paths below symlinked roots.
+    static func canonicalDirectoryURL(
+        _ directory: URL,
+        fileManager: FileManager = .default
+    ) -> URL {
+        var ancestor = directory.standardizedFileURL
+        var missingComponents: [String] = []
+        while !fileManager.fileExists(atPath: ancestor.path) {
+            let parent = ancestor.deletingLastPathComponent()
+            guard parent.path != ancestor.path else { break }
+            missingComponents.append(ancestor.lastPathComponent)
+            ancestor = parent
+        }
+
+        var canonical = ancestor.resolvingSymlinksInPath()
+        for component in missingComponents.reversed() {
+            canonical.appendPathComponent(component, isDirectory: true)
+        }
+        return canonical.standardizedFileURL
     }
 
     init() {

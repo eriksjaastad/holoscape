@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -134,7 +135,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
 
     init(
         executableURL: URL,
-        socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(),
+        socketPath: String? = nil,
         environment: [String: String]? = nil,
         socketWaitTimeoutMilliseconds: Int = 5_000,
         requestTimeoutMilliseconds: Int = 10_000,
@@ -144,7 +145,9 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     ) {
         self.executableURL = executableURL
-        self.socketPath = socketPath
+        self.socketPath = socketPath ?? Self.defaultSocketPath(
+            environment: environment ?? ProcessInfo.processInfo.environment
+        )
         self.environment = environment
         self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
@@ -402,10 +405,25 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     }
 
-    static func defaultSocketPath(processInfo: ProcessInfo = .processInfo) -> String {
+    /// Keeps the production socket name unchanged. Explicit config profiles
+    /// use a short, deterministic name in the user's private temporary
+    /// directory so profiles cannot attach to one another's broker sessions.
+    static func defaultSocketPath(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
         let uid = getuid()
         let bundleID = Bundle.main.bundleIdentifier ?? "holoscape"
         let safeBundleID = bundleID.replacingOccurrences(of: "/", with: "-")
-        return NSTemporaryDirectory() + "\(safeBundleID)-broker-\(uid).sock"
+        let baseName = "\(safeBundleID)-broker-\(uid)"
+        guard let configDirectory = ConfigService.explicitConfigDirectory(environment: environment) else {
+            return NSTemporaryDirectory() + "\(baseName).sock"
+        }
+
+        let namespace = "\(bundleID)\u{0}\(configDirectory.path)"
+        let digest = SHA256.hash(data: Data(namespace.utf8))
+            .prefix(6)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return NSTemporaryDirectory() + "hs-broker-\(uid)-\(digest).sock"
     }
 }

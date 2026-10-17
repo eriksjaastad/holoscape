@@ -30,6 +30,65 @@ final class BrokerSessionRegistryTests: XCTestCase {
         tempDirectory = nil
     }
 
+    func testDefaultFileURLUsesCanonicalConfigDirectoryOverride() throws {
+        let realParent = tempDirectory.appendingPathComponent("real", isDirectory: true)
+        let linkedParent = tempDirectory.appendingPathComponent("linked", isDirectory: true)
+        let configDirectory = linkedParent.appendingPathComponent("isolated-config")
+        try FileManager.default.createDirectory(at: realParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+
+        let fileURL = BrokerSessionRegistry.defaultFileURL(
+            environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path],
+            homeDirectory: tempDirectory.appendingPathComponent("home"),
+            applicationSupportDirectory: tempDirectory.appendingPathComponent("application-support")
+        )
+
+        XCTAssertEqual(
+            fileURL,
+            realParent
+                .appendingPathComponent("isolated-config", isDirectory: true)
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
+                .standardizedFileURL
+        )
+    }
+
+    func testDefaultFileURLPreservesApplicationSupportLocationWithoutOverride() {
+        let applicationSupportDirectory = tempDirectory.appendingPathComponent("application-support")
+
+        let fileURL = BrokerSessionRegistry.defaultFileURL(
+            environment: [:],
+            homeDirectory: tempDirectory.appendingPathComponent("home"),
+            applicationSupportDirectory: applicationSupportDirectory
+        )
+
+        XCTAssertEqual(
+            fileURL,
+            applicationSupportDirectory
+                .appendingPathComponent("Holoscape", isDirectory: true)
+                .appendingPathComponent("BrokerSessions", isDirectory: true)
+                .appendingPathComponent("sessions.json")
+        )
+    }
+
+    func testScrollbackDirectoryUsesCanonicalConfigDirectoryOverride() throws {
+        let realParent = tempDirectory.appendingPathComponent("real", isDirectory: true)
+        let linkedParent = tempDirectory.appendingPathComponent("linked", isDirectory: true)
+        let configDirectory = linkedParent.appendingPathComponent("profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: realParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+
+        XCTAssertEqual(
+            ScrollbackPersistencePolicy.diskDirectory(
+                environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path]
+            ),
+            realParent
+                .appendingPathComponent("profile", isDirectory: true)
+                .appendingPathComponent("scrollback", isDirectory: true)
+                .standardizedFileURL
+        )
+    }
+
     func testSaveAndLoadRoundTripsBrokerSessionRecords() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         let registry = BrokerSessionRegistry(fileURL: registryURL)
