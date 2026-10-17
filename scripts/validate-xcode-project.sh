@@ -299,13 +299,46 @@ validate_source_phase DF2F634F7655E0873CBF64BB Tests/HoloscapeUITests 'UI-test'
 
 plutil -lint "$project_file" >/dev/null
 xmllint --noout "$scheme_file"
-if [[ $(grep -c 'BlueprintName = "HoloscapeTests"' "$scheme_file") -ne 1 ]]; then
-    echo "error: the shared Holoscape scheme must include HoloscapeTests exactly once" >&2
-    exit 1
-fi
-if [[ $(grep -c 'BlueprintName = "HoloscapePropertyTests"' "$scheme_file") -ne 1 ]]; then
-    echo "error: the shared Holoscape scheme must include HoloscapePropertyTests exactly once" >&2
-    exit 1
-fi
+python3 - "$scheme_file" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+scheme_file = sys.argv[1]
+root = ET.parse(scheme_file).getroot()
+testables = root.find("./TestAction/Testables")
+if testables is None:
+    raise SystemExit("error: the shared Holoscape scheme is missing TestAction/Testables")
+
+expected = {
+    "HoloscapeTests": ("6D1C4365B7B34EC1185722E9", "HoloscapeTests.xctest"),
+    "HoloscapePropertyTests": ("EC16900C71D87D4A20A1DE69", "HoloscapePropertyTests.xctest"),
+    "HoloscapeUITests": ("70CD47CBC5D1B1774DFA63D9", "HoloscapeUITests.xctest"),
+}
+found = {}
+for testable in testables.findall("TestableReference"):
+    buildable = testable.find("BuildableReference")
+    if buildable is None:
+        raise SystemExit("error: a shared Holoscape scheme test entry has no buildable reference")
+    name = buildable.get("BlueprintName")
+    if not name or name in found:
+        raise SystemExit("error: the shared Holoscape scheme has a missing or duplicate test target name")
+    found[name] = (testable, buildable)
+
+if set(found) != set(expected):
+    raise SystemExit(
+        "error: the shared Holoscape scheme must contain exactly "
+        "HoloscapeTests, HoloscapePropertyTests, and HoloscapeUITests"
+    )
+for name, (blueprint_id, buildable_name) in expected.items():
+    testable, buildable = found[name]
+    if (
+        testable.get("skipped") != "NO"
+        or buildable.get("BuildableIdentifier") != "primary"
+        or buildable.get("BlueprintIdentifier") != blueprint_id
+        or buildable.get("BuildableName") != buildable_name
+        or buildable.get("ReferencedContainer") != "container:Holoscape.xcodeproj"
+    ):
+        raise SystemExit(f"error: the shared Holoscape scheme has an invalid {name} test entry")
+PY
 
 echo "Xcode project source and CNativePTY integration is valid"

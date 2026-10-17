@@ -105,26 +105,53 @@ for mutation in missing stale moved target-config target-product target-membersh
         exit 1
     fi
 done
-mutated_scheme="$work_dir/missing-property-tests.xcscheme"
-python3 - "$scheme" "$mutated_scheme" <<'PY'
-from pathlib import Path
-import sys
+mutate_scheme() {
+    local destination="$1"
+    local mode="$2"
 
-source = Path(sys.argv[1]).read_text()
-needle = '               BlueprintName = "HoloscapePropertyTests"\n'
-if source.count(needle) != 1:
-    raise SystemExit("expected one HoloscapePropertyTests scheme entry")
-Path(sys.argv[2]).write_text(source.replace(needle, '', 1))
+    python3 - "$scheme" "$destination" "$mode" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+source, destination, mode = sys.argv[1:]
+tree = ET.parse(source)
+root = tree.getroot()
+testables = root.find("./TestAction/Testables")
+if testables is None:
+    raise SystemExit("expected shared scheme test entries")
+entries = {
+    buildable.get("BlueprintName"): (testable, buildable)
+    for testable in testables.findall("TestableReference")
+    if (buildable := testable.find("BuildableReference")) is not None
+}
+
+if mode == "missing-property":
+    testables.remove(entries["HoloscapePropertyTests"][0])
+elif mode == "property-blueprint":
+    entries["HoloscapePropertyTests"][1].set("BlueprintIdentifier", "FFFFFFFFFFFFFFFFFFFFFFFF")
+elif mode == "property-skipped":
+    entries["HoloscapePropertyTests"][0].set("skipped", "YES")
+elif mode == "property-buildable":
+    entries["HoloscapePropertyTests"][1].set("BuildableName", "HoloscapeTests.xctest")
+elif mode == "property-container":
+    entries["HoloscapePropertyTests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
+elif mode == "ui-membership":
+    testables.remove(entries["HoloscapeUITests"][0])
+else:
+    raise SystemExit(f"unknown scheme mutation: {mode}")
+
+tree.write(destination, encoding="UTF-8", xml_declaration=True)
 PY
-if "$validator" "$project" "$mutated_scheme" >"$work_dir/missing-property-tests.out" 2>&1; then
-    echo "error: Xcode validator accepted a scheme without property tests" >&2
-    exit 1
-fi
-if ! grep -q 'must include HoloscapePropertyTests exactly once' "$work_dir/missing-property-tests.out"; then
-    echo "error: missing property-test scheme entry lacked a diagnostic" >&2
-    cat "$work_dir/missing-property-tests.out" >&2
-    exit 1
-fi
+}
+
+for mutation in missing-property property-blueprint property-skipped property-buildable property-container ui-membership; do
+    mutated_scheme="$work_dir/$mutation.xcscheme"
+    mutate_scheme "$mutated_scheme" "$mutation"
+    if "$validator" "$project" "$mutated_scheme" >"$work_dir/$mutation.out" 2>&1; then
+        echo "error: Xcode validator accepted the $mutation scheme mutation" >&2
+        exit 1
+    fi
+done
 if ! grep -q '^+Tests/HoloscapeTests/Unit/Legacy/AgentStatusNotificationRoutingTests.swift$' "$work_dir/moved.out"; then
     echo "error: moved-source regression did not compare the resolved stale path" >&2
     cat "$work_dir/moved.out" >&2
