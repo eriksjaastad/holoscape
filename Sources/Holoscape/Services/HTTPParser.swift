@@ -112,6 +112,12 @@ enum HTTPParser {
             if let colon = line.firstIndex(of: ":") {
                 let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
                 let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                // This server does not implement transfer codings. Ignoring this
+                // field would make the request boundary ambiguous when a sender
+                // also supplies Content-Length.
+                if name == "transfer-encoding" {
+                    return .badRequest
+                }
                 if name == "content-length" {
                     guard !value.isEmpty,
                           value.utf8.allSatisfy({ (48...57).contains($0) }) else {

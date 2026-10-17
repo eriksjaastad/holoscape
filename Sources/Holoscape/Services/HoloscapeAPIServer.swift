@@ -6,7 +6,7 @@ import UserNotifications
 protocol HTTPServerConnection: AnyObject, Sendable {
     func start(queue: DispatchQueue)
     func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void)
-    func send(content: Data, completion: @escaping @Sendable () -> Void)
+    func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void)
     func cancel()
 }
 
@@ -27,8 +27,8 @@ private final class NetworkHTTPServerConnection: HTTPServerConnection {
         }
     }
 
-    func send(content: Data, completion: @escaping @Sendable () -> Void) {
-        connection.send(content: content, completion: .contentProcessed { _ in completion() })
+    func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void) {
+        connection.send(content: content, completion: .contentProcessed(completion))
     }
 
     func cancel() {
@@ -187,14 +187,10 @@ class HoloscapeAPIServer {
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
-                    connection.send(content: response.serialize()) {
-                        connection.cancel()
-                    }
+                    Self.sendAndClose(response, connection: connection)
                 }
             case .respond(let response):
-                connection.send(content: response.serialize()) {
-                    connection.cancel()
-                }
+                Self.sendAndClose(response, connection: connection)
             case .receiveMore(let buffer):
                 if error == nil {
                     self?.receiveFullRequest(connection: connection, accumulated: buffer)
@@ -202,6 +198,18 @@ class HoloscapeAPIServer {
                     connection.cancel()
                 }
             }
+        }
+    }
+
+    private nonisolated static func sendAndClose(
+        _ response: HTTPResponse,
+        connection: HTTPServerConnection
+    ) {
+        connection.send(content: response.serialize()) { error in
+            if let error {
+                NSLog("HoloscapeAPI: Failed to send response: \(error)")
+            }
+            connection.cancel()
         }
     }
 

@@ -117,7 +117,7 @@ final class HTTPParserTests: XCTestCase {
 
     func testConflictingContentLengthsDoNotRouteRequest() {
         let request = Data(
-            "POST /channels HTTP/1.1\r\nContent-Length: 129\r\nContent-Length: 2\r\n\r\n{}".utf8
+            "POST /channels HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}".utf8
         )
 
         let decision = HoloscapeAPIServer.requestReceiveDecision(
@@ -130,7 +130,43 @@ final class HTTPParserTests: XCTestCase {
         guard case .respond(let response) = decision else {
             return XCTFail("Expected response, got \(decision)")
         }
-        XCTAssertEqual(response.status, 413)
+        XCTAssertEqual(response.status, 400)
+    }
+
+    func testIdenticalContentLengthsRouteRequest() throws {
+        let request = Data(
+            "POST /channels HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}".utf8
+        )
+
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: request,
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .route(let parsedRequest) = decision else {
+            return XCTFail("Expected route, got \(decision)")
+        }
+        XCTAssertEqual(try XCTUnwrap(parsedRequest.body), Data("{}".utf8))
+    }
+
+    func testTransferEncodingWithContentLengthDoesNotRouteRequest() {
+        let request = Data(
+            "POST /channels HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8
+        )
+
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: request,
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .respond(let response) = decision else {
+            return XCTFail("Expected response, got \(decision)")
+        }
+        XCTAssertEqual(response.status, 400)
     }
 
     @MainActor
@@ -171,6 +207,41 @@ final class HTTPParserTests: XCTestCase {
     }
 
     @MainActor
+    func testSendFailureStillCancelsConnection() throws {
+        let server = makeServer()
+        let connection = RecordingHTTPServerConnection(
+            receiveEvents: [
+                .init(data: Data("broken".utf8), isComplete: true, error: nil)
+            ],
+            sendError: NWError.posix(.EPIPE)
+        )
+
+        server.handleConnection(connection)
+
+        XCTAssertNotNil(connection.sentContent)
+        XCTAssertEqual(connection.cancelCallCount, 1)
+    }
+
+    @MainActor
+    func testSplitReadsReachRouteResponseAndCancel() async throws {
+        let server = makeServer()
+        let connection = RecordingHTTPServerConnection(
+            receiveEvents: [
+                .init(data: Data("GET /chan".utf8), isComplete: false, error: nil),
+                .init(data: Data("nels HTTP/1.1\r\n\r\n".utf8), isComplete: false, error: nil)
+            ]
+        )
+
+        server.handleConnection(connection)
+        await Task.yield()
+
+        let response = try XCTUnwrap(connection.sentContent)
+        XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 503 Service Unavailable\r\n"))
+        XCTAssertEqual(connection.receiveCallCount, 2)
+        XCTAssertEqual(connection.cancelCallCount, 1)
+    }
+
+    @MainActor
     private func makeServer() -> HoloscapeAPIServer {
         let configService = ConfigService(
             configDir: FileManager.default.temporaryDirectory
@@ -191,27 +262,39 @@ final class HTTPParserTests: XCTestCase {
 }
 
 private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchecked Sendable {
-    private let data: Data?
-    private let isComplete: Bool
-    private let error: NWError?
+    struct ReceiveEvent {
+        let data: Data?
+        let isComplete: Bool
+        let error: NWError?
+    }
+
+    private var receiveEvents: [ReceiveEvent]
+    private let sendError: NWError?
     private(set) var sentContent: Data?
     private(set) var cancelCallCount = 0
+    private(set) var receiveCallCount = 0
 
     init(data: Data?, isComplete: Bool, error: NWError?) {
-        self.data = data
-        self.isComplete = isComplete
-        self.error = error
+        receiveEvents = [.init(data: data, isComplete: isComplete, error: error)]
+        sendError = nil
+    }
+
+    init(receiveEvents: [ReceiveEvent], sendError: NWError? = nil) {
+        self.receiveEvents = receiveEvents
+        self.sendError = sendError
     }
 
     func start(queue: DispatchQueue) {}
 
     func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void) {
-        completion(data, isComplete, error)
+        receiveCallCount += 1
+        let event = receiveEvents.removeFirst()
+        completion(event.data, event.isComplete, event.error)
     }
 
-    func send(content: Data, completion: @escaping @Sendable () -> Void) {
+    func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void) {
         sentContent = content
-        completion()
+        completion(sendError)
     }
 
     func cancel() {
