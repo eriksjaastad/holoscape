@@ -2318,10 +2318,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             }
         }
 
-        guard !apiURL.isEmpty, !apiKey.isEmpty else {
+        guard let validatedAPIURL = ExternalServiceURLValidator.url(from: apiURL),
+              !apiKey.isEmpty else {
             let alert = NSAlert()
             alert.messageText = "Chat Not Configured"
-            alert.informativeText = "~/.claude/agent-chat.env not found or missing AGENT_CHAT_URL/AGENT_CHAT_API_KEY"
+            alert.informativeText = "~/.claude/agent-chat.env is missing a valid HTTP(S) AGENT_CHAT_URL or AGENT_CHAT_API_KEY"
             alert.runModal()
             return
         }
@@ -2333,7 +2334,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         ) { id, _, role, instanceNum, _ in
             Self.builtInGroupChatController(
                 id: id,
-                apiURL: apiURL,
+                apiURL: validatedAPIURL,
                 apiKey: apiKey,
                 label: role,
                 instanceNumber: instanceNum
@@ -2346,14 +2347,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     static func builtInGroupChatController(
         id: UUID,
-        apiURL: String,
+        apiURL: URL,
         apiKey: String,
         label: String,
         instanceNumber: Int?
     ) -> GroupChatChannelController {
         GroupChatChannelController(
             id: id,
-            apiURL: apiURL,
+            apiURL: apiURL.absoluteString,
             apiKey: apiKey,
             label: label,
             instanceNumber: instanceNumber

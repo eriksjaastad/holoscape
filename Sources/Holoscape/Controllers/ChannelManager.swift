@@ -14,6 +14,46 @@ enum SessionProfileLaunchError: LocalizedError, Equatable {
     }
 }
 
+enum ExternalServiceURLValidator {
+    static func url(from rawValue: String?) -> URL? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hasValidPercentEscapes(trimmed),
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return components.url
+    }
+
+    private static func hasValidPercentEscapes(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x25 else {
+                index += 1
+                continue
+            }
+            guard index + 2 < bytes.count,
+                  isASCIIHexDigit(bytes[index + 1]),
+                  isASCIIHexDigit(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        }
+        return true
+    }
+
+    private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte)
+            || (0x41...0x46).contains(byte)
+            || (0x61...0x66).contains(byte)
+    }
+}
+
 @MainActor
 class ChannelManager {
     private var channels: [UUID: any ChannelController] = [:]
@@ -81,13 +121,13 @@ class ChannelManager {
         let agentChatAPIURL: String?
         switch profile.connection {
         case .mcp:
-            guard let endpoint = Self.validExternalServiceURL(profile.endpoint) else {
+            guard let endpoint = ExternalServiceURLValidator.url(from: profile.endpoint) else {
                 throw SessionProfileLaunchError.invalidMCPEndpoint(label: profile.label)
             }
             mcpEndpoint = endpoint
             agentChatAPIURL = nil
         case .agentChat:
-            guard let apiURL = Self.validExternalServiceURL(profile.apiURL) else {
+            guard let apiURL = ExternalServiceURLValidator.url(from: profile.apiURL) else {
                 throw SessionProfileLaunchError.invalidAgentChatAPIURL(label: profile.label)
             }
             mcpEndpoint = nil
@@ -154,44 +194,6 @@ class ChannelManager {
         channelOrder.append(id)
         channelLabels[id] = profile.label
         return controller
-    }
-
-    private static func validExternalServiceURL(_ rawValue: String?) -> URL? {
-        guard let rawValue else { return nil }
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard hasValidPercentEscapes(trimmed),
-              let components = URLComponents(string: trimmed),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = components.host,
-              !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return components.url
-    }
-
-    private static func hasValidPercentEscapes(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        var index = 0
-        while index < bytes.count {
-            guard bytes[index] == 0x25 else {
-                index += 1
-                continue
-            }
-            guard index + 2 < bytes.count,
-                  isASCIIHexDigit(bytes[index + 1]),
-                  isASCIIHexDigit(bytes[index + 2]) else {
-                return false
-            }
-            index += 3
-        }
-        return true
-    }
-
-    private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
-        (0x30...0x39).contains(byte)
-            || (0x41...0x46).contains(byte)
-            || (0x61...0x66).contains(byte)
     }
 
     /// Close a channel. Returns true if confirmation is needed (active process).

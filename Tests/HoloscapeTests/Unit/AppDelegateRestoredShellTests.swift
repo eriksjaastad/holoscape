@@ -1627,6 +1627,24 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(controller.displayLabel, "mini-claude")
     }
 
+    func testRestoredMCPRejectsMalformedAndUnsupportedEndpoints() {
+        let appDelegate = AppDelegate()
+        for endpoint in [
+            "not a URL",
+            "file:///tmp/mcp.sock",
+            "https://mcp.example.com/%zz",
+            "https://mcp.example.com/%2",
+        ] {
+            let metadata = ChannelMetadata(
+                id: UUID(),
+                type: .mcp,
+                role: "Invalid MCP",
+                endpoint: endpoint
+            )
+            XCTAssertNil(appDelegate.createChannelFromMetadata(metadata), endpoint)
+        }
+    }
+
     func testRestoredGroupChatPreservesProfileAndInstanceIdentity() {
         let metadata = ChannelMetadata(
             id: UUID(),
@@ -1639,7 +1657,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
 
         let controller = AppDelegate.restoredGroupChatController(
             from: metadata,
-            apiURL: "https://chat.example.com",
+            apiURL: URL(string: "https://chat.example.com")!,
             apiKey: "test-key"
         )
 

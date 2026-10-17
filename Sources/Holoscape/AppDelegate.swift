@@ -521,8 +521,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                     }
                 }
             }
-            guard !apiURL.isEmpty, !apiKey.isEmpty else { return nil }
-            return Self.restoredGroupChatController(from: metadata, apiURL: apiURL, apiKey: apiKey)
+            guard let validatedAPIURL = ExternalServiceURLValidator.url(from: apiURL),
+                  !apiKey.isEmpty else { return nil }
+            return Self.restoredGroupChatController(
+                from: metadata,
+                apiURL: validatedAPIURL,
+                apiKey: apiKey
+            )
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
             let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
@@ -534,7 +539,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
             return controller
         case .mcp:
-            guard let endpointStr = metadata.endpoint, let endpoint = URL(string: endpointStr) else { return nil }
+            guard let endpoint = ExternalServiceURLValidator.url(from: metadata.endpoint) else { return nil }
             let controller = MCPChannelController(id: metadata.id, endpoint: endpoint, label: metadata.role, instanceNumber: metadata.instanceNumber)
             return controller
         case .bridge:
@@ -602,12 +607,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
 
     static func restoredGroupChatController(
         from metadata: ChannelMetadata,
-        apiURL: String,
+        apiURL: URL,
         apiKey: String
     ) -> GroupChatChannelController {
         GroupChatChannelController(
             id: metadata.id,
-            apiURL: apiURL,
+            apiURL: apiURL.absoluteString,
             apiKey: apiKey,
             label: metadata.role,
             instanceNumber: metadata.instanceNumber,
