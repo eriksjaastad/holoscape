@@ -535,6 +535,7 @@ fi
 
 cat >"$work_dir/signaled-group-leader.py" <<'PY'
 from pathlib import Path
+import os
 import subprocess
 import sys
 import time
