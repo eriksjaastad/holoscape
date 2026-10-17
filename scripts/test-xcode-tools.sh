@@ -145,6 +145,12 @@ elif mode == "unit-container":
     entries["HoloscapeTests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
 elif mode == "ui-blueprint":
     entries["HoloscapeUITests"][1].set("BlueprintIdentifier", "FFFFFFFFFFFFFFFFFFFFFFFF")
+elif mode == "ui-skipped":
+    entries["HoloscapeUITests"][0].set("skipped", "YES")
+elif mode == "ui-buildable":
+    entries["HoloscapeUITests"][1].set("BuildableName", "HoloscapeTests.xctest")
+elif mode == "ui-container":
+    entries["HoloscapeUITests"][1].set("ReferencedContainer", "container:Other.xcodeproj")
 elif mode == "ui-membership":
     testables.remove(entries["HoloscapeUITests"][0])
 elif mode == "duplicate-unit":
@@ -161,7 +167,8 @@ PY
 }
 
 for mutation in missing-property property-blueprint property-skipped property-buildable property-container \
-    unit-blueprint unit-skipped unit-buildable unit-container ui-blueprint ui-membership \
+    unit-blueprint unit-skipped unit-buildable unit-container \
+    ui-blueprint ui-skipped ui-buildable ui-container ui-membership \
     duplicate-unit extra-entry; do
     mutated_scheme="$work_dir/$mutation.xcscheme"
     mutate_scheme "$mutated_scheme" "$mutation"
@@ -169,8 +176,15 @@ for mutation in missing-property property-blueprint property-skipped property-bu
         echo "error: Xcode validator accepted the $mutation scheme mutation" >&2
         exit 1
     fi
-    if ! grep -q 'shared Holoscape scheme' "$work_dir/$mutation.out"; then
-        echo "error: the $mutation scheme mutation failed without a scheme diagnostic" >&2
+    expected_diagnostic='must contain exactly'
+    case "$mutation" in
+        property-*) expected_diagnostic='invalid HoloscapePropertyTests test entry' ;;
+        unit-*) expected_diagnostic='invalid HoloscapeTests test entry' ;;
+        ui-blueprint|ui-skipped|ui-buildable|ui-container) expected_diagnostic='invalid HoloscapeUITests test entry' ;;
+        duplicate-unit) expected_diagnostic='missing or duplicate test target name' ;;
+    esac
+    if ! grep -q "$expected_diagnostic" "$work_dir/$mutation.out"; then
+        echo "error: the $mutation scheme mutation failed for the wrong reason" >&2
         cat "$work_dir/$mutation.out" >&2
         exit 1
     fi
@@ -416,6 +430,20 @@ def fail_existence_probe(pid, sig):
 module.os.killpg = fail_existence_probe
 if module.stop_and_reap_process_group(ExitedProcess(), signal.SIGTERM):
     raise SystemExit("cleanup existence-probe failure was reported as success")
+
+class SuccessfulProcess:
+    pid = 43212
+    args = ["synthetic-command"]
+
+    def wait(self, timeout=None):
+        return 0
+
+module.subprocess.Popen = lambda *args, **kwargs: SuccessfulProcess()
+module.process_group_exists = lambda _pid: (_ for _ in ()).throw(OSError("inspection failed"))
+module.sys.argv = [module_path, "1", "synthetic-command"]
+status = module.main()
+if status != module.TERMINATION_FAILURE_EXIT_STATUS:
+    raise SystemExit(f"normal-exit inspection failure returned {status}, expected 125")
 PY
 
 cat >"$work_dir/signal-child.py" <<'PY'
@@ -572,7 +600,7 @@ time.sleep(30)
 PY
 descendant_pid_path="$work_dir/group-descendant.pid"
 set +e
-"$script_dir/run-with-timeout.py" 0.1 python3 "$work_dir/group-leader.py" \
+"$script_dir/run-with-timeout.py" 5 python3 "$work_dir/group-leader.py" \
     "$descendant_pid_path" >"$work_dir/group-timeout.out" 2>&1
 group_timeout_status=$?
 set -e
@@ -737,9 +765,10 @@ for target in test-ui-shard test-ui-range; do
 done
 for target in test-ui-fast test-ui-notifications; do
     set +e
-    FAKE_EXIT_STATUS=130 PATH="$work_dir/bin:$PATH" \
+    FAKE_EXIT_STATUS=130 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/make-results" \
+        PATH="$work_dir/bin:$PATH" \
         make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
-        UI_TEST_RUNNER= "$target" >"$work_dir/$target-signal.out" 2>&1
+        "$target" >"$work_dir/$target-signal.out" 2>&1
     make_signal_status=$?
     set -e
     if [[ "$make_signal_status" -eq 0 ]] || \
@@ -750,9 +779,10 @@ for target in test-ui-fast test-ui-notifications; do
     fi
 done
 for target in test-ui-fast test-ui-notifications; do
-    if FAKE_SUCCESS_NO_TESTS=1 PATH="$work_dir/bin:$PATH" \
+    if FAKE_SUCCESS_NO_TESTS=1 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/make-results" \
+       PATH="$work_dir/bin:$PATH" \
        make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
-       UI_TEST_RUNNER= "$target" >"$work_dir/$target-zero.out" 2>&1; then
+       "$target" >"$work_dir/$target-zero.out" 2>&1; then
         echo "error: $target accepted a successful xcodebuild that executed no tests" >&2
         exit 1
     fi
@@ -762,16 +792,18 @@ for target in test-ui-fast test-ui-notifications; do
         exit 1
     fi
 done
-if ! FAKE_SUCCESS_ONE_TEST=1 PATH="$work_dir/bin:$PATH" \
+if ! FAKE_SUCCESS_ONE_TEST=1 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/make-results" \
+   PATH="$work_dir/bin:$PATH" \
    make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
-   UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-one.out" 2>&1; then
+   test-ui-fast >"$work_dir/test-ui-fast-one.out" 2>&1; then
     echo "error: test-ui-fast rejected a successful xcodebuild that executed a test" >&2
     cat "$work_dir/test-ui-fast-one.out" >&2
     exit 1
 fi
-if ! FAKE_SUCCESS_SKIPPED_TEST=1 PATH="$work_dir/bin:$PATH" \
+if ! FAKE_SUCCESS_SKIPPED_TEST=1 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/make-results" \
+   PATH="$work_dir/bin:$PATH" \
    make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
-   UI_TEST_RUNNER= test-ui-fast >"$work_dir/test-ui-fast-skipped.out" 2>&1; then
+   test-ui-fast >"$work_dir/test-ui-fast-skipped.out" 2>&1; then
     echo "error: test-ui-fast rejected a successful skipped-only XCTest run" >&2
     cat "$work_dir/test-ui-fast-skipped.out" >&2
     exit 1

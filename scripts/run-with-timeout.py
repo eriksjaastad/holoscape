@@ -123,7 +123,15 @@ def main() -> int:
     try:
         status = process.wait(timeout=timeout_seconds)
         if status >= 0:
-            if process_group_exists(process.pid) and not stop_and_reap_process_group(
+            try:
+                descendants_remain = process_group_exists(process.pid)
+            except OSError as error:
+                print(
+                    f"error: cannot inspect command group {process.pid}: {error}",
+                    file=sys.stderr,
+                )
+                return TERMINATION_FAILURE_EXIT_STATUS
+            if descendants_remain and not stop_and_reap_process_group(
                 process, signal.SIGTERM
             ):
                 return TERMINATION_FAILURE_EXIT_STATUS

@@ -7,7 +7,8 @@
 #   ./scripts/test-ui-shards.sh 3-5          # Run shards 3 through 5
 #   ./scripts/test-ui-shards.sh failing      # Run only currently-failing classes
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
-# Results: /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}
+# Results default to /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}.
+# Override the results directory with HOLOSCAPE_UI_TEST_RESULTS_DIR.
 # Override the one-hour xcodebuild limit with UI_TEST_TIMEOUT_SECONDS.
 # Override the failing-mode source log with HOLOSCAPE_UI_FAILING_RESULTS_FILE.
 # UI execution requires macOS Accessibility/Automation permission for the runner.
@@ -17,7 +18,7 @@ set -euo pipefail
 
 SCHEME="Holoscape"
 DEST="platform=macOS"
-RESULTS_DIR="/tmp/holoscape-test-shards"
+RESULTS_DIR="${HOLOSCAPE_UI_TEST_RESULTS_DIR:-/tmp/holoscape-test-shards}"
 RESUME_FILE="$RESULTS_DIR/last-failed-shard"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
@@ -93,6 +94,37 @@ is_terminal_status() {
     esac
 }
 
+run_selected_tests() {
+    local label="$1"
+    local output="$2"
+    local bundle="$3"
+    shift 3
+
+    if ! rm -rf "$bundle"; then
+        echo "error: cannot remove prior result bundle: $bundle" >&2
+        return 1
+    fi
+    set +e
+    "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
+        -scheme "$SCHEME" \
+        -destination "$DEST" \
+        -skipPackagePluginValidation \
+        -resultBundlePath "$bundle" \
+        "$@" \
+        2>&1 | tee "$output" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
+    local pipeline_status=("${PIPESTATUS[@]}")
+    set -e
+    local output_status=0
+    "$TEST_OUTPUT_VALIDATOR" "$output" || output_status=$?
+    echo "  $label bundle: $bundle"
+    if [ "${pipeline_status[0]}" -ne 0 ]; then
+        return "${pipeline_status[0]}"
+    fi
+    if [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ]; then
+        return 1
+    fi
+}
+
 run_shard() {
     local n=$1
     local classes=$(get_shard "$n")
@@ -162,8 +194,7 @@ run_shard() {
     echo "  Bundle:  $bundle"
 
     if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$count_status" -ne 0 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
-        local recording_status=0
-        record_failed_shard "$n" "$status_file" || recording_status=$?
+        record_failed_shard "$n" "$status_file" || true
         if is_terminal_status "${pipeline_status[0]}"; then
             return "${pipeline_status[0]}"
         fi
@@ -172,9 +203,6 @@ run_shard() {
         fi
         if [ "${pipeline_status[0]}" -ne 0 ]; then
             return "${pipeline_status[0]}"
-        fi
-        if [ "$recording_status" -ne 0 ]; then
-            return 1
         fi
         return 1
     fi
@@ -312,32 +340,27 @@ case "$selection" in
             echo "error: no failing Holoscape UI test classes found in $FAILING_RESULTS_FILE" >&2
             exit 1
         fi
-        args=""
+        args=()
         for class in $FAILING_CLASSES; do
-            args="$args -only-testing:HoloscapeUITests/$class"
+            args+=("-only-testing:HoloscapeUITests/$class")
         done
         failing_bundle="$RESULTS_DIR/failing.xcresult"
-        rm -rf "$failing_bundle"
         failing_output="$RESULTS_DIR/failing-only.txt"
-        set +e
-        "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
-            -scheme "$SCHEME" \
-            -destination "$DEST" \
-            -skipPackagePluginValidation \
-            -resultBundlePath "$failing_bundle" \
-            $args \
-            2>&1 | tee "$failing_output" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
-        failing_pipeline_status=("${PIPESTATUS[@]}")
-        set -e
-        failing_output_status=0
-        "$TEST_OUTPUT_VALIDATOR" "$failing_output" || failing_output_status=$?
-        echo "  Bundle:  $failing_bundle"
-        if [ "${failing_pipeline_status[0]}" -ne 0 ]; then
-            exit "${failing_pipeline_status[0]}"
-        fi
-        if [ "${failing_pipeline_status[1]}" -ne 0 ] || [ "${failing_pipeline_status[2]}" -gt 1 ] || [ "$failing_output_status" -ne 0 ]; then
-            exit 1
-        fi
+        run_selected_tests "Failing tests" "$failing_output" "$failing_bundle" "${args[@]}"
+        ;;
+    fast)
+        run_selected_tests "Fast UI tests" \
+            "$RESULTS_DIR/fast.txt" "$RESULTS_DIR/fast.xcresult" \
+            -only-testing:HoloscapeUITests/HoloscapeUITests \
+            -only-testing:HoloscapeUITests/SettingsUITests \
+            -only-testing:HoloscapeUITests/TerminalDisplayUITests \
+            -only-testing:HoloscapeUITests/SidebarUITests \
+            -only-testing:HoloscapeUITests/KeyboardShortcutsUITests
+        ;;
+    notifications)
+        run_selected_tests "Notification UI tests" \
+            "$RESULTS_DIR/notifications.txt" "$RESULTS_DIR/notifications.xcresult" \
+            -only-testing:HoloscapeUITests/NotificationSystemUITests
         ;;
     *-*)
         # Range like 3-5
