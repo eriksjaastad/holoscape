@@ -41,6 +41,8 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     /// Internal read-only accessor exposing the current density gate wiring
     /// for test verification. Production code must not rely on this.
     var _densityManagerOnSkinEngine: DensityModeManager? { skinEngine.densityModeManager }
+    /// Internal read-only accessor for deterministic layout verification.
+    var _storageButtonForTesting: NSButton { storageButton }
     private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
     private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
     private let notifAgentCheckbox = NSButton(checkboxWithTitle: "Agent", target: nil, action: nil)
@@ -185,6 +187,14 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         storageButton.action = #selector(openScrollbackStorage(_:))
         storageButton.setAccessibilityIdentifier("storage-button")
         stack.addArrangedSubview(storageButton)
+
+        // Keep the non-resizable settings window large enough for every
+        // arranged control. Without this, controls appended below the original
+        // 480-point content height are clipped with no way to reach them.
+        let requiredHeight = ceil(stack.fittingSize.height)
+        if requiredHeight > contentView.bounds.height {
+            window?.setContentSize(NSSize(width: contentView.bounds.width, height: requiredHeight))
+        }
     }
 
     private func makeRow(label: String, control: NSView) -> NSStackView {

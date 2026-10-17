@@ -127,4 +127,19 @@ final class SkinEngineDensityGateTests: XCTestCase {
         XCTAssertNil(wc._densityManagerOnSkinEngine,
                      "Nil densityModeManager leaves the SkinEngine gate default-open")
     }
+
+    func testAppearanceSettingsKeepsStorageButtonInsideContentBounds() throws {
+        let service = ConfigService()
+        let controller = AppearanceSettingsWindowController(
+            config: service.load().appearance,
+            configService: service
+        )
+        let contentView = try XCTUnwrap(controller.window?.contentView)
+        contentView.layoutSubtreeIfNeeded()
+        let storageButton = controller._storageButtonForTesting
+        let frame = storageButton.convert(storageButton.bounds, to: contentView)
+
+        XCTAssertGreaterThanOrEqual(frame.minY, contentView.bounds.minY)
+        XCTAssertLessThanOrEqual(frame.maxY, contentView.bounds.maxY)
+    }
 }

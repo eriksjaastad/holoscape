@@ -28,6 +28,14 @@ selected app-config profile.
 - If replay succeeds, the terminal shows a one-line restore notice before the replayed bytes and names the replay source plus byte cap.
 - If scrollback replay fails after the broker session was successfully reattached, Holoscape keeps the live session attached, writes a warning into the terminal, skips the bad tail, and continues streaming new output. Scrollback corruption must not silently replace or drop the live process.
 
-## Remaining #7171 work
+## Storage maintenance
 
-- Dedicated settings/maintenance UI should expose manual pruning for per-session scrollback files.
+Appearance Settings includes **Manage Stored Scrollback…**, which opens the
+Scrollback Storage window. It lists each non-empty persisted session tail with
+its size and last-modified time, and supports confirmed per-session or bulk
+clearing without affecting live sessions.
+
+Listing and clearing use the same persistent per-session advisory-lock authority
+as broker append, replay, and pruning. The window refreshes after each clear; if
+an operation or its cleanup fails, it reports that completion could not be
+confirmed instead of claiming success.
