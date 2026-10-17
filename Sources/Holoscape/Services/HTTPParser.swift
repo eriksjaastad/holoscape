@@ -107,7 +107,7 @@ enum HTTPParser {
         let fullPath = String(parts[1])
 
         // Parse header fields (case-insensitive keys per RFC).
-        var contentLength = 0
+        var parsedContentLength: Int?
         for line in headerLines.dropFirst() {
             if let colon = line.firstIndex(of: ":") {
                 let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
@@ -117,16 +117,20 @@ enum HTTPParser {
                           value.utf8.allSatisfy({ (48...57).contains($0) }) else {
                         return .badRequest
                     }
-                    guard let parsedLength = Int(value) else { return .payloadTooLarge }
-                    contentLength = parsedLength
+                    guard let contentLength = Int(value) else { return .payloadTooLarge }
+                    guard bodyStart <= maximumRequestBytes,
+                          contentLength <= maximumRequestBytes - bodyStart else {
+                        return .payloadTooLarge
+                    }
+                    if let parsedContentLength, parsedContentLength != contentLength {
+                        return .badRequest
+                    }
+                    parsedContentLength = contentLength
                 }
             }
         }
 
-        guard bodyStart <= maximumRequestBytes,
-              contentLength <= maximumRequestBytes - bodyStart else {
-            return .payloadTooLarge
-        }
+        let contentLength = parsedContentLength ?? 0
 
         // Strictly require full body before considering the request complete.
         // Without this check, the parser used to happily return a request with

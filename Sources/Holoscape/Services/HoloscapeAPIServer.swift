@@ -3,6 +3,39 @@ import Foundation
 import Network
 import UserNotifications
 
+protocol HTTPServerConnection: AnyObject, Sendable {
+    func start(queue: DispatchQueue)
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void)
+    func send(content: Data, completion: @escaping @Sendable () -> Void)
+    func cancel()
+}
+
+private final class NetworkHTTPServerConnection: HTTPServerConnection {
+    private let connection: NWConnection
+
+    init(_ connection: NWConnection) {
+        self.connection = connection
+    }
+
+    func start(queue: DispatchQueue) {
+        connection.start(queue: queue)
+    }
+
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+            completion(data, isComplete, error)
+        }
+    }
+
+    func send(content: Data, completion: @escaping @Sendable () -> Void) {
+        connection.send(content: content, completion: .contentProcessed { _ in completion() })
+    }
+
+    func cancel() {
+        connection.cancel()
+    }
+}
+
 @MainActor
 protocol DockAttentionClient: AnyObject {
     var badgeLabel: String? { get set }
@@ -84,7 +117,7 @@ class HoloscapeAPIServer {
         acceptsRequests = true
 
         listener?.newConnectionHandler = { [weak self] connection in
-            self?.handleConnection(connection)
+            self?.handleConnection(NetworkHTTPServerConnection(connection))
         }
 
         listener?.stateUpdateHandler = { state in
@@ -109,7 +142,7 @@ class HoloscapeAPIServer {
         listener = nil
     }
 
-    private nonisolated func handleConnection(_ connection: NWConnection) {
+    nonisolated func handleConnection(_ connection: HTTPServerConnection) {
         connection.start(queue: .global(qos: .userInitiated))
         receiveFullRequest(connection: connection, accumulated: Data())
     }
@@ -143,8 +176,8 @@ class HoloscapeAPIServer {
     }
 
     /// Accumulate data until we have a complete HTTP request (headers + body).
-    private nonisolated func receiveFullRequest(connection: NWConnection, accumulated: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+    private nonisolated func receiveFullRequest(connection: HTTPServerConnection, accumulated: Data) {
+        connection.receive { [weak self] data, isComplete, error in
             switch Self.requestReceiveDecision(
                 accumulated: accumulated,
                 incoming: data ?? Data(),
@@ -154,14 +187,14 @@ class HoloscapeAPIServer {
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
-                    connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                    connection.send(content: response.serialize()) {
                         connection.cancel()
-                    }))
+                    }
                 }
             case .respond(let response):
-                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                connection.send(content: response.serialize()) {
                     connection.cancel()
-                }))
+                }
             case .receiveMore(let buffer):
                 if error == nil {
                     self?.receiveFullRequest(connection: connection, accumulated: buffer)
