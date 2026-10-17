@@ -7,12 +7,13 @@
 #   ./scripts/test-ui-shards.sh 3-5          # Run shards 3 through 5
 #   ./scripts/test-ui-shards.sh fast         # Run core UI smoke tests
 #   ./scripts/test-ui-shards.sh notifications # Run notification UI tests
-#   ./scripts/test-ui-shards.sh failing      # Run only currently-failing classes
+#   HOLOSCAPE_UI_FAILING_RESULTS_FILE=path ./scripts/test-ui-shards.sh failing
+#                                           # Run classes failed in that log
 #   ./scripts/test-ui-shards.sh resume       # Resume from last failed shard
 # Results default to /tmp/holoscape-test-shards/shard-{1..10}.{txt,xcresult}.
 # Override the results directory with HOLOSCAPE_UI_TEST_RESULTS_DIR.
 # Override the one-hour xcodebuild limit with UI_TEST_TIMEOUT_SECONDS.
-# Override the failing-mode source log with HOLOSCAPE_UI_FAILING_RESULTS_FILE.
+# Failing mode requires HOLOSCAPE_UI_FAILING_RESULTS_FILE to name its source log.
 # UI execution requires macOS Accessibility/Automation permission for the runner.
 # Each build-for-testing re-signs the runner and can require TCC re-approval.
 
@@ -26,7 +27,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout.py"
 TEST_OUTPUT_VALIDATOR="$SCRIPT_DIR/validate-xcode-test-output.sh"
 UI_TEST_TIMEOUT_SECONDS="${UI_TEST_TIMEOUT_SECONDS:-3600}"
-FAILING_RESULTS_FILE="${HOLOSCAPE_UI_FAILING_RESULTS_FILE:-/tmp/test-results-full-2.txt}"
+FAILING_RESULTS_FILE="${HOLOSCAPE_UI_FAILING_RESULTS_FILE:-}"
 
 mkdir -p "$RESULTS_DIR"
 declare -a SHARD_RUN_STATUS=()
@@ -64,11 +65,20 @@ record_failed_shard() {
         echo "error: cannot record failed shard status: $status_file" >&2
         recording_failed=1
     fi
-    if ! printf '%s\n' "$n" > "$RESUME_FILE"; then
-        echo "error: cannot record failed shard resume point: $RESUME_FILE" >&2
-        recording_failed=1
+    if [[ ! -e "$RESUME_FILE" ]]; then
+        if ! printf '%s\n' "$n" > "$RESUME_FILE"; then
+            echo "error: cannot record failed shard resume point: $RESUME_FILE" >&2
+            recording_failed=1
+        fi
     fi
     return "$recording_failed"
+}
+
+reset_resume_state() {
+    if ! rm -f "$RESUME_FILE"; then
+        echo "error: cannot clear prior shard resume point: $RESUME_FILE" >&2
+        return 1
+    fi
 }
 
 # Balanced shards with heavy classes spread across shards.
@@ -208,32 +218,14 @@ print_summary() {
     local total_failed=0
 
     for i in $(seq 1 10); do
-        local outfile="$RESULTS_DIR/shard-${i}.txt"
-        if [[ -n "${SHARD_RUN_STATUS[$i]+set}" || -f "$outfile" ]]; then
-            local status_file="$RESULTS_DIR/shard-${i}.status"
+        if [[ -n "${SHARD_RUN_STATUS[$i]+set}" ]]; then
             local p
             local f
-            if [[ -n "${SHARD_RUN_STATUS[$i]+set}" ]]; then
-                p="${SHARD_RUN_PASSED[$i]}"
-                f="${SHARD_RUN_FAILED[$i]}"
-            else
-                p=$(count_matches "^Test Case .* passed" "$outfile") || return 1
-                f=$(count_matches "^Test Case .* failed" "$outfile") || return 1
-            fi
+            p="${SHARD_RUN_PASSED[$i]}"
+            f="${SHARD_RUN_FAILED[$i]}"
             total_passed=$((total_passed + p))
             total_failed=$((total_failed + f))
-            local status="UNKNOWN"
-            if [[ -n "${SHARD_RUN_STATUS[$i]+set}" ]]; then
-                status="${SHARD_RUN_STATUS[$i]}"
-            elif [[ -r "$status_file" ]]; then
-                status=$(<"$status_file")
-                if [[ "$status" != "PASS" && "$status" != "FAIL" ]]; then
-                    echo "error: invalid shard status in $status_file: $status" >&2
-                    return 1
-                fi
-            elif [[ "$f" -gt 0 ]]; then
-                status="FAIL"
-            fi
+            local status="${SHARD_RUN_STATUS[$i]}"
             printf "  Shard %2d: %3d passed, %3d failed  [%s]\n" "$i" "$p" "$f" "$status"
         else
             printf "  Shard %2d: not run\n" "$i"
@@ -259,6 +251,7 @@ fi
 case "$selection" in
     all)
         overall_status=0
+        reset_resume_state || exit $?
         for (( i=1; i<=10; i++ )); do
             if run_shard "$i"; then
                 :
@@ -281,6 +274,7 @@ case "$selection" in
                 echo "error: invalid shard resume point in $RESUME_FILE: $start" >&2
                 exit 2
             fi
+            reset_resume_state || exit $?
             echo "Resuming from shard $start"
             for (( i=start; i<=10; i++ )); do
                 if run_shard "$i"; then
@@ -294,6 +288,7 @@ case "$selection" in
                 fi
             done
         else
+            reset_resume_state || exit $?
             echo "No resume point found. Run all."
             for (( i=1; i<=10; i++ )); do
                 if run_shard "$i"; then
@@ -312,6 +307,10 @@ case "$selection" in
         ;;
     failing)
         echo "Running only currently-failing test classes..."
+        if [[ -z "$FAILING_RESULTS_FILE" ]]; then
+            echo "error: HOLOSCAPE_UI_FAILING_RESULTS_FILE must name the xcodebuild log to inspect" >&2
+            exit 2
+        fi
         if [[ ! -r "$FAILING_RESULTS_FILE" ]]; then
             echo "error: cannot read failing-test results: $FAILING_RESULTS_FILE" >&2
             exit 1
@@ -359,6 +358,7 @@ case "$selection" in
             exit 2
         fi
         overall_status=0
+        reset_resume_state || exit $?
         for (( i=start; i<=end; i++ )); do
             if run_shard "$i"; then
                 :
@@ -379,6 +379,7 @@ case "$selection" in
             echo "error: shard number must be from 1 through 10: $1" >&2
             exit 2
         fi
+        reset_resume_state || exit $?
         run_shard "$selection"
         ;;
 esac

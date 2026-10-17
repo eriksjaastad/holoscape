@@ -296,6 +296,12 @@ if text.count(needle) != 1:
 script.write_text(text.replace(needle, replacement, 1))
 PY
 
+mkdir -p "$work_dir/results"
+cat >"$work_dir/results/shard-10.txt" <<'EOF'
+Test Case '-[SyntheticUITests staleTest]' passed (0.001 seconds).
+EOF
+printf 'PASS\n' >"$work_dir/results/shard-10.status"
+
 if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/results" PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
     echo "error: aggregate UI shards hid an xcodebuild failure" >&2
@@ -309,6 +315,28 @@ fi
 if [[ ! -f "$work_dir/results/shard-1.status" || ! -f "$work_dir/results/shard-2.status" || \
       -e "$work_dir/unexpected-default-results" ]]; then
     echo "error: aggregate UI shards did not honor the results-directory override" >&2
+    exit 1
+fi
+if ! grep -Eq 'Shard[[:space:]]+10: not run' "$work_dir/shards.out" || \
+   grep -q 'staleTest' "$work_dir/shards.out" || \
+   ! grep -Eq 'TOTAL:[[:space:]]+0 passed,[[:space:]]+0 failed' "$work_dir/shards.out"; then
+    echo "error: aggregate UI shard summary included stale results from an earlier invocation" >&2
+    cat "$work_dir/shards.out" >&2
+    exit 1
+fi
+if [[ $(<"$work_dir/results/last-failed-shard") != "1" ]]; then
+    echo "error: aggregate UI shards did not preserve the earliest failed shard for resume" >&2
+    exit 1
+fi
+
+if ! FAKE_SUCCESS_ONE_TEST=1 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/results" PATH="$work_dir/bin:$PATH" \
+   bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards-clean.out" 2>&1; then
+    echo "error: clean aggregate UI shard run failed" >&2
+    cat "$work_dir/shards-clean.out" >&2
+    exit 1
+fi
+if [[ -e "$work_dir/results/last-failed-shard" ]]; then
+    echo "error: clean aggregate UI shard run retained a stale resume point" >&2
     exit 1
 fi
 
@@ -808,6 +836,21 @@ fi
 
 failing_invocation_marker="$work_dir/failing-xcodebuild-invoked"
 if FAKE_STATUS_PATH="$failing_invocation_marker" FAKE_SUCCESS_ONE_TEST=1 \
+   PATH="$work_dir/bin:$PATH" \
+   make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
+   test-ui-failing \
+   >"$work_dir/failing-unset.out" 2>&1; then
+    echo "error: test-ui-failing accepted an implicit machine-specific results input" >&2
+    exit 1
+fi
+if [[ -e "$failing_invocation_marker" ]] || \
+   ! grep -q 'HOLOSCAPE_UI_FAILING_RESULTS_FILE must name' "$work_dir/failing-unset.out"; then
+    echo "error: unset failing-test results did not fail before xcodebuild with guidance" >&2
+    cat "$work_dir/failing-unset.out" >&2
+    exit 1
+fi
+
+if FAKE_STATUS_PATH="$failing_invocation_marker" FAKE_SUCCESS_ONE_TEST=1 \
    HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/missing-failing-results.txt" \
    PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
    >"$work_dir/failing-missing.out" 2>&1; then
@@ -858,7 +901,9 @@ Test Case SyntheticUITests.testFail failed (0.001 seconds).
 Test Suite SyntheticUITests passed at 2026-10-16 00:00:00.000.
 Test Suite Selected tests failed at 2026-10-16 00:00:00.000.
 EOF
-    printf "FAIL\n" >"$RESULTS_DIR/shard-1.status"
+    SHARD_RUN_STATUS[1]="FAIL"
+    SHARD_RUN_PASSED[1]=$(count_matches "^Test Case .* passed" "$RESULTS_DIR/shard-1.txt")
+    SHARD_RUN_FAILED[1]=$(count_matches "^Test Case .* failed" "$RESULTS_DIR/shard-1.txt")
     print_summary
 ' _ "$definitions" >"$work_dir/count.out" 2>&1; then
     echo "error: aggregate UI shard summary failed for XCTest-style output" >&2
@@ -875,7 +920,7 @@ if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
     mkdir -p "$RESULTS_DIR"
     printf "Test Case SyntheticUITests.testExample passed (0.001 seconds).\n" >"$RESULTS_DIR/shard-1.txt"
     chmod 000 "$RESULTS_DIR/shard-1.txt"
-    print_summary
+    count_matches "^Test Case .* passed" "$RESULTS_DIR/shard-1.txt"
 ' _ "$definitions" >"$work_dir/unreadable.out" 2>&1; then
     if ! grep -q 'cannot read test output' "$work_dir/unreadable.out"; then
         echo "error: unreadable UI shard output failed without a diagnostic" >&2
@@ -883,7 +928,7 @@ if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
         exit 1
     fi
 else
-    echo "error: aggregate UI shard summary accepted unreadable output" >&2
+    echo "error: UI shard result counting accepted unreadable output" >&2
     exit 1
 fi
 

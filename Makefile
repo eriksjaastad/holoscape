@@ -12,7 +12,7 @@ help:
 	@echo "  make test-ui-notifications  Notification UI tests"
 	@echo "  make test-ui-shard SHARD=3    Run one UI shard"
 	@echo "  make test-ui-range RANGE=3-5  Run a UI shard range"
-	@echo "  make test-ui-failing  Run classes from the failing-results log"
+	@echo "  make test-ui-failing FAILING_RESULTS=path  Run classes failed in an xcodebuild log"
 	@echo "  make test-ui-resume   Resume at the last failed shard"
 	@echo "  make test-class CLASS=Name    Run one Swift test class"
 	@echo "  make xcode            Open the checked-in Xcode project"
@@ -65,9 +65,9 @@ test-ui-range: bundle
 test-ui-resume: bundle
 	./scripts/test-ui-shards.sh resume
 
-# Run only currently-failing test classes (~35 min)
+# Run classes failed in a prior xcodebuild log (~35 min)
 test-ui-failing: bundle
-	./scripts/test-ui-shards.sh failing
+	HOLOSCAPE_UI_FAILING_RESULTS_FILE="$(FAILING_RESULTS)" ./scripts/test-ui-shards.sh failing
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
