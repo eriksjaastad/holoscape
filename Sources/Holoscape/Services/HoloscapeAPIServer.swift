@@ -191,6 +191,9 @@ class HoloscapeAPIServer {
         let receiveErrorReporter = receiveErrorReporter
         let responseSendErrorReporter = responseSendErrorReporter
         connection.receive { [weak self] data, isComplete, error in
+            if let error {
+                receiveErrorReporter(error)
+            }
             switch Self.requestReceiveDecision(
                 accumulated: accumulated,
                 incoming: data ?? Data(),
@@ -213,8 +216,7 @@ class HoloscapeAPIServer {
                     reportError: responseSendErrorReporter
                 )
             case .receiveMore(let buffer):
-                if let error {
-                    receiveErrorReporter(error)
+                if error != nil {
                     connection.cancel()
                 } else {
                     self?.receiveFullRequest(connection: connection, accumulated: buffer)

@@ -326,7 +326,10 @@ final class HTTPParserTests: XCTestCase {
     @MainActor
     func testCompleteValidCallbackWithErrorStillRoutesContent() async throws {
         let responseSent = expectation(description: "route response sent")
-        let server = makeServer()
+        let events = OrderedEventRecorder()
+        let server = makeServer(receiveErrorReporter: { _ in
+            events.record("receiveError")
+        })
         let connection = RecordingHTTPServerConnection(
             receiveEvents: [
                 .init(
@@ -347,6 +350,7 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 503 Service Unavailable\r\n"))
         XCTAssertEqual(connection.receiveCallCount, 1)
         XCTAssertEqual(connection.cancelCallCount, 1)
+        XCTAssertEqual(events.values, ["receiveError"])
     }
 
     @MainActor
