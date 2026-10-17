@@ -193,7 +193,8 @@ final class HTTPParserTests: XCTestCase {
     func testMalformedHeaderLinesDoNotRouteRequest() {
         let malformedHeaders = [
             "Content-Length 100",
-            "Content-Length : 100"
+            "Content-Length : 100",
+            "X-Test:\u{0}"
         ]
 
         for header in malformedHeaders {
@@ -205,10 +206,50 @@ final class HTTPParserTests: XCTestCase {
             )
 
             guard case .respond(let response) = decision else {
-                return XCTFail("Expected response for \(header), got \(decision)")
+                return XCTFail("Expected response for \(header.debugDescription), got \(decision)")
             }
             XCTAssertEqual(response.status, 400)
         }
+    }
+
+    func testMalformedRequestTargetsDoNotRouteRequest() {
+        let requestTargets = [
+            "?",
+            "/channels?bad=\u{0}",
+            "/channels?bad=%GG",
+            "/channels#fragment",
+            "/channels\\input"
+        ]
+
+        for requestTarget in requestTargets {
+            let decision = HoloscapeAPIServer.requestReceiveDecision(
+                accumulated: Data(),
+                incoming: Data("GET \(requestTarget) HTTP/1.1\r\n\r\n".utf8),
+                isComplete: false,
+                maximumBytes: 128
+            )
+
+            guard case .respond(let response) = decision else {
+                return XCTFail("Expected response for \(requestTarget.debugDescription), got \(decision)")
+            }
+            XCTAssertEqual(response.status, 400)
+        }
+    }
+
+    func testValidRequestTargetAndHeaderValueRoute() throws {
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: Data("GET /channels?label=Agent%20One&filter=ready?now HTTP/1.1\r\nX-Test:\tvalue\r\n\r\n".utf8),
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .route(let request) = decision else {
+            return XCTFail("Expected route, got \(decision)")
+        }
+        XCTAssertEqual(request.path, "/channels")
+        XCTAssertEqual(request.queryParams["label"], "Agent One")
+        XCTAssertEqual(request.queryParams["filter"], "ready?now")
     }
 
     func testHTTP10RequestRoutes() {

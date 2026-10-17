@@ -104,7 +104,7 @@ enum HTTPParser {
         let parts = requestLine.split(separator: " ", omittingEmptySubsequences: false)
         guard parts.count == 3,
               isToken(parts[0]),
-              !parts[1].isEmpty,
+              isValidRequestTarget(parts[1]),
               parts[2] == "HTTP/1.0" || parts[2] == "HTTP/1.1" else {
             return .badRequest
         }
@@ -121,7 +121,9 @@ enum HTTPParser {
             guard isToken(rawName) else { return .badRequest }
 
             let name = rawName.lowercased()
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            let rawValue = line[line.index(after: colon)...]
+            guard isValidFieldValue(rawValue) else { return .badRequest }
+            let value = trimmingHTTPWhitespace(rawValue)
             // This server does not implement transfer codings. Ignoring this
             // field would make the request boundary ambiguous when a sender
             // also supplies Content-Length.
@@ -154,11 +156,11 @@ enum HTTPParser {
         if availableBodyBytes < contentLength { return .incomplete }
 
         // Split path and query string.
-        let pathComponents = fullPath.split(separator: "?", maxSplits: 1)
-        let path = String(pathComponents[0])
+        let querySeparator = fullPath.firstIndex(of: "?")
+        let path = querySeparator.map { String(fullPath[..<$0]) } ?? fullPath
         var queryParams: [String: String] = [:]
-        if pathComponents.count > 1 {
-            let queryString = String(pathComponents[1])
+        if let querySeparator {
+            let queryString = fullPath[fullPath.index(after: querySeparator)...]
             for pair in queryString.split(separator: "&") {
                 let kv = pair.split(separator: "=", maxSplits: 1)
                 if kv.count == 2 {
@@ -194,5 +196,68 @@ enum HTTPParser {
                 return false
             }
         }
+    }
+
+    private static func isValidRequestTarget(_ value: Substring) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.first == 47 else { return false }
+
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 37 {
+                guard index + 2 < bytes.count,
+                      isHexDigit(bytes[index + 1]),
+                      isHexDigit(bytes[index + 2]) else {
+                    return false
+                }
+                index += 3
+                continue
+            }
+            if byte == 63 {
+                index += 1
+                continue
+            }
+            guard byte == 47 || isPChar(byte) else {
+                return false
+            }
+            index += 1
+        }
+        return true
+    }
+
+    private static func isValidFieldValue(_ value: Substring) -> Bool {
+        value.utf8.allSatisfy { byte in
+            byte == 9 || byte >= 32 && byte != 127
+        }
+    }
+
+    private static func trimmingHTTPWhitespace(_ value: Substring) -> Substring {
+        var start = value.startIndex
+        var end = value.endIndex
+        while start < end, value[start] == " " || value[start] == "\t" {
+            start = value.index(after: start)
+        }
+        while start < end {
+            let previous = value.index(before: end)
+            guard value[previous] == " " || value[previous] == "\t" else { break }
+            end = previous
+        }
+        return value[start..<end]
+    }
+
+    private static func isPChar(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 48...57, 65...90, 97...122:
+            return true
+        case 33, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 58, 59, 61, 64, 95, 126:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isHexDigit(_ byte: UInt8) -> Bool {
+        (48...57).contains(byte) || (65...70).contains(byte) || (97...102).contains(byte)
     }
 }
