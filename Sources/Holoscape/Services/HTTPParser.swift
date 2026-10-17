@@ -64,6 +64,7 @@ struct HTTPResponse {
         case 201: return "Created"
         case 404: return "Not Found"
         case 400: return "Bad Request"
+        case 413: return "Payload Too Large"
         case 503: return "Service Unavailable"
         case 500: return "Internal Server Error"
         default: return "Unknown"
@@ -71,16 +72,24 @@ struct HTTPResponse {
     }
 }
 
+enum HTTPParseOutcome {
+    case incomplete
+    case request(HTTPRequest)
+    case badRequest
+    case payloadTooLarge
+}
+
 enum HTTPParser {
-    /// Parse an HTTP request from raw bytes.
-    /// Returns nil if the request is incomplete (no `\r\n\r\n` separator yet,
-    /// or fewer body bytes than `Content-Length` promises). Callers should
-    /// treat nil as "need more data" and keep reading from the socket.
-    static func parse(_ data: Data) -> HTTPRequest? {
+    /// Parse a bounded HTTP request from raw bytes.
+    static func parse(_ data: Data, maximumRequestBytes: Int) -> HTTPParseOutcome {
+        guard maximumRequestBytes >= 0, data.count <= maximumRequestBytes else {
+            return .payloadTooLarge
+        }
+
         // Locate the end-of-headers marker in raw bytes. If not present yet,
         // the request is incomplete and the caller must keep reading.
         let crlfcrlf = Data([0x0d, 0x0a, 0x0d, 0x0a])
-        guard let hdrRange = data.range(of: crlfcrlf) else { return nil }
+        guard let hdrRange = data.range(of: crlfcrlf) else { return .incomplete }
 
         // Slice out headers (before \r\n\r\n) and body (after).
         let headerData = data.subdata(in: data.startIndex..<hdrRange.lowerBound)
@@ -88,12 +97,12 @@ enum HTTPParser {
         let availableBodyBytes = data.count - bodyStart
 
         // Decode headers as UTF-8. HTTP headers are ASCII, so this is safe.
-        guard let headerString = String(data: headerData, encoding: .utf8) else { return nil }
+        guard let headerString = String(data: headerData, encoding: .utf8) else { return .badRequest }
         let headerLines = headerString.components(separatedBy: "\r\n")
-        guard let requestLine = headerLines.first else { return nil }
+        guard let requestLine = headerLines.first else { return .badRequest }
 
         let parts = requestLine.split(separator: " ", maxSplits: 2)
-        guard parts.count >= 2 else { return nil }
+        guard parts.count >= 2 else { return .badRequest }
         let method = String(parts[0])
         let fullPath = String(parts[1])
 
@@ -103,17 +112,25 @@ enum HTTPParser {
             if let colon = line.firstIndex(of: ":") {
                 let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
                 let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                if name == "content-length", let n = Int(value) {
-                    contentLength = n
+                if name == "content-length" {
+                    guard let parsedLength = Int(value), parsedLength >= 0 else {
+                        return .badRequest
+                    }
+                    contentLength = parsedLength
                 }
             }
+        }
+
+        guard bodyStart <= maximumRequestBytes,
+              contentLength <= maximumRequestBytes - bodyStart else {
+            return .payloadTooLarge
         }
 
         // Strictly require full body before considering the request complete.
         // Without this check, the parser used to happily return a request with
         // body=nil while headers said Content-Length>0, causing handlers to
         // reject the request with 400 "Invalid JSON body."
-        if availableBodyBytes < contentLength { return nil }
+        if availableBodyBytes < contentLength { return .incomplete }
 
         // Split path and query string.
         let pathComponents = fullPath.split(separator: "?", maxSplits: 1)
@@ -142,6 +159,6 @@ enum HTTPParser {
             body = nil
         }
 
-        return HTTPRequest(method: method, path: path, queryParams: queryParams, body: body)
+        return .request(HTTPRequest(method: method, path: path, queryParams: queryParams, body: body))
     }
 }

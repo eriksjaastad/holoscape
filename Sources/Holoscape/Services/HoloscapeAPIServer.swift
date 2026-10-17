@@ -23,6 +23,8 @@ final class SystemDockAttentionClient: DockAttentionClient {
 
 @MainActor
 class HoloscapeAPIServer {
+    nonisolated static let maximumRequestBytes = 1_048_576
+
     private var listener: NWListener?
     private var acceptsRequests = false
     private weak var channelManager: ChannelManager?
@@ -106,16 +108,39 @@ class HoloscapeAPIServer {
         receiveFullRequest(connection: connection, accumulated: Data())
     }
 
+    nonisolated static func appendingRequestData(
+        _ incoming: Data,
+        to accumulated: Data,
+        maximumBytes: Int = maximumRequestBytes
+    ) -> Data? {
+        guard maximumBytes >= 0,
+              accumulated.count <= maximumBytes,
+              incoming.count <= maximumBytes - accumulated.count else {
+            return nil
+        }
+        var buffer = accumulated
+        buffer.append(incoming)
+        return buffer
+    }
+
     /// Accumulate data until we have a complete HTTP request (headers + body).
     private nonisolated func receiveFullRequest(connection: NWConnection, accumulated: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, _ in
-            var buffer = accumulated
-            if let data { buffer.append(data) }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            if error != nil {
+                connection.cancel()
+                return
+            }
 
-            // HTTPParser.parse returns nil unless the full request (headers
-            // end marker + Content-Length worth of body bytes) has arrived,
-            // so the outer Content-Length recursion check is no longer needed.
-            if let request = HTTPParser.parse(buffer) {
+            guard let buffer = Self.appendingRequestData(data ?? Data(), to: accumulated) else {
+                let response = HTTPResponse.error("Payload too large", status: 413)
+                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                    connection.cancel()
+                }))
+                return
+            }
+
+            switch HTTPParser.parse(buffer, maximumRequestBytes: Self.maximumRequestBytes) {
+            case .request(let request):
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
@@ -123,14 +148,25 @@ class HoloscapeAPIServer {
                         connection.cancel()
                     }))
                 }
-            } else if isComplete {
-                let resp = HTTPResponse.error("Bad request")
-                connection.send(content: resp.serialize(), completion: .contentProcessed({ _ in
+            case .payloadTooLarge:
+                let response = HTTPResponse.error("Payload too large", status: 413)
+                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
                     connection.cancel()
                 }))
-            } else {
-                // Incomplete (need more bytes), keep reading from the socket.
-                self?.receiveFullRequest(connection: connection, accumulated: buffer)
+            case .badRequest:
+                let response = HTTPResponse.error("Bad request")
+                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                    connection.cancel()
+                }))
+            case .incomplete:
+                if isComplete {
+                    let response = HTTPResponse.error("Bad request")
+                    connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
+                        connection.cancel()
+                    }))
+                } else {
+                    self?.receiveFullRequest(connection: connection, accumulated: buffer)
+                }
             }
         }
     }
