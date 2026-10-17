@@ -135,6 +135,24 @@ final class HistoryBufferTests: XCTestCase {
         buffer.stopPeriodicFlush()
     }
 
+    func testDefaultPersistenceUsesConfigDirectoryOverride() {
+        let configDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferConfig-\(UUID().uuidString)", isDirectory: true)
+        let fallbackHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryBufferHome-\(UUID().uuidString)", isDirectory: true)
+
+        let persistURL = HistoryBuffer.defaultPersistURL(
+            environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path],
+            homeDirectory: fallbackHome
+        )
+
+        XCTAssertEqual(
+            persistURL,
+            configDirectory.standardizedFileURL.resolvingSymlinksInPath()
+                .appendingPathComponent("history-buffer.json")
+        )
+    }
+
     func testFlushPreservesUnrelatedLiveHistorySentinel() throws {
         let testHistoryURL = makePersistenceURL()
         let liveHistoryURL = testHistoryURL.deletingLastPathComponent()
