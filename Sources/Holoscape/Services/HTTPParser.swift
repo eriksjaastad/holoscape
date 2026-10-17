@@ -113,9 +113,11 @@ enum HTTPParser {
                 let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
                 let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
                 if name == "content-length" {
-                    guard let parsedLength = Int(value), parsedLength >= 0 else {
+                    guard !value.isEmpty,
+                          value.utf8.allSatisfy({ (48...57).contains($0) }) else {
                         return .badRequest
                     }
+                    guard let parsedLength = Int(value) else { return .payloadTooLarge }
                     contentLength = parsedLength
                 }
             }

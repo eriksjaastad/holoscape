@@ -25,6 +25,12 @@ final class SystemDockAttentionClient: DockAttentionClient {
 class HoloscapeAPIServer {
     nonisolated static let maximumRequestBytes = 1_048_576
 
+    enum RequestReceiveDecision {
+        case receiveMore(Data)
+        case route(HTTPRequest)
+        case respond(HTTPResponse)
+    }
+
     private var listener: NWListener?
     private var acceptsRequests = false
     private weak var channelManager: ChannelManager?
@@ -108,39 +114,43 @@ class HoloscapeAPIServer {
         receiveFullRequest(connection: connection, accumulated: Data())
     }
 
-    nonisolated static func appendingRequestData(
-        _ incoming: Data,
-        to accumulated: Data,
+    nonisolated static func requestReceiveDecision(
+        accumulated: Data,
+        incoming: Data,
+        isComplete: Bool,
         maximumBytes: Int = maximumRequestBytes
-    ) -> Data? {
+    ) -> RequestReceiveDecision {
         guard maximumBytes >= 0,
               accumulated.count <= maximumBytes,
               incoming.count <= maximumBytes - accumulated.count else {
-            return nil
+            return .respond(.error("Payload too large", status: 413))
         }
         var buffer = accumulated
         buffer.append(incoming)
-        return buffer
+
+        switch HTTPParser.parse(buffer, maximumRequestBytes: maximumBytes) {
+        case .request(let request):
+            return .route(request)
+        case .payloadTooLarge:
+            return .respond(.error("Payload too large", status: 413))
+        case .badRequest:
+            return .respond(.error("Bad request"))
+        case .incomplete where isComplete:
+            return .respond(.error("Bad request"))
+        case .incomplete:
+            return .receiveMore(buffer)
+        }
     }
 
     /// Accumulate data until we have a complete HTTP request (headers + body).
     private nonisolated func receiveFullRequest(connection: NWConnection, accumulated: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            if error != nil {
-                connection.cancel()
-                return
-            }
-
-            guard let buffer = Self.appendingRequestData(data ?? Data(), to: accumulated) else {
-                let response = HTTPResponse.error("Payload too large", status: 413)
-                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
-                    connection.cancel()
-                }))
-                return
-            }
-
-            switch HTTPParser.parse(buffer, maximumRequestBytes: Self.maximumRequestBytes) {
-            case .request(let request):
+            switch Self.requestReceiveDecision(
+                accumulated: accumulated,
+                incoming: data ?? Data(),
+                isComplete: isComplete
+            ) {
+            case .route(let request):
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
@@ -148,24 +158,15 @@ class HoloscapeAPIServer {
                         connection.cancel()
                     }))
                 }
-            case .payloadTooLarge:
-                let response = HTTPResponse.error("Payload too large", status: 413)
+            case .respond(let response):
                 connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
                     connection.cancel()
                 }))
-            case .badRequest:
-                let response = HTTPResponse.error("Bad request")
-                connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
-                    connection.cancel()
-                }))
-            case .incomplete:
-                if isComplete {
-                    let response = HTTPResponse.error("Bad request")
-                    connection.send(content: response.serialize(), completion: .contentProcessed({ _ in
-                        connection.cancel()
-                    }))
-                } else {
+            case .receiveMore(let buffer):
+                if error == nil {
                     self?.receiveFullRequest(connection: connection, accumulated: buffer)
+                } else {
+                    connection.cancel()
                 }
             }
         }
