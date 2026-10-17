@@ -664,6 +664,35 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testResolveConfiguredProfilesBeforeInterpretingCommandLikeLabels() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        let profiles = [
+            SessionProfile(
+                label: "ssh host",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "https://mcp.example.com"
+            ),
+            SessionProfile(
+                label: "claude project",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "https://chat.example.com"
+            ),
+        ]
+        var config = HoloscapeConfig.default
+        config.sessionProfiles = profiles
+        configService.save(config)
+
+        XCTAssertEqual(manager.resolve(label: "ssh host"), profiles[0])
+        XCTAssertEqual(manager.resolve(label: "claude project"), profiles[1])
+    }
+
+    @MainActor
     func testResolveUnknownLabelCreatesSSHProject() {
         let configService = ConfigService()
         let discoveryService = ProjectDiscoveryService(configService: configService)

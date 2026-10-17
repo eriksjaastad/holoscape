@@ -9,7 +9,7 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "mini-claude", connection: .local, command: "claude", directory: "~")
-        let channel = manager.createChannel(from: profile)
+        let channel = try! manager.createChannel(from: profile)
         XCTAssertEqual(channel.displayLabel, "mini-claude")
     }
 
@@ -19,8 +19,8 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "mini-claude", connection: .local, command: "claude", directory: "~")
-        let ch1 = manager.createChannel(from: profile)
-        let ch2 = manager.createChannel(from: profile)
+        let ch1 = try! manager.createChannel(from: profile)
+        let ch2 = try! manager.createChannel(from: profile)
 
         // First channel stays unnumbered (it was created before there were multiples)
         // Second channel gets number 2
@@ -34,9 +34,9 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "architect", connection: .local, command: "claude", directory: "~")
-        _ = manager.createChannel(from: profile)
-        _ = manager.createChannel(from: profile)
-        let ch3 = manager.createChannel(from: profile)
+        _ = try! manager.createChannel(from: profile)
+        _ = try! manager.createChannel(from: profile)
+        let ch3 = try! manager.createChannel(from: profile)
 
         XCTAssertEqual(ch3.displayLabel, "architect 3")
     }
@@ -47,8 +47,8 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "test", connection: .local, command: "claude", directory: "~")
-        let ch1 = manager.createChannel(from: profile)
-        let ch2 = manager.createChannel(from: profile)
+        let ch1 = try! manager.createChannel(from: profile)
+        let ch2 = try! manager.createChannel(from: profile)
 
         // Close the first channel
         manager.closeChannel(id: ch1.channelId)
@@ -57,7 +57,7 @@ final class InstanceNumberingTests: XCTestCase {
         XCTAssertEqual(ch2.displayLabel, "test 2")
 
         // Create a third — should get 3, not reuse 1
-        let ch3 = manager.createChannel(from: profile)
+        let ch3 = try! manager.createChannel(from: profile)
         XCTAssertEqual(ch3.displayLabel, "test 3")
     }
 
@@ -69,9 +69,9 @@ final class InstanceNumberingTests: XCTestCase {
         let profile1 = SessionProfile(label: "mini-claude", connection: .local, command: "claude", directory: "~")
         let profile2 = SessionProfile(label: "architect", connection: .local, command: "claude", directory: "~")
 
-        let mc1 = manager.createChannel(from: profile1)
-        let ar1 = manager.createChannel(from: profile2)
-        let mc2 = manager.createChannel(from: profile1)
+        let mc1 = try! manager.createChannel(from: profile1)
+        let ar1 = try! manager.createChannel(from: profile2)
+        let mc2 = try! manager.createChannel(from: profile1)
 
         XCTAssertEqual(mc1.displayLabel, "mini-claude")
         XCTAssertEqual(ar1.displayLabel, "architect")
@@ -84,7 +84,7 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "architect", connection: .ssh, command: "claude", directory: "~/projects", host: "MacBook.local", user: "erik")
-        let channel = manager.createChannel(from: profile)
+        let channel = try! manager.createChannel(from: profile)
 
         XCTAssertEqual(channel.channelType, .ssh)
         XCTAssertEqual(channel.displayLabel, "architect")
@@ -96,7 +96,7 @@ final class InstanceNumberingTests: XCTestCase {
         let manager = ChannelManager(configService: configService)
 
         let profile = SessionProfile(label: "shell", connection: .local, command: "/bin/zsh", directory: "~")
-        let channel = manager.createChannel(from: profile)
+        let channel = try! manager.createChannel(from: profile)
 
         XCTAssertEqual(channel.channelType, .shell)
     }

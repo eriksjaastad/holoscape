@@ -21,13 +21,17 @@ class SessionProfileManager {
         SessionProfile(label: "Bridge", connection: .bridge, command: "", directory: ""),
     ]
 
-    func allSessions() -> (preconfigured: [SessionProfile], discovered: [SessionProfile], recent: [RecentSession]) {
+    func allSessions() -> (
+        configured: [SessionProfile],
+        builtIn: [SessionProfile],
+        discovered: [SessionProfile],
+        recent: [RecentSession]
+    ) {
         let config = configService.load()
         let userProfiles = config.sessionProfiles ?? []
-        let preconfigured = userProfiles + Self.builtInProfiles
         let discovered = discoveryService.cached()
         let recent = config.recentSessions ?? []
-        return (preconfigured, discovered, recent)
+        return (userProfiles, Self.builtInProfiles, discovered, recent)
     }
 
     func refreshDiscoveredSessions() async -> [SessionProfile] {
@@ -40,6 +44,11 @@ class SessionProfileManager {
         let requestedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         let config = configService.load()
 
+        // Check preconfigured profiles
+        if let match = (config.sessionProfiles ?? []).first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
+            return match.resolved(with: config.sshDefaults)
+        }
+
         if let directSSH = directSSHProfile(from: requestedLabel, config: config) {
             return directSSH
         }
@@ -48,14 +57,10 @@ class SessionProfileManager {
             return claudeProject
         }
 
-        // Check built-in profiles
+        // Check built-in profiles after user profiles so a saved recent session
+        // reopens the same configured profile when its label shadows a built-in.
         if let match = Self.builtInProfiles.first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
             return match
-        }
-
-        // Check preconfigured profiles
-        if let match = (config.sessionProfiles ?? []).first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
-            return match.resolved(with: config.sshDefaults)
         }
 
         // Check discovered projects

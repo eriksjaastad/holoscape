@@ -2,7 +2,9 @@ import AppKit
 
 @MainActor
 protocol SessionLauncherDelegate: AnyObject {
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile label: String)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String)
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String)
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView)
 }
@@ -204,13 +206,21 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     }
 
     /// Update the items shown in the dropdown.
-    func updateItems(preconfigured: [SessionProfile], discovered: [SessionProfile], recent: [RecentSession]) {
+    func updateItems(
+        configured: [SessionProfile],
+        builtIn: [SessionProfile],
+        discovered: [SessionProfile],
+        recent: [RecentSession]
+    ) {
         items.removeAll()
 
-        if !preconfigured.isEmpty {
+        if !configured.isEmpty || !builtIn.isEmpty {
             items.append(LauncherItem(label: "--- Sessions ---", isHeader: true))
-            for profile in preconfigured {
+            for profile in configured {
                 items.append(LauncherItem(profile: profile, isHeader: false))
+            }
+            for profile in builtIn {
+                items.append(LauncherItem(profile: profile, isBuiltIn: true))
             }
         }
 
@@ -268,6 +278,16 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         }
     }
 
+    private func select(_ item: LauncherItem) {
+        if item.isBuiltIn {
+            launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: item.label)
+        } else if let profile = item.profile {
+            launcherDelegate?.sessionLauncher(self, didSelectProfile: profile)
+        } else {
+            launcherDelegate?.sessionLauncher(self, didSelectRecentSession: item.label)
+        }
+    }
+
     // MARK: - NSComboBoxDataSource
 
     nonisolated func numberOfItems(in comboBox: NSComboBox) -> Int {
@@ -286,7 +306,7 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
             guard index >= 0, index < items.count else { return }
             let item = items[index]
             guard !item.isHeader else { return }
-            launcherDelegate?.sessionLauncher(self, didSelectProfile: item.label)
+            select(item)
             comboBox.stringValue = ""
         }
     }
@@ -300,7 +320,7 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
 
                 // Check if it matches an existing item
                 if let existing = itemMatching(text) {
-                    launcherDelegate?.sessionLauncher(self, didSelectProfile: existing.label)
+                    select(existing)
                 } else {
                     launcherDelegate?.sessionLauncher(self, didTypeNewName: text)
                 }
@@ -318,6 +338,8 @@ struct LauncherItem {
     let label: String
     let detail: String?
     let isHeader: Bool
+    let profile: SessionProfile?
+    let isBuiltIn: Bool
 
     var displayText: String {
         if isHeader { return label }
@@ -333,12 +355,16 @@ struct LauncherItem {
         self.label = label
         self.detail = detail
         self.isHeader = isHeader
+        self.profile = nil
+        self.isBuiltIn = false
     }
 
-    init(profile: SessionProfile, isHeader: Bool) {
+    init(profile: SessionProfile, isHeader: Bool = false, isBuiltIn: Bool = false) {
         self.label = profile.label
         self.detail = Self.detail(for: profile)
         self.isHeader = isHeader
+        self.profile = profile
+        self.isBuiltIn = isBuiltIn
     }
 
     private static func detail(for profile: SessionProfile) -> String {
