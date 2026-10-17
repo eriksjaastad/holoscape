@@ -669,9 +669,80 @@ final class ChannelManagerTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try manager.createChannel(from: profile)) { error in
-            XCTAssertEqual(error as? SessionProfileLaunchError, .missingAgentChatAPIURL(label: "Broken Chat"))
+            XCTAssertEqual(error as? SessionProfileLaunchError, .invalidAgentChatAPIURL(label: "Broken Chat"))
         }
         XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testMalformedAndUnsupportedExternalProfileURLsDoNotCreateChannels() {
+        let profiles = [
+            SessionProfile(
+                label: "Malformed MCP",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "not a URL"
+            ),
+            SessionProfile(
+                label: "Unsupported MCP",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "file:///tmp/mcp.sock"
+            ),
+            SessionProfile(
+                label: "Malformed Chat",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "https://"
+            ),
+            SessionProfile(
+                label: "Unsupported Chat",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "ftp://chat.example.com"
+            ),
+        ]
+
+        for profile in profiles {
+            XCTAssertThrowsError(try manager.createChannel(from: profile), profile.label)
+        }
+        XCTAssertTrue(manager.allChannels().isEmpty)
+    }
+
+    func testSessionLauncherFailureDoesNotActivateSwitchOrRecordRecentSession() throws {
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let profileManager = SessionProfileManager(
+            configService: configService,
+            discoveryService: discoveryService
+        )
+        let windowController = MainWindowController(
+            channelManager: manager,
+            configService: configService
+        )
+        windowController.setProfileManager(profileManager)
+        var presentedError: Error?
+        windowController.sessionLaunchErrorPresenter = { error, _ in
+            presentedError = error
+        }
+
+        windowController.launchSession(from: SessionProfile(
+            label: "Broken MCP",
+            connection: .mcp,
+            command: "",
+            directory: "",
+            endpoint: "file:///tmp/mcp.sock"
+        ))
+
+        XCTAssertEqual(
+            presentedError as? SessionProfileLaunchError,
+            .invalidMCPEndpoint(label: "Broken MCP")
+        )
+        XCTAssertTrue(manager.allChannels().isEmpty)
+        XCTAssertNil(windowController.activeChannelId)
+        XCTAssertEqual(configService.load().recentSessions ?? [], [])
     }
 
     func testValidExternalProfilesCreateRequestedChannelTypes() throws {

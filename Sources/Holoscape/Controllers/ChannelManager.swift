@@ -2,14 +2,14 @@ import Foundation
 
 enum SessionProfileLaunchError: LocalizedError, Equatable {
     case invalidMCPEndpoint(label: String)
-    case missingAgentChatAPIURL(label: String)
+    case invalidAgentChatAPIURL(label: String)
 
     var errorDescription: String? {
         switch self {
         case .invalidMCPEndpoint(let label):
             return "The MCP session profile “\(label)” does not have a valid endpoint URL."
-        case .missingAgentChatAPIURL(let label):
-            return "The Agent Chat session profile “\(label)” does not have an API URL."
+        case .invalidAgentChatAPIURL(let label):
+            return "The Agent Chat session profile “\(label)” does not have a valid HTTP or HTTPS API URL."
         }
     }
 }
@@ -81,18 +81,17 @@ class ChannelManager {
         let agentChatAPIURL: String?
         switch profile.connection {
         case .mcp:
-            guard let endpointString = profile.endpoint,
-                  let endpoint = URL(string: endpointString) else {
+            guard let endpoint = Self.validExternalServiceURL(profile.endpoint) else {
                 throw SessionProfileLaunchError.invalidMCPEndpoint(label: profile.label)
             }
             mcpEndpoint = endpoint
             agentChatAPIURL = nil
         case .agentChat:
-            guard let apiURL = profile.apiURL, !apiURL.isEmpty else {
-                throw SessionProfileLaunchError.missingAgentChatAPIURL(label: profile.label)
+            guard let apiURL = Self.validExternalServiceURL(profile.apiURL) else {
+                throw SessionProfileLaunchError.invalidAgentChatAPIURL(label: profile.label)
             }
             mcpEndpoint = nil
-            agentChatAPIURL = apiURL
+            agentChatAPIURL = apiURL.absoluteString
         case .local, .ssh, .bridge:
             mcpEndpoint = nil
             agentChatAPIURL = nil
@@ -141,7 +140,7 @@ class ChannelManager {
             controller = BridgeChannelController(id: id, channelManager: self, instanceNumber: instanceNumber)
         case .agentChat:
             guard let apiURL = agentChatAPIURL else {
-                throw SessionProfileLaunchError.missingAgentChatAPIURL(label: profile.label)
+                throw SessionProfileLaunchError.invalidAgentChatAPIURL(label: profile.label)
             }
             let apiKey = loadAPIKey(envVarName: profile.apiKeyEnv)
             controller = GroupChatChannelController(
@@ -155,6 +154,19 @@ class ChannelManager {
         channelOrder.append(id)
         channelLabels[id] = profile.label
         return controller
+    }
+
+    private static func validExternalServiceURL(_ rawValue: String?) -> URL? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return components.url
     }
 
     /// Close a channel. Returns true if confirmation is needed (active process).

@@ -32,6 +32,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     let channelManager: ChannelManager
     private let configService: ConfigService
     private var profileManager: SessionProfileManager?
+    internal var sessionLaunchErrorPresenter: (Error, NSWindow) -> Void = { error, window in
+        let alert = NSAlert()
+        alert.messageText = "Session Not Configured"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window)
+    }
     private(set) var channelMutationEnabled = true
 
     func setChannelMutationEnabled(_ enabled: Bool) {
@@ -2363,7 +2370,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         switchToChannel(channel.channelId)
     }
 
-    private func launchSession(from profile: SessionProfile) {
+    internal func launchSession(from profile: SessionProfile) {
         guard channelMutationEnabled else { return }
         let resolved = profile.resolved(with: configService.load().sshDefaults)
         do {
@@ -2374,11 +2381,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             refreshLauncher()
             switchToChannel(channel.channelId)
         } catch {
-            let alert = NSAlert()
-            alert.messageText = "Session Not Configured"
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            alert.beginSheetModal(for: window)
+            sessionLaunchErrorPresenter(error, window)
         }
     }
 
