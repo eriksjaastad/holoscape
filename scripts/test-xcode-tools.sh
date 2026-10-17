@@ -66,6 +66,14 @@ elif mode == "target-membership":
     )
     destination.write_text(source)
     raise SystemExit(0)
+elif mode == "source-phase-membership":
+    source = source.replace(
+        "\t\t\t\t588AC30E0A325E0EC23904A2 /* Sources */,\n",
+        "",
+        1,
+    )
+    destination.write_text(source)
+    raise SystemExit(0)
 elif mode == "link-edge":
     source = source.replace(
         "33BBD496CD920CD4B74477AF /* libCNativePTY.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C8599FAC0805093E678DF085 /* libCNativePTY.a */; };",
@@ -97,7 +105,7 @@ destination.write_text(source[:start] + phase + source[end:])
 PY
 }
 
-for mutation in missing stale moved target-config target-product target-membership link-edge native-path proxy-target; do
+for mutation in missing stale moved target-config target-product target-membership source-phase-membership link-edge native-path proxy-target; do
     mutated_project="$work_dir/$mutation.pbxproj"
     mutate_project "$project" "$mutated_project" "$mutation"
     if "$validator" "$mutated_project" >"$work_dir/$mutation.out" 2>&1; then
@@ -215,6 +223,12 @@ if [[ -n "${FAKE_STATUS_PATH:-}" ]]; then
 fi
 if [[ -n "${FAKE_INVOCATION_LOG:-}" ]]; then
     printf 'invoked\n' >>"$FAKE_INVOCATION_LOG"
+fi
+if [[ -n "${FAKE_PID_PATH:-}" ]]; then
+    printf '%s\n' "$$" >"$FAKE_PID_PATH"
+fi
+if [[ -n "${FAKE_SIGNAL_PATH:-}" ]]; then
+    trap 'printf TERM >"$FAKE_SIGNAL_PATH"; exit 143' TERM
 fi
 if [[ -n "${FAKE_SLEEP_SECONDS:-}" ]]; then
     sleep "$FAKE_SLEEP_SECONDS"
@@ -531,6 +545,75 @@ for forwarded_signal in HUP INT TERM; do
         exit 1
     fi
 done
+
+shard_signal_pid="$work_dir/shard-script-signal.pid"
+shard_signal_received="$work_dir/shard-script-signal.received"
+FAKE_SLEEP_SECONDS=30 FAKE_PID_PATH="$shard_signal_pid" FAKE_SIGNAL_PATH="$shard_signal_received" \
+    HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/shard-script-signal-results" \
+    PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1 \
+    >"$work_dir/shard-script-signal.out" 2>&1 &
+shard_script_pid=$!
+signal_attempts=0
+while [[ ! -f "$shard_signal_pid" && "$signal_attempts" -lt 100 ]]; do
+    sleep 0.02
+    signal_attempts=$((signal_attempts + 1))
+done
+if [[ ! -f "$shard_signal_pid" ]]; then
+    echo "error: shard-script signal fixture did not become ready" >&2
+    kill -KILL "$shard_script_pid" 2>/dev/null || true
+    wait "$shard_script_pid" 2>/dev/null || true
+    exit 1
+fi
+kill -TERM "$shard_script_pid"
+set +e
+wait "$shard_script_pid"
+shard_script_status=$?
+set -e
+fake_xcodebuild_pid=$(<"$shard_signal_pid")
+if [[ "$shard_script_status" -ne 143 ]] || \
+   [[ ! -f "$shard_signal_received" ]] || \
+   kill -0 "$fake_xcodebuild_pid" 2>/dev/null; then
+    echo "error: UI shard script did not forward SIGTERM and reap xcodebuild" >&2
+    cat "$work_dir/shard-script-signal.out" >&2
+    exit 1
+fi
+
+make_signal_pid="$work_dir/make-signal.pid"
+make_signal_received="$work_dir/make-signal.received"
+cat >"$work_dir/make-signal-overrides.mk" <<'EOF'
+bundle:
+	@:
+EOF
+FAKE_SLEEP_SECONDS=30 FAKE_PID_PATH="$make_signal_pid" FAKE_SIGNAL_PATH="$make_signal_received" \
+    HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/make-signal-results" \
+    PATH="$work_dir/bin:$PATH" \
+    make -s -C "$repo_root" -f Makefile -f "$work_dir/make-signal-overrides.mk" \
+    test-ui-shard SHARD=1 >"$work_dir/make-signal.out" 2>&1 &
+make_pid=$!
+signal_attempts=0
+while [[ ! -f "$make_signal_pid" && "$signal_attempts" -lt 100 ]]; do
+    sleep 0.02
+    signal_attempts=$((signal_attempts + 1))
+done
+if [[ ! -f "$make_signal_pid" ]]; then
+    echo "error: make signal fixture did not become ready" >&2
+    kill -KILL "$make_pid" 2>/dev/null || true
+    wait "$make_pid" 2>/dev/null || true
+    exit 1
+fi
+kill -TERM "$make_pid"
+set +e
+wait "$make_pid"
+make_signal_status=$?
+set -e
+fake_xcodebuild_pid=$(<"$make_signal_pid")
+if [[ "$make_signal_status" -eq 0 ]] || \
+   [[ ! -f "$make_signal_received" ]] || \
+   kill -0 "$fake_xcodebuild_pid" 2>/dev/null; then
+    echo "error: test-ui-shard make recipe did not terminate and reap xcodebuild" >&2
+    cat "$work_dir/make-signal.out" >&2
+    exit 1
+fi
 
 invalid_shard_index=0
 for invalid_shards in "" 5-3 0-1 1-11 11 invalid-range 18446744073709551617 \

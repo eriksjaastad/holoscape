@@ -33,6 +33,21 @@ mkdir -p "$RESULTS_DIR"
 declare -a SHARD_RUN_STATUS=()
 declare -a SHARD_RUN_PASSED=()
 declare -a SHARD_RUN_FAILED=()
+ACTIVE_TIMEOUT_PID=""
+INTERRUPTED_STATUS=0
+
+forward_active_signal() {
+    local signal_name="$1"
+    local status="$2"
+    INTERRUPTED_STATUS="$status"
+    if [[ -n "$ACTIVE_TIMEOUT_PID" ]] && kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+        kill -"$signal_name" "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true
+    fi
+}
+
+trap 'forward_active_signal HUP 129' HUP
+trap 'forward_active_signal INT 130' INT
+trap 'forward_active_signal TERM 143' TERM
 
 count_matches() {
     local pattern="$1"
@@ -116,23 +131,61 @@ run_selected_tests() {
         echo "error: cannot remove prior result bundle: $bundle" >&2
         return 1
     fi
+    local pipeline_fifo="$RESULTS_DIR/.xcodebuild-output.$$.$RANDOM"
+    local pipeline_status="$RESULTS_DIR/.xcodebuild-status.$$.$RANDOM"
+    if ! mkfifo "$pipeline_fifo"; then
+        echo "error: cannot create xcodebuild output pipe: $pipeline_fifo" >&2
+        return 1
+    fi
     set +e
+    (
+        set +e
+        tee "$output" <"$pipeline_fifo" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
+        local_status=("${PIPESTATUS[@]}")
+        printf '%s %s\n' "${local_status[0]}" "${local_status[1]}" >"$pipeline_status"
+    ) &
+    local filter_pid=$!
     "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
         -skipPackagePluginValidation \
         -resultBundlePath "$bundle" \
         "$@" \
-        2>&1 | tee "$output" | grep -E "Test Case.*(passed|failed|skipped)|Executed|TEST|error: command timed out"
-    local pipeline_status=("${PIPESTATUS[@]}")
+        >"$pipeline_fifo" 2>&1 &
+    ACTIVE_TIMEOUT_PID=$!
+    wait "$ACTIVE_TIMEOUT_PID"
+    local command_status=$?
+    wait "$filter_pid"
+    local filter_status=$?
+    ACTIVE_TIMEOUT_PID=""
     set -e
+    local tee_status=1
+    local grep_status=1
+    if [[ -r "$pipeline_status" ]]; then
+        read -r tee_status grep_status <"$pipeline_status"
+    fi
+    local cleanup_status=0
+    rm -f "$pipeline_fifo" "$pipeline_status" || cleanup_status=$?
+    if [[ "$cleanup_status" -ne 0 ]]; then
+        echo "error: cannot remove xcodebuild pipeline artifacts" >&2
+        return "$cleanup_status"
+    fi
     local output_status=0
     "$TEST_OUTPUT_VALIDATOR" "$output" || output_status=$?
     echo "  $label bundle: $bundle"
-    if [ "${pipeline_status[0]}" -ne 0 ]; then
-        return "${pipeline_status[0]}"
+    if [[ "$command_status" -eq 125 ]]; then
+        INTERRUPTED_STATUS=0
+        return 125
     fi
-    if [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ]; then
+    if [[ "$INTERRUPTED_STATUS" -ne 0 ]]; then
+        local interrupted_status="$INTERRUPTED_STATUS"
+        INTERRUPTED_STATUS=0
+        return "$interrupted_status"
+    fi
+    if [[ "$command_status" -ne 0 ]]; then
+        return "$command_status"
+    fi
+    if [[ "$filter_status" -ne 0 ]] || [[ "$tee_status" -ne 0 ]] || [[ "$grep_status" -gt 1 ]] || [[ "$output_status" -ne 0 ]]; then
         return 1
     fi
 }

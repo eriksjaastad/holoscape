@@ -199,6 +199,8 @@ PY
 
 app_target=$(object_block 5C59BAAE8FD8795F26EC429E)
 unit_target=$(object_block 6D1C4365B7B34EC1185722E9)
+property_target=$(object_block EC16900C71D87D4A20A1DE69)
+ui_target=$(object_block 70CD47CBC5D1B1774DFA63D9)
 app_frameworks=$(object_block 17800BD5018258B2F8301A01)
 unit_frameworks=$(object_block 982D1B0759F34671CF2E01A8)
 native_target=$(object_block 6C329224BFDF298222AD54F2)
@@ -236,6 +238,10 @@ require_exact_count '"-lc\+\+",' 4 'the Debug and Release C++ runtime links for 
 require_in_block "$app_target" 'DAC48B5DA795A81287A82366 /\* PBXTargetDependency \*/' 'the app CNativePTY dependency'
 require_in_block "$unit_target" '580BFB81F52809995A063812 /\* PBXTargetDependency \*/' 'the unit-test CNativePTY dependency'
 require_in_block "$unit_target" 'BCB539B94D0F4E55A8FD76D3 /\* SwiftTerm \*/' 'the unit-test SwiftTerm package dependency'
+require_in_block "$app_target" 'DBDABAE51D6625081EA3C33F /\* Sources \*/' 'the app source phase'
+require_in_block "$unit_target" '588AC30E0A325E0EC23904A2 /\* Sources \*/' 'the unit-test source phase'
+require_in_block "$property_target" 'D667E382F8A6AB7B28F95FC5 /\* Sources \*/' 'the property-test source phase'
+require_in_block "$ui_target" 'DF2F634F7655E0873CBF64BB /\* Sources \*/' 'the UI-test source phase'
 require_in_block "$app_frameworks" '33BBD496CD920CD4B74477AF /\* libCNativePTY\.a in Frameworks \*/' 'the app CNativePTY link'
 require_in_block "$unit_frameworks" '440A44BB465227FF25586C6C /\* libCNativePTY\.a in Frameworks \*/' 'the unit-test CNativePTY link'
 require_in_block "$unit_frameworks" '18A4681DF2204A32A91C6E67 /\* SwiftTerm in Frameworks \*/' 'the unit-test SwiftTerm link'
