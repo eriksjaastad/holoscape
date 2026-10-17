@@ -405,8 +405,7 @@ struct BrokerSessionRegistry {
         ).first
     ) -> URL {
         if let configDirectory = ConfigService.explicitConfigDirectory(
-            environment: environment,
-            homeDirectory: homeDirectory
+            environment: environment
         ) {
             return configDirectory
                 .appendingPathComponent("BrokerSessions", isDirectory: true)
