@@ -81,15 +81,20 @@ final class HistoryBuffer {
     private var isDirty: Bool = false
 
     init(persistURL: URL? = nil, startsPeriodicFlush: Bool = true) {
-        self.persistURL = persistURL ?? Self.defaultPersistURL
+        self.persistURL = persistURL ?? Self.defaultPersistURL()
         if startsPeriodicFlush {
             startPeriodicFlush()
         }
     }
 
-    private static var defaultPersistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".holoscape/history-buffer.json")
+    static func defaultPersistURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        ConfigService.defaultConfigDirectory(
+            environment: environment,
+            homeDirectory: homeDirectory
+        ).appendingPathComponent("history-buffer.json")
     }
 
     func stopPeriodicFlush() {
@@ -175,7 +180,7 @@ final class HistoryBuffer {
     static func loadPersistedSnapshot(
         from url: URL? = nil
     ) -> Result<HistorySnapshot?, HistorySnapshotLoadFailure> {
-        let url = url ?? defaultPersistURL
+        let url = url ?? defaultPersistURL()
         var fileStatus = stat()
         guard lstat(url.path, &fileStatus) == 0 else {
             let code = errno

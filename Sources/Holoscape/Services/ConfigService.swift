@@ -28,6 +28,19 @@ class ConfigService {
     private var unresolvedLoadFailure: ConfigServiceDiagnostic?
     private(set) var lastDiagnostic: ConfigServiceDiagnostic?
 
+    static func defaultConfigDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        let directory: URL
+        if let override = environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
+            directory = URL(fileURLWithPath: override)
+        } else {
+            directory = homeDirectory.appendingPathComponent(".holoscape")
+        }
+        return directory.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     init() {
         // Allow UI tests to isolate config in a per-test directory by setting
         // HOLOSCAPE_CONFIG_DIR in launchEnvironment. Without this override,
@@ -35,12 +48,7 @@ class ConfigService {
         // guard in applicationWillTerminate / scheduleSaveState to skip
         // persistence under --ui-testing to avoid cross-test pollution —
         // which in turn breaks restart/persistence tests.
-        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            self.configDir = URL(fileURLWithPath: override).standardizedFileURL.resolvingSymlinksInPath()
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            self.configDir = home.appendingPathComponent(".holoscape").standardizedFileURL.resolvingSymlinksInPath()
-        }
+        self.configDir = Self.defaultConfigDirectory()
         self.configURL = configDir.appendingPathComponent("config.json")
         self.persistence = .live
         self.createDirectory = { directory in
