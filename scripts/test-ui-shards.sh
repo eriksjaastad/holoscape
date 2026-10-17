@@ -85,6 +85,13 @@ get_shard() {
     echo "${!var}"
 }
 
+is_terminal_status() {
+    case "$1" in
+        125|129|130|143) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 run_shard() {
     local n=$1
     local classes=$(get_shard "$n")
@@ -152,6 +159,9 @@ run_shard() {
 
     if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ] || [ "${pipeline_status[2]}" -gt 1 ] || [ "$output_status" -ne 0 ] || [ "$failed" -gt 0 ]; then
         record_failed_shard "$n" "$status_file" || return 1
+        if [ "${pipeline_status[0]}" -ne 0 ]; then
+            return "${pipeline_status[0]}"
+        fi
         return 1
     fi
     if ! printf 'PASS\n' > "$status_file"; then
@@ -223,8 +233,16 @@ fi
 case "$selection" in
     all)
         overall_status=0
-        for i in $(seq 1 10); do
-            run_shard "$i" || overall_status=1
+        for (( i=1; i<=10; i++ )); do
+            if run_shard "$i"; then
+                :
+            else
+                shard_status=$?
+                if is_terminal_status "$shard_status"; then
+                    exit "$shard_status"
+                fi
+                overall_status=1
+            fi
         done
         print_summary
         exit "$overall_status"
@@ -232,15 +250,35 @@ case "$selection" in
     resume)
         overall_status=0
         if [ -f "$RESUME_FILE" ]; then
-            start=$(cat "$RESUME_FILE")
+            start=$(<"$RESUME_FILE")
+            if ! [[ "$start" =~ ^([1-9]|10)$ ]]; then
+                echo "error: invalid shard resume point in $RESUME_FILE: $start" >&2
+                exit 2
+            fi
             echo "Resuming from shard $start"
-            for i in $(seq "$start" 10); do
-                run_shard "$i" || overall_status=1
+            for (( i=start; i<=10; i++ )); do
+                if run_shard "$i"; then
+                    :
+                else
+                    shard_status=$?
+                    if is_terminal_status "$shard_status"; then
+                        exit "$shard_status"
+                    fi
+                    overall_status=1
+                fi
             done
         else
             echo "No resume point found. Run all."
-            for i in $(seq 1 10); do
-                run_shard "$i" || overall_status=1
+            for (( i=1; i<=10; i++ )); do
+                if run_shard "$i"; then
+                    :
+                else
+                    shard_status=$?
+                    if is_terminal_status "$shard_status"; then
+                        exit "$shard_status"
+                    fi
+                    overall_status=1
+                fi
             done
         fi
         print_summary
@@ -280,7 +318,10 @@ case "$selection" in
         failing_output_status=0
         "$TEST_OUTPUT_VALIDATOR" "$failing_output" || failing_output_status=$?
         echo "  Bundle:  $failing_bundle"
-        if [ "${failing_pipeline_status[0]}" -ne 0 ] || [ "${failing_pipeline_status[1]}" -ne 0 ] || [ "${failing_pipeline_status[2]}" -gt 1 ] || [ "$failing_output_status" -ne 0 ]; then
+        if [ "${failing_pipeline_status[0]}" -ne 0 ]; then
+            exit "${failing_pipeline_status[0]}"
+        fi
+        if [ "${failing_pipeline_status[1]}" -ne 0 ] || [ "${failing_pipeline_status[2]}" -gt 1 ] || [ "$failing_output_status" -ne 0 ]; then
             exit 1
         fi
         ;;
@@ -297,8 +338,16 @@ case "$selection" in
             exit 2
         fi
         overall_status=0
-        for i in $(seq "$start" "$end"); do
-            run_shard "$i" || overall_status=1
+        for (( i=start; i<=end; i++ )); do
+            if run_shard "$i"; then
+                :
+            else
+                shard_status=$?
+                if is_terminal_status "$shard_status"; then
+                    exit "$shard_status"
+                fi
+                overall_status=1
+            fi
         done
         print_summary
         exit "$overall_status"

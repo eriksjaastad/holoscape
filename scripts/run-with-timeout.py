@@ -40,7 +40,9 @@ def process_group_exists(process_group_id: int) -> bool:
         return True
 
 
-def wait_for_process_group_exit(process: subprocess.Popen[bytes], timeout: float) -> bool:
+def wait_for_process_group_exit(
+    process: subprocess.Popen[bytes], timeout: float
+) -> bool | None:
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -51,8 +53,15 @@ def wait_for_process_group_exit(process: subprocess.Popen[bytes], timeout: float
                 process.wait(timeout=min(0.05, remaining))
             except subprocess.TimeoutExpired:
                 continue
-        if not process_group_exists(process.pid):
-            return True
+        try:
+            if not process_group_exists(process.pid):
+                return True
+        except OSError as error:
+            print(
+                f"error: cannot inspect command group {process.pid}: {error}",
+                file=sys.stderr,
+            )
+            return None
         time.sleep(min(0.05, remaining))
 
 
@@ -61,12 +70,14 @@ def stop_and_reap_process_group(
 ) -> bool:
     if not stop_process_group(process, initial_signal):
         return False
-    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
-        return True
+    initial_wait = wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS)
+    if initial_wait is not False:
+        return initial_wait is True
     if not stop_process_group(process, signal.SIGKILL):
         return False
-    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
-        return True
+    final_wait = wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS)
+    if final_wait is not False:
+        return final_wait is True
     command_name = (
         process.args[0] if isinstance(process.args, (list, tuple)) else process.args
     )

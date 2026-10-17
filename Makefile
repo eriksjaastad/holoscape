@@ -74,7 +74,7 @@ test-ui-failing: bundle
 test-ui-fast: bundle
 	@output=$$(mktemp "$${TMPDIR:-/tmp}/holoscape-ui-fast.XXXXXX"); \
 	trap 'rm -f "$$output"' EXIT; \
-	set -o pipefail; status=0; $(UI_TEST_RUNNER) xcodebuild test \
+	set -o pipefail; set +e; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
@@ -83,21 +83,29 @@ test-ui-fast: bundle
 		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
 		-only-testing:HoloscapeUITests/SidebarUITests \
 		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
-		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out" || status=$$?; \
-	$(UI_TEST_OUTPUT_VALIDATOR) "$$output" || status=$$?; \
+		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out"; \
+	pipeline_status=("$${PIPESTATUS[@]}"); set -e; status=$${pipeline_status[0]}; \
+	if [ "$$status" -eq 0 ] && [ "$${pipeline_status[1]}" -ne 0 ]; then status=$${pipeline_status[1]}; fi; \
+	if [ "$$status" -eq 0 ] && [ "$${pipeline_status[2]}" -gt 1 ]; then status=$${pipeline_status[2]}; fi; \
+	validator_status=0; $(UI_TEST_OUTPUT_VALIDATOR) "$$output" || validator_status=$$?; \
+	if [ "$$status" -eq 0 ]; then status=$$validator_status; fi; \
 	exit $$status
 
 # Run notification UI tests
 test-ui-notifications: bundle
 	@output=$$(mktemp "$${TMPDIR:-/tmp}/holoscape-ui-notifications.XXXXXX"); \
 	trap 'rm -f "$$output"' EXIT; \
-	set -o pipefail; status=0; $(UI_TEST_RUNNER) xcodebuild test \
+	set -o pipefail; set +e; $(UI_TEST_RUNNER) xcodebuild test \
 		-scheme Holoscape \
 		-destination 'platform=macOS' \
 		-skipPackagePluginValidation \
 		-only-testing:HoloscapeUITests/NotificationSystemUITests \
-		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out" || status=$$?; \
-	$(UI_TEST_OUTPUT_VALIDATOR) "$$output" || status=$$?; \
+		2>&1 | tee "$$output" | grep -E "Test Case|Executed|TEST|error: command timed out"; \
+	pipeline_status=("$${PIPESTATUS[@]}"); set -e; status=$${pipeline_status[0]}; \
+	if [ "$$status" -eq 0 ] && [ "$${pipeline_status[1]}" -ne 0 ]; then status=$${pipeline_status[1]}; fi; \
+	if [ "$$status" -eq 0 ] && [ "$${pipeline_status[2]}" -gt 1 ]; then status=$${pipeline_status[2]}; fi; \
+	validator_status=0; $(UI_TEST_OUTPUT_VALIDATOR) "$$output" || validator_status=$$?; \
+	if [ "$$status" -eq 0 ]; then status=$$validator_status; fi; \
 	exit $$status
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)

@@ -124,8 +124,14 @@ cat >"$work_dir/bin/xcodebuild" <<'EOF'
 if [[ -n "${FAKE_STATUS_PATH:-}" ]]; then
     mkdir -p "$FAKE_STATUS_PATH"
 fi
+if [[ -n "${FAKE_INVOCATION_LOG:-}" ]]; then
+    printf 'invoked\n' >>"$FAKE_INVOCATION_LOG"
+fi
 if [[ -n "${FAKE_SLEEP_SECONDS:-}" ]]; then
     sleep "$FAKE_SLEEP_SECONDS"
+fi
+if [[ -n "${FAKE_EXIT_STATUS:-}" ]]; then
+    exit "$FAKE_EXIT_STATUS"
 fi
 if [[ -n "${FAKE_REQUIRE_ARGUMENT:-}" ]]; then
     found_argument=0
@@ -316,6 +322,24 @@ module.sys.argv = [module_path, "1", "synthetic-command"]
 status = module.main()
 if status != module.TERMINATION_FAILURE_EXIT_STATUS:
     raise SystemExit(f"cleanup signaling failure returned {status}, expected 125")
+
+class ExitedProcess:
+    pid = 43211
+    args = ["synthetic-command"]
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+def fail_existence_probe(pid, sig):
+    if sig == 0:
+        raise OSError("inspection failed")
+
+module.os.killpg = fail_existence_probe
+if module.stop_and_reap_process_group(ExitedProcess(), signal.SIGTERM):
+    raise SystemExit("cleanup existence-probe failure was reported as success")
 PY
 
 cat >"$work_dir/signal-child.py" <<'PY'
@@ -397,6 +421,39 @@ for invalid_shards in "" 5-3 0-1 1-11 11 invalid-range 18446744073709551617 \
         exit 1
     fi
 done
+
+resume_file="$work_dir/single-results/last-failed-shard"
+invalid_resume_index=0
+for invalid_resume in "" garbage 0 11 18446744073709551617; do
+    invalid_resume_index=$((invalid_resume_index + 1))
+    printf '%s\n' "$invalid_resume" >"$resume_file"
+    resume_marker="$work_dir/invalid-resume-$invalid_resume_index-xcodebuild-invoked"
+    if FAKE_STATUS_PATH="$resume_marker" PATH="$work_dir/bin:$PATH" \
+       bash "$work_dir/test-ui-shards.sh" resume \
+       >"$work_dir/invalid-resume-$invalid_resume_index.out" 2>&1; then
+        echo "error: UI shard runner accepted invalid resume point: $invalid_resume" >&2
+        exit 1
+    fi
+    if [[ -e "$resume_marker" ]] || \
+       ! grep -q 'invalid shard resume point' "$work_dir/invalid-resume-$invalid_resume_index.out"; then
+        echo "error: invalid resume point did not fail before xcodebuild: $invalid_resume" >&2
+        cat "$work_dir/invalid-resume-$invalid_resume_index.out" >&2
+        exit 1
+    fi
+done
+
+signal_invocations="$work_dir/shard-signal-invocations"
+set +e
+FAKE_EXIT_STATUS=130 FAKE_INVOCATION_LOG="$signal_invocations" PATH="$work_dir/bin:$PATH" \
+    bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal.out" 2>&1
+shard_signal_status=$?
+set -e
+if [[ "$shard_signal_status" -ne 130 ]] || \
+   [[ $(wc -l <"$signal_invocations") -ne 1 ]]; then
+    echo "error: UI shard range did not preserve cancellation status and stop" >&2
+    cat "$work_dir/shard-signal.out" >&2
+    exit 1
+fi
 
 cat >"$work_dir/group-leader.py" <<'PY'
 from pathlib import Path
@@ -492,6 +549,20 @@ for target in test-ui-shard test-ui-range; do
        ! grep -q 'shard selection must not be empty' "$work_dir/$target-missing.out"; then
         echo "error: $target did not reject its missing selection before xcodebuild" >&2
         cat "$work_dir/$target-missing.out" >&2
+        exit 1
+    fi
+done
+for target in test-ui-fast test-ui-notifications; do
+    set +e
+    FAKE_EXIT_STATUS=130 PATH="$work_dir/bin:$PATH" \
+        make -s -C "$repo_root" -f Makefile -f "$work_dir/make-overrides.mk" \
+        UI_TEST_RUNNER= "$target" >"$work_dir/$target-signal.out" 2>&1
+    make_signal_status=$?
+    set -e
+    if [[ "$make_signal_status" -eq 0 ]] || \
+       ! grep -q 'Error 130' "$work_dir/$target-signal.out"; then
+        echo "error: $target did not preserve cancellation status 130 in its recipe" >&2
+        cat "$work_dir/$target-signal.out" >&2
         exit 1
     fi
 done
