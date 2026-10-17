@@ -169,11 +169,16 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     /// Build a filtered environment for the SSH subprocess.
-    func buildSSHEnvironment() -> [String] {
+    func buildSSHEnvironment(
+        from parentEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String] {
         let allowedKeys: Set<String> = ["PATH", "HOME", "SHELL", "TERM", "LANG", "SSH_AUTH_SOCK"]
-        return ProcessInfo.processInfo.environment
-            .filter { allowedKeys.contains($0.key) }
-            .map { "\($0.key)=\($0.value)" }
+        var environment = parentEnvironment.filter { allowedKeys.contains($0.key) }
+        environment["TERM"] = "xterm-256color"
+        if !TerminalEnvironment.isUTF8Locale(environment["LANG"]) {
+            environment["LANG"] = "en_US.UTF-8"
+        }
+        return environment.map { "\($0.key)=\($0.value)" }
     }
 
     /// Build SSH command-line arguments for connecting to a remote host.

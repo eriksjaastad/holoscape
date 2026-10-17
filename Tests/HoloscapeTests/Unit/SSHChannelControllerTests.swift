@@ -465,6 +465,49 @@ final class SSHChannelControllerTests: XCTestCase {
         }
     }
 
+    @MainActor func testSSHEnvironmentSuppliesTerminalDefaultsForGUILaunch() {
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
+
+        let environment = Dictionary(
+            uniqueKeysWithValues: controller.buildSSHEnvironment(from: [
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/Users/test",
+                "LANG": "C",
+                "UNRELATED_SECRET": "must-not-leak",
+            ]).map { entry in
+                let parts = entry.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                return (String(parts[0]), String(parts[1]))
+            }
+        )
+
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
+        XCTAssertEqual(environment["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(environment["PATH"], "/usr/bin:/bin")
+        XCTAssertEqual(environment["HOME"], "/Users/test")
+        XCTAssertNil(environment["UNRELATED_SECRET"])
+    }
+
+    @MainActor func testSSHEnvironmentPreservesUTF8LocaleAndAgentSocket() {
+        let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
+        let controller = SSHChannelController(id: UUID(), profile: profile, instanceNumber: nil)
+
+        let environment = Dictionary(
+            uniqueKeysWithValues: controller.buildSSHEnvironment(from: [
+                "LANG": "nb_NO.UTF-8",
+                "SSH_AUTH_SOCK": "/private/tmp/agent.sock",
+                "TERM": "dumb",
+            ]).map { entry in
+                let parts = entry.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                return (String(parts[0]), String(parts[1]))
+            }
+        )
+
+        XCTAssertEqual(environment["TERM"], "xterm-256color")
+        XCTAssertEqual(environment["LANG"], "nb_NO.UTF-8")
+        XCTAssertEqual(environment["SSH_AUTH_SOCK"], "/private/tmp/agent.sock")
+    }
+
     @MainActor func testRetryReactivatesAfterDisconnect() {
         let mock = MockTerminalProcess()
         let profile = SessionProfile(label: "t", connection: .ssh, command: "bash", directory: "~", host: "h", user: "u")
