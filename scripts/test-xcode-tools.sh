@@ -325,6 +325,42 @@ for forwarded_signal in HUP TERM; do
     fi
 done
 
+cat >"$work_dir/group-leader.py" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+descendant_pid = Path(sys.argv[1])
+descendant = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "time.sleep(30)",
+        str(descendant_pid),
+    ]
+)
+while not descendant_pid.exists():
+    time.sleep(0.01)
+time.sleep(30)
+PY
+descendant_pid_path="$work_dir/group-descendant.pid"
+set +e
+"$script_dir/run-with-timeout.py" 0.1 python3 "$work_dir/group-leader.py" \
+    "$descendant_pid_path" >"$work_dir/group-timeout.out" 2>&1
+group_timeout_status=$?
+set -e
+descendant_pid=$(<"$descendant_pid_path")
+if [[ "$group_timeout_status" -ne 124 ]] || kill -0 "$descendant_pid" 2>/dev/null; then
+    echo "error: timeout runner returned before its entire process group exited" >&2
+    cat "$work_dir/group-timeout.out" >&2
+    exit 1
+fi
+
 /bin/rm -rf "$bundle_path" "$status_path"
 if FAKE_SLEEP_SECONDS=2 HOLOSCAPE_UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
    bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then

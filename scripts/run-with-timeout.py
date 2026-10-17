@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 TERMINATION_GRACE_SECONDS = 5
 TIMEOUT_EXIT_STATUS = 124
@@ -21,29 +22,49 @@ def stop_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) ->
         pass
 
 
+def process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def wait_for_process_group_exit(process: subprocess.Popen[bytes], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if process.poll() is None:
+            try:
+                process.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+        if not process_group_exists(process.pid):
+            return True
+        time.sleep(min(0.05, remaining))
+
+
 def stop_and_reap_process_group(
     process: subprocess.Popen[bytes], initial_signal: signal.Signals
 ) -> bool:
     stop_process_group(process, initial_signal)
-    try:
-        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
         return True
-    except subprocess.TimeoutExpired:
-        stop_process_group(process, signal.SIGKILL)
-        try:
-            process.wait(timeout=TERMINATION_GRACE_SECONDS)
-            return True
-        except subprocess.TimeoutExpired:
-            command_name = (
-                process.args[0]
-                if isinstance(process.args, (list, tuple))
-                else process.args
-            )
-            print(
-                f"error: command did not exit after SIGKILL: {command_name}",
-                file=sys.stderr,
-            )
-            return False
+    stop_process_group(process, signal.SIGKILL)
+    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
+        return True
+    command_name = (
+        process.args[0] if isinstance(process.args, (list, tuple)) else process.args
+    )
+    print(
+        f"error: command group did not exit after SIGKILL: {command_name}",
+        file=sys.stderr,
+    )
+    return False
 
 
 def main() -> int:
