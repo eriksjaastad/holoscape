@@ -14,10 +14,17 @@ struct ScrollbackPersistencePolicy: Equatable, Sendable {
     static let maxReplayBytesOnReattach = maxRetainedBytesPerSession
 
     static var defaultDiskDirectory: URL {
-        if let override = ProcessInfo.processInfo.environment["HOLOSCAPE_CONFIG_DIR"], !override.isEmpty {
-            return URL(fileURLWithPath: override).appendingPathComponent("scrollback", isDirectory: true)
+        diskDirectory()
+    }
+
+    static func diskDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        if let configDirectory = ConfigService.explicitConfigDirectory(environment: environment) {
+            return configDirectory.appendingPathComponent("scrollback", isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
+        return homeDirectory
             .appendingPathComponent(".holoscape", isDirectory: true)
             .appendingPathComponent("scrollback", isDirectory: true)
     }

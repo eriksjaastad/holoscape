@@ -67,6 +67,24 @@ final class BrokerSessionRegistryTests: XCTestCase {
         )
     }
 
+    func testScrollbackDirectoryUsesCanonicalConfigDirectoryOverride() throws {
+        let realParent = tempDirectory.appendingPathComponent("real", isDirectory: true)
+        let linkedParent = tempDirectory.appendingPathComponent("linked", isDirectory: true)
+        let configDirectory = linkedParent.appendingPathComponent("profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: realParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+
+        XCTAssertEqual(
+            ScrollbackPersistencePolicy.diskDirectory(
+                environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path]
+            ),
+            realParent
+                .appendingPathComponent("profile", isDirectory: true)
+                .appendingPathComponent("scrollback", isDirectory: true)
+                .standardizedFileURL
+        )
+    }
+
     func testSaveAndLoadRoundTripsBrokerSessionRecords() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         let registry = BrokerSessionRegistry(fileURL: registryURL)

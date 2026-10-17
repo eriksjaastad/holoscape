@@ -40,6 +40,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(productionPath, expectedProductionPath)
         XCTAssertEqual(emptyOverridePath, productionPath)
         XCTAssertFalse(firstPath.contains(firstConfig.path))
+        XCTAssertEqual(
+            URL(fileURLWithPath: firstPath).deletingLastPathComponent().standardizedFileURL,
+            URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL
+        )
         XCTAssertTrue(firstPath.hasSuffix(".sock"))
         XCTAssertLessThan(
             firstPath.utf8.count,

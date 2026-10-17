@@ -135,7 +135,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
 
     init(
         executableURL: URL,
-        socketPath: String = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(),
+        socketPath: String? = nil,
         environment: [String: String]? = nil,
         socketWaitTimeoutMilliseconds: Int = 5_000,
         requestTimeoutMilliseconds: Int = 10_000,
@@ -145,7 +145,9 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     ) {
         self.executableURL = executableURL
-        self.socketPath = socketPath
+        self.socketPath = socketPath ?? Self.defaultSocketPath(
+            environment: environment ?? ProcessInfo.processInfo.environment
+        )
         self.environment = environment
         self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
@@ -419,6 +421,6 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
             .prefix(6)
             .map { String(format: "%02x", $0) }
             .joined()
-        return "/tmp/hs-broker-\(uid)-\(digest).sock"
+        return NSTemporaryDirectory() + "hs-broker-\(uid)-\(digest).sock"
     }
 }
