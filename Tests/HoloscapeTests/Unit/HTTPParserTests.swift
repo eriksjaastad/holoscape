@@ -169,6 +169,61 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(response.status, 400)
     }
 
+    func testMalformedOrUnsupportedRequestLinesDoNotRouteRequest() {
+        let requestLines = [
+            "DELETE /channels/123",
+            "DELETE /channels/123 HTTP/9.9"
+        ]
+
+        for requestLine in requestLines {
+            let decision = HoloscapeAPIServer.requestReceiveDecision(
+                accumulated: Data(),
+                incoming: Data("\(requestLine)\r\n\r\n".utf8),
+                isComplete: false,
+                maximumBytes: 128
+            )
+
+            guard case .respond(let response) = decision else {
+                return XCTFail("Expected response for \(requestLine), got \(decision)")
+            }
+            XCTAssertEqual(response.status, 400)
+        }
+    }
+
+    func testMalformedHeaderLinesDoNotRouteRequest() {
+        let malformedHeaders = [
+            "Content-Length 100",
+            "Content-Length : 100"
+        ]
+
+        for header in malformedHeaders {
+            let decision = HoloscapeAPIServer.requestReceiveDecision(
+                accumulated: Data(),
+                incoming: Data("POST /channels HTTP/1.1\r\n\(header)\r\n\r\n".utf8),
+                isComplete: false,
+                maximumBytes: 128
+            )
+
+            guard case .respond(let response) = decision else {
+                return XCTFail("Expected response for \(header), got \(decision)")
+            }
+            XCTAssertEqual(response.status, 400)
+        }
+    }
+
+    func testHTTP10RequestRoutes() {
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: Data("GET /channels HTTP/1.0\r\n\r\n".utf8),
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .route = decision else {
+            return XCTFail("Expected route, got \(decision)")
+        }
+    }
+
     @MainActor
     func testCompleteOversizedCallbackWithErrorSends413AndCancels() throws {
         let server = makeServer()

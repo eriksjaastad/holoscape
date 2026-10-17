@@ -101,38 +101,47 @@ enum HTTPParser {
         let headerLines = headerString.components(separatedBy: "\r\n")
         guard let requestLine = headerLines.first else { return .badRequest }
 
-        let parts = requestLine.split(separator: " ", maxSplits: 2)
-        guard parts.count >= 2 else { return .badRequest }
+        let parts = requestLine.split(separator: " ", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              isToken(parts[0]),
+              !parts[1].isEmpty,
+              parts[2] == "HTTP/1.0" || parts[2] == "HTTP/1.1" else {
+            return .badRequest
+        }
         let method = String(parts[0])
         let fullPath = String(parts[1])
 
         // Parse header fields (case-insensitive keys per RFC).
         var parsedContentLength: Int?
         for line in headerLines.dropFirst() {
-            if let colon = line.firstIndex(of: ":") {
-                let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                // This server does not implement transfer codings. Ignoring this
-                // field would make the request boundary ambiguous when a sender
-                // also supplies Content-Length.
-                if name == "transfer-encoding" {
+            guard let colon = line.firstIndex(of: ":"), colon != line.startIndex else {
+                return .badRequest
+            }
+            let rawName = line[..<colon]
+            guard isToken(rawName) else { return .badRequest }
+
+            let name = rawName.lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            // This server does not implement transfer codings. Ignoring this
+            // field would make the request boundary ambiguous when a sender
+            // also supplies Content-Length.
+            if name == "transfer-encoding" {
+                return .badRequest
+            }
+            if name == "content-length" {
+                guard !value.isEmpty,
+                      value.utf8.allSatisfy({ (48...57).contains($0) }) else {
                     return .badRequest
                 }
-                if name == "content-length" {
-                    guard !value.isEmpty,
-                          value.utf8.allSatisfy({ (48...57).contains($0) }) else {
-                        return .badRequest
-                    }
-                    guard let contentLength = Int(value) else { return .payloadTooLarge }
-                    guard bodyStart <= maximumRequestBytes,
-                          contentLength <= maximumRequestBytes - bodyStart else {
-                        return .payloadTooLarge
-                    }
-                    if let parsedContentLength, parsedContentLength != contentLength {
-                        return .badRequest
-                    }
-                    parsedContentLength = contentLength
+                guard let contentLength = Int(value) else { return .payloadTooLarge }
+                guard bodyStart <= maximumRequestBytes,
+                      contentLength <= maximumRequestBytes - bodyStart else {
+                    return .payloadTooLarge
                 }
+                if let parsedContentLength, parsedContentLength != contentLength {
+                    return .badRequest
+                }
+                parsedContentLength = contentLength
             }
         }
 
@@ -172,5 +181,18 @@ enum HTTPParser {
         }
 
         return .request(HTTPRequest(method: method, path: path, queryParams: queryParams, body: body))
+    }
+
+    private static func isToken(_ value: Substring) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            switch byte {
+            case 48...57, 65...90, 97...122:
+                return true
+            case 33, 35...39, 42, 43, 45, 46, 94, 95, 96, 124, 126:
+                return true
+            default:
+                return false
+            }
+        }
     }
 }
