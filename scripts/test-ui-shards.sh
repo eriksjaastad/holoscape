@@ -41,6 +41,12 @@ forward_active_signal() {
     local status="$2"
     INTERRUPTED_STATUS="$status"
     if [[ -n "$ACTIVE_TIMEOUT_PID" ]] && kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+        # Non-interactive bash starts asynchronous children with SIGINT ignored.
+        # Use SIGTERM for cancellation so an early Ctrl-C cannot be lost before
+        # the Python timeout runner installs its own handlers.
+        if [[ "$signal_name" == "INT" ]]; then
+            signal_name="TERM"
+        fi
         kill -"$signal_name" "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true
     fi
 }
@@ -56,6 +62,17 @@ return_if_interrupted() {
     fi
     INTERRUPTED_STATUS=0
     return "$status"
+}
+
+wait_for_active_timeout() {
+    local status
+    while true; do
+        wait "$ACTIVE_TIMEOUT_PID"
+        status=$?
+        if ! kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+            return "$status"
+        fi
+    done
 }
 
 count_matches() {
@@ -173,11 +190,11 @@ run_selected_tests() {
     if [[ "$INTERRUPTED_STATUS" -ne 0 ]]; then
         case "$INTERRUPTED_STATUS" in
             129) kill -HUP "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
-            130) kill -INT "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
+            130) kill -TERM "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
             143) kill -TERM "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
         esac
     fi
-    wait "$ACTIVE_TIMEOUT_PID"
+    wait_for_active_timeout
     local command_status=$?
     wait "$filter_pid"
     local filter_status=$?
