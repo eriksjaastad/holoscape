@@ -39,8 +39,6 @@ These failures have intentionally different outcomes:
 ### Config file
 
 Holoscape stores app-owned config under `~/.holoscape/config.json` unless `HOLOSCAPE_CONFIG_DIR` overrides it.
-The override also selects an isolated broker registry and socket namespace, so
-custom profiles cannot attach to another profile's surviving terminal sessions.
 
 If Setup Diagnostics reports a config load/save failure:
 

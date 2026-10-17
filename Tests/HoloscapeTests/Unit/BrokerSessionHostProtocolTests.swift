@@ -22,6 +22,12 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let repeatedFirstPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
             environment: ["HOLOSCAPE_CONFIG_DIR": firstConfig.path]
         )
+        let canonicalFirstPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: [
+                "HOLOSCAPE_CONFIG_DIR": realParent
+                    .appendingPathComponent("profile", isDirectory: true).path,
+            ]
+        )
         let secondPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
             environment: ["HOLOSCAPE_CONFIG_DIR": secondConfig.path]
         )
@@ -35,6 +41,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             + "\(safeBundleID)-broker-\(getuid()).sock"
 
         XCTAssertEqual(firstPath, repeatedFirstPath)
+        XCTAssertEqual(firstPath, canonicalFirstPath)
         XCTAssertNotEqual(firstPath, secondPath)
         XCTAssertNotEqual(firstPath, productionPath)
         XCTAssertEqual(productionPath, expectedProductionPath)
@@ -2260,12 +2267,16 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .appendingPathComponent("LazyUnixSocketEnvironmentTests-\(UUID().uuidString)")
         let helperURL = temporaryDirectory.appendingPathComponent("environment-broker")
         let environmentMarkerURL = temporaryDirectory.appendingPathComponent("config-directory")
-        let socketPath = "/tmp/hs-lazy-environment-\(UUID().uuidString).sock"
         let configDirectory = temporaryDirectory.appendingPathComponent("profile").path
+        let environment = ["HOLOSCAPE_CONFIG_DIR": configDirectory]
+        let socketPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: environment
+        )
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: temporaryDirectory)
             unlink(socketPath)
+            unlink(socketPath + ".lock")
         }
         try """
         #!/bin/sh
@@ -2277,8 +2288,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
 
         let transport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: helperURL,
-            socketPath: socketPath,
-            environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory],
+            environment: environment,
             socketWaitTimeoutMilliseconds: 100,
             requestTimeoutMilliseconds: 100,
             launchedChildObserver: { _ in
@@ -2289,9 +2299,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
-            guard case LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut = error else {
+            guard case let LazyBrokerSessionHostUnixSocketTransport.LaunchError.socketTimedOut(actualPath) = error else {
                 return XCTFail("Expected socketTimedOut, got \(error)")
             }
+            XCTAssertEqual(actualPath, socketPath)
         }
         XCTAssertEqual(try String(contentsOf: environmentMarkerURL, encoding: .utf8), configDirectory)
     }

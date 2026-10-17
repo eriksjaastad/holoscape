@@ -17,6 +17,8 @@ struct ScrollbackPersistencePolicy: Equatable, Sendable {
         diskDirectory()
     }
 
+    /// Stores scrollback under the same canonical explicit profile as broker
+    /// metadata; without an override, preserves `~/.holoscape/scrollback`.
     static func diskDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser

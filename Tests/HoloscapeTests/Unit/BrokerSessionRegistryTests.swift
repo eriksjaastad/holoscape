@@ -30,8 +30,12 @@ final class BrokerSessionRegistryTests: XCTestCase {
         tempDirectory = nil
     }
 
-    func testDefaultFileURLUsesConfigDirectoryOverride() {
-        let configDirectory = tempDirectory.appendingPathComponent("isolated-config")
+    func testDefaultFileURLUsesCanonicalConfigDirectoryOverride() throws {
+        let realParent = tempDirectory.appendingPathComponent("real", isDirectory: true)
+        let linkedParent = tempDirectory.appendingPathComponent("linked", isDirectory: true)
+        let configDirectory = linkedParent.appendingPathComponent("isolated-config")
+        try FileManager.default.createDirectory(at: realParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
 
         let fileURL = BrokerSessionRegistry.defaultFileURL(
             environment: ["HOLOSCAPE_CONFIG_DIR": configDirectory.path],
@@ -41,11 +45,11 @@ final class BrokerSessionRegistryTests: XCTestCase {
 
         XCTAssertEqual(
             fileURL,
-            configDirectory
+            realParent
+                .appendingPathComponent("isolated-config", isDirectory: true)
                 .appendingPathComponent("BrokerSessions", isDirectory: true)
                 .appendingPathComponent("sessions.json")
                 .standardizedFileURL
-                .resolvingSymlinksInPath()
         )
     }
 

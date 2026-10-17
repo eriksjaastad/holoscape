@@ -77,11 +77,6 @@ App config lives in `~/.holoscape/` (or `$HOLOSCAPE_CONFIG_DIR` if set):
   pending-reports/     # Unsent bug reports
 ```
 
-An explicit `HOLOSCAPE_CONFIG_DIR` also isolates broker session metadata and
-the broker socket namespace. Profiles therefore reattach only to sessions
-created under the same config directory; sessions created by older builds that
-shared the production broker registry are not migrated into custom profiles.
-
 Local shell and agent processes are owned by the broker host rather than by a
 tab view. They can survive GUI quit/relaunch and reattach through durable broker
 session IDs. SSH restores by reconnecting; it does not claim to preserve the

@@ -396,6 +396,8 @@ struct BrokerSessionRegistry {
         if let closeError { throw closeError }
     }
 
+    /// Keeps the production registry location unchanged, while explicit
+    /// config profiles receive an isolated registry under their canonical root.
     static func defaultFileURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,

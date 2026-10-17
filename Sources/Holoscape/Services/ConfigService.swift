@@ -36,6 +36,11 @@ class ConfigService {
             ?? canonicalDirectoryURL(homeDirectory.appendingPathComponent(".holoscape"))
     }
 
+    /// Returns the canonical root selected by `HOLOSCAPE_CONFIG_DIR`.
+    ///
+    /// The same root namespaces app config, broker metadata, scrollback, and
+    /// the broker socket. Existing production sessions are not migrated into
+    /// an explicit profile.
     static func explicitConfigDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {

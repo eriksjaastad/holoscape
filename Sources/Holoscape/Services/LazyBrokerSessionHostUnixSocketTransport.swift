@@ -405,6 +405,9 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         }
     }
 
+    /// Keeps the production socket name unchanged. Explicit config profiles
+    /// use a short, deterministic name in the user's private temporary
+    /// directory so profiles cannot attach to one another's broker sessions.
     static func defaultSocketPath(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {

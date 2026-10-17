@@ -10,13 +10,10 @@ Relaunch should restore enough per-channel terminal context to understand what a
 
 Broker-backed terminal sessions retain a bounded raw-byte scrollback ring in the broker runtime and mirror the same bounded tail to disk. When Holoscape reattaches a saved broker session after app quit/relaunch, `BrokerBackedTerminalProcess` asks the coordinator for the documented replay tail and feeds it back into the terminal view with a status line naming whether the replay came from live broker memory or the persisted disk tail. If the in-memory runtime has been replaced, `NativePTYBrokerSessionRuntime` can still read the persisted per-session tail by broker session id.
 
-Policy constants live in `ScrollbackPersistencePolicy`:
-
-- `maxRetainedBytesPerSession = 1_048_576` bytes;
-- `maxReplayBytesOnReattach = 1_048_576` bytes;
-- `defaultDiskDirectory = $HOLOSCAPE_CONFIG_DIR/scrollback` when set, otherwise `~/.holoscape/scrollback`.
-
-This replaces the earlier audit-only 64 KiB replay cap. The runtime drops older bytes FIFO once a session exceeds the per-session retention limit, both in memory and on disk.
+The runtime retains and replays at most 1 MiB per session, replacing the
+earlier audit-only 64 KiB replay cap. It drops older bytes FIFO once a session
+exceeds the limit, both in memory and on disk. Disk tails stay within the
+selected app-config profile.
 
 ## Privacy behavior
 
