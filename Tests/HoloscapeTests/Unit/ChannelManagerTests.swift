@@ -713,6 +713,17 @@ final class ChannelManagerTests: XCTestCase {
     }
 
     func testSessionLauncherFailureDoesNotActivateSwitchOrRecordRecentSession() throws {
+        let profile = SessionProfile(
+            label: "Shell",
+            connection: .mcp,
+            command: "",
+            directory: "",
+            endpoint: "file:///tmp/mcp.sock"
+        )
+        var config = configService.load()
+        config.sessionProfiles = [profile]
+        XCTAssertTrue(configService.save(config))
+
         let discoveryService = ProjectDiscoveryService(configService: configService)
         let profileManager = SessionProfileManager(
             configService: configService,
@@ -728,17 +739,14 @@ final class ChannelManagerTests: XCTestCase {
             presentedError = error
         }
 
-        windowController.launchSession(from: SessionProfile(
-            label: "Broken MCP",
-            connection: .mcp,
-            command: "",
-            directory: "",
-            endpoint: "file:///tmp/mcp.sock"
-        ))
+        windowController.sessionLauncher(
+            windowController.sessionLauncherForTesting,
+            didSelectProfile: profile
+        )
 
         XCTAssertEqual(
             presentedError as? SessionProfileLaunchError,
-            .invalidMCPEndpoint(label: "Broken MCP")
+            .invalidMCPEndpoint(label: "Shell")
         )
         XCTAssertTrue(manager.allChannels().isEmpty)
         XCTAssertNil(windowController.activeChannelId)

@@ -48,14 +48,15 @@ class SessionProfileManager {
             return claudeProject
         }
 
-        // Check built-in profiles
-        if let match = Self.builtInProfiles.first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
-            return match
-        }
-
         // Check preconfigured profiles
         if let match = (config.sessionProfiles ?? []).first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
             return match.resolved(with: config.sshDefaults)
+        }
+
+        // Check built-in profiles after user profiles so a saved recent session
+        // reopens the same configured profile when its label shadows a built-in.
+        if let match = Self.builtInProfiles.first(where: { $0.label.caseInsensitiveCompare(requestedLabel) == .orderedSame }) {
+            return match
         }
 
         // Check discovered projects

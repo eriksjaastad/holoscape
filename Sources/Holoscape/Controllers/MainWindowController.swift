@@ -2679,8 +2679,21 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile label: String) {
-        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
+    private func performSelectedProfile(_ profile: SessionProfile) {
+        if SessionProfileManager.builtInProfiles.contains(profile) {
+            performUnifiedLauncherAction(Self.unifiedLauncherAction(for: profile.label))
+        } else {
+            launchSession(from: profile)
+        }
+    }
+
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile) {
+        performSelectedProfile(profile)
+    }
+
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String) {
+        guard let profileManager else { return }
+        performSelectedProfile(profileManager.resolve(label: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
