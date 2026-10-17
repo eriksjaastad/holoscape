@@ -64,32 +64,6 @@ Right-click any sidebar entry for: Close, Rename, Duplicate, Reconnect, Pin/Unpi
 | **Bridge** | Broadcast channel to all agents |
 | **MCP** | Client channel connected to an external Model Context Protocol server; distinct from the `HoloscapeMCP` control server |
 
-## Running Tests
-
-```bash
-# Unit + property tests
-make test
-
-# Full UI test suite (~5 hrs; current shard inventory is defined by the runner)
-make test-ui
-
-# Quick smoke test (~5 min)
-make test-ui-fast
-
-# Single shard
-make test-ui-shard SHARD=3
-
-# Specific test class
-make test-class CLASS=KeyboardShortcutsUITests
-
-# Resume from last failed shard
-make test-ui-resume
-```
-
-Results go to `/tmp/holoscape-test-shards/shard-{1..10}.txt` and `.xcresult` bundles.
-
-**Note:** UI tests require macOS Accessibility/Automation permission for the test runner. Each `build-for-testing` re-signs the binary, which can invalidate the TCC grant — you may need to re-approve the system prompt.
-
 ## Configuration
 
 App config lives in `~/.holoscape/` (or `$HOLOSCAPE_CONFIG_DIR` if set):

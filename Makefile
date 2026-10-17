@@ -1,4 +1,4 @@
-.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-failing test-ui-resume validate-tools xcode bundle clean run setup check-submodules
+.PHONY: help auth-check build test test-unit test-property test-ui test-ui-fast test-ui-shard test-ui-range test-ui-failing test-ui-resume test-ui-notifications validate-tools xcode bundle clean run setup check-submodules
 
 help:
 	@echo "Holoscape — common ops"
@@ -7,7 +7,16 @@ help:
 	@echo "  make test             Unit + property tests"
 	@echo "  make test-unit        Unit tests only"
 	@echo "  make test-property    Property tests only"
-	@echo "  make validate-tools   Check shell syntax and bundled skin archives"
+	@echo "  make test-ui          Full sharded UI suite (Accessibility/Automation permission required)"
+	@echo "  make test-ui-fast     Core UI smoke tests"
+	@echo "  make test-ui-notifications  Notification UI tests"
+	@echo "  make test-ui-shard SHARD=3    Run one UI shard"
+	@echo "  make test-ui-range RANGE=3-5  Run a UI shard range"
+	@echo "  make test-ui-failing FAILING_RESULTS=path  Run classes failed in an xcodebuild log"
+	@echo "  make test-ui-resume   Resume at the last failed shard"
+	@echo "  make test-class CLASS=Name    Run one Swift test class"
+	@echo "  make xcode            Open the checked-in Xcode project"
+	@echo "  make validate-tools   Check scripts, skin archives, and Xcode tooling"
 	@echo "  make bundle           Build debug .app bundle"
 	@echo "  make run              Build and open debug .app bundle"
 	@echo "  make setup            Install Claude Code MCP/hooks integration"
@@ -38,6 +47,7 @@ test-property: check-submodules
 validate-tools:
 	@./scripts/validate-tools.sh
 	@./scripts/test-package-tools.sh
+	@./scripts/test-xcode-tools.sh
 
 # Run all UI tests via shards with per-shard reporting (~5 hrs)
 test-ui: bundle
@@ -45,54 +55,34 @@ test-ui: bundle
 
 # Run a single shard (usage: make test-ui-shard SHARD=3)
 test-ui-shard: bundle
-	./scripts/test-ui-shards.sh $(SHARD)
+	./scripts/test-ui-shards.sh "$(SHARD)"
 
 # Run a range of shards (usage: make test-ui-range RANGE=3-5)
 test-ui-range: bundle
-	./scripts/test-ui-shards.sh $(RANGE)
+	./scripts/test-ui-shards.sh "$(RANGE)"
 
 # Resume from last failed shard
 test-ui-resume: bundle
 	./scripts/test-ui-shards.sh resume
 
-# Run only currently-failing test classes (~35 min)
+# Run classes failed in a prior xcodebuild log (~35 min)
 test-ui-failing: bundle
-	./scripts/test-ui-shards.sh failing
+	HOLOSCAPE_UI_FAILING_RESULTS_FILE="$(FAILING_RESULTS)" ./scripts/test-ui-shards.sh failing
 
 # Quick smoke test — core functionality (~5 min)
 test-ui-fast: bundle
-	xcodebuild test \
-		-scheme Holoscape \
-		-destination 'platform=macOS' \
-		-only-testing:HoloscapeUITests/HoloscapeUITests \
-		-only-testing:HoloscapeUITests/SettingsUITests \
-		-only-testing:HoloscapeUITests/TerminalDisplayUITests \
-		-only-testing:HoloscapeUITests/SidebarUITests \
-		-only-testing:HoloscapeUITests/KeyboardShortcutsUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST"
+	./scripts/test-ui-shards.sh fast
 
 # Run notification UI tests
 test-ui-notifications: bundle
-	xcodebuild test \
-		-scheme Holoscape \
-		-destination 'platform=macOS' \
-		-only-testing:HoloscapeUITests/NotificationSystemUITests \
-		2>&1 | grep -E "Test Case|Executed|TEST"
+	./scripts/test-ui-shards.sh notifications
 
 # Run a specific test class (usage: make test-class CLASS=CommandHistoryTests)
 test-class:
 	swift test --filter $(CLASS)
 
-# Generate Xcode project and open it
+# Open the authoritative checked-in Xcode project
 xcode: check-submodules
-	swift package generate-xcodeproj
-	@echo ""
-	@echo "Xcode project generated. Opening..."
-	@echo "NOTE: After opening, manually add the UI test target:"
-	@echo "  1. File > New > Target > UI Testing Bundle"
-	@echo "  2. Drag Tests/HoloscapeUITests/HoloscapeUITests.swift into it"
-	@echo "  3. Set the target application to Holoscape"
-	@echo ""
 	open Holoscape.xcodeproj
 
 # Build and assemble .app bundle
@@ -114,4 +104,3 @@ setup:
 clean:
 	swift package clean
 	rm -rf build/
-	rm -rf Holoscape.xcodeproj

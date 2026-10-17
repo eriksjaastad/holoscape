@@ -44,6 +44,28 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6D1C4365B7B34EC1185722E9"
+               BuildableName = "HoloscapeTests.xctest"
+               BlueprintName = "HoloscapeTests"
+               ReferencedContainer = "container:Holoscape.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "EC16900C71D87D4A20A1DE69"
+               BuildableName = "HoloscapePropertyTests.xctest"
+               BlueprintName = "HoloscapePropertyTests"
+               ReferencedContainer = "container:Holoscape.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "70CD47CBC5D1B1774DFA63D9"
                BuildableName = "HoloscapeUITests.xctest"
                BlueprintName = "HoloscapeUITests"

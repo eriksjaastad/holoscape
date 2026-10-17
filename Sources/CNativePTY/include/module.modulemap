@@ -1,0 +1,4 @@
+module CNativePTY {
+    header "HoloscapeNativePTY.h"
+    export *
+}
