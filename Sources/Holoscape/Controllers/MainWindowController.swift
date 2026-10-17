@@ -2125,8 +2125,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     func refreshLauncher() {
         guard let profileManager else { return }
-        let (preconfigured, discovered, recent) = profileManager.allSessions()
-        sessionLauncher.updateItems(preconfigured: preconfigured, discovered: discovered, recent: recent)
+        let sessions = profileManager.allSessions()
+        sessionLauncher.updateItems(
+            configured: sessions.configured,
+            builtIn: sessions.builtIn,
+            discovered: sessions.discovered,
+            recent: sessions.recent
+        )
     }
 
     @objc func handleNewSession() {
@@ -2679,21 +2684,17 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    private func performSelectedProfile(_ profile: SessionProfile) {
-        if SessionProfileManager.builtInProfiles.contains(profile) {
-            performUnifiedLauncherAction(Self.unifiedLauncherAction(for: profile.label))
-        } else {
-            launchSession(from: profile)
-        }
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String) {
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile) {
-        performSelectedProfile(profile)
+        launchSession(from: profile)
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String) {
         guard let profileManager else { return }
-        performSelectedProfile(profileManager.resolve(label: label))
+        launchSession(from: profileManager.resolve(label: label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {

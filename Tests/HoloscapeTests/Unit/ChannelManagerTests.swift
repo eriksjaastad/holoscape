@@ -714,11 +714,10 @@ final class ChannelManagerTests: XCTestCase {
 
     func testSessionLauncherFailureDoesNotActivateSwitchOrRecordRecentSession() throws {
         let profile = SessionProfile(
-            label: "Shell",
-            connection: .mcp,
+            label: "Group Chat",
+            connection: .agentChat,
             command: "",
-            directory: "",
-            endpoint: "file:///tmp/mcp.sock"
+            directory: ""
         )
         var config = configService.load()
         config.sessionProfiles = [profile]
@@ -746,7 +745,7 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(
             presentedError as? SessionProfileLaunchError,
-            .invalidMCPEndpoint(label: "Shell")
+            .invalidAgentChatAPIURL(label: "Group Chat")
         )
         XCTAssertTrue(manager.allChannels().isEmpty)
         XCTAssertNil(windowController.activeChannelId)
