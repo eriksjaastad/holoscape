@@ -13,7 +13,6 @@ import time
 TERMINATION_GRACE_SECONDS = 5
 TIMEOUT_EXIT_STATUS = 124
 TERMINATION_FAILURE_EXIT_STATUS = 125
-INTERRUPT_EXIT_STATUS = 130
 READY_FILE_ENVIRONMENT_VARIABLE = "RUN_WITH_TIMEOUT_READY_FILE"
 
 
@@ -177,10 +176,6 @@ def main() -> int:
         )
         if stop_and_reap_process_group(process, signal.SIGTERM):
             return TIMEOUT_EXIT_STATUS
-        return TERMINATION_FAILURE_EXIT_STATUS
-    except KeyboardInterrupt:
-        if stop_and_reap_process_group(process, signal.SIGINT):
-            return INTERRUPT_EXIT_STATUS
         return TERMINATION_FAILURE_EXIT_STATUS
 
 

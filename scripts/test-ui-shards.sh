@@ -66,15 +66,16 @@ return_if_interrupted() {
     return "$status"
 }
 
-wait_for_active_timeout() {
+wait_for_child() {
+    local child_pid="$1"
     local status
     while true; do
-        wait "$ACTIVE_TIMEOUT_PID"
+        wait "$child_pid"
         status=$?
-        if ! kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+        if ! kill -0 "$child_pid" 2>/dev/null; then
             if [[ "$INTERRUPTED_STATUS" -ne 0 ]] && \
                [[ "$status" -eq "$INTERRUPTED_STATUS" ]]; then
-                wait "$ACTIVE_TIMEOUT_PID"
+                wait "$child_pid"
                 local rewait_status=$?
                 if [[ "$rewait_status" -ne 127 ]]; then
                     return "$rewait_status"
@@ -226,9 +227,9 @@ run_selected_tests() {
             143) kill -TERM "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
         esac
     fi
-    wait_for_active_timeout
+    wait_for_child "$ACTIVE_TIMEOUT_PID"
     local command_status=$?
-    wait "$filter_pid"
+    wait_for_child "$filter_pid"
     local filter_status=$?
     ACTIVE_TIMEOUT_PID=""
     ACTIVE_TIMEOUT_READY=0

@@ -333,7 +333,7 @@ EOF
 printf 'PASS\n' >"$work_dir/results/shard-10.status"
 
 if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/results" PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards.out" 2>&1; then
     echo "error: aggregate UI shards hid an xcodebuild failure" >&2
     exit 1
 fi
@@ -360,7 +360,7 @@ if [[ $(<"$work_dir/results/last-failed-shard") != "1" ]]; then
 fi
 
 if ! FAKE_SUCCESS_ONE_TEST=1 HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/results" PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards-clean.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shards-clean.out" 2>&1; then
     echo "error: clean aggregate UI shard run failed" >&2
     cat "$work_dir/shards-clean.out" >&2
     exit 1
@@ -372,7 +372,7 @@ fi
 
 export HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results"
 if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/single.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/single.out" 2>&1; then
     echo "error: single UI shard hid an xcodebuild failure" >&2
     exit 1
 fi
@@ -384,7 +384,7 @@ fi
 
 status_path="$work_dir/single-results/shard-1.status"
 if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" FAKE_STATUS_PATH="$status_path" PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/status-write.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/status-write.out" 2>&1; then
     echo "error: UI shard accepted a failed status write" >&2
     exit 1
 fi
@@ -417,7 +417,7 @@ EOF
 chmod +x "$work_dir/bin/rm"
 printf '7\n' >"$work_dir/single-results/last-failed-shard"
 if HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/single-results" FAKE_RM_FAIL_PATH="$bundle_path" PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1-1 >"$work_dir/cleanup.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1-1 >"$work_dir/cleanup.out" 2>&1; then
     echo "error: UI shard accepted result-bundle cleanup failure" >&2
     exit 1
 fi
@@ -453,20 +453,6 @@ module_path = sys.argv[1]
 spec = importlib.util.spec_from_file_location("run_with_timeout", module_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-
-class FakeProcess:
-    pid = 43210
-    args = ["synthetic-command"]
-
-    def wait(self, timeout=None):
-        raise KeyboardInterrupt
-
-module.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
-module.os.killpg = lambda pid, sig: (_ for _ in ()).throw(PermissionError("denied"))
-module.sys.argv = [module_path, "1", "synthetic-command"]
-status = module.main()
-if status != module.TERMINATION_FAILURE_EXIT_STATUS:
-    raise SystemExit(f"cleanup signaling failure returned {status}, expected 125")
 
 class ExitedProcess:
     pid = 43211
@@ -582,7 +568,7 @@ shard_signal_pid="$work_dir/shard-script-signal.pid"
 shard_signal_received="$work_dir/shard-script-signal.received"
 FAKE_SLEEP_SECONDS=30 FAKE_PID_PATH="$shard_signal_pid" FAKE_SIGNAL_PATH="$shard_signal_received" \
     HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/shard-script-signal-results" \
-    PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1 \
+    PATH="$work_dir/bin:$PATH" /bin/bash "$work_dir/test-ui-shards.sh" 1 \
     >"$work_dir/shard-script-signal.out" 2>&1 &
 shard_script_pid=$!
 signal_attempts=0
@@ -649,7 +635,7 @@ environment.update(
 )
 with open(output, "wb") as log:
     process = subprocess.Popen(
-        ["bash", script, "1"],
+        ["/bin/bash", script, "1"],
         env=environment,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -709,7 +695,7 @@ environment.update(
 )
 with open(output, "wb") as log:
     process = subprocess.Popen(
-        ["bash", script, "1"],
+        ["/bin/bash", script, "1"],
         env=environment,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -784,7 +770,7 @@ between_shards_invocations="$work_dir/between-shards.invocations"
 FAKE_SUCCESS_ONE_TEST=1 FAKE_COUNT_READY="$between_shards_ready" \
     FAKE_INVOCATION_LOG="$between_shards_invocations" \
     HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/between-shards-results" \
-    PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" 1-2 \
+    PATH="$work_dir/bin:$PATH" /bin/bash "$work_dir/test-ui-shards.sh" 1-2 \
     >"$work_dir/between-shards.out" 2>&1 &
 between_shards_pid=$!
 signal_attempts=0
@@ -816,7 +802,7 @@ for invalid_shards in "" 5-3 0-1 1-11 11 invalid-range 18446744073709551617 \
     invalid_shard_index=$((invalid_shard_index + 1))
     invalid_marker="$work_dir/invalid-$invalid_shard_index-xcodebuild-invoked"
     if FAKE_STATUS_PATH="$invalid_marker" PATH="$work_dir/bin:$PATH" \
-       bash "$work_dir/test-ui-shards.sh" "$invalid_shards" \
+       /bin/bash "$work_dir/test-ui-shards.sh" "$invalid_shards" \
        >"$work_dir/invalid-$invalid_shard_index.out" 2>&1; then
         echo "error: UI shard runner accepted invalid selection: $invalid_shards" >&2
         exit 1
@@ -836,7 +822,7 @@ for invalid_resume in "" garbage 0 11 18446744073709551617; do
     printf '%s\n' "$invalid_resume" >"$resume_file"
     resume_marker="$work_dir/invalid-resume-$invalid_resume_index-xcodebuild-invoked"
     if FAKE_STATUS_PATH="$resume_marker" PATH="$work_dir/bin:$PATH" \
-       bash "$work_dir/test-ui-shards.sh" resume \
+       /bin/bash "$work_dir/test-ui-shards.sh" resume \
        >"$work_dir/invalid-resume-$invalid_resume_index.out" 2>&1; then
         echo "error: UI shard runner accepted invalid resume point: $invalid_resume" >&2
         exit 1
@@ -852,7 +838,7 @@ done
 signal_invocations="$work_dir/shard-signal-invocations"
 set +e
 FAKE_EXIT_STATUS=130 FAKE_INVOCATION_LOG="$signal_invocations" PATH="$work_dir/bin:$PATH" \
-    bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal.out" 2>&1
+    /bin/bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal.out" 2>&1
 shard_signal_status=$?
 set -e
 if [[ "$shard_signal_status" -ne 130 ]] || \
@@ -867,7 +853,7 @@ signal_recording_invocations="$work_dir/shard-signal-recording-invocations"
 set +e
 FAKE_EXIT_STATUS=130 FAKE_STATUS_PATH="$status_path" \
     FAKE_INVOCATION_LOG="$signal_recording_invocations" PATH="$work_dir/bin:$PATH" \
-    bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal-recording.out" 2>&1
+    /bin/bash "$work_dir/test-ui-shards.sh" 1-2 >"$work_dir/shard-signal-recording.out" 2>&1
 shard_signal_recording_status=$?
 set -e
 if [[ "$shard_signal_recording_status" -ne 130 ]] || \
@@ -1002,7 +988,7 @@ fi
 
 /bin/rm -rf "$bundle_path" "$status_path"
 if FAKE_SLEEP_SECONDS=2 UI_TEST_TIMEOUT_SECONDS=0.1 PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/timeout.out" 2>&1; then
     echo "error: UI shard accepted a timed-out xcodebuild" >&2
     exit 1
 fi
@@ -1015,7 +1001,7 @@ fi
 
 /bin/rm -rf "$status_path"
 if FAKE_SUCCESS_NO_TESTS=1 PATH="$work_dir/bin:$PATH" \
-   bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/zero-tests.out" 2>&1; then
+   /bin/bash "$work_dir/test-ui-shards.sh" 1 >"$work_dir/zero-tests.out" 2>&1; then
     echo "error: UI shard accepted a successful xcodebuild that executed no tests" >&2
     exit 1
 fi
@@ -1130,7 +1116,7 @@ fi
 
 if FAKE_STATUS_PATH="$failing_invocation_marker" FAKE_SUCCESS_ONE_TEST=1 \
    HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/missing-failing-results.txt" \
-   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   PATH="$work_dir/bin:$PATH" /bin/bash "$work_dir/test-ui-shards.sh" failing \
    >"$work_dir/failing-missing.out" 2>&1; then
     echo "error: failing UI mode accepted a missing results input" >&2
     exit 1
@@ -1144,7 +1130,7 @@ fi
 
 printf '** TEST SUCCEEDED **\n' >"$work_dir/empty-failing-results.txt"
 if FAKE_SUCCESS_ONE_TEST=1 HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/empty-failing-results.txt" \
-   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   PATH="$work_dir/bin:$PATH" /bin/bash "$work_dir/test-ui-shards.sh" failing \
    >"$work_dir/failing-empty.out" 2>&1; then
     echo "error: failing UI mode accepted results with no failing classes" >&2
     exit 1
@@ -1161,7 +1147,7 @@ EOF
 if ! FAKE_SUCCESS_ONE_TEST=1 \
    FAKE_REQUIRE_ARGUMENT='-only-testing:HoloscapeUITests/NotificationSystemUITests' \
    HOLOSCAPE_UI_FAILING_RESULTS_FILE="$work_dir/one-failing-result.txt" \
-   PATH="$work_dir/bin:$PATH" bash "$work_dir/test-ui-shards.sh" failing \
+   PATH="$work_dir/bin:$PATH" /bin/bash "$work_dir/test-ui-shards.sh" failing \
    >"$work_dir/failing-one.out" 2>&1; then
     echo "error: failing UI mode rejected a valid failing-class input" >&2
     cat "$work_dir/failing-one.out" >&2
@@ -1169,8 +1155,8 @@ if ! FAKE_SUCCESS_ONE_TEST=1 \
 fi
 
 definitions="$work_dir/test-ui-shard-definitions.sh"
-sed -n '/^count_matches() {$/,/^# Parse arguments$/p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
-if ! RESULTS_DIR="$work_dir/count-results" bash -c '
+sed -n '/^count_matches() {$/,/^# Parse arguments\./p' "$work_dir/test-ui-shards.sh" | sed '$d' >"$definitions"
+if ! RESULTS_DIR="$work_dir/count-results" /bin/bash -c '
     source "$1"
     mkdir -p "$RESULTS_DIR"
     cat >"$RESULTS_DIR/shard-1.txt" <<EOF
@@ -1193,7 +1179,7 @@ if ! grep -Eq 'Shard[[:space:]]+1:.*1 passed,.*1 failed.*\[FAIL\]' "$work_dir/co
     cat "$work_dir/count.out" >&2
     exit 1
 fi
-if ! RESULTS_DIR="$work_dir/unreadable-results" bash -c '
+if ! RESULTS_DIR="$work_dir/unreadable-results" /bin/bash -c '
     source "$1"
     mkdir -p "$RESULTS_DIR"
     printf "Test Case SyntheticUITests.testExample passed (0.001 seconds).\n" >"$RESULTS_DIR/shard-1.txt"
