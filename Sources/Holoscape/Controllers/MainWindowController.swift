@@ -795,7 +795,6 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 } else {
                     self.splitPaneManager.splitHorizontal()
                 }
-                self.scheduleSaveState()
                 return nil
             }
 
@@ -803,7 +802,6 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             if event.keyCode == 13 && hasShift {
                 if self.splitPaneManager.paneCount > 1 {
                     self.splitPaneManager.closeActivePane()
-                    self.scheduleSaveState()
                 }
                 return nil  // consume even with 1 pane to prevent system handling
             }

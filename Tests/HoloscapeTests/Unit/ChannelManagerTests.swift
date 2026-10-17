@@ -2526,6 +2526,38 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(restored.activePaneId, paneIDs[0])
     }
 
+    func testSplitPaneActivationAndClosePersistThroughDelegate() throws {
+        let first = createMockChannel(type: .shell, role: "Shell")
+        let second = createMockChannel(type: .agentDirect, role: "Agent")
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+
+        windowController.switchToChannel(first.channelId)
+        windowController.splitPaneManagerForTesting.splitHorizontal()
+        windowController.switchToChannel(second.channelId)
+
+        let initialSave = expectation(description: "initial layout saved")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { initialSave.fulfill() }
+        wait(for: [initialSave], timeout: 2)
+
+        let initialLayout = windowController.splitPaneManagerForTesting.exportLayout()
+        let firstPaneID = initialLayout.panes[0].paneId
+        windowController.splitPaneManagerForTesting.setActivePane(firstPaneID)
+
+        let activationSave = expectation(description: "active pane saved")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { activationSave.fulfill() }
+        wait(for: [activationSave], timeout: 2)
+        XCTAssertEqual(configService.load().splitLayout?.activePaneId, firstPaneID)
+
+        windowController.splitPaneManagerForTesting.closeActivePane()
+
+        let closeSave = expectation(description: "closed pane saved")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { closeSave.fulfill() }
+        wait(for: [closeSave], timeout: 2)
+        let closedLayout = try XCTUnwrap(configService.load().splitLayout)
+        XCTAssertEqual(closedLayout.panes.map(\.channelId), [second.channelId])
+        XCTAssertEqual(closedLayout.activePaneId, initialLayout.panes[1].paneId)
+    }
+
     // MARK: - Helpers
 
     @discardableResult

@@ -455,7 +455,7 @@ When Holoscape is not the frontmost app and a channel receives eligible content 
 }
 ```
 
-### Window Splitting (Side-by-Side Channels) — shipped flat model; persistence remaining
+### Window Splitting (Side-by-Side Channels) — shipped flat model
 
 View two channels simultaneously in a split terminal area.
 
@@ -469,14 +469,6 @@ View two channels simultaneously in a split terminal area.
 - Maximum 4 panes (2x2 grid)
 - Pane assignments and the active pane persist across restarts; panes whose
   channels cannot be restored are omitted safely
-
-**Implementation:**
-- The shipped model is a bounded flat layout of at most four panes; it is not a
-  recursive split tree.
-- Each split pane wraps a channel's content view.
-- The active pane ID is tracked separately from the sidebar selection.
-- Normal and termination saves include the exported layout. Launch recovery
-  applies it after channel restoration and falls back to the first valid pane.
 
 ### Bridge Channel (Broadcast to All Agents) — shipped
 
