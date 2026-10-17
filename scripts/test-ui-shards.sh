@@ -34,13 +34,15 @@ declare -a SHARD_RUN_STATUS=()
 declare -a SHARD_RUN_PASSED=()
 declare -a SHARD_RUN_FAILED=()
 ACTIVE_TIMEOUT_PID=""
+ACTIVE_TIMEOUT_READY=0
 INTERRUPTED_STATUS=0
 
 forward_active_signal() {
     local signal_name="$1"
     local status="$2"
     INTERRUPTED_STATUS="$status"
-    if [[ -n "$ACTIVE_TIMEOUT_PID" ]] && kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+    if [[ "$ACTIVE_TIMEOUT_READY" -eq 1 ]] && \
+       [[ -n "$ACTIVE_TIMEOUT_PID" ]] && kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
         # Non-interactive bash starts asynchronous children with SIGINT ignored.
         # Use SIGTERM for cancellation so an early Ctrl-C cannot be lost before
         # the Python timeout runner installs its own handlers.
@@ -70,6 +72,14 @@ wait_for_active_timeout() {
         wait "$ACTIVE_TIMEOUT_PID"
         status=$?
         if ! kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+            if [[ "$INTERRUPTED_STATUS" -ne 0 ]] && \
+               [[ "$status" -eq "$INTERRUPTED_STATUS" ]]; then
+                wait "$ACTIVE_TIMEOUT_PID"
+                local rewait_status=$?
+                if [[ "$rewait_status" -ne 127 ]]; then
+                    return "$rewait_status"
+                fi
+            fi
             return "$status"
         fi
     done
@@ -161,6 +171,7 @@ run_selected_tests() {
     return_if_interrupted || return $?
     local pipeline_fifo="$RESULTS_DIR/.xcodebuild-output.$$.$RANDOM"
     local pipeline_status="$RESULTS_DIR/.xcodebuild-status.$$.$RANDOM"
+    local timeout_ready="$RESULTS_DIR/.timeout-ready.$$.$RANDOM"
     if ! mkfifo "$pipeline_fifo"; then
         echo "error: cannot create xcodebuild output pipe: $pipeline_fifo" >&2
         return 1
@@ -179,6 +190,9 @@ run_selected_tests() {
         printf '%s %s\n' "${local_status[0]}" "${local_status[1]}" >"$pipeline_status"
     ) &
     local filter_pid=$!
+    sleep 300 >"$pipeline_fifo" &
+    local pipeline_guard_pid=$!
+    RUN_WITH_TIMEOUT_READY_FILE="$timeout_ready" \
     "$TIMEOUT_RUNNER" "$UI_TEST_TIMEOUT_SECONDS" xcodebuild test \
         -scheme "$SCHEME" \
         -destination "$DEST" \
@@ -187,6 +201,24 @@ run_selected_tests() {
         "$@" \
         >"$pipeline_fifo" 2>&1 &
     ACTIVE_TIMEOUT_PID=$!
+    ACTIVE_TIMEOUT_READY=0
+    local ready_attempts=0
+    while [[ ! -e "$timeout_ready" ]] && \
+          kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null && \
+          [[ "$ready_attempts" -lt 250 ]]; do
+        sleep 0.02
+        ready_attempts=$((ready_attempts + 1))
+    done
+    kill -TERM "$pipeline_guard_pid" 2>/dev/null || true
+    wait "$pipeline_guard_pid" 2>/dev/null || true
+    local readiness_failed=0
+    if [[ -e "$timeout_ready" ]]; then
+        ACTIVE_TIMEOUT_READY=1
+    elif kill -0 "$ACTIVE_TIMEOUT_PID" 2>/dev/null; then
+        echo "error: timeout runner did not become ready" >&2
+        kill -TERM "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true
+        readiness_failed=1
+    fi
     if [[ "$INTERRUPTED_STATUS" -ne 0 ]]; then
         case "$INTERRUPTED_STATUS" in
             129) kill -HUP "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
@@ -199,6 +231,7 @@ run_selected_tests() {
     wait "$filter_pid"
     local filter_status=$?
     ACTIVE_TIMEOUT_PID=""
+    ACTIVE_TIMEOUT_READY=0
     set -e
     local tee_status=1
     local grep_status=1
@@ -206,7 +239,7 @@ run_selected_tests() {
         read -r tee_status grep_status <"$pipeline_status"
     fi
     local cleanup_status=0
-    rm -f "$pipeline_fifo" "$pipeline_status" || cleanup_status=$?
+    rm -f "$pipeline_fifo" "$pipeline_status" "$timeout_ready" || cleanup_status=$?
     if [[ "$cleanup_status" -ne 0 ]]; then
         echo "error: cannot remove xcodebuild pipeline artifacts" >&2
         return "$cleanup_status"
@@ -215,6 +248,10 @@ run_selected_tests() {
     "$TEST_OUTPUT_VALIDATOR" "$output" || output_status=$?
     echo "  $label bundle: $bundle"
     if [[ "$command_status" -eq 125 ]]; then
+        INTERRUPTED_STATUS=0
+        return 125
+    fi
+    if [[ "$readiness_failed" -ne 0 ]]; then
         INTERRUPTED_STATUS=0
         return 125
     fi

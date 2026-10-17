@@ -14,6 +14,7 @@ TERMINATION_GRACE_SECONDS = 5
 TIMEOUT_EXIT_STATUS = 124
 TERMINATION_FAILURE_EXIT_STATUS = 125
 INTERRUPT_EXIT_STATUS = 130
+READY_FILE_ENVIRONMENT_VARIABLE = "RUN_WITH_TIMEOUT_READY_FILE"
 
 
 def stop_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> bool:
@@ -88,6 +89,19 @@ def stop_and_reap_process_group(
     return False
 
 
+def publish_ready_file() -> bool:
+    ready_file = os.environ.get(READY_FILE_ENVIRONMENT_VARIABLE)
+    if ready_file is None:
+        return True
+    try:
+        descriptor = os.open(ready_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        return True
+    except OSError as error:
+        print(f"error: cannot publish timeout-runner readiness: {error}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(f"usage: {sys.argv[0]} SECONDS COMMAND [ARG ...]", file=sys.stderr)
@@ -131,6 +145,9 @@ def main() -> int:
     if pending_signal is not None:
         if stop_and_reap_process_group(process, pending_signal):
             return 128 + pending_signal.value
+        return TERMINATION_FAILURE_EXIT_STATUS
+    if not publish_ready_file():
+        stop_and_reap_process_group(process, signal.SIGTERM)
         return TERMINATION_FAILURE_EXIT_STATUS
 
     try:

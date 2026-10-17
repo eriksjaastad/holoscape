@@ -617,9 +617,13 @@ int_cancel_ready="$work_dir/int-cancel.ready"
 int_cancel_received="$work_dir/int-cancel.received"
 cat >"$work_dir/int-cancel/run-with-timeout.py" <<'EOF'
 #!/bin/bash
-trap 'printf TERM >"$INT_CANCEL_RECEIVED"; exit 143' TERM
+sleep 30 &
+child_pid=$!
+trap 'kill -TERM "$child_pid" 2>/dev/null || true; wait "$child_pid" 2>/dev/null || true; printf TERM >"$INT_CANCEL_RECEIVED"; exit 143' TERM
 : >"$INT_CANCEL_READY"
-sleep 30
+sleep 0.1
+: >"$RUN_WITH_TIMEOUT_READY_FILE"
+wait "$child_pid"
 EOF
 chmod +x "$work_dir/int-cancel/run-with-timeout.py" \
     "$work_dir/int-cancel/validate-xcode-test-output.sh"
@@ -659,7 +663,12 @@ with open(output, "wb") as log:
         process.wait()
         raise SystemExit("early-INT cancellation fixture did not become ready")
     process.send_signal(signal.SIGINT)
-    status = process.wait()
+    try:
+        status = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise SystemExit("UI shard script did not stop after SIGINT")
 if status != 130 or not Path(received).exists():
     raise SystemExit(f"UI shard script lost or misreported SIGINT cancellation: {status}")
 PY
@@ -670,38 +679,59 @@ cp "$script_dir/validate-xcode-test-output.sh" "$work_dir/cleanup-failure/valida
 cleanup_failure_ready="$work_dir/cleanup-failure.ready"
 cat >"$work_dir/cleanup-failure/run-with-timeout.py" <<'EOF'
 #!/bin/bash
-trap 'exit 125' TERM
+sleep 30 &
+child_pid=$!
+trap 'kill -TERM "$child_pid" 2>/dev/null || true; wait "$child_pid" 2>/dev/null || true; exit 125' TERM
+: >"$RUN_WITH_TIMEOUT_READY_FILE"
 : >"$CLEANUP_FAILURE_READY"
-sleep 30
+wait "$child_pid"
 EOF
 chmod +x "$work_dir/cleanup-failure/run-with-timeout.py" \
     "$work_dir/cleanup-failure/validate-xcode-test-output.sh"
-CLEANUP_FAILURE_READY="$cleanup_failure_ready" \
-    HOLOSCAPE_UI_TEST_RESULTS_DIR="$work_dir/cleanup-failure-results" \
-    PATH="$work_dir/bin:$PATH" bash "$work_dir/cleanup-failure/test-ui-shards.sh" 1 \
-    >"$work_dir/cleanup-failure.out" 2>&1 &
-cleanup_failure_pid=$!
-signal_attempts=0
-while [[ ! -f "$cleanup_failure_ready" && "$signal_attempts" -lt 100 ]]; do
-    sleep 0.02
-    signal_attempts=$((signal_attempts + 1))
-done
-if [[ ! -f "$cleanup_failure_ready" ]]; then
-    echo "error: cleanup-failure cancellation fixture did not become ready" >&2
-    kill -KILL "$cleanup_failure_pid" 2>/dev/null || true
-    wait "$cleanup_failure_pid" 2>/dev/null || true
-    exit 1
-fi
-kill -TERM "$cleanup_failure_pid"
-set +e
-wait "$cleanup_failure_pid"
-cleanup_failure_status=$?
-set -e
-if [[ "$cleanup_failure_status" -ne 125 ]]; then
-    echo "error: UI shard script hid timeout-runner cleanup failure" >&2
-    cat "$work_dir/cleanup-failure.out" >&2
-    exit 1
-fi
+python3 - "$work_dir/cleanup-failure/test-ui-shards.sh" \
+    "$work_dir/cleanup-failure.out" "$cleanup_failure_ready" \
+    "$work_dir/cleanup-failure-results" "$work_dir/bin" <<'PY'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+script, output, ready, results, fake_bin = sys.argv[1:]
+environment = os.environ.copy()
+environment.update(
+    {
+        "CLEANUP_FAILURE_READY": ready,
+        "HOLOSCAPE_UI_TEST_RESULTS_DIR": results,
+        "PATH": f"{fake_bin}:{environment['PATH']}",
+    }
+)
+with open(output, "wb") as log:
+    process = subprocess.Popen(
+        ["bash", script, "1"],
+        env=environment,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+    )
+    for _ in range(100):
+        if Path(ready).exists():
+            break
+        time.sleep(0.02)
+    else:
+        process.kill()
+        process.wait()
+        raise SystemExit("cleanup-failure cancellation fixture did not become ready")
+    process.send_signal(signal.SIGTERM)
+    try:
+        status = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise SystemExit("cleanup-failure cancellation fixture did not stop")
+if status != 125:
+    raise SystemExit(f"UI shard script hid timeout-runner cleanup failure: {status}")
+PY
 
 make_signal_pid="$work_dir/make-signal.pid"
 make_signal_received="$work_dir/make-signal.received"
