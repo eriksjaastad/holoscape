@@ -704,6 +704,20 @@ final class ChannelManagerTests: XCTestCase {
                 directory: "",
                 apiURL: "ftp://chat.example.com"
             ),
+            SessionProfile(
+                label: "Malformed MCP Percent Escape",
+                connection: .mcp,
+                command: "",
+                directory: "",
+                endpoint: "https://mcp.example.com/%zz"
+            ),
+            SessionProfile(
+                label: "Truncated Chat Percent Escape",
+                connection: .agentChat,
+                command: "",
+                directory: "",
+                apiURL: "https://chat.example.com/%2"
+            ),
         ]
 
         for profile in profiles {

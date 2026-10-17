@@ -159,7 +159,8 @@ class ChannelManager {
     private static func validExternalServiceURL(_ rawValue: String?) -> URL? {
         guard let rawValue else { return nil }
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let components = URLComponents(string: trimmed),
+        guard hasValidPercentEscapes(trimmed),
+              let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = components.host,
@@ -167,6 +168,30 @@ class ChannelManager {
             return nil
         }
         return components.url
+    }
+
+    private static func hasValidPercentEscapes(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x25 else {
+                index += 1
+                continue
+            }
+            guard index + 2 < bytes.count,
+                  isASCIIHexDigit(bytes[index + 1]),
+                  isASCIIHexDigit(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        }
+        return true
+    }
+
+    private static func isASCIIHexDigit(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte)
+            || (0x41...0x46).contains(byte)
+            || (0x61...0x66).contains(byte)
     }
 
     /// Close a channel. Returns true if confirmation is needed (active process).
