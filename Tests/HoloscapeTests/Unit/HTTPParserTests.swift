@@ -207,19 +207,26 @@ final class HTTPParserTests: XCTestCase {
     }
 
     @MainActor
-    func testSendFailureStillCancelsConnection() throws {
-        let server = makeServer()
+    func testSendFailureIsReportedBeforeConnectionCancellation() throws {
+        let events = OrderedEventRecorder()
+        let server = makeServer(responseSendErrorReporter: { _ in
+            events.record("sendError")
+        })
         let connection = RecordingHTTPServerConnection(
             receiveEvents: [
                 .init(data: Data("broken".utf8), isComplete: true, error: nil)
             ],
-            sendError: NWError.posix(.EPIPE)
+            sendError: NWError.posix(.EPIPE),
+            onCancel: {
+                events.record("cancel")
+            }
         )
 
         server.handleConnection(connection)
 
         XCTAssertNotNil(connection.sentContent)
         XCTAssertEqual(connection.cancelCallCount, 1)
+        XCTAssertEqual(events.values, ["sendError", "cancel"])
     }
 
     @MainActor
@@ -242,7 +249,9 @@ final class HTTPParserTests: XCTestCase {
     }
 
     @MainActor
-    private func makeServer() -> HoloscapeAPIServer {
+    private func makeServer(
+        responseSendErrorReporter: @escaping @Sendable (NWError) -> Void = { _ in }
+    ) -> HoloscapeAPIServer {
         let configService = ConfigService(
             configDir: FileManager.default.temporaryDirectory
                 .appendingPathComponent("HTTPParserTests-")
@@ -256,7 +265,8 @@ final class HTTPParserTests: XCTestCase {
         return HoloscapeAPIServer(
             channelManager: channelManager,
             windowController: windowController,
-            port: 0
+            port: 0,
+            responseSendErrorReporter: responseSendErrorReporter
         )
     }
 }
@@ -270,6 +280,7 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
 
     private var receiveEvents: [ReceiveEvent]
     private let sendError: NWError?
+    private let onCancel: @Sendable () -> Void
     private(set) var sentContent: Data?
     private(set) var cancelCallCount = 0
     private(set) var receiveCallCount = 0
@@ -277,11 +288,17 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
     init(data: Data?, isComplete: Bool, error: NWError?) {
         receiveEvents = [.init(data: data, isComplete: isComplete, error: error)]
         sendError = nil
+        onCancel = {}
     }
 
-    init(receiveEvents: [ReceiveEvent], sendError: NWError? = nil) {
+    init(
+        receiveEvents: [ReceiveEvent],
+        sendError: NWError? = nil,
+        onCancel: @escaping @Sendable () -> Void = {}
+    ) {
         self.receiveEvents = receiveEvents
         self.sendError = sendError
+        self.onCancel = onCancel
     }
 
     func start(queue: DispatchQueue) {}
@@ -299,5 +316,21 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
 
     func cancel() {
         cancelCallCount += 1
+        onCancel()
+    }
+}
+
+private final class OrderedEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [String] = []
+
+    var values: [String] {
+        lock.withLock { storedValues }
+    }
+
+    func record(_ value: String) {
+        lock.withLock {
+            storedValues.append(value)
+        }
     }
 }

@@ -76,17 +76,22 @@ class HoloscapeAPIServer {
     private(set) var mutedNotificationChannelIds: Set<UUID> = []
     private let agentStatusAdapter = AgentStatusAdapter()
     private let dockAttentionClient: DockAttentionClient
+    private let responseSendErrorReporter: @Sendable (NWError) -> Void
 
     init(
         channelManager: ChannelManager,
         windowController: MainWindowController,
         port: UInt16 = 7865,
-        dockAttentionClient: DockAttentionClient = SystemDockAttentionClient()
+        dockAttentionClient: DockAttentionClient = SystemDockAttentionClient(),
+        responseSendErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
+            NSLog("HoloscapeAPI: Failed to send response: \(error)")
+        }
     ) {
         self.channelManager = channelManager
         self.windowController = windowController
         self.port = port
         self.dockAttentionClient = dockAttentionClient
+        self.responseSendErrorReporter = responseSendErrorReporter
     }
 
     /// Suppress notifications for a grace period after launch (tabs start idle)
@@ -177,6 +182,7 @@ class HoloscapeAPIServer {
 
     /// Accumulate data until we have a complete HTTP request (headers + body).
     private nonisolated func receiveFullRequest(connection: HTTPServerConnection, accumulated: Data) {
+        let responseSendErrorReporter = responseSendErrorReporter
         connection.receive { [weak self] data, isComplete, error in
             switch Self.requestReceiveDecision(
                 accumulated: accumulated,
@@ -187,10 +193,18 @@ class HoloscapeAPIServer {
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     let response = await self.route(request)
-                    Self.sendAndClose(response, connection: connection)
+                    Self.sendAndClose(
+                        response,
+                        connection: connection,
+                        reportError: responseSendErrorReporter
+                    )
                 }
             case .respond(let response):
-                Self.sendAndClose(response, connection: connection)
+                Self.sendAndClose(
+                    response,
+                    connection: connection,
+                    reportError: responseSendErrorReporter
+                )
             case .receiveMore(let buffer):
                 if error == nil {
                     self?.receiveFullRequest(connection: connection, accumulated: buffer)
@@ -203,11 +217,12 @@ class HoloscapeAPIServer {
 
     private nonisolated static func sendAndClose(
         _ response: HTTPResponse,
-        connection: HTTPServerConnection
+        connection: HTTPServerConnection,
+        reportError: @escaping @Sendable (NWError) -> Void
     ) {
         connection.send(content: response.serialize()) { error in
             if let error {
-                NSLog("HoloscapeAPI: Failed to send response: \(error)")
+                reportError(error)
             }
             connection.cancel()
         }
