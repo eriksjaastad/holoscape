@@ -252,6 +252,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     internal var tabBarForTesting: TabBarView { tabBar }
     internal var inputResizeHandleForTesting: InputResizeHandleView { inputResizeHandle }
     internal var chromeDragOverlaysForTesting: [WindowDragOverlay] { chromeDragOverlays }
+    internal var splitPaneManagerForTesting: SplitPaneManager { splitPaneManager }
 
     init(channelManager: ChannelManager, configService: ConfigService) {
         self.channelManager = channelManager
@@ -794,6 +795,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 } else {
                     self.splitPaneManager.splitHorizontal()
                 }
+                self.scheduleSaveState()
                 return nil
             }
 
@@ -801,6 +803,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             if event.keyCode == 13 && hasShift {
                 if self.splitPaneManager.paneCount > 1 {
                     self.splitPaneManager.closeActivePane()
+                    self.scheduleSaveState()
                 }
                 return nil  // consume even with 1 pane to prevent system handling
             }
@@ -2035,6 +2038,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             inputHeightConstraint?.constant = userInputPanelHeight ?? inputMinHeight
             window.makeFirstResponder(inputBox)
         }
+        scheduleSaveState()
     }
 
     /// Schedule a tab refresh for the end of the current run loop cycle.
@@ -2059,10 +2063,29 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         saveStateWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.channelManager.saveState()
+            self.saveChannelState()
         }
         saveStateWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    @discardableResult
+    func saveChannelState() -> Bool {
+        channelManager.saveState(splitLayout: splitPaneManager.exportLayout())
+    }
+
+    @discardableResult
+    func restoreSplitLayout() -> Bool {
+        guard let layout = configService.load().splitLayout else { return false }
+        let didRestore = splitPaneManager.restoreLayout(
+            layout,
+            compiledShader: cachedShader
+        ) { [channelManager] channelID in
+            channelManager.channel(for: channelID)?.contentView
+        }
+        guard didRestore, let activeChannelID = splitPaneManager.activeChannelId else { return false }
+        switchToChannel(activeChannelID)
+        return true
     }
 
     /// Immediately refresh all tabs (use sparingly — prefer scheduleRefreshAllTabs).
@@ -2750,6 +2773,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         if let channelId {
             activeChannelId = channelId
             scheduleRefreshAllTabs()
+            scheduleSaveState()
         }
     }
 

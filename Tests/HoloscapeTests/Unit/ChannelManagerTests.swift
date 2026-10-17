@@ -2432,6 +2432,100 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(newManager.count, 1)
     }
 
+    func testSplitPaneLayoutSurvivesSaveReloadAndDropsUnavailableChannels() throws {
+        let first = createMockChannel(type: .shell, role: "Shell")
+        let second = createMockChannel(type: .agentDirect, role: "Agent")
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+
+        windowController.switchToChannel(first.channelId)
+        windowController.splitPaneManagerForTesting.splitHorizontal()
+        windowController.switchToChannel(second.channelId)
+
+        let savedLayout = windowController.splitPaneManagerForTesting.exportLayout()
+        XCTAssertEqual(savedLayout.panes.map(\.channelId), [first.channelId, second.channelId])
+        XCTAssertEqual(savedLayout.activePaneId, savedLayout.panes.last?.paneId)
+
+        let normalSave = expectation(description: "normal save includes split layout")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+            normalSave.fulfill()
+        }
+        wait(for: [normalSave], timeout: 2)
+        XCTAssertEqual(configService.load().splitLayout, savedLayout)
+
+        windowController.switchToChannel(first.channelId)
+        let terminationLayout = windowController.splitPaneManagerForTesting.exportLayout()
+        XCTAssertEqual(terminationLayout.activePaneId, terminationLayout.panes.first?.paneId)
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        appDelegate.windowControllerRef = windowController
+        XCTAssertTrue(appDelegate.terminationSaveChannelState())
+
+        var persisted = configService.load()
+        XCTAssertEqual(persisted.splitLayout, terminationLayout)
+        persisted.splitLayout?.panes.insert(
+            PaneConfig(paneId: UUID(), channelId: UUID()),
+            at: 1
+        )
+        XCTAssertTrue(configService.save(persisted))
+
+        let restoredManager = ChannelManager(configService: configService)
+        restoredManager.restoreState { metadata in
+            MockChannelController(
+                id: metadata.id,
+                type: metadata.type,
+                label: metadata.role,
+                instanceNumber: metadata.instanceNumber
+            )
+        }
+        let restoredWindowController = MainWindowController(
+            channelManager: restoredManager,
+            configService: configService
+        )
+        let restoredAppDelegate = AppDelegate()
+        restoredAppDelegate.channelManagerRef = restoredManager
+        restoredAppDelegate.windowControllerRef = restoredWindowController
+
+        restoredAppDelegate.launchRecoveryEnsureInitialChannel()
+        let restoredLayout = restoredWindowController.splitPaneManagerForTesting.exportLayout()
+        XCTAssertEqual(restoredLayout, terminationLayout)
+        XCTAssertEqual(restoredWindowController.activeChannelId, first.channelId)
+    }
+
+    func testSplitPaneLayoutRestoreRejectsDuplicatesAndRemainsBounded() {
+        let channels = (0..<5).map { index in
+            createMockChannel(type: .shell, role: "Shell \(index)")
+        }
+        let paneIDs = (0..<5).map { _ in UUID() }
+        let unavailablePaneID = UUID()
+        let layout = SplitLayoutConfig(
+            panes: [
+                PaneConfig(paneId: paneIDs[0], channelId: channels[0].channelId),
+                PaneConfig(paneId: unavailablePaneID, channelId: UUID()),
+                PaneConfig(paneId: paneIDs[0], channelId: channels[1].channelId),
+                PaneConfig(paneId: paneIDs[1], channelId: channels[0].channelId),
+                PaneConfig(paneId: paneIDs[2], channelId: channels[2].channelId),
+                PaneConfig(paneId: paneIDs[3], channelId: channels[3].channelId),
+                PaneConfig(paneId: paneIDs[4], channelId: channels[4].channelId),
+            ],
+            activePaneId: unavailablePaneID
+        )
+        let windowController = MainWindowController(channelManager: manager, configService: configService)
+
+        XCTAssertTrue(
+            windowController.splitPaneManagerForTesting.restoreLayout(layout) { [manager] channelID in
+                manager.channel(for: channelID)?.contentView
+            }
+        )
+
+        let restored = windowController.splitPaneManagerForTesting.exportLayout()
+        XCTAssertEqual(restored.panes.count, 4)
+        XCTAssertEqual(
+            restored.panes.map(\.channelId),
+            [channels[0], channels[2], channels[3], channels[4]].map(\.channelId)
+        )
+        XCTAssertEqual(restored.activePaneId, paneIDs[0])
+    }
+
     // MARK: - Helpers
 
     @discardableResult

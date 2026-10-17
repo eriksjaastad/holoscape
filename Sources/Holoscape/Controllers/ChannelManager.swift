@@ -270,12 +270,13 @@ class ChannelManager {
 
     /// Save current channel state to config.
     @discardableResult
-    func saveState() -> Bool {
+    func saveState(splitLayout: SplitLayoutConfig? = nil) -> Bool {
         let result = persistence.save(.init(
             channelOrder: channelOrder,
             channels: channels,
             channelLabels: channelLabels,
-            pinnedTimestamps: pinnedTimestamps
+            pinnedTimestamps: pinnedTimestamps,
+            splitLayout: splitLayout
         ))
         if result.didSave {
             for id in result.finalizedClosureIDs {
