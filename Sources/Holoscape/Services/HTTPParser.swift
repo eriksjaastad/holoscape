@@ -96,7 +96,13 @@ enum HTTPParser {
         let bodyStart = hdrRange.upperBound
         let availableBodyBytes = data.count - bodyStart
 
-        // Decode headers as UTF-8. HTTP headers are ASCII, so this is safe.
+        // Foundation strips a leading UTF-8 BOM during decoding. Validate the
+        // first raw method byte so a BOM cannot disappear before grammar checks.
+        guard let firstHeaderByte = headerData.first, isTokenByte(firstHeaderByte) else {
+            return .badRequest
+        }
+
+        // Decode headers as UTF-8. This local control API accepts textual headers.
         guard let headerString = String(data: headerData, encoding: .utf8) else { return .badRequest }
         let headerLines = headerString.components(separatedBy: "\r\n")
         guard let requestLine = headerLines.first else { return .badRequest }
@@ -186,15 +192,17 @@ enum HTTPParser {
     }
 
     private static func isToken(_ value: Substring) -> Bool {
-        !value.isEmpty && value.utf8.allSatisfy { byte in
-            switch byte {
-            case 48...57, 65...90, 97...122:
-                return true
-            case 33, 35...39, 42, 43, 45, 46, 94, 95, 96, 124, 126:
-                return true
-            default:
-                return false
-            }
+        !value.isEmpty && value.utf8.allSatisfy(isTokenByte)
+    }
+
+    private static func isTokenByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 48...57, 65...90, 97...122:
+            return true
+        case 33, 35...39, 42, 43, 45, 46, 94, 95, 96, 124, 126:
+            return true
+        default:
+            return false
         }
     }
 

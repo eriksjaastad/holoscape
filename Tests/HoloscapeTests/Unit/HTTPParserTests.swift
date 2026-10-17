@@ -190,6 +190,22 @@ final class HTTPParserTests: XCTestCase {
         }
     }
 
+    func testUTF8BOMBeforeRequestLineDoesNotRouteRequest() {
+        let request = Data([0xef, 0xbb, 0xbf]) + Data("GET /channels HTTP/1.1\r\n\r\n".utf8)
+
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: request,
+            isComplete: false,
+            maximumBytes: 128
+        )
+
+        guard case .respond(let response) = decision else {
+            return XCTFail("Expected response, got \(decision)")
+        }
+        XCTAssertEqual(response.status, 400)
+    }
+
     func testMalformedHeaderLinesDoNotRouteRequest() {
         let malformedHeaders = [
             "Content-Length 100",
@@ -287,6 +303,48 @@ final class HTTPParserTests: XCTestCase {
     }
 
     @MainActor
+    func testCompleteValidCallbackWithErrorStillRoutesContent() async throws {
+        let responseSent = expectation(description: "route response sent")
+        let server = makeServer()
+        let connection = RecordingHTTPServerConnection(
+            receiveEvents: [
+                .init(
+                    data: Data("GET /channels HTTP/1.1\r\n\r\n".utf8),
+                    isComplete: true,
+                    error: NWError.posix(.ECONNRESET)
+                )
+            ],
+            onSend: {
+                responseSent.fulfill()
+            }
+        )
+
+        server.handleConnection(connection)
+        await fulfillment(of: [responseSent], timeout: 1)
+
+        let response = try XCTUnwrap(connection.sentContent)
+        XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 503 Service Unavailable\r\n"))
+        XCTAssertEqual(connection.receiveCallCount, 1)
+        XCTAssertEqual(connection.cancelCallCount, 1)
+    }
+
+    @MainActor
+    func testIncompleteCallbackWithErrorCancelsWithoutAnotherReceive() {
+        let server = makeServer()
+        let connection = RecordingHTTPServerConnection(
+            data: Data("POST /channels HTTP/1.1\r\nContent-Length: 4\r\n\r\nab".utf8),
+            isComplete: false,
+            error: NWError.posix(.ECONNRESET)
+        )
+
+        server.handleConnection(connection)
+
+        XCTAssertNil(connection.sentContent)
+        XCTAssertEqual(connection.receiveCallCount, 1)
+        XCTAssertEqual(connection.cancelCallCount, 1)
+    }
+
+    @MainActor
     func testTerminalIncompleteCallbackSends400AndCancels() throws {
         let server = makeServer()
         let connection = RecordingHTTPServerConnection(
@@ -327,16 +385,20 @@ final class HTTPParserTests: XCTestCase {
 
     @MainActor
     func testSplitReadsReachRouteResponseAndCancel() async throws {
+        let responseSent = expectation(description: "route response sent")
         let server = makeServer()
         let connection = RecordingHTTPServerConnection(
             receiveEvents: [
                 .init(data: Data("GET /chan".utf8), isComplete: false, error: nil),
                 .init(data: Data("nels HTTP/1.1\r\n\r\n".utf8), isComplete: false, error: nil)
-            ]
+            ],
+            onSend: {
+                responseSent.fulfill()
+            }
         )
 
         server.handleConnection(connection)
-        await Task.yield()
+        await fulfillment(of: [responseSent], timeout: 1)
 
         let response = try XCTUnwrap(connection.sentContent)
         XCTAssertTrue(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 503 Service Unavailable\r\n"))
@@ -376,6 +438,7 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
 
     private var receiveEvents: [ReceiveEvent]
     private let sendError: NWError?
+    private let onSend: @Sendable () -> Void
     private let onCancel: @Sendable () -> Void
     private(set) var sentContent: Data?
     private(set) var cancelCallCount = 0
@@ -384,16 +447,19 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
     init(data: Data?, isComplete: Bool, error: NWError?) {
         receiveEvents = [.init(data: data, isComplete: isComplete, error: error)]
         sendError = nil
+        onSend = {}
         onCancel = {}
     }
 
     init(
         receiveEvents: [ReceiveEvent],
         sendError: NWError? = nil,
+        onSend: @escaping @Sendable () -> Void = {},
         onCancel: @escaping @Sendable () -> Void = {}
     ) {
         self.receiveEvents = receiveEvents
         self.sendError = sendError
+        self.onSend = onSend
         self.onCancel = onCancel
     }
 
@@ -408,6 +474,7 @@ private final class RecordingHTTPServerConnection: HTTPServerConnection, @unchec
     func send(content: Data, completion: @escaping @Sendable (NWError?) -> Void) {
         sentContent = content
         completion(sendError)
+        onSend()
     }
 
     func cancel() {
