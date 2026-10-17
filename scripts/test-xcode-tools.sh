@@ -122,6 +122,12 @@ for mutation in missing stale moved target-config target-product target-membersh
         echo "error: Xcode validator accepted the $mutation project mutation" >&2
         exit 1
     fi
+    if [[ "$mutation" == source-phase-membership-* ]] && \
+       ! grep -q 'source phase' "$work_dir/$mutation.out"; then
+        echo "error: $mutation failed without the expected source-phase diagnostic" >&2
+        cat "$work_dir/$mutation.out" >&2
+        exit 1
+    fi
 done
 mutate_scheme() {
     local destination="$1"
@@ -493,6 +499,22 @@ module.sys.argv = [module_path, "1", "synthetic-command"]
 status = module.main()
 if status != module.TERMINATION_FAILURE_EXIT_STATUS:
     raise SystemExit(f"normal-exit inspection failure returned {status}, expected 125")
+
+class EarlySignalProcess:
+    pid = 43213
+    args = ["synthetic-command"]
+
+forwarded = []
+def signal_during_spawn(*args, **kwargs):
+    module.os.kill(module.os.getpid(), signal.SIGTERM)
+    return EarlySignalProcess()
+
+module.subprocess.Popen = signal_during_spawn
+module.stop_and_reap_process_group = lambda process, sig: forwarded.append(sig) or True
+module.sys.argv = [module_path, "1", "synthetic-command"]
+status = module.main()
+if status != 143 or forwarded != [signal.SIGTERM]:
+    raise SystemExit(f"spawn-window SIGTERM returned {status} with forwarded={forwarded}")
 PY
 
 cat >"$work_dir/signal-child.py" <<'PY'

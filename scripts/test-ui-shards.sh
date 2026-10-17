@@ -170,6 +170,13 @@ run_selected_tests() {
         "$@" \
         >"$pipeline_fifo" 2>&1 &
     ACTIVE_TIMEOUT_PID=$!
+    if [[ "$INTERRUPTED_STATUS" -ne 0 ]]; then
+        case "$INTERRUPTED_STATUS" in
+            129) kill -HUP "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
+            130) kill -INT "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
+            143) kill -TERM "$ACTIVE_TIMEOUT_PID" 2>/dev/null || true ;;
+        esac
+    fi
     wait "$ACTIVE_TIMEOUT_PID"
     local command_status=$?
     wait "$filter_pid"

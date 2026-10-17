@@ -103,13 +103,14 @@ def main() -> int:
         return 2
 
     command = sys.argv[2:]
-    try:
-        process = subprocess.Popen(command, start_new_session=True)
-    except OSError as error:
-        print(f"error: cannot start {command[0]}: {error}", file=sys.stderr)
-        return 127
+    process: subprocess.Popen[bytes] | None = None
+    pending_signal: signal.Signals | None = None
 
     def forward_termination(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
+        if process is None:
+            pending_signal = signal.Signals(signum)
+            return
         for forwarded_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
             signal.signal(forwarded_signal, signal.SIG_IGN)
         if stop_and_reap_process_group(process, signal.Signals(signum)):
@@ -119,6 +120,18 @@ def main() -> int:
     signal.signal(signal.SIGHUP, forward_termination)
     signal.signal(signal.SIGINT, forward_termination)
     signal.signal(signal.SIGTERM, forward_termination)
+
+    if pending_signal is not None:
+        return 128 + pending_signal.value
+    try:
+        process = subprocess.Popen(command, start_new_session=True)
+    except OSError as error:
+        print(f"error: cannot start {command[0]}: {error}", file=sys.stderr)
+        return 127
+    if pending_signal is not None:
+        if stop_and_reap_process_group(process, pending_signal):
+            return 128 + pending_signal.value
+        return TERMINATION_FAILURE_EXIT_STATUS
 
     try:
         status = process.wait(timeout=timeout_seconds)
