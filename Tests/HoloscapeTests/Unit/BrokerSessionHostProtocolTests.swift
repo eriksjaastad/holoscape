@@ -723,6 +723,30 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(runtime.handlerIsInstalled)
     }
 
+    func testHostWaitForOutputAvailabilityReportsHandlerRemovalFailure() throws {
+        let runtime = SignalingBrokerSessionRuntime()
+        runtime.handlerRemovalError = NSError(
+            domain: "BrokerSessionHostProtocolTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "handler removal failed"]
+        )
+        let host = BrokerSessionHost(runtime: runtime)
+        let codec = BrokerSessionHostCodec()
+        let sessionID = BrokerSessionID(rawValue: "host-output-cleanup-failure")
+
+        let response = try codec.decodeResponse(
+            try host.handle(
+                codec.encodeRequest(.waitForOutputAvailability(id: sessionID, timeoutMilliseconds: 0))
+            )
+        )
+
+        guard case let .failure(failure) = response else {
+            return XCTFail("Expected cleanup failure, got \(response)")
+        }
+        XCTAssertEqual(failure.code, "runtime-error")
+        XCTAssertTrue(failure.message.contains("handler removal failed"), failure.message)
+    }
+
     func testHostWaitForOutputAvailabilityReturnsImmediatelyForBufferedNativeOutput() throws {
         let runtime = NativePTYBrokerSessionRuntime()
         let host = BrokerSessionHost(runtime: runtime)
@@ -3627,6 +3651,7 @@ private final class LockedBrokerResponseBox: @unchecked Sendable {
 private final class SignalingBrokerSessionRuntime: BrokerSessionRuntime, BrokerOutputAvailabilityMonitoringRuntime, @unchecked Sendable {
     private let lock = NSLock()
     private var handler: (@Sendable (BrokerSessionID) -> Void)?
+    var handlerRemovalError: Error?
 
     var handlerIsInstalled: Bool {
         lock.lock()
@@ -3651,6 +3676,9 @@ private final class SignalingBrokerSessionRuntime: BrokerSessionRuntime, BrokerO
     }
 
     func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
+        if handler == nil, let handlerRemovalError {
+            throw handlerRemovalError
+        }
         lock.lock()
         self.handler = handler
         lock.unlock()
