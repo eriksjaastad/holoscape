@@ -2138,8 +2138,26 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             configured: sessions.configured,
             builtIn: sessions.builtIn,
             discovered: sessions.discovered,
-            recent: sessions.recent
+            recent: sessions.recent,
+            root: launcherRootURL()
         )
+    }
+
+    private func launcherRootURL() -> URL {
+        let activeDirectory: String?
+        if let activeChannelId,
+           let channel = channelManager.channel(for: activeChannelId) {
+            if let shell = channel as? ShellChannelController {
+                activeDirectory = shell.persistedWorkingDirectory
+            } else if let agent = channel as? AgentChannelController {
+                activeDirectory = agent.persistedWorkingDirectory
+            } else {
+                activeDirectory = nil
+            }
+        } else {
+            activeDirectory = nil
+        }
+        return DirectoryLauncherModel.root(activeDirectory: activeDirectory)
     }
 
     @objc func handleNewSession() {

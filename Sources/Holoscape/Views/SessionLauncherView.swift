@@ -10,42 +10,56 @@ protocol SessionLauncherDelegate: AnyObject {
 }
 
 @MainActor
-class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
+class SessionLauncherView: NSView, NSSearchFieldDelegate {
     weak var launcherDelegate: SessionLauncherDelegate?
 
-    /// Skin context source. Nil falls back to the hardcoded default
-    /// below (standalone rendering path).
     var skinContext: SkinContext? {
         didSet { refreshFromSkin() }
     }
 
     private static let containerBg = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
 
-    private let comboBox = NSComboBox()
-    /// Amplify Task 11.5 — subclassed refresh button so hover + pressed
-    /// transitions flow back into the launcher's sprite-state tracking.
-    /// Nil skinContext = no-op; state tracking still runs harmlessly.
+    private let searchField = LauncherSearchField()
     private let refreshButton = LauncherButton()
-    var comboBoxForTesting: NSComboBox { comboBox }
-    var refreshButtonForTesting: NSButton { refreshButton }
-    private var items: [LauncherItem] = []
+    private let popover = NSPopover()
+    private let rootPathLabel = NSTextField(labelWithString: "")
+    private let resultsStack = NSStackView()
+    private let scrollView = NSScrollView()
+    private var representedItems: [String: DirectoryLauncherItem] = [:]
+    private var snapshot: DirectoryLauncherSnapshot?
+    private var configuredProfiles: [SessionProfile] = []
+    private var builtInProfiles = SessionProfileManager.builtInProfiles
+    private var discoveredProfiles: [SessionProfile] = []
+    private var recentSessions: [RecentSession] = []
+    private var selectedRoot: URL = DefaultWorkingDirectory.preferredURL
+    private var followsSuggestedRoot = true
 
-    /// Amplify Task 11.5 — hover + pressed state for the refresh button.
-    /// Only one button, so we keep simple flags rather than a per-button
-    /// dict (TabBarView's approach). `private(set)` + `internal` so
-    /// tests can inspect without writing.
-    private(set) var refreshButtonHovered: Bool = false
-    private(set) var refreshButtonPressed: Bool = false
+    var comboBoxForTesting: NSSearchField { searchField }
+    var refreshButtonForTesting: NSButton { refreshButton }
+    var rootPathForTesting: String { selectedRoot.path }
+    var visibleSectionTitlesForTesting: [String] {
+        snapshot?.filtered(by: searchField.stringValue).sections.map(\.title) ?? []
+    }
+    var resultsStartAtTopForTesting: Bool {
+        scrollView.documentView?.isFlipped == true
+            && !resultsStack.isFlipped
+            && scrollView.contentView.bounds.origin == .zero
+    }
+
+    private(set) var refreshButtonHovered = false
+    private(set) var refreshButtonPressed = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         setupViews()
+        setupPopover()
         setupSkinObserver()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupViews()
+        setupPopover()
         setupSkinObserver()
     }
 
@@ -66,10 +80,6 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         refreshFromSkin()
     }
 
-    /// Apply the container fill (color / gradient / image) via
-    /// `SkinContext.applyFill` so gradient and ninepatch skins render
-    /// correctly. Nil skinContext falls back to the hardcoded
-    /// pre-skinning color.
     private func refreshFromSkin() {
         guard let layer else { return }
         guard let ctx = skinContext else {
@@ -79,30 +89,13 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         let resolved = ctx.currentState(for: .sessionLauncherContainer)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
-        // Amplify Task 13 — combo box font from the skin. Applies to
-        // both the visible field and the dropdown list. Nil = retain
-        // init's monospaced default.
         if let font = ctx.resolvedFont(for: .sessionLauncherContainer) {
-            comboBox.font = font
+            searchField.font = font
         }
-        // Amplify Task 15 — border/corner/shadow on the launcher
-        // container layer. Shadow on the container gives the launcher
-        // visual separation from the sidebar; border gives a skin
-        // authoring-friendly outline option.
         ctx.applyBorderAndCorner(to: layer, from: resolved)
-        // Amplify Task 11.5 — paint the refresh button from a per-
-        // state sprite-capable surface. Each state maps to a distinct
-        // SurfaceKey so a skin author can declare `sessionLauncher.button.hover`
-        // as a solid color OR use `.sessionLauncher.button.normal` with
-        // a sprite descriptor and pass state through the spriteState
-        // channel. Both work; `applyRefreshButtonFill` handles both.
         applyRefreshButtonFill()
     }
 
-    /// Amplify Task 11.5 — resolve and apply the refresh button's
-    /// fill based on current hover + pressed state. Also applies
-    /// border/corner/shadow per Task 15 conventions so the button
-    /// participates in skin chrome.
     private func applyRefreshButtonFill() {
         guard let ctx = skinContext,
               let buttonLayer = refreshButton.layer else {
@@ -124,10 +117,6 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         )
     }
 
-    /// Map the refresh button's hover + pressed flags to a (surfaceKey,
-    /// spriteState) pair. Pressed > hover > normal. Exposed at internal
-    /// visibility so the sprite-publishing tests can verify the
-    /// mapping without driving real NSEvents.
     func refreshButtonSurfaceAndState() -> (SurfaceKey, SpriteState) {
         if refreshButtonPressed {
             return (.sessionLauncherButtonPressed, .pressed)
@@ -137,8 +126,6 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         }
         return (.sessionLauncherButtonNormal, .normal)
     }
-
-    // MARK: - Amplify Task 11.5 event handlers
 
     func handleRefreshButtonMouseEntered() {
         refreshButtonHovered = true
@@ -162,7 +149,6 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
 
     override func layout() {
         super.layout()
-        // Re-apply so gradient sublayers track the launcher's bounds.
         refreshFromSkin()
     }
 
@@ -170,18 +156,15 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         wantsLayer = true
         layer?.backgroundColor = Self.containerBg
 
-        comboBox.isEditable = true
-        comboBox.completes = true
-        comboBox.usesDataSource = true
-        comboBox.dataSource = self
-        comboBox.delegate = self
-        comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        comboBox.placeholderString = "New Channel / project / Claude / ssh host..."
-        comboBox.toolTip = "Choose Shell, Agent, Group Chat, Bridge, a saved session, a project folder, or type 'ssh host'."
-        comboBox.setAccessibilityLabel("New channel launcher")
-        comboBox.setAccessibilityHelp(comboBox.toolTip)
-        comboBox.setAccessibilityIdentifier("session-launcher-combo")
-        comboBox.translatesAutoresizingMaskIntoConstraints = false
+        searchField.onActivate = { [weak self] in self?.showPopover() }
+        searchField.delegate = self
+        searchField.font = NSFont.systemFont(ofSize: 12)
+        searchField.placeholderString = "New channel, directory, or ssh host"
+        searchField.toolTip = "Search channel actions, child directories, saved sessions, or type a command such as ssh host."
+        searchField.setAccessibilityLabel("New channel launcher")
+        searchField.setAccessibilityHelp(searchField.toolTip)
+        searchField.setAccessibilityIdentifier("session-launcher-combo")
+        searchField.translatesAutoresizingMaskIntoConstraints = false
 
         refreshButton.launcher = self
         refreshButton.wantsLayer = true
@@ -190,19 +173,19 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshButton.target = self
         refreshButton.action = #selector(refreshClicked)
-        refreshButton.toolTip = "Refresh project list"
-        refreshButton.setAccessibilityLabel("Refresh projects")
-        refreshButton.setAccessibilityHelp("Refresh the available projects and saved sessions")
+        refreshButton.toolTip = "Refresh launcher directories and sessions"
+        refreshButton.setAccessibilityLabel("Refresh launcher")
+        refreshButton.setAccessibilityHelp("Reload the current root directory and configured sessions")
         refreshButton.setAccessibilityIdentifier("refresh-sessions")
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(comboBox)
+        addSubview(searchField)
         addSubview(refreshButton)
 
         NSLayoutConstraint.activate([
-            comboBox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            comboBox.trailingAnchor.constraint(equalTo: refreshButton.leadingAnchor, constant: -4),
-            comboBox.centerYAnchor.constraint(equalTo: centerYAnchor),
+            searchField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            searchField.trailingAnchor.constraint(equalTo: refreshButton.leadingAnchor, constant: -4),
+            searchField.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             refreshButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             refreshButton.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -211,214 +194,332 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         ])
     }
 
-    /// Update the items shown in the dropdown.
+    private func setupPopover() {
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentSize = NSSize(width: 440, height: 520)
+
+        let contentController = NSViewController()
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 520))
+        contentView.setAccessibilityElement(false)
+
+        let rootTitle = NSTextField(labelWithString: "CURRENT ROOT")
+        rootTitle.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        rootTitle.textColor = .secondaryLabelColor
+        rootTitle.setAccessibilityElement(true)
+        rootTitle.setAccessibilityRole(.staticText)
+        rootTitle.setAccessibilityIdentifier("launcher-root-title")
+        rootTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        rootPathLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        rootPathLabel.lineBreakMode = .byTruncatingMiddle
+        rootPathLabel.setAccessibilityLabel("Current launcher root")
+        rootPathLabel.setAccessibilityIdentifier("launcher-root-path")
+        rootPathLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let chooseRootButton = NSButton(title: "Choose…", target: self, action: #selector(chooseRoot))
+        chooseRootButton.bezelStyle = .inline
+        chooseRootButton.setAccessibilityIdentifier("launcher-choose-root")
+        chooseRootButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        resultsStack.orientation = .vertical
+        resultsStack.alignment = .leading
+        resultsStack.spacing = 4
+        resultsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let documentView = LauncherResultsDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(resultsStack)
+        NSLayoutConstraint.activate([
+            resultsStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 8),
+            resultsStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 12),
+            resultsStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -12),
+            resultsStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -12),
+            resultsStack.widthAnchor.constraint(equalTo: documentView.widthAnchor, constant: -24),
+        ])
+
+        scrollView.documentView = documentView
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(rootTitle)
+        contentView.addSubview(rootPathLabel)
+        contentView.addSubview(chooseRootButton)
+        contentView.addSubview(separator)
+        contentView.addSubview(scrollView)
+
+        NSLayoutConstraint.activate([
+            rootTitle.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            rootTitle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            rootPathLabel.topAnchor.constraint(equalTo: rootTitle.bottomAnchor, constant: 3),
+            rootPathLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            rootPathLabel.trailingAnchor.constraint(equalTo: chooseRootButton.leadingAnchor, constant: -10),
+            chooseRootButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            chooseRootButton.centerYAnchor.constraint(equalTo: rootPathLabel.centerYAnchor),
+            separator.topAnchor.constraint(equalTo: rootPathLabel.bottomAnchor, constant: 12),
+            separator.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            separator.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            scrollView.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 4),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+
+        contentController.view = contentView
+        popover.contentViewController = contentController
+    }
+
     func updateItems(
         configured: [SessionProfile],
         builtIn: [SessionProfile],
         discovered: [SessionProfile],
-        recent: [RecentSession]
+        recent: [RecentSession],
+        root: URL = DefaultWorkingDirectory.preferredURL
     ) {
-        items.removeAll()
-
-        if !configured.isEmpty || !builtIn.isEmpty {
-            items.append(LauncherItem(label: "--- Sessions ---", isHeader: true))
-            for profile in configured {
-                items.append(LauncherItem(profile: profile, isHeader: false))
-            }
-            for profile in builtIn {
-                items.append(LauncherItem(profile: profile, isBuiltIn: true))
-            }
+        configuredProfiles = configured
+        builtInProfiles = builtIn
+        discoveredProfiles = discovered
+        recentSessions = recent
+        if followsSuggestedRoot {
+            selectedRoot = root.standardizedFileURL
         }
-
-        if !discovered.isEmpty {
-            items.append(LauncherItem.header("Projects"))
-            for profile in discovered {
-                items.append(LauncherItem(profile: profile, isHeader: false))
-            }
-        }
-
-        if !recent.isEmpty {
-            items.append(LauncherItem.header("Recent"))
-            for session in recent {
-                items.append(LauncherItem(label: session.label, detail: "Reopen recent session", isHeader: false))
-            }
-        }
-
-        comboBox.reloadData()
+        reloadSnapshot()
     }
 
-    /// Focus the combobox for keyboard input.
     func focus() {
-        window?.makeFirstResponder(comboBox)
+        window?.makeFirstResponder(searchField)
     }
 
-    /// Focus the unified launcher and open its dropdown so File → New Channel
-    /// lands on the same keyboard-navigable entry point as the sidebar control.
     func presentChoices() {
         focus()
-        comboBox.performClick(nil)
+        showPopover()
     }
 
-    /// Seed the editable launcher with the inline fields needed to create an
-    /// agent channel. This keeps Agent creation inside the keyboard-driven
-    /// picker instead of bouncing through a second NSAlert sheet.
     func beginInlineAgentChannelDraft(kindLabel: String, directory: URL) {
         let defaultLabel = directory.lastPathComponent.isEmpty ? "Agent" : directory.lastPathComponent
-        comboBox.stringValue = "\(kindLabel) \(directory.path) as \(defaultLabel)"
-        comboBox.placeholderString = "\(kindLabel) <directory> as <label>"
-        focus()
-        if let editor = window?.fieldEditor(true, for: comboBox) as? NSTextView {
+        searchField.stringValue = "\(kindLabel) \(directory.path) as \(defaultLabel)"
+        searchField.placeholderString = "\(kindLabel) <directory> as <label>"
+        presentChoices()
+        if let editor = window?.fieldEditor(true, for: searchField) as? NSTextView {
             editor.selectAll(nil)
         }
     }
 
     @objc private func refreshClicked() {
+        reloadSnapshot()
+        showPopover()
         launcherDelegate?.sessionLauncherDidRequestRefresh(self)
     }
 
-    private func itemMatching(_ text: String) -> LauncherItem? {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return items.first { item in
-            guard !item.isHeader else { return false }
-            return item.label.lowercased() == normalized || item.displayText.lowercased() == normalized
+    @objc private func chooseRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = selectedRoot
+        panel.prompt = "Use as Root"
+        panel.message = "Choose the directory whose immediate child folders should appear in the launcher."
+
+        let applySelection: (NSApplication.ModalResponse) -> Void = { [weak self, weak panel] response in
+            guard response == .OK, let url = panel?.url else { return }
+            self?.followsSuggestedRoot = false
+            self?.selectedRoot = url.standardizedFileURL
+            self?.reloadSnapshot()
+            self?.showPopover()
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: applySelection)
+        } else {
+            applySelection(panel.runModal())
         }
     }
 
-    private func select(_ item: LauncherItem) {
-        if item.isBuiltIn {
+    private func reloadSnapshot() {
+        do {
+            snapshot = try DirectoryLauncherModel.snapshot(
+                root: selectedRoot,
+                configured: configuredProfiles,
+                builtIn: builtInProfiles,
+                discovered: discoveredProfiles,
+                recent: recentSessions
+            )
+        } catch {
+            NSLog("SessionLauncher: unable to read root '%@': %@", selectedRoot.path, String(describing: error))
+            snapshot = DirectoryLauncherSnapshot(root: selectedRoot, sections: [])
+        }
+        rootPathLabel.stringValue = selectedRoot.path
+        rootPathLabel.toolTip = selectedRoot.path
+        renderResults()
+    }
+
+    private func showPopover() {
+        if snapshot == nil {
+            reloadSnapshot()
+        }
+        renderResults()
+        guard !popover.isShown else { return }
+        popover.show(relativeTo: searchField.bounds, of: searchField, preferredEdge: .maxY)
+        scrollResultsToTop()
+    }
+
+    private func renderResults() {
+        for view in resultsStack.arrangedSubviews {
+            resultsStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        representedItems.removeAll()
+
+        let filtered = snapshot?.filtered(by: searchField.stringValue)
+        guard let sections = filtered?.sections, !sections.isEmpty else {
+            let message = NSTextField(labelWithString: "No matches. Press Return to launch the typed command.")
+            message.textColor = .secondaryLabelColor
+            message.font = NSFont.systemFont(ofSize: 12)
+            message.setAccessibilityIdentifier("launcher-empty-state")
+            resultsStack.addArrangedSubview(message)
+            return
+        }
+
+        for section in sections {
+            let heading = NSTextField(labelWithString: section.title.uppercased())
+            heading.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            heading.textColor = .secondaryLabelColor
+            heading.setAccessibilityIdentifier("launcher-section-\(identifierFragment(section.title))")
+            resultsStack.addArrangedSubview(heading)
+
+            for item in section.items {
+                let identifier = UUID().uuidString
+                representedItems[identifier] = item
+                let button = NSButton(title: rowTitle(for: item), target: self, action: #selector(selectResult(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier(identifier)
+                button.bezelStyle = .inline
+                button.isBordered = false
+                button.alignment = .left
+                button.font = NSFont.systemFont(ofSize: 12)
+                button.lineBreakMode = .byTruncatingTail
+                button.setAccessibilityLabel(item.label)
+                button.setAccessibilityHelp(item.detail)
+                button.setAccessibilityIdentifier("launcher-item-\(identifierFragment(item.label))")
+                button.translatesAutoresizingMaskIntoConstraints = false
+                resultsStack.addArrangedSubview(button)
+                button.widthAnchor.constraint(equalTo: resultsStack.widthAnchor).isActive = true
+                button.heightAnchor.constraint(greaterThanOrEqualToConstant: item.detail == nil ? 26 : 38).isActive = true
+            }
+        }
+        scrollResultsToTop()
+    }
+
+    private func scrollResultsToTop() {
+        scrollView.documentView?.layoutSubtreeIfNeeded()
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func rowTitle(for item: DirectoryLauncherItem) -> String {
+        guard let detail = item.detail, !detail.isEmpty else { return item.label }
+        return "\(item.label)\n\(detail)"
+    }
+
+    private func identifierFragment(_ value: String) -> String {
+        value.lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .replacingOccurrences(of: "/", with: "-")
+    }
+
+    @objc private func selectResult(_ sender: NSButton) {
+        guard let identifier = sender.identifier?.rawValue,
+              let item = representedItems[identifier] else { return }
+        select(item)
+    }
+
+    private func select(_ item: DirectoryLauncherItem) {
+        popover.close()
+        searchField.stringValue = ""
+        switch item.kind {
+        case .builtIn:
             launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: item.label)
-        } else if let profile = item.profile {
-            launcherDelegate?.sessionLauncher(self, didSelectProfile: profile)
-        } else {
+        case .profile:
+            if let profile = item.profile {
+                launcherDelegate?.sessionLauncher(self, didSelectProfile: profile)
+            }
+        case .recent:
             launcherDelegate?.sessionLauncher(self, didSelectRecentSession: item.label)
         }
     }
 
-    // MARK: - NSComboBoxDataSource
-
-    nonisolated func numberOfItems(in comboBox: NSComboBox) -> Int {
-        return MainActor.assumeIsolated { items.count }
+    private func exactMatch(for text: String) -> DirectoryLauncherItem? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return snapshot?.sections
+            .flatMap(\.items)
+            .first { $0.label.caseInsensitiveCompare(normalized) == .orderedSame }
     }
 
-    nonisolated func comboBox(_ comboBox: NSComboBox, objectValueForItemAt index: Int) -> Any? {
-        return MainActor.assumeIsolated { items[index].displayText }
+    nonisolated func controlTextDidBeginEditing(_ notification: Notification) {
+        MainActor.assumeIsolated { showPopover() }
     }
 
-    // MARK: - NSComboBoxDelegate
+    nonisolated func controlTextDidChange(_ notification: Notification) {
+        MainActor.assumeIsolated { renderResults() }
+    }
 
-    nonisolated func comboBoxSelectionDidChange(_ notification: Notification) {
+    nonisolated func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
         MainActor.assumeIsolated {
-            let index = comboBox.indexOfSelectedItem
-            guard index >= 0, index < items.count else { return }
-            let item = items[index]
-            guard !item.isHeader else { return }
-            select(item)
-            comboBox.stringValue = ""
-        }
-    }
-
-    // Handle Enter key on typed text
-    nonisolated func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        return MainActor.assumeIsolated {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                let text = comboBox.stringValue.trimmingCharacters(in: .whitespaces)
+                let text = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return true }
-
-                // Check if it matches an existing item
-                if let existing = itemMatching(text) {
-                    select(existing)
+                if let item = exactMatch(for: text) {
+                    select(item)
                 } else {
+                    popover.close()
                     launcherDelegate?.sessionLauncher(self, didTypeNewName: text)
+                    searchField.stringValue = ""
                 }
-                comboBox.stringValue = ""
                 return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                popover.close()
+                searchField.stringValue = ""
+                return false
             }
             return false
         }
     }
 }
 
-// MARK: - LauncherItem
+@MainActor
+final class LauncherResultsDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
 
-struct LauncherItem {
-    let label: String
-    let detail: String?
-    let isHeader: Bool
-    let profile: SessionProfile?
-    let isBuiltIn: Bool
+@MainActor
+final class LauncherSearchField: NSSearchField {
+    var onActivate: (() -> Void)?
 
-    var displayText: String {
-        if isHeader { return label }
-        guard let detail, !detail.isEmpty else { return label }
-        return "\(label) — \(detail)"
-    }
-
-    static func header(_ title: String) -> LauncherItem {
-        LauncherItem(label: "--- \(title) ---", detail: nil, isHeader: true)
-    }
-
-    init(label: String, detail: String? = nil, isHeader: Bool) {
-        self.label = label
-        self.detail = detail
-        self.isHeader = isHeader
-        self.profile = nil
-        self.isBuiltIn = false
-    }
-
-    init(profile: SessionProfile, isHeader: Bool = false, isBuiltIn: Bool = false) {
-        self.label = profile.label
-        self.detail = Self.detail(for: profile)
-        self.isHeader = isHeader
-        self.profile = profile
-        self.isBuiltIn = isBuiltIn
-    }
-
-    private static func detail(for profile: SessionProfile) -> String {
-        switch profile.label.lowercased() {
-        case "shell":
-            return "Local zsh in your default project directory"
-        case "agent (oauth)":
-            return "Claude Code with browser login; choose directory and label next"
-        case "agent (api key)":
-            return "Claude Code with API key auth; choose directory and label next"
-        case "claude":
-            return "Claude Code in your default project directory"
-        case "group chat":
-            return "Shared agent chat channel"
-        case "bridge":
-            return "Holoscape bridge channel"
-        default:
-            switch profile.connection {
-            case .local:
-                return profile.directory.isEmpty ? "Local session" : "Local session in \(profile.directory)"
-            case .ssh:
-                if let host = profile.host, !host.isEmpty {
-                    return "SSH to \(host)"
-                }
-                return "SSH session"
-            case .agentChat:
-                return "Shared agent chat channel"
-            case .bridge:
-                return "Holoscape bridge channel"
-            case .mcp:
-                return "MCP-backed tool session"
-            }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            DispatchQueue.main.async { [weak self] in self?.onActivate?() }
         }
+        return accepted
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        onActivate?()
     }
 }
 
-// MARK: - LauncherButton (Amplify Task 11.5)
-
-/// NSButton subclass that forwards hover + pressed transitions to
-/// its owning `SessionLauncherView`. NSTrackingArea is installed in
-/// `updateTrackingAreas` so the rect always matches the button's
-/// current bounds even after auto-layout resizes.
-///
-/// `mouseDown` runs AppKit's modal tracking loop — when it returns
-/// the button has already released, so the "pressed" flag is
-/// cleared right after `super.mouseDown` rather than via a separate
-/// `mouseUp` override (AppKit eats mouseUp events during the
-/// tracking loop).
 @MainActor
 final class LauncherButton: HoverTrackingButton {
     weak var launcher: SessionLauncherView?

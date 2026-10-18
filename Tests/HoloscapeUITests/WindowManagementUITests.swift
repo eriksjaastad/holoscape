@@ -296,7 +296,7 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2), "New Channel menu item should exist")
         newChannelItem.click()
 
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Unified New Channel launcher should appear")
         XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "New Channel should not open a separate modal picker")
         app.typeKey(.escape, modifierFlags: [])

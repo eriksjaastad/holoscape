@@ -4,7 +4,7 @@ final class SSHChannelUITests: HoloscapeUITestCase {
 
     private func sshProfileAvailable() -> Bool {
         // Check if any SSH profiles are configured by looking for sidebar entries after refresh
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         return comboBox.waitForExistence(timeout: 2)
     }
 
@@ -15,19 +15,19 @@ final class SSHChannelUITests: HoloscapeUITestCase {
         // typed/profile-driven rather than a separate modal button.
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        XCTAssertTrue(app.comboBoxes["session-launcher-combo"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.searchFields["session-launcher-combo"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "New Channel should not open a separate SSH dialog")
     }
 
     // MARK: - Session Launcher SSH Path
 
     func testSessionLauncherComboBoxExists() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Session launcher should exist for SSH profile selection")
     }
 
     func testSessionLauncherAcceptsSSHProfileName() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
         comboBox.click()
         comboBox.typeText("ssh-test")

@@ -8,7 +8,7 @@ final class KeyboardShortcutsUITests: HoloscapeUITestCase {
         app.typeKey("n", modifierFlags: .command)
 
         // Should focus the unified new-channel launcher, not a separate picker.
-        let comboBox = app.comboBoxes.firstMatch
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Cmd+N should show the unified new-channel launcher")
         XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "Cmd+N should not show a separate New Channel picker")
 

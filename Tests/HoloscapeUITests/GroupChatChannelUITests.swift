@@ -169,7 +169,7 @@ final class GroupChatChannelUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 2), "Window should remain after timer leak test")
         // Verify the sidebar is still interactive by checking the session launcher
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Session launcher should remain functional after cycles")
         XCTAssertTrue(comboBox.isEnabled, "Session launcher should be enabled after create/close cycles")
     }

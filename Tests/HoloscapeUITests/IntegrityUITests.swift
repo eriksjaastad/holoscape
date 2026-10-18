@@ -898,7 +898,7 @@ final class IntegrityUITests: HoloscapeUITestCase {
 
     /// Session launcher combo box must be functional and accept input.
     func testSessionLauncherFunctional() throws {
-        let combo = app.comboBoxes["session-launcher-combo"]
+        let combo = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(combo.waitForExistence(timeout: 3),
             "Session launcher combo box should exist")
         XCTAssertTrue(combo.isEnabled,

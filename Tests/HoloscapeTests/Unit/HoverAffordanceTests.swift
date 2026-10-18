@@ -44,8 +44,8 @@ final class HoverAffordanceTests: XCTestCase {
         let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 400, height: 40))
 
         XCTAssertEqual(launcher.comboBoxForTesting.accessibilityLabel(), "New channel launcher")
-        XCTAssertEqual(launcher.refreshButtonForTesting.accessibilityLabel(), "Refresh projects")
-        XCTAssertEqual(launcher.refreshButtonForTesting.toolTip, "Refresh project list")
+        XCTAssertEqual(launcher.refreshButtonForTesting.accessibilityLabel(), "Refresh launcher")
+        XCTAssertEqual(launcher.refreshButtonForTesting.toolTip, "Refresh launcher directories and sessions")
     }
 
     func testSidebarHoverDoesNotHideAttentionOrActiveState() {
