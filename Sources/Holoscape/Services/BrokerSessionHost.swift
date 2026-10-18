@@ -178,10 +178,10 @@ struct BrokerSessionHost {
             guard signaledID == id else { return }
             semaphore.signal()
         }
-        defer { try? runtime.setOutputAvailabilityHandler(id: id, handler: nil) }
-
         let boundedTimeout = max(0, min(timeoutMilliseconds, 5_000))
-        return semaphore.wait(timeout: .now() + .milliseconds(boundedTimeout)) == .success
+        let outputAvailable = semaphore.wait(timeout: .now() + .milliseconds(boundedTimeout)) == .success
+        try runtime.setOutputAvailabilityHandler(id: id, handler: nil)
+        return outputAvailable
     }
 
     private func failureCode(for error: Error) -> String {
