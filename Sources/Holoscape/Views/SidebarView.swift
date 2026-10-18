@@ -235,7 +235,7 @@ class SidebarView: NSView {
 /// accessibility system only provides full hit-test integration for standard
 /// AppKit control classes. NSButton gets this natively.
 @MainActor
-class SidebarTabEntry: NSButton {
+class SidebarTabEntry: HoverTrackingButton {
     // Fallback colors for the standalone rendering path (no SkinContext
     // wired). The skinned path reproduces these exact values through
     // `SkinContext.builtInDefaults` state variants on `sidebarRowNormal`
@@ -309,6 +309,16 @@ class SidebarTabEntry: NSButton {
     private func configureLast() {
         lastConfigure?()
         applySkinFonts()
+    }
+
+    override func hoverStateDidChange(isInside: Bool) {
+        configureLast()
+    }
+
+    func rowSurfaceKey(isActive: Bool, preservesSemanticState: Bool) -> SurfaceKey {
+        if isActive { return .sidebarRowSelected }
+        if preservesSemanticState { return .sidebarRowNormal }
+        return isPointerInside ? .sidebarRowHover : .sidebarRowNormal
     }
 
     /// Amplify Task 13 — apply skin-defined font to the row's labels.
@@ -532,7 +542,11 @@ class SidebarTabEntry: NSButton {
         // selection wins over notification). Otherwise paint
         // `sidebar.row.normal`, whose state variants express unread /
         // permission / idle via this entry's private snapshot.
-        let rowKey: SurfaceKey = isActive ? .sidebarRowSelected : .sidebarRowNormal
+        let preservesSemanticState = hasUnread || notificationKind != 0 || connectionState != 0
+        let rowKey = rowSurfaceKey(
+            isActive: isActive,
+            preservesSemanticState: preservesSemanticState
+        )
         layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
         layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
         labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)

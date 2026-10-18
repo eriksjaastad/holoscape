@@ -26,6 +26,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
     /// transitions flow back into the launcher's sprite-state tracking.
     /// Nil skinContext = no-op; state tracking still runs harmlessly.
     private let refreshButton = LauncherButton()
+    var comboBoxForTesting: NSComboBox { comboBox }
+    var refreshButtonForTesting: NSButton { refreshButton }
     private var items: [LauncherItem] = []
 
     /// Amplify Task 11.5 — hover + pressed state for the refresh button.
@@ -176,6 +178,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         comboBox.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         comboBox.placeholderString = "New Channel / project / Claude / ssh host..."
         comboBox.toolTip = "Choose Shell, Agent, Group Chat, Bridge, a saved session, a project folder, or type 'ssh host'."
+        comboBox.setAccessibilityLabel("New channel launcher")
+        comboBox.setAccessibilityHelp(comboBox.toolTip)
         comboBox.setAccessibilityIdentifier("session-launcher-combo")
         comboBox.translatesAutoresizingMaskIntoConstraints = false
 
@@ -187,6 +191,8 @@ class SessionLauncherView: NSView, NSComboBoxDelegate, NSComboBoxDataSource {
         refreshButton.target = self
         refreshButton.action = #selector(refreshClicked)
         refreshButton.toolTip = "Refresh project list"
+        refreshButton.setAccessibilityLabel("Refresh projects")
+        refreshButton.setAccessibilityHelp("Refresh the available projects and saved sessions")
         refreshButton.setAccessibilityIdentifier("refresh-sessions")
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
@@ -414,36 +420,36 @@ struct LauncherItem {
 /// `mouseUp` override (AppKit eats mouseUp events during the
 /// tracking loop).
 @MainActor
-final class LauncherButton: NSButton {
+final class LauncherButton: HoverTrackingButton {
     weak var launcher: SessionLauncherView?
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for area in trackingAreas where area.owner === self {
-            removeTrackingArea(area)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        publishHoverStateForUITesting()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        publishHoverStateForUITesting()
+    }
+
+    override func hoverStateDidChange(isInside: Bool) {
+        publishHoverStateForUITesting()
+        if isInside {
+            launcher?.handleRefreshButtonMouseEntered()
+        } else {
+            launcher?.handleRefreshButtonMouseExited()
         }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        launcher?.handleRefreshButtonMouseEntered()
-        super.mouseEntered(with: event)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        launcher?.handleRefreshButtonMouseExited()
-        super.mouseExited(with: event)
     }
 
     override func mouseDown(with event: NSEvent) {
         launcher?.handleRefreshButtonMouseDown()
         super.mouseDown(with: event)
         launcher?.handleRefreshButtonMouseUp()
+    }
+
+    private func publishHoverStateForUITesting() {
+        guard CommandLine.arguments.contains("--ui-testing") else { return }
+        setAccessibilityValue(isPointerInside ? "hovered" : "not hovered")
     }
 }

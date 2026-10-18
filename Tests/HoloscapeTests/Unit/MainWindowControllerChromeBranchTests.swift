@@ -100,6 +100,19 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
                       "Chrome reconstruction must preserve close semantics for detached traffic lights")
         XCTAssertTrue(controller.window.styleMask.contains(.miniaturizable),
                       "Chrome reconstruction must preserve minimize semantics for detached traffic lights")
+        let close = try XCTUnwrap(controller.chromeWindowControlButton(.closeButton))
+        let minimize = try XCTUnwrap(controller.chromeWindowControlButton(.miniaturizeButton))
+        let zoom = try XCTUnwrap(controller.chromeWindowControlButton(.zoomButton))
+        XCTAssertEqual(close.accessibilityLabel(), "Close window")
+        XCTAssertEqual(close.toolTip, "Close window")
+        XCTAssertEqual(minimize.accessibilityLabel(), "Minimize window")
+        XCTAssertEqual(minimize.toolTip, "Minimize window")
+        XCTAssertEqual(zoom.accessibilityLabel(), "Enter full screen")
+        XCTAssertEqual(zoom.toolTip, "Enter full screen (Option-click to zoom window)")
+
+        controller.updateChromeZoomButtonLabel(isFullScreen: true)
+        XCTAssertEqual(zoom.accessibilityLabel(), "Exit full screen")
+        XCTAssertEqual(zoom.toolTip, "Exit full screen (Option-click to zoom window)")
     }
 
     func testChromeToDefaultTransitionPreservesStableHostConstraints() throws {

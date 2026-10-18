@@ -472,34 +472,17 @@ class TabBarView: NSView {
 ///   2. mouseDown override keeps the button's native click behavior
 ///      (super.mouseDown) while layering sprite-state mutation on top.
 @MainActor
-final class TabButton: NSButton {
+final class TabButton: HoverTrackingButton {
     weak var tabBar: TabBarView?
     var channelId: UUID?
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        // Remove stale areas so repeated layout passes don't leak
-        // them into the tracking-area list.
-        for area in trackingAreas where area.owner === self {
-            removeTrackingArea(area)
+    override func hoverStateDidChange(isInside: Bool) {
+        guard let id = channelId else { return }
+        if isInside {
+            tabBar?.handleTabButtonMouseEntered(id)
+        } else {
+            tabBar?.handleTabButtonMouseExited(id)
         }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        if let id = channelId { tabBar?.handleTabButtonMouseEntered(id) }
-        super.mouseEntered(with: event)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        if let id = channelId { tabBar?.handleTabButtonMouseExited(id) }
-        super.mouseExited(with: event)
     }
 
     override func mouseDown(with event: NSEvent) {
