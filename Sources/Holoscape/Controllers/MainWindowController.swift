@@ -15,6 +15,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         case agentAPIKey(AgentChannelPromptResult)
         case groupChat
         case bridge
+        case profile(SessionProfile)
         case sessionProfile(String)
     }
 
@@ -2417,7 +2418,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             let channel = try channelManager.createChannel(from: resolved)
             channel.delegate = self
             channel.activate()
-            profileManager?.recordRecentSession(label: profile.label)
+            profileManager?.recordRecentSession(profile: resolved)
             refreshLauncher()
             switchToChannel(channel.channelId)
         } catch {
@@ -2698,6 +2699,38 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
+    static func unifiedLauncherAction(
+        forBuiltInProfile profile: SessionProfile,
+        defaultDirectory: URL = DefaultWorkingDirectory.preferredURL
+    ) -> UnifiedLauncherAction {
+        guard let index = SessionProfileManager.builtInProfiles.firstIndex(of: profile) else {
+            var selected = profile
+            if selected.connection == .local {
+                selected.directory = defaultDirectory.path
+            }
+            return .profile(selected)
+        }
+
+        switch index {
+        case 0:
+            return .shell
+        case 1:
+            return .agentOAuthDraft
+        case 2:
+            return .agentAPIKeyDraft
+        case 4:
+            return .groupChat
+        case 5:
+            return .bridge
+        default:
+            var selected = profile
+            if selected.connection == .local {
+                selected.directory = defaultDirectory.path
+            }
+            return .profile(selected)
+        }
+    }
+
     private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction, root: URL) {
         guard channelMutationEnabled else { return }
         switch action {
@@ -2715,6 +2748,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             createGroupChatChannel()
         case .bridge:
             createBridgeChannel()
+        case .profile(let profile):
+            launchSession(from: profile)
         case .sessionProfile(let label):
             guard let profileManager else { return }
             var profile = profileManager.resolve(label: label)
@@ -2725,17 +2760,20 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String, root: URL) {
-        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label, defaultDirectory: root), root: root)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL) {
+        performUnifiedLauncherAction(
+            Self.unifiedLauncherAction(forBuiltInProfile: profile, defaultDirectory: root),
+            root: root
+        )
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile) {
         launchSession(from: profile)
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String) {
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession recent: RecentSession) {
         guard let profileManager else { return }
-        launchSession(from: profileManager.resolve(label: label))
+        launchSession(from: recent.profile ?? profileManager.resolve(label: recent.label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {

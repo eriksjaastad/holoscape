@@ -594,6 +594,27 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testBuiltInLauncherActionPreservesChannelSemanticsAndExactClaudeIdentity() {
+        let root = URL(fileURLWithPath: "/work/selected-root", isDirectory: true)
+        XCTAssertEqual(
+            MainWindowController.unifiedLauncherAction(
+                forBuiltInProfile: SessionProfileManager.builtInProfiles[1],
+                defaultDirectory: root
+            ),
+            .agentOAuthDraft
+        )
+        var expectedClaude = SessionProfileManager.builtInProfiles[3]
+        expectedClaude.directory = root.path
+        XCTAssertEqual(
+            MainWindowController.unifiedLauncherAction(
+                forBuiltInProfile: SessionProfileManager.builtInProfiles[3],
+                defaultDirectory: root
+            ),
+            .profile(expectedClaude)
+        )
+    }
+
+    @MainActor
     func testUnifiedLauncherUsesSelectedRootForAgentDraftDefaults() {
         let root = URL(fileURLWithPath: "/work/selected-root", isDirectory: true)
         let prompt = MainWindowController.agentChannelPromptResult(
@@ -760,6 +781,36 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(recent.count, 2)
         XCTAssertEqual(recent[0].label, "alpha")  // most recent first
         XCTAssertEqual(recent[1].label, "beta")
+    }
+
+    @MainActor
+    func testRecordRecentSessionRetainsDistinctSameLabelProfiles() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        configService.save(HoloscapeConfig.default)
+        let first = SessionProfile(
+            label: "production",
+            connection: .ssh,
+            command: "/bin/zsh",
+            directory: "~/one",
+            host: "one.example",
+            user: "erik"
+        )
+        let second = SessionProfile(
+            label: "production",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/two",
+            host: "two.example",
+            user: "erik"
+        )
+
+        manager.recordRecentSession(profile: first)
+        manager.recordRecentSession(profile: second)
+
+        let recent = configService.load().recentSessions ?? []
+        XCTAssertEqual(recent.map(\.profile), [second, first])
     }
 
     @MainActor

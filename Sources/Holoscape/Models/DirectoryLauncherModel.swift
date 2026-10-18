@@ -11,9 +11,10 @@ struct DirectoryLauncherItem: Equatable {
     let detail: String?
     let kind: DirectoryLauncherItemKind
     let profile: SessionProfile?
+    let recent: RecentSession?
 
     var searchableText: String {
-        [label, detail, profile?.directory]
+        [label, detail, profile?.directory, profile?.command, profile?.host, profile?.user]
             .compactMap { $0 }
             .joined(separator: " ")
             .lowercased()
@@ -37,7 +38,16 @@ struct DirectoryLauncherSnapshot: Equatable {
             root: root,
             sections: sections.compactMap { section in
                 let items = section.items.filter { $0.searchableText.contains(normalized) }
+                    .sorted { lhs, rhs in
+                        let lhsExact = lhs.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+                        let rhsExact = rhs.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+                        return lhsExact && !rhsExact
+                    }
                 return items.isEmpty ? nil : DirectoryLauncherSection(title: section.title, items: items)
+            }.sorted { lhs, rhs in
+                let lhsExact = lhs.items.contains { $0.label.lowercased() == normalized }
+                let rhsExact = rhs.items.contains { $0.label.lowercased() == normalized }
+                return lhsExact && !rhsExact
             },
             directoryError: directoryError
         )
@@ -61,7 +71,8 @@ enum DirectoryLauncherModel {
         builtIn: [SessionProfile],
         discovered: [SessionProfile],
         recent: [RecentSession],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        resourceValues: (URL) throws -> URLResourceValues = { try $0.resourceValues(forKeys: [.isDirectoryKey]) }
     ) -> DirectoryLauncherSnapshot {
         let standardizedRoot = root.standardizedFileURL
         let directories: [URL]
@@ -72,13 +83,19 @@ enum DirectoryLauncherModel {
                 includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles]
             )
+            var errors: [String] = []
             directories = childURLs.compactMap { url -> URL? in
-                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
-                return url.standardizedFileURL
+                do {
+                    guard try resourceValues(url).isDirectory == true else { return nil }
+                    return url.standardizedFileURL
+                } catch {
+                    errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                    return nil
+                }
             }.sorted {
                 $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
             }
-            directoryError = nil
+            directoryError = errors.isEmpty ? nil : errors.joined(separator: "; ")
         } catch {
             directories = []
             directoryError = String(describing: error)
@@ -93,7 +110,8 @@ enum DirectoryLauncherModel {
                         label: $0.label,
                         detail: builtInDetail(for: $0),
                         kind: .builtIn,
-                        profile: $0
+                        profile: $0,
+                        recent: nil
                     )
                 }
             ))
@@ -112,7 +130,8 @@ enum DirectoryLauncherModel {
                             connection: .local,
                             command: "/bin/zsh",
                             directory: directory.path
-                        )
+                        ),
+                        recent: nil
                     )
                 }
             ))
@@ -132,7 +151,8 @@ enum DirectoryLauncherModel {
                         label: $0.label,
                         detail: profileDetail(for: $0),
                         kind: .profile,
-                        profile: $0
+                        profile: $0,
+                        recent: nil
                     )
                 }
             ))
@@ -144,9 +164,10 @@ enum DirectoryLauncherModel {
                 items: recent.map {
                     DirectoryLauncherItem(
                         label: $0.label,
-                        detail: "Reopen recent session",
+                        detail: recentDetail(for: $0),
                         kind: .recent,
-                        profile: nil
+                        profile: $0.profile,
+                        recent: $0
                     )
                 }
             ))
@@ -175,17 +196,33 @@ enum DirectoryLauncherModel {
     }
 
     private static func profileDetail(for profile: SessionProfile) -> String {
+        var parts: [String] = []
         switch profile.connection {
         case .local:
-            return profile.directory.isEmpty ? "Local session" : profile.directory
+            parts.append("Local")
         case .ssh:
-            return profile.host.map { "SSH to \($0)" } ?? "SSH session"
+            let destination = [profile.user, profile.host]
+                .compactMap { value in value?.isEmpty == false ? value : nil }
+                .joined(separator: "@")
+            parts.append(destination.isEmpty ? "SSH" : "SSH to \(destination)")
         case .agentChat:
-            return "Shared agent chat"
+            parts.append("Shared agent chat")
         case .bridge:
-            return "Holoscape bridge"
+            parts.append("Holoscape bridge")
         case .mcp:
-            return "MCP tool session"
+            parts.append("MCP tool session")
         }
+        if !profile.directory.isEmpty {
+            parts.append(profile.directory)
+        }
+        if !profile.command.isEmpty {
+            parts.append(profile.command)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func recentDetail(for recent: RecentSession) -> String {
+        guard let profile = recent.profile else { return "Reopen recent session" }
+        return profileDetail(for: profile)
     }
 }

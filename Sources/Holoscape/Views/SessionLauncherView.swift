@@ -2,9 +2,9 @@ import AppKit
 
 @MainActor
 protocol SessionLauncherDelegate: AnyObject {
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String, root: URL)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile)
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession recent: RecentSession)
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String)
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView)
 }
@@ -44,6 +44,13 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     var selectedItemLabelForTesting: String? {
         guard let selectedResultIndex, visibleItems.indices.contains(selectedResultIndex) else { return nil }
         return visibleItems[selectedResultIndex].label
+    }
+    var selectedItemAccessibilityValueForTesting: String? {
+        guard let selectedResultIndex, resultButtons.indices.contains(selectedResultIndex) else { return nil }
+        return resultButtons[selectedResultIndex].accessibilityValue() as? String
+    }
+    var firstResultFontForTesting: NSFont? {
+        resultButtons.first?.font
     }
     var visibleSectionTitlesForTesting: [String] {
         snapshot?.filtered(by: searchField.stringValue).sections.map(\.title) ?? []
@@ -391,6 +398,14 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         selectedResultIndex = nil
 
         let filtered = snapshot?.filtered(by: searchField.stringValue)
+        if let directoryError = filtered?.directoryError {
+            let message = NSTextField(labelWithString: "Directories unavailable. Channel actions and saved sessions remain available.")
+            message.textColor = .systemOrange
+            message.font = NSFont.systemFont(ofSize: 11)
+            message.toolTip = directoryError
+            message.setAccessibilityIdentifier("launcher-directory-error")
+            resultsStack.addArrangedSubview(message)
+        }
         guard let sections = filtered?.sections, !sections.isEmpty else {
             let message = NSTextField(labelWithString: "No matches. Press Return to launch the typed command.")
             message.textColor = .secondaryLabelColor
@@ -425,7 +440,8 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
                 button.bezelStyle = .inline
                 button.isBordered = false
                 button.alignment = .left
-                button.font = NSFont.systemFont(ofSize: 12)
+                button.font = skinContext?.resolvedFont(for: .sessionLauncherContainer)
+                    ?? NSFont.systemFont(ofSize: 12)
                 button.lineBreakMode = .byTruncatingTail
                 button.setAccessibilityLabel(item.label)
                 button.setAccessibilityHelp(item.detail)
@@ -462,6 +478,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             let selected = index == selectedResultIndex
             button.isBordered = selected
             button.bezelStyle = selected ? .recessed : .inline
+            button.setAccessibilityValue(selected ? "selected" : "not selected")
         }
     }
 
@@ -495,13 +512,17 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         searchField.stringValue = ""
         switch item.kind {
         case .builtIn:
-            launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: item.label, root: selectedRoot)
+            if let profile = item.profile {
+                launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: profile, root: selectedRoot)
+            }
         case .profile:
             if let profile = item.profile {
                 launcherDelegate?.sessionLauncher(self, didSelectProfile: profile)
             }
         case .recent:
-            launcherDelegate?.sessionLauncher(self, didSelectRecentSession: item.label)
+            if let recent = item.recent {
+                launcherDelegate?.sessionLauncher(self, didSelectRecentSession: recent)
+            }
         }
     }
 
@@ -521,12 +542,12 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     ) -> Bool {
         MainActor.assumeIsolated {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                let text = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return true }
                 if let selectedResultIndex, visibleItems.indices.contains(selectedResultIndex) {
                     let item = visibleItems[selectedResultIndex]
                     select(item)
                 } else {
+                    let text = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return true }
                     popover.close()
                     launcherDelegate?.sessionLauncher(self, didTypeNewName: text)
                     searchField.stringValue = ""

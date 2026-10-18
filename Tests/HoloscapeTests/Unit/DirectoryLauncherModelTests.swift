@@ -129,4 +129,38 @@ final class DirectoryLauncherModelTests: XCTestCase {
             DefaultWorkingDirectory.projectsURL
         )
     }
+
+    func testPerChildResourceFailureIsReportedWithoutDroppingOtherDirectories() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("launcher-resource-errors-\(UUID().uuidString)")
+        let good = root.appendingPathComponent("good")
+        let bad = root.appendingPathComponent("bad")
+        try FileManager.default.createDirectory(at: good, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bad, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let snapshot = DirectoryLauncherModel.snapshot(
+            root: root,
+            configured: [], builtIn: [], discovered: [], recent: [],
+            resourceValues: { url in
+                if url.lastPathComponent == "bad" { throw NSError(domain: "test", code: 1) }
+                return try url.resourceValues(forKeys: [.isDirectoryKey])
+            }
+        )
+
+        XCTAssertEqual(snapshot.sections.first?.items.map { $0.label }, ["good"])
+        XCTAssertTrue(snapshot.directoryError?.contains("bad") == true)
+    }
+
+    func testExactLabelMatchOutranksSubstringDetailMatch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("launcher-exact-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("local"), withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let filtered = DirectoryLauncherModel.snapshot(
+            root: root, configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: []
+        ).filtered(by: "local")
+
+        XCTAssertEqual(filtered.sections.first?.title, "Directories")
+        XCTAssertEqual(filtered.sections.first?.items.first?.label, "local")
+    }
 }
