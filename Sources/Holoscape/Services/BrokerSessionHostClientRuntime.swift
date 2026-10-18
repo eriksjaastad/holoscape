@@ -19,12 +19,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         )
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
         case transportFailed(String)
+        case outputTransportFailed(String)
     }
 
     typealias Transport = (Data) throws -> Data
 
     private let codec: BrokerSessionHostCodec
     private let transport: Transport
+    private let outputTransport: Transport
     let supportsOutputAvailabilityMonitoring: Bool
     private let startsOutputAvailabilityMonitor: Bool
     private let outputMonitor = BrokerSessionHostClientOutputMonitor()
@@ -34,12 +36,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
         supportsOutputAvailabilityMonitoring: Bool = true,
         startsOutputAvailabilityMonitor: Bool = true,
-        transport: @escaping Transport
+        transport: @escaping Transport,
+        outputTransport: Transport? = nil
     ) {
         self.codec = codec
         self.supportsOutputAvailabilityMonitoring = supportsOutputAvailabilityMonitoring
         self.startsOutputAvailabilityMonitor = startsOutputAvailabilityMonitor
         self.transport = transport
+        self.outputTransport = outputTransport ?? transport
     }
 
     convenience init(
@@ -66,20 +70,33 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
 
     static func currentExecutableSocketHostRuntime(
         socketPath: String? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        requestTimeoutMilliseconds: Int = 10_000,
+        outputSnapshotTimeoutMilliseconds: Int = 500
     ) -> BrokerSessionHostClientRuntime {
+        let resolvedSocketPath = socketPath
+            ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment)
         let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
-            socketPath: socketPath
-                ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment),
-            environment: environment
+            socketPath: resolvedSocketPath,
+            environment: environment,
+            requestTimeoutMilliseconds: requestTimeoutMilliseconds
+        )
+        // Snapshot polling must not hold teardown behind the lifecycle request
+        // deadline when a connected broker stops responding.
+        let outputTransport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: currentExecutableURL(),
+            socketPath: resolvedSocketPath,
+            environment: environment,
+            requestTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds,
+            launchesBrokerOnConnectionFailure: false
         )
         return BrokerSessionHostClientRuntime(
             supportsOutputAvailabilityMonitoring: false,
-            startsOutputAvailabilityMonitor: false
-        ) { frame in
-            try lazyTransport.sendFrame(frame)
-        }
+            startsOutputAvailabilityMonitor: false,
+            transport: { frame in try lazyTransport.sendFrame(frame) },
+            outputTransport: { frame in try outputTransport.sendFrame(frame) }
+        )
     }
 
     private static func currentExecutableURL() -> URL {
@@ -166,11 +183,17 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
                 0,
                 min(maxBytes, BrokerSessionHostProtocolLimits.maximumOutputPayloadSize)
             )
-            let response = try response(
-                for: .snapshotAvailableOutput(id: id, maxBytes: boundedMaxBytes)
-            )
-            guard case let .outputSnapshot(snapshot) = response else {
-                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
+            let outputResponse: BrokerSessionHostResponse
+            do {
+                outputResponse = try response(
+                    for: .snapshotAvailableOutput(id: id, maxBytes: boundedMaxBytes),
+                    transport: outputTransport
+                )
+            } catch ClientError.transportFailed(let reason) {
+                throw ClientError.outputTransportFailed(reason)
+            }
+            guard case let .outputSnapshot(snapshot) = outputResponse else {
+                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: outputResponse)
             }
             return snapshot
         }
@@ -315,11 +338,14 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         return isAvailable
     }
 
-    private func response(for request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
+    private func response(
+        for request: BrokerSessionHostRequest,
+        transport: Transport? = nil
+    ) throws -> BrokerSessionHostResponse {
         let requestFrame = try codec.encodeRequest(request)
         let responseFrame: Data
         do {
-            responseFrame = try transport(requestFrame)
+            responseFrame = try (transport ?? self.transport)(requestFrame)
         } catch let error as ClientError {
             throw error
         } catch {
@@ -363,7 +389,8 @@ extension BrokerSessionHostClientRuntime.ClientError {
             return reason
         case .unexpectedResponse(let expected, let actual):
             return "unexpected response; expected \(expected), got \(actual)"
-        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
+        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
+             .outputTransportFailed:
             return nil
         }
     }
