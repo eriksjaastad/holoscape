@@ -487,6 +487,28 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertEqual(try client.readAvailableOutput(id: sessionID), Data())
     }
 
+    func testProductionOutputSnapshotDeadlineIsShorterThanOrdinaryRequestDeadline() throws {
+        let ordinaryDuration = try silentProductionSocketRequestDuration(
+            requestTimeoutMilliseconds: 300,
+            outputSnapshotTimeoutMilliseconds: 75
+        ) { client in
+            _ = try client.listSessions()
+        }
+        let outputDuration = try silentProductionSocketRequestDuration(
+            requestTimeoutMilliseconds: 300,
+            outputSnapshotTimeoutMilliseconds: 75
+        ) { client in
+            _ = try client.snapshotAvailableOutput(
+                id: BrokerSessionID(rawValue: "bounded-output-deadline")
+            )
+        }
+
+        XCTAssertGreaterThanOrEqual(ordinaryDuration, 0.20)
+        XCTAssertLessThan(ordinaryDuration, 0.50)
+        XCTAssertLessThan(outputDuration, 0.20)
+        XCTAssertGreaterThan(ordinaryDuration, outputDuration * 2)
+    }
+
     func testLostOutputResponseLeavesSnapshotAvailableForRetry() throws {
         let codec = BrokerSessionHostCodec()
         let runtime = RecordingBrokerSessionRuntime()
@@ -3374,6 +3396,47 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let result = Result { try transport.sendFrame(Data("{}\n".utf8)) }
         wait(for: [serverFinished], timeout: 1)
         return result
+    }
+
+    private func silentProductionSocketRequestDuration(
+        requestTimeoutMilliseconds: Int,
+        outputSnapshotTimeoutMilliseconds: Int,
+        operation: (BrokerSessionHostClientRuntime) throws -> Void
+    ) throws -> TimeInterval {
+        let socketPath = "/tmp/hs-silent-production-broker-\(UUID().uuidString).sock"
+        let serverFD = try makeListeningUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(serverFD)
+            unlink(socketPath)
+        }
+
+        let serverFinished = expectation(description: "silent production socket server released client")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clientFD = accept(serverFD, nil, nil)
+            if clientFD >= 0 {
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = Darwin.read(clientFD, &request, request.count)
+                usleep(500_000)
+                Darwin.close(clientFD)
+            }
+            serverFinished.fulfill()
+        }
+
+        let client = BrokerSessionHostClientRuntime.currentExecutableSocketHostRuntime(
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: requestTimeoutMilliseconds,
+            outputSnapshotTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds
+        )
+        let startedAt = Date()
+        XCTAssertThrowsError(try operation(client)) { error in
+            guard case let BrokerSessionHostClientRuntime.ClientError.transportFailed(message) = error else {
+                return XCTFail("Expected transport failure, got \(error)")
+            }
+            XCTAssertTrue(message.contains("timedOut"), "Expected timeout failure, got \(message)")
+        }
+        let duration = Date().timeIntervalSince(startedAt)
+        wait(for: [serverFinished], timeout: 1)
+        return duration
     }
 
     private func makeListeningUnixSocket(at path: String) throws -> Int32 {
