@@ -1130,7 +1130,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch clientError {
         case .transportFailed, .unexpectedResponse:
             return true
-        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
+        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
+             .outputTransportFailed:
             return false
         }
     }

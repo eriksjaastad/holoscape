@@ -267,6 +267,9 @@ final class BrokerOutputReadLane: @unchecked Sendable {
         finishTermination: @escaping @Sendable (BrokerSessionID, Int32) throws -> Error?
     ) -> (exitCode: Int32?, error: Error) {
         guard observedExitCode == nil else { return (observedExitCode, originalError) }
+        if case BrokerSessionHostClientRuntime.ClientError.outputTransportFailed = originalError {
+            return (nil, originalError)
+        }
         do {
             guard let exitCode = try terminationStatus(sessionID) else {
                 return (nil, originalError)

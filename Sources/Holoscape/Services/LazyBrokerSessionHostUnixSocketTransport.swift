@@ -127,6 +127,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
     private let environment: [String: String]?
     private let socketWaitTimeoutMilliseconds: Int
     private let requestTimeoutMilliseconds: Int
+    private let launchesBrokerOnConnectionFailure: Bool
     private let launchedChildObserver: ((LaunchedChild) -> Void)?
     private let brokerProcessIDProvider: (String) throws -> pid_t
     private let lock = NSLock()
@@ -139,6 +140,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         environment: [String: String]? = nil,
         socketWaitTimeoutMilliseconds: Int = 5_000,
         requestTimeoutMilliseconds: Int = 10_000,
+        launchesBrokerOnConnectionFailure: Bool = true,
         launchedChildObserver: ((LaunchedChild) -> Void)? = nil,
         brokerProcessIDProvider: @escaping (String) throws -> pid_t = {
             try BrokerSessionHostUnixSocketServer.activeBrokerProcessID($0)
@@ -151,6 +153,7 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         self.environment = environment
         self.socketWaitTimeoutMilliseconds = max(1, socketWaitTimeoutMilliseconds)
         self.requestTimeoutMilliseconds = requestTimeoutMilliseconds
+        self.launchesBrokerOnConnectionFailure = launchesBrokerOnConnectionFailure
         self.launchedChildObserver = launchedChildObserver
         self.brokerProcessIDProvider = brokerProcessIDProvider
     }
@@ -162,7 +165,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         )
         do {
             return try transport.sendFrame(frame)
-        } catch BrokerSessionHostUnixSocketTransport.TransportError.connectFailed {
+        } catch let BrokerSessionHostUnixSocketTransport.TransportError.connectFailed(message) {
+            guard launchesBrokerOnConnectionFailure else {
+                throw BrokerSessionHostUnixSocketTransport.TransportError.connectFailed(message)
+            }
             try ensureBrokerIsReachableAfterConnectionFailure()
             return try transport.sendFrame(frame)
         }

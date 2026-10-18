@@ -5363,6 +5363,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             (BrokerSessionCoordinator.CoordinatorError.brokerHostUnavailable(id, "down"), .brokerHostUnavailable),
             (BrokerSessionCoordinator.CoordinatorError.exitCodeMismatch(id, expected: 0, observed: 9), .failed),
             (BrokerSessionHostClientRuntime.ClientError.transportFailed("socket"), .brokerHostUnavailable),
+            (BrokerSessionHostClientRuntime.ClientError.outputTransportFailed("output socket"), .brokerHostUnavailable),
             (BrokerSessionHostClientRuntime.ClientError.hostFailure(code: "output-monitoring-failed", message: ""), .brokerSessionStale),
             (BrokerSessionHostClientRuntime.ClientError.hostFailure(code: "retirement-completed-with-input-close-failure", message: ""), .brokerSessionStale),
             (RuntimeError.outputReadFailed, .failed),

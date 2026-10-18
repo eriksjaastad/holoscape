@@ -19,6 +19,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         )
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
         case transportFailed(String)
+        case outputTransportFailed(String)
     }
 
     typealias Transport = (Data) throws -> Data
@@ -87,7 +88,8 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             executableURL: currentExecutableURL(),
             socketPath: resolvedSocketPath,
             environment: environment,
-            requestTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds
+            requestTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds,
+            launchesBrokerOnConnectionFailure: false
         )
         return BrokerSessionHostClientRuntime(
             supportsOutputAvailabilityMonitoring: false,
@@ -181,12 +183,17 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
                 0,
                 min(maxBytes, BrokerSessionHostProtocolLimits.maximumOutputPayloadSize)
             )
-            let response = try response(
-                for: .snapshotAvailableOutput(id: id, maxBytes: boundedMaxBytes),
-                transport: outputTransport
-            )
-            guard case let .outputSnapshot(snapshot) = response else {
-                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: response)
+            let outputResponse: BrokerSessionHostResponse
+            do {
+                outputResponse = try response(
+                    for: .snapshotAvailableOutput(id: id, maxBytes: boundedMaxBytes),
+                    transport: outputTransport
+                )
+            } catch ClientError.transportFailed(let reason) {
+                throw ClientError.outputTransportFailed(reason)
+            }
+            guard case let .outputSnapshot(snapshot) = outputResponse else {
+                throw ClientError.unexpectedResponse(expected: "outputSnapshot", actual: outputResponse)
             }
             return snapshot
         }
@@ -382,7 +389,8 @@ extension BrokerSessionHostClientRuntime.ClientError {
             return reason
         case .unexpectedResponse(let expected, let actual):
             return "unexpected response; expected \(expected), got \(actual)"
-        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure:
+        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
+             .outputTransportFailed:
             return nil
         }
     }

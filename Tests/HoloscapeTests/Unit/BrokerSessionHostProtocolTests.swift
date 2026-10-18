@@ -509,6 +509,60 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertGreaterThan(ordinaryDuration, outputDuration * 2)
     }
 
+    func testOutputReadLaneDoesNotProbeStatusAfterBoundedSnapshotTransportFailure() {
+        let lane = BrokerOutputReadLane()
+        let sessionID = BrokerSessionID(rawValue: "bounded-output-lane-failure")
+        let statusProbeCount = LockedCounter()
+        let failureReported = expectation(description: "bounded output failure reported")
+        let teardownBarrier = expectation(description: "teardown barrier released")
+
+        lane.pollOnce(
+            sessionID: sessionID,
+            read: { _ in
+                throw BrokerSessionHostClientRuntime.ClientError.outputTransportFailed("timedOut(output snapshot)")
+            },
+            acknowledge: { _, _ in XCTFail("failed snapshots must not be acknowledged") },
+            terminationStatus: { _ in
+                _ = statusProbeCount.increment()
+                return nil
+            },
+            finishTermination: { _, _ in XCTFail("no exit was observed"); return nil },
+            exitResolutionClaim: BrokerExitResolutionClaim(),
+            onSample: { _, _ in XCTFail("failed snapshots must not be presented"); return false },
+            onTermination: { _, _, _ in XCTFail("no termination was observed") },
+            onFailure: { _, exitCode, error, _ in
+                XCTAssertNil(exitCode)
+                guard case BrokerSessionHostClientRuntime.ClientError.outputTransportFailed = error else {
+                    return XCTFail("Expected bounded output transport failure, got \(error)")
+                }
+                failureReported.fulfill()
+            }
+        )
+
+        wait(for: [failureReported], timeout: 1)
+        lane.finishWithoutConsuming { teardownBarrier.fulfill() }
+        wait(for: [teardownBarrier], timeout: 0.2)
+        XCTAssertEqual(statusProbeCount.value, 0)
+    }
+
+    func testLazySocketTransportCanFailConnectionWithoutLaunchingBroker() {
+        let socketPath = "/tmp/hs-no-launch-output-\(UUID().uuidString).sock"
+        let transport = LazyBrokerSessionHostUnixSocketTransport(
+            executableURL: URL(fileURLWithPath: "/does/not/exist"),
+            socketPath: socketPath,
+            requestTimeoutMilliseconds: 75,
+            launchesBrokerOnConnectionFailure: false,
+            launchedChildObserver: { _ in XCTFail("output transport must not launch the broker") }
+        )
+
+        XCTAssertThrowsError(try transport.sendFrame(Data("{}\n".utf8))) { error in
+            guard case BrokerSessionHostUnixSocketTransport.TransportError.connectFailed = error else {
+                return XCTFail("Expected connect failure, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+    }
+
     func testLostOutputResponseLeavesSnapshotAvailableForRetry() throws {
         let codec = BrokerSessionHostCodec()
         let runtime = RecordingBrokerSessionRuntime()
@@ -3429,7 +3483,12 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         )
         let startedAt = Date()
         XCTAssertThrowsError(try operation(client)) { error in
-            guard case let BrokerSessionHostClientRuntime.ClientError.transportFailed(message) = error else {
+            let message: String
+            switch error {
+            case let BrokerSessionHostClientRuntime.ClientError.transportFailed(reason),
+                 let BrokerSessionHostClientRuntime.ClientError.outputTransportFailed(reason):
+                message = reason
+            default:
                 return XCTFail("Expected transport failure, got \(error)")
             }
             XCTAssertTrue(message.contains("timedOut"), "Expected timeout failure, got \(message)")

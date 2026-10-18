@@ -997,6 +997,9 @@ final class BrokerTerminalLifecycle {
         if case BrokerSessionHostClientRuntime.ClientError.transportFailed = error {
             return .brokerHostUnavailable
         }
+        if case BrokerSessionHostClientRuntime.ClientError.outputTransportFailed = error {
+            return .brokerHostUnavailable
+        }
         if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError,
            case .missingSession = runtimeError {
             return .brokerSessionStale
