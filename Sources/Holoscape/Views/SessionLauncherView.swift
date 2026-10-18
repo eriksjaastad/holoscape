@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 protocol SessionLauncherDelegate: AnyObject {
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String)
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String, root: URL)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String)
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String)
@@ -26,6 +26,9 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     private let resultsStack = NSStackView()
     private let scrollView = NSScrollView()
     private var representedItems: [String: DirectoryLauncherItem] = [:]
+    private var visibleItems: [DirectoryLauncherItem] = []
+    private var resultButtons: [NSButton] = []
+    private var selectedResultIndex: Int?
     private var snapshot: DirectoryLauncherSnapshot?
     private var configuredProfiles: [SessionProfile] = []
     private var builtInProfiles = SessionProfileManager.builtInProfiles
@@ -36,7 +39,12 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
 
     var comboBoxForTesting: NSSearchField { searchField }
     var refreshButtonForTesting: NSButton { refreshButton }
+    var selectedRootURL: URL { selectedRoot }
     var rootPathForTesting: String { selectedRoot.path }
+    var selectedItemLabelForTesting: String? {
+        guard let selectedResultIndex, visibleItems.indices.contains(selectedResultIndex) else { return nil }
+        return visibleItems[selectedResultIndex].label
+    }
     var visibleSectionTitlesForTesting: [String] {
         snapshot?.filtered(by: searchField.stringValue).sections.map(\.title) ?? []
     }
@@ -44,6 +52,11 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         scrollView.documentView?.isFlipped == true
             && !resultsStack.isFlipped
             && scrollView.contentView.bounds.origin == .zero
+    }
+    var resultsFitViewportForTesting: Bool {
+        scrollView.layoutSubtreeIfNeeded()
+        return (scrollView.documentView?.frame.width ?? .greatestFiniteMagnitude)
+            <= scrollView.contentView.bounds.width + 0.5
     }
 
     private(set) var refreshButtonHovered = false
@@ -247,6 +260,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor).isActive = true
 
         contentView.addSubview(rootTitle)
         contentView.addSubview(rootPathLabel)
@@ -341,17 +355,15 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     }
 
     private func reloadSnapshot() {
-        do {
-            snapshot = try DirectoryLauncherModel.snapshot(
-                root: selectedRoot,
-                configured: configuredProfiles,
-                builtIn: builtInProfiles,
-                discovered: discoveredProfiles,
-                recent: recentSessions
-            )
-        } catch {
-            NSLog("SessionLauncher: unable to read root '%@': %@", selectedRoot.path, String(describing: error))
-            snapshot = DirectoryLauncherSnapshot(root: selectedRoot, sections: [])
+        snapshot = DirectoryLauncherModel.snapshot(
+            root: selectedRoot,
+            configured: configuredProfiles,
+            builtIn: builtInProfiles,
+            discovered: discoveredProfiles,
+            recent: recentSessions
+        )
+        if let directoryError = snapshot?.directoryError {
+            NSLog("SessionLauncher: unable to read root '%@': %@", selectedRoot.path, directoryError)
         }
         rootPathLabel.stringValue = selectedRoot.path
         rootPathLabel.toolTip = selectedRoot.path
@@ -374,6 +386,9 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             view.removeFromSuperview()
         }
         representedItems.removeAll()
+        visibleItems.removeAll()
+        resultButtons.removeAll()
+        selectedResultIndex = nil
 
         let filtered = snapshot?.filtered(by: searchField.stringValue)
         guard let sections = filtered?.sections, !sections.isEmpty else {
@@ -383,6 +398,15 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             message.setAccessibilityIdentifier("launcher-empty-state")
             resultsStack.addArrangedSubview(message)
             return
+        }
+
+        if let directoryError = filtered?.directoryError {
+            let message = NSTextField(labelWithString: "Directories unavailable. Channel actions and saved sessions remain available.")
+            message.textColor = .systemOrange
+            message.font = NSFont.systemFont(ofSize: 11)
+            message.toolTip = directoryError
+            message.setAccessibilityIdentifier("launcher-directory-error")
+            resultsStack.addArrangedSubview(message)
         }
 
         for section in sections {
@@ -395,6 +419,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             for item in section.items {
                 let identifier = UUID().uuidString
                 representedItems[identifier] = item
+                visibleItems.append(item)
                 let button = NSButton(title: rowTitle(for: item), target: self, action: #selector(selectResult(_:)))
                 button.identifier = NSUserInterfaceItemIdentifier(identifier)
                 button.bezelStyle = .inline
@@ -407,11 +432,37 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
                 button.setAccessibilityIdentifier("launcher-item-\(identifierFragment(item.label))")
                 button.translatesAutoresizingMaskIntoConstraints = false
                 resultsStack.addArrangedSubview(button)
+                resultButtons.append(button)
                 button.widthAnchor.constraint(equalTo: resultsStack.widthAnchor).isActive = true
                 button.heightAnchor.constraint(greaterThanOrEqualToConstant: item.detail == nil ? 26 : 38).isActive = true
             }
         }
+        if !visibleItems.isEmpty {
+            selectedResultIndex = 0
+            updateSelectionAppearance()
+        }
         scrollResultsToTop()
+    }
+
+    func moveSelectionForTesting(by delta: Int) {
+        moveSelection(by: delta)
+    }
+
+    private func moveSelection(by delta: Int) {
+        guard !visibleItems.isEmpty else { return }
+        selectedResultIndex = min(max((selectedResultIndex ?? 0) + delta, 0), visibleItems.count - 1)
+        updateSelectionAppearance()
+        if let selectedResultIndex {
+            resultButtons[selectedResultIndex].scrollToVisible(resultButtons[selectedResultIndex].bounds)
+        }
+    }
+
+    private func updateSelectionAppearance() {
+        for (index, button) in resultButtons.enumerated() {
+            let selected = index == selectedResultIndex
+            button.isBordered = selected
+            button.bezelStyle = selected ? .recessed : .inline
+        }
     }
 
     private func scrollResultsToTop() {
@@ -444,7 +495,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         searchField.stringValue = ""
         switch item.kind {
         case .builtIn:
-            launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: item.label)
+            launcherDelegate?.sessionLauncher(self, didSelectBuiltInProfile: item.label, root: selectedRoot)
         case .profile:
             if let profile = item.profile {
                 launcherDelegate?.sessionLauncher(self, didSelectProfile: profile)
@@ -454,12 +505,6 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         }
     }
 
-    private func exactMatch(for text: String) -> DirectoryLauncherItem? {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snapshot?.sections
-            .flatMap(\.items)
-            .first { $0.label.caseInsensitiveCompare(normalized) == .orderedSame }
-    }
 
     nonisolated func controlTextDidBeginEditing(_ notification: Notification) {
         MainActor.assumeIsolated { showPopover() }
@@ -478,13 +523,22 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 let text = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return true }
-                if let item = exactMatch(for: text) {
+                if let selectedResultIndex, visibleItems.indices.contains(selectedResultIndex) {
+                    let item = visibleItems[selectedResultIndex]
                     select(item)
                 } else {
                     popover.close()
                     launcherDelegate?.sessionLauncher(self, didTypeNewName: text)
                     searchField.stringValue = ""
                 }
+                return true
+            }
+            if commandSelector == #selector(NSResponder.moveDown(_:)) {
+                moveSelection(by: 1)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.moveUp(_:)) {
+                moveSelection(by: -1)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {

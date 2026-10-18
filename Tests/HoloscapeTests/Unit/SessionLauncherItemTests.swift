@@ -9,7 +9,7 @@ final class SessionLauncherItemTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
-        let snapshot = try DirectoryLauncherModel.snapshot(
+        let snapshot = DirectoryLauncherModel.snapshot(
             root: root,
             configured: [],
             builtIn: SessionProfileManager.builtInProfiles,
@@ -39,7 +39,7 @@ final class SessionLauncherItemTests: XCTestCase {
             host: "server.example"
         )
 
-        let snapshot = try DirectoryLauncherModel.snapshot(
+        let snapshot = DirectoryLauncherModel.snapshot(
             root: root,
             configured: [profile],
             builtIn: [],
@@ -69,5 +69,22 @@ final class SessionLauncherItemTests: XCTestCase {
         )
 
         XCTAssertTrue(launcher.resultsStartAtTopForTesting)
+        XCTAssertTrue(launcher.resultsFitViewportForTesting)
+    }
+
+    func testFilteredResultsSelectFirstItemAndSupportArrowNavigation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launcher-keyboard-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("alpha"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("alpine"), withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
+        launcher.updateItems(configured: [], builtIn: [], discovered: [], recent: [], root: root)
+        launcher.comboBoxForTesting.stringValue = "alp"
+        launcher.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+
+        XCTAssertEqual(launcher.selectedItemLabelForTesting, "alpha")
+        launcher.moveSelectionForTesting(by: 1)
+        XCTAssertEqual(launcher.selectedItemLabelForTesting, "alpine")
     }
 }

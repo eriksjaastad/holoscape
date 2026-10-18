@@ -43,7 +43,7 @@ final class DirectoryLauncherModelTests: XCTestCase {
         try Data("not a directory".utf8).write(to: root.appendingPathComponent("README.md"))
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
-        let snapshot = try DirectoryLauncherModel.snapshot(
+        let snapshot = DirectoryLauncherModel.snapshot(
             root: root,
             configured: [SessionProfile(label: "Saved SSH", connection: .ssh, command: "", directory: "~")],
             builtIn: SessionProfileManager.builtInProfiles,
@@ -72,7 +72,7 @@ final class DirectoryLauncherModelTests: XCTestCase {
         )
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
-        let snapshot = try DirectoryLauncherModel.snapshot(
+        let snapshot = DirectoryLauncherModel.snapshot(
             root: root,
             configured: [],
             builtIn: SessionProfileManager.builtInProfiles,
@@ -83,5 +83,50 @@ final class DirectoryLauncherModelTests: XCTestCase {
 
         XCTAssertEqual(filtered.sections.map(\.title), ["Directories"])
         XCTAssertEqual(filtered.sections[0].items.map(\.label), ["holoscape"])
+    }
+
+    func testSnapshotPreservesDistinctProfilesThatShareDirectoryOrLabel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-launcher-profiles-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let shell = SessionProfile(label: "project", connection: .local, command: "/bin/zsh", directory: project.path)
+        let agent = SessionProfile(label: "project", connection: .local, command: "claude", directory: project.path)
+
+        let snapshot = DirectoryLauncherModel.snapshot(
+            root: root,
+            configured: [shell, agent],
+            builtIn: [],
+            discovered: [],
+            recent: []
+        )
+
+        XCTAssertEqual(snapshot.sections.map(\.title), ["Directories", "Saved Sessions"])
+        XCTAssertEqual(snapshot.sections[1].items.compactMap(\.profile), [shell, agent])
+    }
+
+    func testUnreadableRootKeepsIndependentSectionsAndReportsError() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-launcher-root-\(UUID().uuidString)", isDirectory: true)
+        let saved = SessionProfile(label: "Saved", connection: .local, command: "custom", directory: "/work")
+
+        let snapshot = DirectoryLauncherModel.snapshot(
+            root: missing,
+            configured: [saved],
+            builtIn: SessionProfileManager.builtInProfiles,
+            discovered: [],
+            recent: [RecentSession(label: "Recent", timestamp: Date())]
+        )
+
+        XCTAssertNotNil(snapshot.directoryError)
+        XCTAssertEqual(snapshot.sections.map(\.title), ["Channels", "Saved Sessions", "Recent"])
+    }
+
+    func testMissingActiveDirectoryFallsBackToProjectsPath() {
+        XCTAssertEqual(
+            DirectoryLauncherModel.root(activeDirectory: "/definitely/missing/holoscape-directory"),
+            DefaultWorkingDirectory.projectsURL
+        )
     }
 }

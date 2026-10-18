@@ -28,6 +28,7 @@ struct DirectoryLauncherSection: Equatable {
 struct DirectoryLauncherSnapshot: Equatable {
     let root: URL
     let sections: [DirectoryLauncherSection]
+    let directoryError: String?
 
     func filtered(by query: String) -> DirectoryLauncherSnapshot {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -37,13 +38,14 @@ struct DirectoryLauncherSnapshot: Equatable {
             sections: sections.compactMap { section in
                 let items = section.items.filter { $0.searchableText.contains(normalized) }
                 return items.isEmpty ? nil : DirectoryLauncherSection(title: section.title, items: items)
-            }
+            },
+            directoryError: directoryError
         )
     }
 }
 
 enum DirectoryLauncherModel {
-    static func root(activeDirectory: String?, fallback: URL = DefaultWorkingDirectory.preferredURL) -> URL {
+    static func root(activeDirectory: String?, fallback: URL = DefaultWorkingDirectory.projectsURL) -> URL {
         if let activeDirectory {
             let activeURL = DefaultWorkingDirectory.expandedURL(from: activeDirectory)
             if isReadableDirectory(activeURL) {
@@ -60,18 +62,26 @@ enum DirectoryLauncherModel {
         discovered: [SessionProfile],
         recent: [RecentSession],
         fileManager: FileManager = .default
-    ) throws -> DirectoryLauncherSnapshot {
+    ) -> DirectoryLauncherSnapshot {
         let standardizedRoot = root.standardizedFileURL
-        let childURLs = try fileManager.contentsOfDirectory(
-            at: standardizedRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        let directories = try childURLs.compactMap { url -> URL? in
-            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { return nil }
-            return url.standardizedFileURL
-        }.sorted {
-            $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+        let directories: [URL]
+        let directoryError: String?
+        do {
+            let childURLs = try fileManager.contentsOfDirectory(
+                at: standardizedRoot,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            directories = childURLs.compactMap { url -> URL? in
+                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
+                return url.standardizedFileURL
+            }.sorted {
+                $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+            }
+            directoryError = nil
+        } catch {
+            directories = []
+            directoryError = String(describing: error)
         }
 
         var sections: [DirectoryLauncherSection] = []
@@ -108,12 +118,10 @@ enum DirectoryLauncherModel {
             ))
         }
 
-        let directoryPaths = Set(directories.map(\.path))
-        var seenProfiles = Set<String>()
+        var seenProfiles: [SessionProfile] = []
         let savedProfiles = (configured + discovered).filter { profile in
-            let key = "\(profile.connection.rawValue)|\(profile.label.lowercased())|\(profile.directory)"
-            guard !seenProfiles.contains(key), !directoryPaths.contains(profile.directory) else { return false }
-            seenProfiles.insert(key)
+            guard !seenProfiles.contains(profile) else { return false }
+            seenProfiles.append(profile)
             return true
         }
         if !savedProfiles.isEmpty {
@@ -144,7 +152,7 @@ enum DirectoryLauncherModel {
             ))
         }
 
-        return DirectoryLauncherSnapshot(root: standardizedRoot, sections: sections)
+        return DirectoryLauncherSnapshot(root: standardizedRoot, sections: sections, directoryError: directoryError)
     }
 
     private static func isReadableDirectory(_ url: URL) -> Bool {

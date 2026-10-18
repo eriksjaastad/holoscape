@@ -594,6 +594,18 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testUnifiedLauncherUsesSelectedRootForAgentDraftDefaults() {
+        let root = URL(fileURLWithPath: "/work/selected-root", isDirectory: true)
+        let prompt = MainWindowController.agentChannelPromptResult(
+            fromInlineInput: "Agent (OAuth)",
+            kindLabel: "Agent (OAuth)",
+            defaultDirectory: root
+        )
+        XCTAssertEqual(prompt?.workingDirectory.path, root.path)
+        XCTAssertEqual(prompt?.label, "selected-root")
+    }
+
+    @MainActor
     func testUnifiedLauncherMapsInlineAgentFieldsToCreateAction() {
         let action = MainWindowController.unifiedLauncherAction(
             for: "Agent (OAuth) /Users/erik/projects/holoscape as Holoscape Agent"

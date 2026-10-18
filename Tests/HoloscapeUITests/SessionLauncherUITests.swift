@@ -1,6 +1,24 @@
 import XCTest
 
 final class SessionLauncherUITests: HoloscapeUITestCase {
+    private var launcherFixtureRoot: URL!
+
+    override func configureAppForLaunch(_ app: XCUIApplication) {
+        launcherFixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-launcher-ui-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: launcherFixtureRoot.appendingPathComponent("filter-target", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        app.launchEnvironment["HOLOSCAPE_UI_TEST_LAUNCHER_ROOT"] = launcherFixtureRoot.path
+    }
+
+    override func tearDownWithError() throws {
+        try super.tearDownWithError()
+        if let launcherFixtureRoot {
+            try? FileManager.default.removeItem(at: launcherFixtureRoot)
+        }
+    }
 
     // MARK: - Session Launcher Display
 
@@ -31,9 +49,9 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         let searchField = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 2))
         searchField.click()
-        searchField.typeText("holoscape-agent")
+        searchField.typeText("filter-target")
 
-        XCTAssertTrue(app.buttons["launcher-item-holoscape-agent"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["launcher-item-filter-target"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts["launcher-section-directories"].exists)
         XCTAssertFalse(app.staticTexts["launcher-section-recent"].exists)
     }
