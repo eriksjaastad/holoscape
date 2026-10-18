@@ -8,6 +8,7 @@ final class SessionLauncherItemTests: XCTestCase {
         var selectedBuiltIn: SessionProfile?
         var selectedRecent: RecentSession?
 
+        func sessionLauncherWillPresent(_ launcher: SessionLauncherView) {}
         func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL) {
             selectedBuiltIn = profile
         }
@@ -113,7 +114,7 @@ final class SessionLauncherItemTests: XCTestCase {
         launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
 
         XCTAssertEqual(launcher.selectedItemLabelForTesting, "Shell")
-        XCTAssertEqual(launcher.selectedItemAccessibilityValueForTesting, "selected")
+        XCTAssertEqual(launcher.selectedItemAccessibilitySelectedForTesting, true)
         XCTAssertTrue(launcher.control(launcher.comboBoxForTesting, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:))))
         XCTAssertEqual(spy.selectedBuiltIn, SessionProfileManager.builtInProfiles[0])
     }

@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor
 protocol SessionLauncherDelegate: AnyObject {
+    func sessionLauncherWillPresent(_ launcher: SessionLauncherView)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile)
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession recent: RecentSession)
@@ -45,9 +46,9 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         guard let selectedResultIndex, visibleItems.indices.contains(selectedResultIndex) else { return nil }
         return visibleItems[selectedResultIndex].label
     }
-    var selectedItemAccessibilityValueForTesting: String? {
+    var selectedItemAccessibilitySelectedForTesting: Bool? {
         guard let selectedResultIndex, resultButtons.indices.contains(selectedResultIndex) else { return nil }
-        return resultButtons[selectedResultIndex].accessibilityValue() as? String
+        return resultButtons[selectedResultIndex].isAccessibilitySelected()
     }
     var firstResultFontForTesting: NSFont? {
         resultButtons.first?.font
@@ -378,6 +379,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     }
 
     private func showPopover() {
+        launcherDelegate?.sessionLauncherWillPresent(self)
         if snapshot == nil {
             reloadSnapshot()
         }
@@ -399,7 +401,13 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
 
         let filtered = snapshot?.filtered(by: searchField.stringValue)
         if let directoryError = filtered?.directoryError {
-            let message = NSTextField(labelWithString: "Directories unavailable. Channel actions and saved sessions remain available.")
+            let hasDirectoryRows = filtered?.sections
+                .first(where: { $0.title == "Directories" })?
+                .items.isEmpty == false
+            let text = hasDirectoryRows
+                ? "Some directories could not be loaded. Available results remain usable."
+                : "Directories unavailable. Channel actions and saved sessions remain available."
+            let message = NSTextField(labelWithString: text)
             message.textColor = .systemOrange
             message.font = NSFont.systemFont(ofSize: 11)
             message.toolTip = directoryError
@@ -413,15 +421,6 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             message.setAccessibilityIdentifier("launcher-empty-state")
             resultsStack.addArrangedSubview(message)
             return
-        }
-
-        if let directoryError = filtered?.directoryError {
-            let message = NSTextField(labelWithString: "Directories unavailable. Channel actions and saved sessions remain available.")
-            message.textColor = .systemOrange
-            message.font = NSFont.systemFont(ofSize: 11)
-            message.toolTip = directoryError
-            message.setAccessibilityIdentifier("launcher-directory-error")
-            resultsStack.addArrangedSubview(message)
         }
 
         for section in sections {
@@ -478,7 +477,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             let selected = index == selectedResultIndex
             button.isBordered = selected
             button.bezelStyle = selected ? .recessed : .inline
-            button.setAccessibilityValue(selected ? "selected" : "not selected")
+            button.setAccessibilitySelected(selected)
         }
     }
 

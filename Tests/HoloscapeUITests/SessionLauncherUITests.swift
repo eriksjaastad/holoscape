@@ -6,9 +6,11 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     override func configureAppForLaunch(_ app: XCUIApplication) {
         launcherFixtureRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-launcher-ui-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: launcherFixtureRoot.appendingPathComponent("filter-target", isDirectory: true),
-            withIntermediateDirectories: true
+        XCTAssertNoThrow(
+            try FileManager.default.createDirectory(
+                at: launcherFixtureRoot.appendingPathComponent("filter-target", isDirectory: true),
+                withIntermediateDirectories: true
+            )
         )
         app.launchEnvironment["HOLOSCAPE_UI_TEST_LAUNCHER_ROOT"] = launcherFixtureRoot.path
     }
@@ -16,7 +18,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     override func tearDownWithError() throws {
         try super.tearDownWithError()
         if let launcherFixtureRoot {
-            try? FileManager.default.removeItem(at: launcherFixtureRoot)
+            try FileManager.default.removeItem(at: launcherFixtureRoot)
         }
     }
 

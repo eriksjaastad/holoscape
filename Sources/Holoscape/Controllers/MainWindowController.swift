@@ -2133,15 +2133,28 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     func refreshLauncher() {
-        guard let profileManager else { return }
-        let sessions = profileManager.allSessions()
-        sessionLauncher.updateItems(
-            configured: sessions.configured,
-            builtIn: sessions.builtIn,
-            discovered: sessions.discovered,
-            recent: sessions.recent,
-            root: launcherRootURL()
-        )
+        let root = launcherRootURL()
+        if let profileManager {
+            let sessions = profileManager.allSessions()
+            sessionLauncher.updateItems(
+                configured: sessions.configured,
+                builtIn: sessions.builtIn,
+                discovered: sessions.discovered,
+                recent: sessions.recent,
+                root: root
+            )
+            return
+        }
+
+        if CommandLine.arguments.contains("--ui-testing") {
+            sessionLauncher.updateItems(
+                configured: [],
+                builtIn: SessionProfileManager.builtInProfiles,
+                discovered: [],
+                recent: [],
+                root: root
+            )
+        }
     }
 
     private func launcherRootURL() -> URL {
@@ -2758,6 +2771,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             }
             launchSession(from: profile)
         }
+    }
+
+    func sessionLauncherWillPresent(_ launcher: SessionLauncherView) {
+        refreshLauncher()
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL) {

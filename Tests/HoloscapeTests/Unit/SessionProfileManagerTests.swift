@@ -763,6 +763,13 @@ final class SessionProfileManagerTests: XCTestCase {
 
     // MARK: - Recent Sessions
 
+    func testLegacyRecentSessionDecodesWithoutProfileIdentity() throws {
+        let data = Data(#"{"label":"legacy","timestamp":0}"#.utf8)
+        let recent = try JSONDecoder().decode(RecentSession.self, from: data)
+        XCTAssertEqual(recent.label, "legacy")
+        XCTAssertNil(recent.profile)
+    }
+
     @MainActor
     func testRecordRecentSessionPrependsAndDeduplicates() {
         let configService = ConfigService()
