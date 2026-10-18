@@ -26,6 +26,41 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         let refreshButton = app.buttons["refresh-sessions"]
         XCTAssertTrue(refreshButton.waitForExistence(timeout: 2), "Refresh button should exist")
         XCTAssertTrue(refreshButton.isHittable, "Refresh button should be hittable")
+        XCTAssertEqual(refreshButton.label, "Refresh projects")
+    }
+
+    func testRefreshHoverSurvivesAppReactivation() throws {
+        let window = app.windows["Holoscape"]
+        let refreshButton = app.buttons["refresh-sessions"]
+        XCTAssertTrue(refreshButton.waitForExistence(timeout: 2))
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).hover()
+        waitForValue("not hovered", on: refreshButton)
+
+        refreshButton.hover()
+        waitForValue("hovered", on: refreshButton)
+        let beforeReactivation = XCTAttachment(screenshot: window.screenshot())
+        beforeReactivation.name = "Refresh hover before reactivation"
+        beforeReactivation.lifetime = .keepAlways
+        add(beforeReactivation)
+
+        XCUIApplication(bundleIdentifier: "com.apple.finder").activate()
+        waitForValue("not hovered", on: refreshButton)
+        app.activate()
+        XCTAssertTrue(refreshButton.waitForExistence(timeout: 2))
+        waitForValue("hovered", on: refreshButton)
+
+        let afterReactivation = XCTAttachment(screenshot: window.screenshot())
+        afterReactivation.name = "Refresh hover after reactivation"
+        afterReactivation.lifetime = .keepAlways
+        add(afterReactivation)
+    }
+
+    private func waitForValue(_ value: String, on element: XCUIElement) {
+        let expectation = expectation(
+            for: NSPredicate(format: "value == %@", value),
+            evaluatedWith: element
+        )
+        wait(for: [expectation], timeout: 2)
     }
 
     // MARK: - Profile Selection

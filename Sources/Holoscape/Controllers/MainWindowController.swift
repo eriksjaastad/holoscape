@@ -1915,6 +1915,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        updateChromeZoomButtonLabel(isFullScreen: true)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        updateChromeZoomButtonLabel(isFullScreen: false)
+    }
+
     // MARK: - NSSplitViewDelegate
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {

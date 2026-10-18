@@ -168,13 +168,13 @@ extension MainWindowController {
         let buttonY = CGFloat(chrome.height) - yFromTop - buttonSize.height
         let leadingX = chromeControlLeadingX(chrome: chrome, layout: layout)
 
-        let specs: [(NSWindow.ButtonType, CGFloat, Selector, String)] = [
-            (.closeButton,       leadingX,      #selector(handleChromeCloseButton(_:)), "chrome-close-button"),
-            (.miniaturizeButton, leadingX + 20, #selector(handleChromeMinimizeButton(_:)), "chrome-minimize-button"),
-            (.zoomButton,        leadingX + 40, #selector(handleChromeZoomButton(_:)), "chrome-zoom-button"),
+        let specs: [(NSWindow.ButtonType, CGFloat, Selector, String, String)] = [
+            (.closeButton,       leadingX,      #selector(handleChromeCloseButton(_:)), "chrome-close-button", "Close window"),
+            (.miniaturizeButton, leadingX + 20, #selector(handleChromeMinimizeButton(_:)), "chrome-minimize-button", "Minimize window"),
+            (.zoomButton,        leadingX + 40, #selector(handleChromeZoomButton(_:)), "chrome-zoom-button", "Enter full screen"),
         ]
 
-        for (buttonType, x, action, identifier) in specs {
+        for (buttonType, x, action, identifier, label) in specs {
             guard let btn = NSWindow.standardWindowButton(
                 buttonType,
                 for: [.titled, .closable, .miniaturizable, .resizable]
@@ -182,12 +182,22 @@ extension MainWindowController {
             btn.frame = CGRect(x: x, y: buttonY, width: buttonSize.width, height: buttonSize.height)
             btn.identifier = NSUserInterfaceItemIdentifier(identifier)
             btn.setAccessibilityIdentifier(identifier)
+            btn.setAccessibilityLabel(label)
+            btn.toolTip = label
             btn.isEnabled = true
             btn.target = self
             btn.action = action
             contentView.addSubview(btn)
             chromeWindowControlButtons[buttonType] = btn
         }
+        updateChromeZoomButtonLabel(isFullScreen: window.styleMask.contains(.fullScreen))
+    }
+
+    func updateChromeZoomButtonLabel(isFullScreen: Bool) {
+        guard let button = chromeWindowControlButtons[.zoomButton] else { return }
+        let label = isFullScreen ? "Exit full screen" : "Enter full screen"
+        button.setAccessibilityLabel(label)
+        button.toolTip = "\(label) (Option-click to zoom window)"
     }
 
     private func chromeControlLeadingX(

@@ -25,6 +25,8 @@
 		100587EC34B3C6D6B232D8F7 /* DiskBackedScrollbackStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04893A784155517E7A4F33A2 /* DiskBackedScrollbackStore.swift */; };
 		11F085DF99DACEB69966A92A /* BundledSkinTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6336E4C4DEFBCAADD091145B /* BundledSkinTests.swift */; };
 		11FC1BA6E0166AEC41D29943 /* SessionLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FFB141178B64F31C8D29D8C /* SessionLauncherView.swift */; };
+		841900000000000000000002 /* HoverTrackingButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 841900000000000000000001 /* HoverTrackingButton.swift */; };
+		841900000000000000000004 /* HoverAffordanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 841900000000000000000003 /* HoverAffordanceTests.swift */; };
 		121D1C30B4A6F2218A97FDAE /* ChannelRecoveryActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5460E92445A5A5B69689F695 /* ChannelRecoveryActionTests.swift */; };
 		12270680C90C84261BDE489B /* NativePTYBrokerSessionRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C63F1DE9FBEF4A9E3436F96D /* NativePTYBrokerSessionRuntimeTests.swift */; };
 		12C44BC7C209CE5649025A50 /* V1CompatibilityPropertyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77A4D067FB75A5B8CC9A4B67 /* V1CompatibilityPropertyTests.swift */; };
@@ -559,6 +561,8 @@
 		0EC016130ABF4A6E590AB5F7 /* BridgeChannelUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeChannelUITests.swift; sourceTree = "<group>"; };
 		0F63616AA46068C468C20AD5 /* attribute.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = attribute.cpp; sourceTree = "<group>"; };
 		0FFB141178B64F31C8D29D8C /* SessionLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLauncherView.swift; sourceTree = "<group>"; };
+		841900000000000000000001 /* HoverTrackingButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverTrackingButton.swift; sourceTree = "<group>"; };
+		841900000000000000000003 /* HoverAffordanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverAffordanceTests.swift; sourceTree = "<group>"; };
 		1243CA34E3FB3B01E34645CD /* HitRegionDeterminismPropertyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HitRegionDeterminismPropertyTests.swift; sourceTree = "<group>"; };
 		12EFBACFFFC095E666326F54 /* PluginManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginManager.swift; sourceTree = "<group>"; };
 		14C877949C089C7CAC8629FD /* BackwardCompatIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackwardCompatIntegrationTests.swift; sourceTree = "<group>"; };
@@ -1088,6 +1092,7 @@
 				37B014172438F19FAD650873 /* DiskBackedScrollbackStoreTests.swift */,
 				60B9FEBCF3526BB4962E1681 /* DragRegionTrackerTests.swift */,
 				DF1EE8DE7EAA4E90F00BF228 /* GroupChatV2Tests.swift */,
+				841900000000000000000003 /* HoverAffordanceTests.swift */,
 				837D3D3A28745038BD81CFC5 /* HistoryBufferTests.swift */,
 				18B0BB95A29649039367F14F /* HitRegionSamplerTests.swift */,
 				5F036C7BB957D398369075BA /* InstanceNumberingTests.swift */,
@@ -1491,6 +1496,7 @@
 				56FD45CFB61961709FF903ED /* ChromeDebugOverlay.swift */,
 				04690FBBA92C033F291D371C /* ChromeHostView.swift */,
 				32889C593C7BA532FC5E0ACB /* HoloscapeTerminalView.swift */,
+				841900000000000000000001 /* HoverTrackingButton.swift */,
 				60E2640C327CEFE619F66E23 /* InputBoxView.swift */,
 				9E68F1529C52765228BE947F /* InputResizeHandleView.swift */,
 				FB12B8C815E3764D46702A6D /* InteriorView.swift */,
@@ -1885,6 +1891,7 @@
 				1520609E0682C767045BF51E /* DragRegionTrackerTests.swift in Sources */,
 				9AF6CDB446EF898C9309EB01 /* FailingBrokerSessionRuntime.swift in Sources */,
 				A12EF055078FAAEA4060844F /* GroupChatV2Tests.swift in Sources */,
+				841900000000000000000004 /* HoverAffordanceTests.swift in Sources */,
 				2B2BC02D41F577A439572EE8 /* HistoryBufferTests.swift in Sources */,
 				F0CDB1097ECD5DA8F3E4AAB6 /* HitRegionSamplerTests.swift in Sources */,
 				D0A902C841F40726C75427F8 /* HoloscapeClassicLiveIntegrationTests.swift in Sources */,
@@ -2136,6 +2143,7 @@
 				B29CBDFC7621A4D2410D1E44 /* HoloscapeAPIServer.swift in Sources */,
 				5B20B07AA53C6944A8731058 /* HoloscapeConfig.swift in Sources */,
 				6251E4DC99625DA92C03232D /* HoloscapeTerminalView.swift in Sources */,
+				841900000000000000000002 /* HoverTrackingButton.swift in Sources */,
 				37508AD61F791ED9B32D44DD /* InputBoxView.swift in Sources */,
 				D840130A3EFCC8ADB1FD5BD3 /* InputResizeHandleView.swift in Sources */,
 				CA300FBDEEF35540C25BCC02 /* InteriorView.swift in Sources */,
