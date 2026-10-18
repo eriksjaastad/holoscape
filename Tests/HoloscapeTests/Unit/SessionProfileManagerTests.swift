@@ -594,6 +594,39 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testBuiltInLauncherActionPreservesChannelSemanticsAndExactClaudeIdentity() {
+        let root = URL(fileURLWithPath: "/work/selected-root", isDirectory: true)
+        XCTAssertEqual(
+            MainWindowController.unifiedLauncherAction(
+                forBuiltInProfile: SessionProfileManager.builtInProfiles[1],
+                defaultDirectory: root
+            ),
+            .agentOAuthDraft
+        )
+        var expectedClaude = SessionProfileManager.builtInProfiles[3]
+        expectedClaude.directory = root.path
+        XCTAssertEqual(
+            MainWindowController.unifiedLauncherAction(
+                forBuiltInProfile: SessionProfileManager.builtInProfiles[3],
+                defaultDirectory: root
+            ),
+            .profile(expectedClaude)
+        )
+    }
+
+    @MainActor
+    func testUnifiedLauncherUsesSelectedRootForAgentDraftDefaults() {
+        let root = URL(fileURLWithPath: "/work/selected-root", isDirectory: true)
+        let prompt = MainWindowController.agentChannelPromptResult(
+            fromInlineInput: "Agent (OAuth)",
+            kindLabel: "Agent (OAuth)",
+            defaultDirectory: root
+        )
+        XCTAssertEqual(prompt?.workingDirectory.path, root.path)
+        XCTAssertEqual(prompt?.label, "selected-root")
+    }
+
+    @MainActor
     func testUnifiedLauncherMapsInlineAgentFieldsToCreateAction() {
         let action = MainWindowController.unifiedLauncherAction(
             for: "Agent (OAuth) /Users/erik/projects/holoscape as Holoscape Agent"
@@ -730,6 +763,13 @@ final class SessionProfileManagerTests: XCTestCase {
 
     // MARK: - Recent Sessions
 
+    func testLegacyRecentSessionDecodesWithoutProfileIdentity() throws {
+        let data = Data(#"{"label":"legacy","timestamp":0}"#.utf8)
+        let recent = try JSONDecoder().decode(RecentSession.self, from: data)
+        XCTAssertEqual(recent.label, "legacy")
+        XCTAssertNil(recent.profile)
+    }
+
     @MainActor
     func testRecordRecentSessionPrependsAndDeduplicates() {
         let configService = ConfigService()
@@ -748,6 +788,36 @@ final class SessionProfileManagerTests: XCTestCase {
         XCTAssertEqual(recent.count, 2)
         XCTAssertEqual(recent[0].label, "alpha")  // most recent first
         XCTAssertEqual(recent[1].label, "beta")
+    }
+
+    @MainActor
+    func testRecordRecentSessionRetainsDistinctSameLabelProfiles() {
+        let configService = ConfigService()
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+        configService.save(HoloscapeConfig.default)
+        let first = SessionProfile(
+            label: "production",
+            connection: .ssh,
+            command: "/bin/zsh",
+            directory: "~/one",
+            host: "one.example",
+            user: "erik"
+        )
+        let second = SessionProfile(
+            label: "production",
+            connection: .ssh,
+            command: "claude",
+            directory: "~/two",
+            host: "two.example",
+            user: "erik"
+        )
+
+        manager.recordRecentSession(profile: first)
+        manager.recordRecentSession(profile: second)
+
+        let recent = configService.load().recentSessions ?? []
+        XCTAssertEqual(recent.map(\.profile), [second, first])
     }
 
     @MainActor

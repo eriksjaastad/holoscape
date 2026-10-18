@@ -15,6 +15,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         case agentAPIKey(AgentChannelPromptResult)
         case groupChat
         case bridge
+        case profile(SessionProfile)
         case sessionProfile(String)
     }
 
@@ -2132,14 +2133,50 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     func refreshLauncher() {
-        guard let profileManager else { return }
-        let sessions = profileManager.allSessions()
-        sessionLauncher.updateItems(
-            configured: sessions.configured,
-            builtIn: sessions.builtIn,
-            discovered: sessions.discovered,
-            recent: sessions.recent
-        )
+        let root = launcherRootURL()
+        if let profileManager {
+            let sessions = profileManager.allSessions()
+            sessionLauncher.updateItems(
+                configured: sessions.configured,
+                builtIn: sessions.builtIn,
+                discovered: sessions.discovered,
+                recent: sessions.recent,
+                root: root
+            )
+            return
+        }
+
+        if CommandLine.arguments.contains("--ui-testing") {
+            sessionLauncher.updateItems(
+                configured: [],
+                builtIn: SessionProfileManager.builtInProfiles,
+                discovered: [],
+                recent: [],
+                root: root
+            )
+        }
+    }
+
+    private func launcherRootURL() -> URL {
+        if CommandLine.arguments.contains("--ui-testing"),
+           let path = ProcessInfo.processInfo.environment["HOLOSCAPE_UI_TEST_LAUNCHER_ROOT"],
+           !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        let activeDirectory: String?
+        if let activeChannelId,
+           let channel = channelManager.channel(for: activeChannelId) {
+            if let shell = channel as? ShellChannelController {
+                activeDirectory = shell.persistedWorkingDirectory
+            } else if let agent = channel as? AgentChannelController {
+                activeDirectory = agent.persistedWorkingDirectory
+            } else {
+                activeDirectory = nil
+            }
+        } else {
+            activeDirectory = nil
+        }
+        return DirectoryLauncherModel.root(activeDirectory: activeDirectory)
     }
 
     @objc func handleNewSession() {
@@ -2167,12 +2204,15 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     @objc func createShellChannel() {
+        createShellChannelInDirectory(DefaultWorkingDirectory.preferredURL)
+    }
+
+    private func createShellChannelInDirectory(_ workingDirectory: URL) {
         guard channelMutationEnabled else { return }
-        let defaultDir = DefaultWorkingDirectory.preferredURL
         let channel = channelManager.createChannel(
             type: .shell,
             role: nil,
-            workingDirectory: defaultDir
+            workingDirectory: workingDirectory
         ) { id, _, _, instanceNum, workDir in
             return ShellChannelController.brokerBacked(
                 id: id,
@@ -2391,7 +2431,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             let channel = try channelManager.createChannel(from: resolved)
             channel.delegate = self
             channel.activate()
-            profileManager?.recordRecentSession(label: profile.label)
+            profileManager?.recordRecentSession(profile: resolved)
             refreshLauncher()
             switchToChannel(channel.channelId)
         } catch {
@@ -2644,12 +2684,15 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     // MARK: - SessionLauncherDelegate
 
-    static func unifiedLauncherAction(for label: String) -> UnifiedLauncherAction {
+    static func unifiedLauncherAction(
+        for label: String,
+        defaultDirectory: URL = DefaultWorkingDirectory.preferredURL
+    ) -> UnifiedLauncherAction {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (OAuth)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (OAuth)", defaultDirectory: defaultDirectory) {
             return trimmed.caseInsensitiveCompare("Agent (OAuth)") == .orderedSame ? .agentOAuthDraft : .agentOAuth(prompt)
         }
-        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (API Key)", defaultDirectory: DefaultWorkingDirectory.preferredURL) {
+        if let prompt = agentChannelPromptResult(fromInlineInput: trimmed, kindLabel: "Agent (API Key)", defaultDirectory: defaultDirectory) {
             return trimmed.caseInsensitiveCompare("Agent (API Key)") == .orderedSame ? .agentAPIKeyDraft : .agentAPIKey(prompt)
         }
 
@@ -2669,15 +2712,47 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction) {
+    static func unifiedLauncherAction(
+        forBuiltInProfile profile: SessionProfile,
+        defaultDirectory: URL = DefaultWorkingDirectory.preferredURL
+    ) -> UnifiedLauncherAction {
+        guard let index = SessionProfileManager.builtInProfiles.firstIndex(of: profile) else {
+            var selected = profile
+            if selected.connection == .local {
+                selected.directory = defaultDirectory.path
+            }
+            return .profile(selected)
+        }
+
+        switch index {
+        case 0:
+            return .shell
+        case 1:
+            return .agentOAuthDraft
+        case 2:
+            return .agentAPIKeyDraft
+        case 4:
+            return .groupChat
+        case 5:
+            return .bridge
+        default:
+            var selected = profile
+            if selected.connection == .local {
+                selected.directory = defaultDirectory.path
+            }
+            return .profile(selected)
+        }
+    }
+
+    private func performUnifiedLauncherAction(_ action: UnifiedLauncherAction, root: URL) {
         guard channelMutationEnabled else { return }
         switch action {
         case .shell:
-            createShellChannel()
+            createShellChannelInDirectory(root)
         case .agentOAuthDraft:
-            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (OAuth)", directory: DefaultWorkingDirectory.preferredURL)
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (OAuth)", directory: root)
         case .agentAPIKeyDraft:
-            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (API Key)", directory: DefaultWorkingDirectory.preferredURL)
+            sessionLauncher.beginInlineAgentChannelDraft(kindLabel: "Agent (API Key)", directory: root)
         case .agentOAuth(let prompt):
             createAgentChannel(authType: .oauth, prompt: prompt)
         case .agentAPIKey(let prompt):
@@ -2686,28 +2761,41 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             createGroupChatChannel()
         case .bridge:
             createBridgeChannel()
+        case .profile(let profile):
+            launchSession(from: profile)
         case .sessionProfile(let label):
             guard let profileManager else { return }
-            let profile = profileManager.resolve(label: label)
+            var profile = profileManager.resolve(label: label)
+            if label.caseInsensitiveCompare("Claude") == .orderedSame {
+                profile.directory = root.path
+            }
             launchSession(from: profile)
         }
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile label: String) {
-        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: label))
+    func sessionLauncherWillPresent(_ launcher: SessionLauncherView) {
+        refreshLauncher()
+    }
+
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL) {
+        performUnifiedLauncherAction(
+            Self.unifiedLauncherAction(forBuiltInProfile: profile, defaultDirectory: root),
+            root: root
+        )
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didSelectProfile profile: SessionProfile) {
         launchSession(from: profile)
     }
 
-    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession label: String) {
+    func sessionLauncher(_ launcher: SessionLauncherView, didSelectRecentSession recent: RecentSession) {
         guard let profileManager else { return }
-        launchSession(from: profileManager.resolve(label: label))
+        launchSession(from: recent.profile ?? profileManager.resolve(label: recent.label))
     }
 
     func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {
-        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: name))
+        let root = launcher.selectedRootURL
+        performUnifiedLauncherAction(Self.unifiedLauncherAction(for: name, defaultDirectory: root), root: root)
     }
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {

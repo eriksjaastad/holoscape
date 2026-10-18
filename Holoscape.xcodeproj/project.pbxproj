@@ -25,6 +25,7 @@
 		100587EC34B3C6D6B232D8F7 /* DiskBackedScrollbackStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04893A784155517E7A4F33A2 /* DiskBackedScrollbackStore.swift */; };
 		11F085DF99DACEB69966A92A /* BundledSkinTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6336E4C4DEFBCAADD091145B /* BundledSkinTests.swift */; };
 		11FC1BA6E0166AEC41D29943 /* SessionLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FFB141178B64F31C8D29D8C /* SessionLauncherView.swift */; };
+		A11900000000000000000002 /* DirectoryLauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11900000000000000000001 /* DirectoryLauncherModel.swift */; };
 		841900000000000000000002 /* HoverTrackingButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 841900000000000000000001 /* HoverTrackingButton.swift */; };
 		841900000000000000000004 /* HoverAffordanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 841900000000000000000003 /* HoverAffordanceTests.swift */; };
 		121D1C30B4A6F2218A97FDAE /* ChannelRecoveryActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5460E92445A5A5B69689F695 /* ChannelRecoveryActionTests.swift */; };
@@ -415,6 +416,7 @@
 		A8D682061786D2EB396E603D /* OffscreenNotificationUXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 943DA940DC4CCEA1995594B7 /* OffscreenNotificationUXTests.swift */; };
 		A33D5130CC15C6CC65EBB82F /* ScrollbackMaintenanceFormattingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5D1AB0077677206DBC8EAAD /* ScrollbackMaintenanceFormattingTests.swift */; };
 		910489E8A3FBC58E42F60FFC /* SessionLauncherItemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A829F9773B26970D3DBFCD2E /* SessionLauncherItemTests.swift */; };
+		A11900000000000000000004 /* DirectoryLauncherModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11900000000000000000003 /* DirectoryLauncherModelTests.swift */; };
 		B2E2978D35406FD4A76AADA8 /* SkinEngineCacheDirectoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C579EC04E5C7FAB439AA0649 /* SkinEngineCacheDirectoryTests.swift */; };
 		4526B0D5038DEEA18D2FA6D4 /* TabTimerDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80561FCF8105557F44AC680 /* TabTimerDisplayTests.swift */; };
 		5280857057C3F0C87B990A2C /* TerminalFileInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F570D8E80E15179A643F3F4 /* TerminalFileInputTests.swift */; };
@@ -561,6 +563,8 @@
 		0EC016130ABF4A6E590AB5F7 /* BridgeChannelUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeChannelUITests.swift; sourceTree = "<group>"; };
 		0F63616AA46068C468C20AD5 /* attribute.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = attribute.cpp; sourceTree = "<group>"; };
 		0FFB141178B64F31C8D29D8C /* SessionLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLauncherView.swift; sourceTree = "<group>"; };
+		A11900000000000000000001 /* DirectoryLauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryLauncherModel.swift; sourceTree = "<group>"; };
+		A11900000000000000000003 /* DirectoryLauncherModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryLauncherModelTests.swift; sourceTree = "<group>"; };
 		841900000000000000000001 /* HoverTrackingButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverTrackingButton.swift; sourceTree = "<group>"; };
 		841900000000000000000003 /* HoverAffordanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverAffordanceTests.swift; sourceTree = "<group>"; };
 		1243CA34E3FB3B01E34645CD /* HitRegionDeterminismPropertyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HitRegionDeterminismPropertyTests.swift; sourceTree = "<group>"; };
@@ -1166,6 +1170,7 @@
 				943DA940DC4CCEA1995594B7 /* OffscreenNotificationUXTests.swift */,
 				F5D1AB0077677206DBC8EAAD /* ScrollbackMaintenanceFormattingTests.swift */,
 				A829F9773B26970D3DBFCD2E /* SessionLauncherItemTests.swift */,
+				A11900000000000000000003 /* DirectoryLauncherModelTests.swift */,
 				C579EC04E5C7FAB439AA0649 /* SkinEngineCacheDirectoryTests.swift */,
 				E80561FCF8105557F44AC680 /* TabTimerDisplayTests.swift */,
 				1F570D8E80E15179A643F3F4 /* TerminalFileInputTests.swift */,
@@ -1564,6 +1569,7 @@
 				A54F4D0D81EDB52FB213C599 /* ProjectDiscoveryConfig.swift */,
 				903B8AC9BA7D5D63D096F582 /* RecentSession.swift */,
 				D325FA1160A16CC1F8CC1262 /* SessionProfile.swift */,
+				A11900000000000000000001 /* DirectoryLauncherModel.swift */,
 				0A748D8403291538C0375ABE /* SkinDefinition.swift */,
 				6326E866A927195F3C196BEB /* SkinLayoutDescriptors.swift */,
 				247750729C852096BBDDC300 /* SplitLayoutConfig.swift */,
@@ -1976,6 +1982,7 @@
 				A8D682061786D2EB396E603D /* OffscreenNotificationUXTests.swift in Sources */,
 				A33D5130CC15C6CC65EBB82F /* ScrollbackMaintenanceFormattingTests.swift in Sources */,
 				910489E8A3FBC58E42F60FFC /* SessionLauncherItemTests.swift in Sources */,
+				A11900000000000000000004 /* DirectoryLauncherModelTests.swift in Sources */,
 				B2E2978D35406FD4A76AADA8 /* SkinEngineCacheDirectoryTests.swift in Sources */,
 				4526B0D5038DEEA18D2FA6D4 /* TabTimerDisplayTests.swift in Sources */,
 				5280857057C3F0C87B990A2C /* TerminalFileInputTests.swift in Sources */,
@@ -2184,6 +2191,7 @@
 				23694DF38D4B1C183E8F6C98 /* ScrollbackPersistencePolicy.swift in Sources */,
 				11FC1BA6E0166AEC41D29943 /* SessionLauncherView.swift in Sources */,
 				063E922ABC9B5D5EF6A2F3B6 /* SessionProfile.swift in Sources */,
+				A11900000000000000000002 /* DirectoryLauncherModel.swift in Sources */,
 				1CE21B1D19F2AB5B2381AEFD /* SessionProfileManager.swift in Sources */,
 				F118A1673DB80CCFFC72AC8E /* SetupDiagnosticsService.swift in Sources */,
 				65DED6ABC2420F6CC7F61523 /* SetupDiagnosticsWindowController.swift in Sources */,

@@ -1,32 +1,68 @@
 import XCTest
 
 final class SessionLauncherUITests: HoloscapeUITestCase {
+    private var launcherFixtureRoot: URL!
+
+    override func configureAppForLaunch(_ app: XCUIApplication) {
+        launcherFixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-launcher-ui-\(UUID().uuidString)", isDirectory: true)
+        XCTAssertNoThrow(
+            try FileManager.default.createDirectory(
+                at: launcherFixtureRoot.appendingPathComponent("filter-target", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        )
+        app.launchEnvironment["HOLOSCAPE_UI_TEST_LAUNCHER_ROOT"] = launcherFixtureRoot.path
+    }
+
+    override func tearDownWithError() throws {
+        try super.tearDownWithError()
+        if let launcherFixtureRoot {
+            try FileManager.default.removeItem(at: launcherFixtureRoot)
+        }
+    }
 
     // MARK: - Session Launcher Display
 
     func testSessionLauncherVisibleOnLaunch() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Session launcher combo box should exist on launch")
         XCTAssertTrue(comboBox.isEnabled, "Session launcher should be enabled on launch")
     }
 
     func testSessionLauncherHasSections() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
 
         comboBox.click()
 
-        // Verify the combo box is interactable with dropdown open
-        XCTAssertTrue(comboBox.isEnabled, "Session launcher should be enabled with dropdown items")
+        let screenshot = XCTAttachment(screenshot: app.windows["Holoscape"].screenshot())
+        screenshot.name = "Directory-rooted session launcher"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        XCTAssertTrue(app.staticTexts["launcher-section-channels"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["launcher-section-directories"].waitForExistence(timeout: 2))
 
         app.typeKey(.escape, modifierFlags: [])
+    }
+
+    func testLauncherFiltersDirectoryRows() throws {
+        let searchField = app.searchFields["session-launcher-combo"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2))
+        searchField.click()
+        searchField.typeText("filter-target")
+
+        XCTAssertTrue(app.buttons["launcher-item-filter-target"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["launcher-section-directories"].exists)
+        XCTAssertFalse(app.staticTexts["launcher-section-recent"].exists)
     }
 
     func testRefreshButtonExists() throws {
         let refreshButton = app.buttons["refresh-sessions"]
         XCTAssertTrue(refreshButton.waitForExistence(timeout: 2), "Refresh button should exist")
         XCTAssertTrue(refreshButton.isHittable, "Refresh button should be hittable")
-        XCTAssertEqual(refreshButton.label, "Refresh projects")
+        XCTAssertEqual(refreshButton.label, "Refresh launcher")
     }
 
     func testRefreshHoverSurvivesAppReactivation() throws {
@@ -85,7 +121,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testSelectingSSHProfileCreatesSSHChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
         comboBox.typeText("ssh localhost")
         comboBox.typeKey(.return, modifierFlags: [])
@@ -106,7 +142,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testSelectingMCPProfileCreatesMCPChannel() throws {
         app.menuBars.firstMatch.menuBarItems["File"].click()
         app.menuItems["New Channel"].click()
-        XCTAssertTrue(app.comboBoxes["session-launcher-combo"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.searchFields["session-launcher-combo"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.dialogs.firstMatch.waitForExistence(timeout: 1), "MCP should no longer be offered through a separate New Channel picker")
         throw XCTSkip("MCP has no unified launcher profile unless a saved session is configured")
     }
@@ -127,7 +163,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     // MARK: - Custom Input
 
     func testTypingCustomNameAndEnter() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
 
         comboBox.click()
@@ -138,13 +174,13 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         let window = app.windows["Holoscape"]
         XCTAssertTrue(window.waitForExistence(timeout: 2), "Window should exist after custom session creation")
         // The combo box should still be functional
-        let comboStill = app.comboBoxes["session-launcher-combo"]
+        let comboStill = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboStill.waitForExistence(timeout: 2), "Session launcher should remain after custom entry")
         XCTAssertTrue(comboStill.isEnabled, "Session launcher should be enabled after custom session creation")
     }
 
     func testComboBoxAutocomplete() throws {
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
 
         comboBox.click()
@@ -167,7 +203,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         refreshButton.click()
 
         // After refresh, the combo box should still be enabled
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Combo box should exist after refresh")
         XCTAssertTrue(comboBox.isEnabled, "Combo box should be enabled after refresh")
     }
@@ -182,7 +218,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         refreshButton.click()
 
         // Combo box should still be functional after multiple refreshes
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Combo box should exist after multiple refreshes")
         XCTAssertTrue(comboBox.isEnabled, "Combo box should remain enabled after multiple refreshes")
 
@@ -201,7 +237,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 3), "Shell channel should appear in sidebar")
 
         // Combo box should still be functional after channel creation
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Session launcher should exist after channel creation")
         XCTAssertTrue(comboBox.isEnabled, "Session launcher should remain enabled after channel creation")
     }
@@ -211,7 +247,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testCmdNFocusesLauncher() throws {
         app.typeKey("n", modifierFlags: .command)
 
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2), "Combo box should exist after Cmd+N")
 
         // Verify focus by typing and checking the value appears
@@ -225,7 +261,7 @@ final class SessionLauncherUITests: HoloscapeUITestCase {
     func testLauncherFocusReturnAfterCancel() throws {
         app.typeKey("n", modifierFlags: .command)
 
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 2))
 
         // Escape to cancel

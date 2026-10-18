@@ -45,7 +45,7 @@ class HoloscapeUITestCase: XCTestCase {
         let newChannelItem = app.menuItems["New Channel"]
         XCTAssertTrue(newChannelItem.waitForExistence(timeout: 2), "New Channel menu item should exist")
         newChannelItem.click()
-        let comboBox = app.comboBoxes["session-launcher-combo"]
+        let comboBox = app.searchFields["session-launcher-combo"]
         XCTAssertTrue(comboBox.waitForExistence(timeout: 3), "Unified New Channel launcher should appear")
         comboBox.typeText(type)
         comboBox.typeKey(.return, modifierFlags: [])

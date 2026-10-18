@@ -148,15 +148,15 @@ class SessionProfileManager {
     }
 
     /// Record a session as recently used. Deduplicates, prepends, caps at 20.
-    func recordRecentSession(label: String) {
+    func recordRecentSession(profile: SessionProfile) {
         var config = configService.load()
         var recent = config.recentSessions ?? []
 
-        // Remove existing entry with same label
-        recent.removeAll { $0.label == label }
+        // Remove the exact prior configuration, not every same-label entry.
+        recent.removeAll { $0.profile == profile || ($0.profile == nil && $0.label == profile.label) }
 
         // Prepend new entry
-        recent.insert(RecentSession(label: label, timestamp: Date()), at: 0)
+        recent.insert(RecentSession(label: profile.label, timestamp: Date(), profile: profile), at: 0)
 
         // Cap at 20
         if recent.count > 20 {
@@ -165,5 +165,15 @@ class SessionProfileManager {
 
         config.recentSessions = recent
         configService.save(config)
+    }
+
+    /// Legacy callers may still record a label-only recent entry.
+    func recordRecentSession(label: String) {
+        recordRecentSession(profile: SessionProfile(
+            label: label,
+            connection: .local,
+            command: "/bin/zsh",
+            directory: ""
+        ))
     }
 }
