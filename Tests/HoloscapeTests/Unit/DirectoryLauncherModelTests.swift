@@ -149,6 +149,10 @@ final class DirectoryLauncherModelTests: XCTestCase {
 
         XCTAssertEqual(snapshot.sections.first?.items.map { $0.label }, ["good"])
         XCTAssertTrue(snapshot.directoryError?.contains("bad") == true)
+
+        let filtered = snapshot.filtered(by: "no-directory-match")
+        XCTAssertTrue(filtered.hasAvailableDirectories)
+        XCTAssertTrue(filtered.sections.isEmpty)
     }
 
     func testExactLabelMatchOutranksSubstringDetailMatch() throws {

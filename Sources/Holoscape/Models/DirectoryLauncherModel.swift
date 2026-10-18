@@ -30,6 +30,7 @@ struct DirectoryLauncherSnapshot: Equatable {
     let root: URL
     let sections: [DirectoryLauncherSection]
     let directoryError: String?
+    let hasAvailableDirectories: Bool
 
     func filtered(by query: String) -> DirectoryLauncherSnapshot {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -49,7 +50,8 @@ struct DirectoryLauncherSnapshot: Equatable {
                 let rhsExact = rhs.items.contains { $0.label.lowercased() == normalized }
                 return lhsExact && !rhsExact
             },
-            directoryError: directoryError
+            directoryError: directoryError,
+            hasAvailableDirectories: hasAvailableDirectories
         )
     }
 }
@@ -173,7 +175,12 @@ enum DirectoryLauncherModel {
             ))
         }
 
-        return DirectoryLauncherSnapshot(root: standardizedRoot, sections: sections, directoryError: directoryError)
+        return DirectoryLauncherSnapshot(
+            root: standardizedRoot,
+            sections: sections,
+            directoryError: directoryError,
+            hasAvailableDirectories: !directories.isEmpty
+        )
     }
 
     private static func isReadableDirectory(_ url: URL) -> Bool {

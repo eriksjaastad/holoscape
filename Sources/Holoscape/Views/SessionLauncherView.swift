@@ -379,12 +379,12 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     }
 
     private func showPopover() {
+        guard !popover.isShown else { return }
         launcherDelegate?.sessionLauncherWillPresent(self)
         if snapshot == nil {
             reloadSnapshot()
         }
         renderResults()
-        guard !popover.isShown else { return }
         popover.show(relativeTo: searchField.bounds, of: searchField, preferredEdge: .maxY)
         scrollResultsToTop()
     }
@@ -401,10 +401,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
 
         let filtered = snapshot?.filtered(by: searchField.stringValue)
         if let directoryError = filtered?.directoryError {
-            let hasDirectoryRows = filtered?.sections
-                .first(where: { $0.title == "Directories" })?
-                .items.isEmpty == false
-            let text = hasDirectoryRows
+            let text = filtered?.hasAvailableDirectories == true
                 ? "Some directories could not be loaded. Available results remain usable."
                 : "Directories unavailable. Channel actions and saved sessions remain available."
             let message = NSTextField(labelWithString: text)
