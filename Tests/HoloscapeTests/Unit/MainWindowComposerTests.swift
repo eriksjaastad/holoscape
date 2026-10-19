@@ -24,6 +24,28 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: second.channelId).draft, "second draft")
     }
 
+    func testSplitPaneActivationSwitchesComposerDraftOwnership() throws {
+        let fixture = try makeFixture()
+        let first = fixture.makeChannel(type: .shell, label: "One")
+        let second = fixture.makeChannel(type: .ssh, label: "Two")
+
+        fixture.controller.switchToChannel(first.channelId)
+        fixture.controller.inputBoxForTesting.string = "first draft"
+        fixture.controller.inputBoxForTesting.didChangeText()
+        fixture.controller.switchToChannel(second.channelId)
+        fixture.controller.inputBoxForTesting.string = "second draft"
+        fixture.controller.inputBoxForTesting.didChangeText()
+        fixture.controller.switchToChannel(first.channelId)
+
+        fixture.controller.splitPaneManager(
+            fixture.controller.splitPaneManagerForTesting,
+            activePaneDidChange: second.channelId
+        )
+
+        XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "second draft")
+        XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: first.channelId).draft, "first draft")
+    }
+
     func testExplicitRawTogglePreservesDraftAndPublishesAccessibilityState() throws {
         let fixture = try makeFixture()
         let channel = fixture.makeChannel(type: .agentDirect, label: "Agent")

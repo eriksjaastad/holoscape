@@ -2057,6 +2057,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private let ptyChannelTypes: Set<ChannelType> = [.shell, .agentDirect, .agentAPI, .ssh]
 
     func switchToChannel(_ id: UUID) {
+        activateChannel(id, updateSplitPane: true)
+    }
+
+    private func activateChannel(_ id: UUID, updateSplitPane: Bool) {
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         if let previousId = activeChannelId {
@@ -2068,7 +2072,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         channel.hasUnread = false
         apiServer?.clearNotification(for: id)
         publishActiveChannelStateToReactiveSnapshot(channel)
-        splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
+        if updateSplitPane {
+            splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
+        }
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
 
@@ -2972,11 +2978,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - SplitPaneManagerDelegate
 
     func splitPaneManager(_ manager: SplitPaneManager, activePaneDidChange channelId: UUID?) {
-        if let channelId {
-            activeChannelId = channelId
-            scheduleRefreshAllTabs()
-            scheduleSaveState()
-        }
+        guard let channelId, channelId != activeChannelId else { return }
+        activateChannel(channelId, updateSplitPane: false)
     }
 
     func recordAppearanceChange(_ settings: AppearanceConfig) {

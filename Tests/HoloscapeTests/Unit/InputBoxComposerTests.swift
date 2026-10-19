@@ -29,6 +29,36 @@ final class InputBoxComposerTests: XCTestCase {
         XCTAssertEqual(view.string, "  \n\t")
     }
 
+    func testReturnDoesNotSubmitWhileIMEHasMarkedText() {
+        let spy = InputBoxDelegateSpy()
+        let view = MarkedTextInputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        view.inputDelegate = spy
+        view.reportsMarkedText = true
+
+        view.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+
+        XCTAssertTrue(spy.submissions.isEmpty)
+    }
+
+    func testNativeUndoRevertsComposerEdit() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        window.contentView?.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+
+        view.insertText("hello", replacementRange: NSRange(location: 0, length: 0))
+        XCTAssertEqual(view.string, "hello")
+
+        view.undoManager?.undo()
+
+        XCTAssertEqual(view.string, "")
+    }
+
     func testHistoryOnlyInterceptsAtDocumentEdgesAndRestoresDraft() {
         let spy = InputBoxDelegateSpy()
         let view = InputBoxView(frame: .zero)
@@ -107,4 +137,10 @@ private final class InputBoxDelegateSpy: InputBoxViewDelegate {
     func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String) {
         drafts.append(text)
     }
+}
+
+@MainActor
+private final class MarkedTextInputBoxView: InputBoxView {
+    var reportsMarkedText = false
+    override var hasActiveMarkedText: Bool { reportsMarkedText }
 }

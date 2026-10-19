@@ -50,6 +50,7 @@ class InputBoxView: NSTextView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+    var hasActiveMarkedText: Bool { hasMarkedText() }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
@@ -62,6 +63,7 @@ class InputBoxView: NSTextView {
         textColor = Self.fieldText
         insertionPointColor = Self.fieldText
         isRichText = false
+        allowsUndo = true
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
@@ -123,6 +125,13 @@ class InputBoxView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Return confirms an active IME composition. Let AppKit commit marked
+        // text before Holoscape considers Return a submit gesture.
+        if event.keyCode == 36 && hasActiveMarkedText {
+            super.keyDown(with: event)
+            return
+        }
+
         // Enter key — send input
         if event.keyCode == 36 && !event.modifierFlags.contains(.shift) {
             let text = string
