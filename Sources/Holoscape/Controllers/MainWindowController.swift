@@ -2057,7 +2057,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private let ptyChannelTypes: Set<ChannelType> = [.shell, .agentDirect, .agentAPI, .ssh]
 
     func switchToChannel(_ id: UUID) {
+        guard id != activeChannelId else { return }
         activateChannel(id, updateSplitPane: true)
+    }
+
+    private func refreshActiveChannelContent() {
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else { return }
+        splitPaneManager.showContent(channel.contentView, channelId: id, compiledShader: cachedShader)
     }
 
     private func activateChannel(_ id: UUID, updateSplitPane: Bool) {
@@ -2738,14 +2745,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - TabBarViewDelegate
 
     func tabBarView(_ tabBar: TabBarView, didSelectChannelWithId id: UUID) {
-        guard id != activeChannelId else { return }
         switchToChannel(id)
     }
 
     // MARK: - SidebarViewDelegate
 
     func sidebarView(_ sidebar: SidebarView, didSelectChannelWithId id: UUID) {
-        guard id != activeChannelId else { return }
         switchToChannel(id)
     }
 
@@ -3016,7 +3021,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private func recompileShader(path: String?) {
         guard let shaderPath = path else {
             cachedShader = nil
-            if let id = activeChannelId { switchToChannel(id) }
+            refreshActiveChannelContent()
             return
         }
         let url: URL
@@ -3041,7 +3046,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             cachedShader = nil
         }
         // Re-show current channel with new (or no) compositor
-        if let id = activeChannelId { switchToChannel(id) }
+        refreshActiveChannelContent()
     }
 
     // MARK: - Bug Report

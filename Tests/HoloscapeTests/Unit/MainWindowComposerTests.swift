@@ -123,6 +123,7 @@ final class MainWindowComposerTests: XCTestCase {
 
         fixture.controller.tabBarView(TabBarView(frame: .zero), didSelectChannelWithId: channel.channelId)
         fixture.controller.sidebarView(SidebarView(frame: .zero), didSelectChannelWithId: channel.channelId)
+        fixture.controller.switchToChannel(channel.channelId)
 
         XCTAssertEqual(input.selectedRange(), NSRange(location: 2, length: 0))
         input.undoManager?.undo()
