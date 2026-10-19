@@ -31,18 +31,28 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
 
     private let themePopup = NSPopUpButton()
     private let skinPopup = NSPopUpButton()
+    private let createSkinButton = NSButton(title: "Create…", target: nil, action: nil)
+    private let duplicateSkinButton = NSButton(title: "Duplicate…", target: nil, action: nil)
+    private let revealSkinButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
+    private let deleteSkinButton = NSButton(title: "Delete", target: nil, action: nil)
     private let colorWell = NSColorWell()
     private let transparencySlider = NSSlider()
     private let fontFamilyPopup = NSPopUpButton()
     private let fontSizeField = NSTextField()
     private let shaderPopup = NSPopUpButton()
-    private let skinEngine = SkinEngine()
+    private let skinEngine: SkinEngine
+    private let skinLibraryService: SkinLibraryService
 
     /// Internal read-only accessor exposing the current density gate wiring
     /// for test verification. Production code must not rely on this.
     var _densityManagerOnSkinEngine: DensityModeManager? { skinEngine.densityModeManager }
     /// Internal read-only accessor for deterministic layout verification.
     var _storageButtonForTesting: NSButton { storageButton }
+    var _skinPopupForTesting: NSPopUpButton { skinPopup }
+    var _createSkinButtonForTesting: NSButton { createSkinButton }
+    var _duplicateSkinButtonForTesting: NSButton { duplicateSkinButton }
+    var _revealSkinButtonForTesting: NSButton { revealSkinButton }
+    var _deleteSkinButtonForTesting: NSButton { deleteSkinButton }
     private let notifEnabledCheckbox = NSButton(checkboxWithTitle: "Enable Notifications", target: nil, action: nil)
     private let notifShellCheckbox = NSButton(checkboxWithTitle: "Shell", target: nil, action: nil)
     private let notifAgentCheckbox = NSButton(checkboxWithTitle: "Agent", target: nil, action: nil)
@@ -54,13 +64,18 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     init(
         config: AppearanceConfig,
         configService: ConfigService,
-        densityModeManager: DensityModeManager? = nil
+        densityModeManager: DensityModeManager? = nil,
+        skinEngine: SkinEngine? = nil,
+        skinLibraryService: SkinLibraryService? = nil
     ) {
         self.config = config
         self.configService = configService
+        let resolvedEngine = skinEngine ?? SkinEngine()
+        self.skinEngine = resolvedEngine
+        self.skinLibraryService = skinLibraryService ?? SkinLibraryService(engine: resolvedEngine)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 200, y: 200, width: 400, height: 480),
+            contentRect: NSRect(x: 200, y: 200, width: 560, height: 480),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -70,7 +85,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         super.init(window: window)
         // Wire the density gate on our SkinEngine so a user with mode=.off
         // sees skin.apply() return config unchanged rather than paint colors.
-        skinEngine.densityModeManager = densityModeManager
+        self.skinEngine.densityModeManager = densityModeManager
         setupUI()
         loadCurrentValues()
     }
@@ -112,6 +127,26 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         skinPopup.setAccessibilityIdentifier("skin-popup")
         skinPopup.menu?.delegate = self
         stack.addArrangedSubview(skinRow)
+
+        let skinActionSpacer = NSView()
+        skinActionSpacer.widthAnchor.constraint(equalToConstant: 148).isActive = true
+        let skinActions = NSStackView(views: [skinActionSpacer, createSkinButton, duplicateSkinButton, revealSkinButton, deleteSkinButton])
+        skinActions.orientation = .horizontal
+        skinActions.spacing = 8
+        skinActions.setAccessibilityIdentifier("skin-actions")
+        configureSkinAction(createSkinButton, identifier: "skin-create-button", tooltip: "Create a new skin from the modern starter")
+        configureSkinAction(duplicateSkinButton, identifier: "skin-duplicate-button", tooltip: "Duplicate the selected skin into your skin library")
+        configureSkinAction(revealSkinButton, identifier: "skin-reveal-button", tooltip: "Reveal the selected skin in Finder")
+        configureSkinAction(deleteSkinButton, identifier: "skin-delete-button", tooltip: "Delete an inactive skin from your skin library")
+        createSkinButton.target = self
+        createSkinButton.action = #selector(createSkin(_:))
+        duplicateSkinButton.target = self
+        duplicateSkinButton.action = #selector(duplicateSkin(_:))
+        revealSkinButton.target = self
+        revealSkinButton.action = #selector(revealSkin(_:))
+        deleteSkinButton.target = self
+        deleteSkinButton.action = #selector(deleteSkin(_:))
+        stack.addArrangedSubview(skinActions)
 
         // Shader
         let shaderRow = makeRow(label: "Shader:", control: shaderPopup)
@@ -254,26 +289,142 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         for cb in [notifShellCheckbox, notifAgentCheckbox, notifSSHCheckbox, notifMCPCheckbox, notifGroupChatCheckbox] {
             cb.isEnabled = notifEnabled
         }
+        updateSkinActionStates()
     }
 
     @objc private func skinChanged(_ sender: NSPopUpButton) {
-        let skinName = sender.titleOfSelectedItem ?? "Default"
+        applySelectedSkin(named: sender.titleOfSelectedItem ?? "Default")
+    }
+
+    private func applySelectedSkin(named skinName: String) {
         config.skinName = skinName
         // v1 path — transfers `windowBackground` / `ansiColors` /
-        // `textForeground` from the skin manifest to the AppearanceConfig
-        // used by the terminal. Retained unchanged; v2 chrome surfaces
-        // are handled by the delegate call below.
+        // `textForeground` from the skin manifest to the AppearanceConfig.
         if skinName != "Default", let skin = skinEngine.loadSkin(named: skinName) {
             config = skinEngine.apply(skin: skin, to: config)
         }
-        // v2 path — tells MainWindowController to rebuild its SkinContext
-        // from the selected skin's surfaces dict and re-inject into every
-        // chrome view. Before this delegate existed the v2 pipeline was
-        // orphaned: the plumbing was there, nothing called it. See PR A
-        // description of task 11 for full context.
         settingsDelegate?.appearanceSettingsDidSelectSkin(skinName)
         loadCurrentValues()
         applyAndSave()
+    }
+
+    private func configureSkinAction(_ button: NSButton, identifier: String, tooltip: String) {
+        button.setAccessibilityIdentifier(identifier)
+        button.toolTip = tooltip
+        button.setAccessibilityLabel(button.title)
+    }
+
+    private func updateSkinActionStates() {
+        let selected = skinPopup.titleOfSelectedItem ?? "Default"
+        let isDefault = selected == "Default"
+        revealSkinButton.isEnabled = !isDefault
+        duplicateSkinButton.isEnabled = !isDefault
+        deleteSkinButton.isEnabled = !deletableSkinNames().isEmpty
+    }
+
+    @objc private func createSkin(_ sender: NSButton) {
+        guard let name = promptForSkinName(title: "Create Skin", message: "Enter a name for the new skin:") else { return }
+        do {
+            _ = try skinLibraryService.create(name: name)
+            refreshSkinPopupItems(selectedTitle: name)
+            applySelectedSkin(named: name)
+        } catch {
+            showSkinError(error)
+        }
+    }
+
+    @objc private func duplicateSkin(_ sender: NSButton) {
+        let source = skinPopup.titleOfSelectedItem ?? "Default"
+        guard source != "Default", let name = promptForSkinName(title: "Duplicate Skin", message: "Enter a name for the copy of \"\(source)\":") else { return }
+        do {
+            _ = try skinLibraryService.create(name: name, from: .existing(source))
+            refreshSkinPopupItems(selectedTitle: name)
+            applySelectedSkin(named: name)
+        } catch {
+            showSkinError(error)
+        }
+    }
+
+    @objc private func revealSkin(_ sender: NSButton) {
+        do {
+            let url = try skinLibraryService.revealURL(for: skinPopup.titleOfSelectedItem ?? "Default")
+            revealSkinURL(url)
+        } catch {
+            showSkinError(error)
+        }
+    }
+
+    @objc private func deleteSkin(_ sender: NSButton) {
+        let candidates = deletableSkinNames()
+        guard deleteSkinButton.isEnabled,
+              let name = chooseSkinForDeletion(from: candidates),
+              confirmSkinDeletion(name: name) else { return }
+        do {
+            try skinLibraryService.delete(name: name, activeSkinName: config.skinName)
+            refreshSkinPopupItems(selectedTitle: config.skinName ?? "Default")
+        } catch {
+            showSkinError(error)
+        }
+    }
+
+    internal func _performCreateForTesting() { createSkin(createSkinButton) }
+    internal func _performDuplicateForTesting() { duplicateSkin(duplicateSkinButton) }
+    internal func _performRevealForTesting() { revealSkin(revealSkinButton) }
+    internal func _performDeleteForTesting() { deleteSkin(deleteSkinButton) }
+
+    private func deletableSkinNames() -> [String] {
+        let active = config.skinName ?? "Default"
+        return skinEngine.availableSkins().filter {
+            $0.caseInsensitiveCompare(active) != .orderedSame && skinLibraryService.isUserManaged(name: $0)
+        }
+    }
+
+    internal func promptForSkinName(title: String, message: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        let field = NSTextField(string: "")
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
+    internal func confirmSkinDeletion(name: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete Skin?"
+        alert.informativeText = "Delete the inactive skin \"\(name)\"? This cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    internal func chooseSkinForDeletion(from names: [String]) -> String? {
+        guard !names.isEmpty else { return nil }
+        let alert = NSAlert()
+        alert.messageText = "Choose a Skin to Delete"
+        alert.informativeText = "Only inactive skins from your skin library are listed."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 26), pullsDown: false)
+        popup.addItems(withTitles: names)
+        popup.setAccessibilityIdentifier("skin-delete-picker")
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? popup.titleOfSelectedItem : nil
+    }
+
+    internal func revealSkinURL(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    internal func showSkinError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Skin Operation Failed"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.runModal()
     }
 
     @objc private func shaderChanged(_ sender: NSPopUpButton) {
@@ -373,6 +524,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         } else {
             skinPopup.selectItem(withTitle: "Default")
         }
+        updateSkinActionStates()
     }
 }
 

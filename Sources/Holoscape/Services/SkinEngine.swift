@@ -493,6 +493,16 @@ class SkinEngine {
         return loadSkin(named: name, from: skinDir)
     }
 
+    /// Internal management seam: uses the same user-over-bundle resolver as loading.
+    func resolvedSkinDirectoryForManagement(named name: String) -> URL? {
+        resolveSkinDir(named: name)
+    }
+
+    /// Internal management seam: validates a manifest with the same decoder used by loading.
+    func loadSkinDefinition(from skinDir: URL) -> SkinDefinition? {
+        loadSkin(named: skinDir.lastPathComponent, from: skinDir)
+    }
+
     private func loadSkin(named name: String, from skinDir: URL) -> SkinDefinition? {
         let skinJson = skinDir.appendingPathComponent("skin.json")
         guard let data = try? Data(contentsOf: skinJson) else {

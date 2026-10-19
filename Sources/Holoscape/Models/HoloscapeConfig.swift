@@ -78,7 +78,7 @@ struct AppearanceConfig: Codable, Equatable, Sendable {
     var customShaderPath: String?
 
     static let `default` = AppearanceConfig(
-        backgroundColor: "#1a1a2e",
+        backgroundColor: "#10151d",
         transparency: 1.0,
         fontFamily: "SF Mono",
         fontSize: 13.0,

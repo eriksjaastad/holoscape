@@ -4,7 +4,7 @@ import AppKit
 
 /// Task 9.1 — TabBarView reads its container and tab-state colors from
 /// the injected SkinContext. Without a context the view still renders
-/// (using the hardcoded pre-skinning constants) — this is the fallback
+/// the modern built-in Default constants — this is the fallback
 /// path used by XCUITest fixtures that don't build a full controller.
 @MainActor
 final class TabBarViewSkinContextTests: XCTestCase {
@@ -85,7 +85,7 @@ final class TabBarViewSkinContextTests: XCTestCase {
     }
 
     func testFallsBackToBuiltInWhenNoContext() {
-        // The built-in tabBar.container default is (0.06, 0.06, 0.12, 1.0).
+        // The modern built-in tabBar.container default is #121b27.
         // Without a SkinContext, setupScrollView must paint that exact
         // constant so the standalone rendering path (XCUITest fixtures)
         // stays visually identical to the skinned path's built-in mode.
@@ -94,7 +94,7 @@ final class TabBarViewSkinContextTests: XCTestCase {
 
         XCTAssertNil(view.skinContext)
 
-        let expected = NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0).cgColor
+        let expected = NSColor(hex: "#121b27")!.cgColor
         let actual = view.layer?.backgroundColor
         XCTAssertNotNil(actual, "Hardcoded fallback must paint a non-nil background")
 
@@ -178,7 +178,7 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .compactMap { $0 as? NSButton }
             .first)
         XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
-        XCTAssertEqual(button.layer?.backgroundColor, NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0).cgColor)
+        XCTAssertEqual(button.layer?.backgroundColor, NSColor(hex: "#4a391f")!.cgColor)
     }
 
     func testTabTitleIncludesAgentIdentityIndicatorPrefix() throws {

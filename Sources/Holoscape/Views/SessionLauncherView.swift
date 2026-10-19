@@ -18,7 +18,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         didSet { refreshFromSkin() }
     }
 
-    private static let containerBg = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+    private static let containerBg = NSColor(hex: "#121b27")!.cgColor
 
     private let searchField = LauncherSearchField()
     private let refreshButton = LauncherButton()

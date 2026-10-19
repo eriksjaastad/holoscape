@@ -13,16 +13,16 @@ class InputBoxView: NSTextView {
     private var isNavigatingHistory = false
 
     /// Skin context source. When nil, the view renders with the hardcoded
-    /// pre-skinning constants — the standalone fallback path for
+    /// the modern built-in Default constants — the standalone fallback path for
     /// XCUITest fixtures that don't build a full window controller.
     var skinContext: SkinContext? {
         didSet { refreshFromSkin() }
     }
 
-    // Built-in defaults matching the pre-skinning colors. Used when
+    // Built-in Default constants used when no SkinContext is wired.
     // `skinContext == nil`; the skinned path produces the same values
     // because `SkinContext.builtInDefaults` seeds the same values.
-    private static let fieldBg = NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0)
+    private static let fieldBg = NSColor(hex: "#182331")!
     private static let fieldText = NSColor.white
 
     override init(frame: NSRect) {

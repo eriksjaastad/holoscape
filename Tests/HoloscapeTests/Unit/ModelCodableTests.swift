@@ -123,7 +123,7 @@ final class ModelCodableTests: XCTestCase {
     func testHoloscapeConfigDefaultValues() throws {
         let config = HoloscapeConfig.default
 
-        XCTAssertEqual(config.appearance.backgroundColor, "#1a1a2e")
+        XCTAssertEqual(config.appearance.backgroundColor, "#10151d")
         XCTAssertEqual(config.appearance.transparency, 1.0)
         XCTAssertEqual(config.appearance.fontFamily, "SF Mono")
         XCTAssertEqual(config.appearance.fontSize, 13.0)

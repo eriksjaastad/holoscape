@@ -35,7 +35,7 @@ final class WindowSurfaceResolutionTests: XCTestCase {
         // color (0.1, 0.1, 0.18, 1.0) — verify the mapping round-trips
         // on every channel.
         let resolved = MainWindowController.resolveWindowBackground(from: context(bgColor: nil))
-        assertColor(resolved, equals: NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+        assertColor(resolved, equals: NSColor(hex: "#10151d")!)
     }
 
     func testGradientFillUsesFirstStopColor() {
@@ -81,7 +81,7 @@ final class WindowSurfaceResolutionTests: XCTestCase {
         let snap = ReactiveUniformSnapshot()
         let ctx = MainWindowController.buildSkinContext(overriding: nil, reactive: snap)
         let resolved = MainWindowController.resolveWindowBackground(from: ctx)
-        assertColor(resolved, equals: NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+        assertColor(resolved, equals: NSColor(hex: "#10151d")!)
     }
 
     // MARK: - Helpers

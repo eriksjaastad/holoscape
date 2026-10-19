@@ -38,7 +38,7 @@ final class SidebarViewSkinContextTests: XCTestCase {
         view.skinContext = context([.sidebarContainer: .red])
         view.skinContext = nil
 
-        let expected = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+        let expected = NSColor(hex: "#121b27")!.cgColor
         guard let actual = view.layer?.backgroundColor,
               let a = actual.components, let e = expected.components else {
             XCTFail("Missing components")
@@ -290,9 +290,9 @@ final class SidebarViewSkinContextTests: XCTestCase {
             let expectedHex: String
         }
         let cases: [Case] = [
-            Case(label: "unread", hasUnread: true, notificationType: nil, expectedHex: "#1a1a38"),
-            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", expectedHex: "#0d4019"),
-            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", expectedHex: "#66400d"),
+            Case(label: "unread", hasUnread: true, notificationType: nil, expectedHex: "#203447"),
+            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", expectedHex: "#173a35"),
+            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", expectedHex: "#4a391f"),
         ]
         for testCase in cases {
             let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 200, height: 36))

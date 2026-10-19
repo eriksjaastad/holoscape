@@ -3,7 +3,7 @@ import QuartzCore
 
 /// The runtime object that chrome views query for their appearance.
 ///
-/// Built once per skin load by `SkinEngine` from a `SkinDefinition` manifest.
+/// Built once per skin load; the built-in Default path supplies this baseline when no manifest is loaded.
 /// Immutable after construction — all mutable state lives in the
 /// `ReactiveUniformSnapshot` that drives state variant selection.
 ///
@@ -12,8 +12,7 @@ import QuartzCore
 /// `applyBorderAndCorner(to:from:)` to paint the underlying `CALayer`.
 ///
 /// When no skin is loaded, `SkinContext.builtInDefaults(reactive:)` returns
-/// a context whose surfaces all resolve to the pre-skinning hardcoded
-/// colors — views render identically to the pre-skinning build.
+/// the intentional modern Default visual baseline used by chrome views.
 @MainActor
 final class SkinContext {
 
@@ -106,9 +105,8 @@ final class SkinContext {
         self.imageCache = imageCache
     }
 
-    /// Build a SkinContext whose surfaces all use the built-in defaults
-    /// (matching the pre-skinning hardcoded colors). Used when no skin
-    /// is loaded so chrome views always have a context to query.
+    /// Build a SkinContext whose surfaces all use the built-in Default visual baseline.
+    /// Used when no skin is loaded so chrome views always have a context to query.
     static func builtInDefaults(reactive: ReactiveUniformSnapshot) -> SkinContext {
         var defaults: [SurfaceKey: ResolvedSurface] = [:]
         for key in SurfaceKey.allCases {
@@ -730,94 +728,88 @@ final class SkinContext {
 
     // MARK: - Built-in defaults
 
-    /// Built-in default surface values matching the pre-skinning hardcoded
-    /// view colors. Future refactor wires these per-surface from the
-    /// existing view files; for now all surfaces share a neutral default
-    /// so the absence of a skin doesn't crash.
+    /// Built-in Default surface values provide a contemporary neutral/cool
+    /// dark baseline even when no skin manifest is present.
+    /// Transparent and non-rendering surfaces remain transparent.
+    /// No skin is still a deliberate visual choice.
     ///
-    /// A handful of surfaces seed state variants that reproduce the old
-    /// notification-state and connection-status colors (`sidebarRowNormal`
-    /// picks up permission/idle/unread variants, `sidebarRowIndicator`
-    /// picks up connection-state variants). Per-entry snapshots drive
-    /// these so two sidebar rows can resolve to different colors at the
-    /// same time.
+    /// A handful of surfaces seed state variants for notification and
+    /// connection semantics. Per-entry snapshots let two sidebar rows
+    /// resolve to different colors at the same time.
     static func defaultSurface(for key: SurfaceKey) -> ResolvedSurface {
         let fill: ResolvedFill
         switch key {
         case .windowBackground, .windowTitleBar:
-            fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+            fill = .color(NSColor(hex: "#10151d")!)
         case .tabBarContainer:
-            fill = .color(NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0))
+            fill = .color(NSColor(hex: "#121b27")!)
         case .tabBarTabActive:
-            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .tabBarTabIdle:
-            fill = .color(NSColor(red: 0.10, green: 0.22, blue: 0.12, alpha: 1.0))
+            fill = .color(NSColor(hex: "#173a35")!)
         case .tabBarTabPermission:
-            fill = .color(NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0))
+            fill = .color(NSColor(hex: "#4a391f")!)
         case .tabBarTabNormal, .tabBarTabUnreadMarker:
             fill = .color(NSColor.clear)
         case .sidebarContainer:
-            fill = .color(NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0))
+            fill = .color(NSColor(hex: "#121b27")!)
         case .sidebarRowNormal, .sidebarRowHover:
             fill = .color(NSColor.clear)
         case .sidebarRowSelected:
-            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .sidebarRowIndicator:
             // Base is "active/usable" green so an unmatched connection-state
             // variant still produces a visible dot (bug-visible rather
             // than silently invisible). Variants override for the
             // needs-approval, error/disconnected, and stale states.
-            fill = .color(NSColor.systemGreen)
+            fill = .color(NSColor(hex: "#4fd1a5")!)
         case .sidebarSectionHeader:
             fill = .color(NSColor.clear)
         case .inputBoxContainer, .inputBoxField:
-            fill = .color(NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0))
+            fill = .color(NSColor(hex: "#182331")!)
         case .inputBoxPlaceholder:
             fill = .color(NSColor.clear)
         case .sessionLauncherContainer:
-            fill = .color(NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0))
+            fill = .color(NSColor(hex: "#121b27")!)
         case .sessionLauncherRow:
             fill = .color(NSColor.clear)
         case .splitPaneDivider:
-            fill = .color(NSColor.systemBlue.withAlphaComponent(0.6))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .terminalContainerPadding:
-            fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+            fill = .color(NSColor(hex: "#10151d")!)
         case .settingsPanel, .dialogContainer:
-            fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+            fill = .color(NSColor(hex: "#182331")!)
 
         // MARK: Amplify (v3) defaults
         //
-        // The 13 v3 surfaces default to the nearest v2 pre-skinning color
-        // so a v3 manifest that omits these keys renders identically to
-        // the chrome-skinning build. Consumers that start reading these
-        // surfaces (sprite-sheet chrome views, Reader Mode, shaped-window
-        // drag handle) opt in per task group; until they do, these
-        // defaults guarantee no visual regression.
+        // The 13 v3 surfaces use the same modern Default baseline when a
+        // manifest omits them. Consumers can still override them with
+        // sprite-sheet, Reader Mode, or shaped-window descriptors.
         case .tabBarTabHover, .tabBarTabPressed:
             // Match tabBarTabActive hue so sprite-less v3 skins still
             // show a reasonable hover/pressed color. Sprite sheets
             // override via FillDescriptor.image(sprite:).
-            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .sidebarRowPressed:
             // Darker sibling of sidebarRowSelected for press feedback.
-            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+            fill = .color(NSColor(hex: "#1b3040")!)
         case .sessionLauncherButtonNormal:
             fill = .color(NSColor.clear)
         case .sessionLauncherButtonHover:
-            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .sessionLauncherButtonPressed:
-            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+            fill = .color(NSColor(hex: "#1b3040")!)
         case .readerPanelBackground, .readerPanelTitleBar:
             // Match window chrome so Reader Mode doesn't pop on first
             // present. ReaderModeController overrides when a v3 skin
             // declares reader surfaces (Task 17).
-            fill = .color(NSColor(red: 0.1, green: 0.1, blue: 0.18, alpha: 1.0))
+            fill = .color(NSColor(hex: "#10151d")!)
         case .readerPanelCloseButtonNormal:
             fill = .color(NSColor.clear)
         case .readerPanelCloseButtonHover:
-            fill = .color(NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0))
+            fill = .color(NSColor(hex: "#24485b")!)
         case .readerPanelCloseButtonPressed:
-            fill = .color(NSColor(red: 0.10, green: 0.10, blue: 0.20, alpha: 1.0))
+            fill = .color(NSColor(hex: "#1b3040")!)
         case .windowShape, .windowDragHandle:
             // Non-rendering surfaces — windowShape carries the mask path
             // semantics, windowDragHandle carries drag-region cursor
@@ -829,33 +821,110 @@ final class SkinContext {
 
         let text = defaultText(for: key)
         let states = defaultStates(for: key)
-
         return ResolvedSurface(
             fill: fill,
-            border: nil,
-            corner: .uniform(0),
-            padding: NSEdgeInsets(),
+            border: defaultBorder(for: key),
+            corner: .uniform(defaultCornerRadius(for: key)),
+            padding: defaultPadding(for: key),
             shadow: nil,
-            font: nil,
+            font: defaultFont(for: key),
             text: text,
-            animation: nil,
+            animation: defaultAnimation(for: key),
             states: states
         )
     }
 
-    /// Built-in default text color — currently uniform (`.white`) except
-    /// on the sidebar "normal" row where the pre-skinning label color is
-    /// light gray. State variants override where needed.
+    /// Built-in default text color. State variants provide semantic accents;
+    /// normal sidebar rows use the quieter secondary label color.
     private static func defaultText(for key: SurfaceKey) -> ResolvedText {
         switch key {
         case .sidebarRowNormal, .sidebarRowHover:
-            return ResolvedText(color: .lightGray, shadow: nil)
+            return ResolvedText(color: NSColor(hex: "#9db0c3")!, shadow: nil)
         default:
-            return ResolvedText(color: .white, shadow: nil)
+            return ResolvedText(color: NSColor(hex: "#e7f2f8")!, shadow: nil)
         }
     }
 
-    /// Built-in state variants. Reproduces the pre-skinning per-row
+    private static func defaultBorder(for key: SurfaceKey) -> ResolvedBorder? {
+        switch key {
+        case .tabBarContainer, .inputBoxContainer, .inputBoxField,
+             .sessionLauncherContainer, .settingsPanel, .dialogContainer,
+             .readerPanelBackground:
+            return ResolvedBorder(color: NSColor(hex: "#2c4354")!, width: 1)
+        default:
+            return nil
+        }
+    }
+
+    private static func defaultCornerRadius(for key: SurfaceKey) -> Double {
+        switch key {
+        case .tabBarContainer:
+            return 10
+        case .tabBarTabActive, .tabBarTabIdle, .tabBarTabPermission,
+             .tabBarTabHover, .tabBarTabPressed,
+             .sidebarRowSelected, .sidebarRowHover, .sidebarRowPressed,
+             .sessionLauncherRow, .sessionLauncherButtonNormal,
+             .sessionLauncherButtonHover, .sessionLauncherButtonPressed:
+            return 8
+        case .inputBoxContainer:
+            return 12
+        case .inputBoxField:
+            return 9
+        case .sessionLauncherContainer, .settingsPanel, .dialogContainer:
+            return 14
+        case .readerPanelBackground, .readerPanelTitleBar:
+            return 12
+        default:
+            return 0
+        }
+    }
+
+    private static func defaultPadding(for key: SurfaceKey) -> NSEdgeInsets {
+        switch key {
+        case .inputBoxContainer, .inputBoxField:
+            return NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        case .sessionLauncherContainer, .settingsPanel, .dialogContainer,
+             .readerPanelBackground:
+            return NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        case .tabBarTabActive, .tabBarTabIdle, .tabBarTabPermission,
+             .sessionLauncherRow:
+            return NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        default:
+            return NSEdgeInsets()
+        }
+    }
+
+    private static func defaultFont(for key: SurfaceKey) -> NSFont? {
+        switch key {
+        case .inputBoxField, .inputBoxPlaceholder:
+            return NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        case .tabBarTabActive, .tabBarTabIdle, .tabBarTabPermission,
+             .tabBarTabNormal, .sidebarRowNormal, .sidebarRowSelected,
+             .sidebarRowHover, .sidebarSectionHeader, .sessionLauncherRow,
+             .sessionLauncherButtonNormal, .sessionLauncherButtonHover,
+             .sessionLauncherButtonPressed, .settingsPanel, .dialogContainer:
+            return NSFont.systemFont(ofSize: 13, weight: .regular)
+        default:
+            return nil
+        }
+    }
+
+    private static func defaultAnimation(for key: SurfaceKey) -> ResolvedAnimation? {
+        switch key {
+        case .tabBarTabActive, .tabBarTabIdle, .tabBarTabPermission,
+             .tabBarTabHover, .tabBarTabPressed,
+             .sidebarRowSelected, .sidebarRowHover, .sidebarRowPressed,
+             .inputBoxField, .sessionLauncherRow,
+             .sessionLauncherButtonNormal, .sessionLauncherButtonHover,
+             .sessionLauncherButtonPressed:
+            let curve = ResolvedCurve(duration: 0.16, timingFunction: .easeInEaseOut, isSpring: false)
+            return ResolvedAnimation(default: curve, fill: curve, corner: curve)
+        default:
+            return nil
+        }
+    }
+
+    // Built-in Default state variants are shared with the standalone fallback.
     /// notification and connection-state colors so `SidebarTabEntry`
     /// can write `notificationKind`, `channelUnread`, and
     /// `channelConnectionState` into its own snapshot and let state
@@ -873,24 +942,24 @@ final class SkinContext {
                     match: MatchExpression(conditions: [
                         "channelUnread": .operators(["$gte": 1]),
                     ]),
-                    fill: .color("#1a1a38"),
-                    text: TextDescriptor(color: "#ffffff", shadow: nil)
+                    fill: .color("#203447"),
+                    text: TextDescriptor(color: "#e7f2f8", shadow: nil)
                 ),
                 StateVariant(
                     name: "idle",
                     match: MatchExpression(conditions: [
                         "notificationKind": .scalar(1),
                     ]),
-                    fill: .color("#0d4019"),
-                    text: TextDescriptor(color: "#66ff80", shadow: nil)
+                    fill: .color("#173a35"),
+                    text: TextDescriptor(color: "#75e6bd", shadow: nil)
                 ),
                 StateVariant(
                     name: "permission",
                     match: MatchExpression(conditions: [
                         "notificationKind": .scalar(2),
                     ]),
-                    fill: .color("#66400d"),
-                    text: TextDescriptor(color: "#ffcc4d", shadow: nil)
+                    fill: .color("#4a391f"),
+                    text: TextDescriptor(color: "#f0c674", shadow: nil)
                 ),
             ]
         case .sidebarRowIndicator:
@@ -905,21 +974,21 @@ final class SkinContext {
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(1),
                     ]),
-                    fill: .color("#ffcc00")  // approximates NSColor.systemYellow
+                    fill: .color("#f0c674")  // approximates NSColor.systemYellow
                 ),
                 StateVariant(
                     name: "disconnected",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(2),
                     ]),
-                    fill: .color("#ff3b30")  // approximates NSColor.systemRed
+                    fill: .color("#ff6b6b")  // approximates NSColor.systemRed
                 ),
                 StateVariant(
                     name: "stale",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(3),
                     ]),
-                    fill: .color("#a97ae6")
+                    fill: .color("#b49cff")
                 ),
             ]
         default:
