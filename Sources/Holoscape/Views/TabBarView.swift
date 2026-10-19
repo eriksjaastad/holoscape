@@ -10,19 +10,19 @@ class TabBarView: NSView {
     weak var tabDelegate: TabBarViewDelegate?
 
     /// When non-nil, surfaces are resolved from the skin context. When
-    /// nil, falls back to the pre-skinning hardcoded constants below so
+    /// nil uses the modern built-in Default constants so this view still
     /// this view still renders standalone (used in XCUITest fixtures).
     var skinContext: SkinContext? {
         didSet { refreshFromSkin() }
     }
 
-    // Built-in defaults matching the pre-skinning colors. Used only when
+    // Built-in Default constants used only when `skinContext == nil`.
     // `skinContext == nil`; the SkinContext path produces identical
     // colors because `SkinContext.builtInDefaults` seeds the same values.
-    private static let barBg = NSColor(red: 0.06, green: 0.06, blue: 0.12, alpha: 1.0).cgColor
-    private static let activeTabBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
-    private static let idleBg = NSColor(red: 0.10, green: 0.22, blue: 0.12, alpha: 1.0).cgColor
-    private static let permissionBg = NSColor(red: 0.24, green: 0.16, blue: 0.08, alpha: 1.0).cgColor
+    private static let barBg = NSColor(hex: "#121b27")!.cgColor
+    private static let activeTabBg = NSColor(hex: "#24485b")!.cgColor
+    private static let idleBg = NSColor(hex: "#173a35")!.cgColor
+    private static let permissionBg = NSColor(hex: "#4a391f")!.cgColor
 
     private let scrollView = NSScrollView()
     private let contentView = NSView()

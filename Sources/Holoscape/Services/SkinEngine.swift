@@ -216,6 +216,13 @@ class SkinEngine {
     /// to a directory-layout skin.
     let wampLoader: WampBundleLoader
 
+    /// The extracted WAMP cache is an approved source root for skin
+    /// management, alongside the user and bundled skin roots.
+    var approvedSkinSourceRoots: [URL] {
+        [skinsDirectory, bundledSkinsDirectory(), wampLoader.cacheRoot]
+            .compactMap { $0 }
+    }
+
     /// Chrome v4 load-time baker (Task 7.2). Fires only when a
     /// manifest declares `chrome != nil`; produces the Base_Layer
     /// CGImage from either a pre-rendered PNG (baked mode) or a
@@ -491,6 +498,16 @@ class SkinEngine {
     func loadSkin(named name: String) -> SkinDefinition? {
         guard let skinDir = resolveSkinDir(named: name) else { return nil }
         return loadSkin(named: name, from: skinDir)
+    }
+
+    /// Internal management seam: uses the same user-over-bundle resolver as loading.
+    func resolvedSkinDirectoryForManagement(named name: String) -> URL? {
+        resolveSkinDir(named: name)
+    }
+
+    /// Internal management seam: validates a manifest with the same decoder used by loading.
+    func loadSkinDefinition(from skinDir: URL) -> SkinDefinition? {
+        loadSkin(named: skinDir.lastPathComponent, from: skinDir)
     }
 
     private func loadSkin(named name: String, from skinDir: URL) -> SkinDefinition? {
@@ -942,6 +959,13 @@ class SkinEngine {
             throw SkinLoadError.notFound(name)
         }
 
+        return try loadComposite(from: skinDir, name: name)
+    }
+
+    /// Run the complete production composite pipeline against an already
+    /// staged directory. Skin management uses this before its atomic move so
+    /// validation cannot stop at JSON decoding.
+    func loadComposite(from skinDir: URL, name: String) throws -> LoadedSkin {
         guard let manifest = loadSkin(named: name, from: skinDir) else {
             throw SkinLoadError.notFound(name)
         }

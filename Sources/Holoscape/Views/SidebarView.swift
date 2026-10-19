@@ -12,7 +12,7 @@ class SidebarView: NSView {
 
     /// Skin context source. When set, propagates to every existing and
     /// newly created `SidebarTabEntry` so a skin swap reaches the rows.
-    /// Nil falls back to the pre-skinning hardcoded constants.
+    /// Nil uses the modern built-in Default constants.
     var skinContext: SkinContext? {
         didSet {
             refreshFromSkin()
@@ -22,7 +22,7 @@ class SidebarView: NSView {
         }
     }
 
-    private static let containerBg = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+    private static let containerBg = NSColor(hex: "#121b27")!.cgColor
 
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
@@ -236,7 +236,7 @@ class SidebarView: NSView {
 /// AppKit control classes. NSButton gets this natively.
 @MainActor
 class SidebarTabEntry: HoverTrackingButton {
-    // Fallback colors for the standalone rendering path (no SkinContext
+    // Built-in Default constants; standalone rows retain semantic state colors.
     // wired). The skinned path reproduces these exact values through
     // `SkinContext.builtInDefaults` state variants on `sidebarRowNormal`
     // and `sidebarRowIndicator`, so per-row notification / connection
@@ -244,12 +244,12 @@ class SidebarTabEntry: HoverTrackingButton {
     // entry's own `ReactiveUniformSnapshot` — two rows can paint
     // different colors at the same moment without a shared snapshot
     // lighting them both up.
-    private static let defaultActiveBg = NSColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1.0).cgColor
-    private static let defaultPermissionBg = NSColor(red: 0.4, green: 0.25, blue: 0.05, alpha: 1.0).cgColor
-    private static let defaultPermissionText = NSColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1.0)
-    private static let defaultIdleBg = NSColor(red: 0.05, green: 0.25, blue: 0.1, alpha: 1.0).cgColor
-    private static let defaultIdleText = NSColor(red: 0.4, green: 1.0, blue: 0.5, alpha: 1.0)
-    private static let defaultUnreadBg = NSColor(red: 0.1, green: 0.1, blue: 0.22, alpha: 1.0).cgColor
+    private static let defaultActiveBg = NSColor(hex: "#24485b")!.cgColor
+    private static let defaultPermissionBg = NSColor(hex: "#4a391f")!.cgColor
+    private static let defaultPermissionText = NSColor(hex: "#f0c674")!
+    private static let defaultIdleBg = NSColor(hex: "#173a35")!.cgColor
+    private static let defaultIdleText = NSColor(hex: "#75e6bd")!
+    private static let defaultUnreadBg = NSColor(hex: "#203447")!.cgColor
 
     // Per-entry reactive snapshot. Isolated from the shared snapshot
     // that drives global animations — writes here affect ONLY this

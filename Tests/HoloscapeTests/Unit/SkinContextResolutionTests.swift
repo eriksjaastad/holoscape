@@ -25,7 +25,7 @@ final class SkinContextResolutionTests: XCTestCase {
 
         let resolved = ctx.resolve(.tabBarContainer)
         if case .color(let c) = resolved.fill {
-            XCTAssertEqual(c.redComponent, 0.06, accuracy: 0.01)
+            XCTAssertEqual(c.redComponent, 0x12 / 255.0, accuracy: 0.01)
         } else {
             XCTFail("Default tab bar container should be a color fill")
         }
@@ -146,17 +146,17 @@ final class SkinContextResolutionTests: XCTestCase {
         let stale = fill(for: 3)
 
         // Base (no matching variant) is the active/usable green dot.
-        XCTAssertEqual(active, NSColor.systemGreen)
+        XCTAssertEqual(active, try XCTUnwrap(NSColor(hex: "#4fd1a5")))
 
         // Each non-default ordinal resolves to its own built-in fill:
         // 1 = needs-approval (yellow), 2 = error/disconnected (red),
         // 3 = stale (purple).
-        XCTAssertEqual(needsApproval, try XCTUnwrap(NSColor(hex: "#ffcc00")))
-        XCTAssertEqual(disconnected, try XCTUnwrap(NSColor(hex: "#ff3b30")))
-        XCTAssertEqual(stale, try XCTUnwrap(NSColor(hex: "#a97ae6")))
+        XCTAssertEqual(needsApproval, try XCTUnwrap(NSColor(hex: "#f0c674")))
+        XCTAssertEqual(disconnected, try XCTUnwrap(NSColor(hex: "#ff6b6b")))
+        XCTAssertEqual(stale, try XCTUnwrap(NSColor(hex: "#b49cff")))
 
         // Ordinal 3 (stale) must NOT fall through to active green.
-        XCTAssertNotEqual(stale, NSColor.systemGreen, "stale must not render as active green")
+        XCTAssertNotEqual(stale, try XCTUnwrap(NSColor(hex: "#4fd1a5")), "stale must not render as active")
 
         // The three non-default ordinals must be pairwise distinct.
         XCTAssertNotEqual(needsApproval, disconnected)
@@ -269,7 +269,7 @@ final class SkinContextResolutionTests: XCTestCase {
         let desc = SurfaceDescriptor(fill: .color("not-a-color"))
         let resolved = SkinContext.convert(desc, for: .tabBarContainer)
         if case .color = resolved.fill {
-            // Default color for tabBarContainer is the dark purple — accept any color result.
+            // Built-in Default baseline; invalid input still preserves a color fill.
         } else {
             XCTFail("Invalid color should fall back to default fill")
         }

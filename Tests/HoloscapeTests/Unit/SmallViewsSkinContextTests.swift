@@ -45,7 +45,7 @@ final class SmallViewsSkinContextTests: XCTestCase {
         view.skinContext = context(key: .inputBoxField, color: .red)
         view.skinContext = nil
 
-        let expected = NSColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1.0)
+        let expected = NSColor(hex: "#182331")!
         assertColorsClose(view.backgroundColor, expected)
     }
 
@@ -63,7 +63,7 @@ final class SmallViewsSkinContextTests: XCTestCase {
         view.skinContext = context(key: .sessionLauncherContainer, color: .red)
         view.skinContext = nil
 
-        let expected = NSColor(red: 0.05, green: 0.05, blue: 0.10, alpha: 1.0).cgColor
+        let expected = NSColor(hex: "#121b27")!.cgColor
         assertCGColorComponents(view.layer?.backgroundColor, expected)
     }
 

@@ -27,13 +27,13 @@ struct ColorTheme: Equatable, Sendable {
 
     static let dark = ColorTheme(
         name: "Dark",
-        background: "#1a1a2e",
-        foreground: "#e0e0e0",
+        background: "#10151d",
+        foreground: "#e7f2f8",
         ansiColors: [
-            "#1a1a2e", "#ff5555", "#50fa7b", "#f1fa8c",
-            "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
-            "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
-            "#d6acff", "#ff92df", "#a4edff", "#ffffff",
+            "#10151d", "#ff6b7a", "#8be28b", "#ffd166",
+            "#78b7ff", "#d19cff", "#66d9e8", "#e7f2f8",
+            "#526273", "#ff9aa5", "#a8f0a8", "#ffe29a",
+            "#a8d0ff", "#e4c2ff", "#a5edf5", "#ffffff",
         ]
     )
 
