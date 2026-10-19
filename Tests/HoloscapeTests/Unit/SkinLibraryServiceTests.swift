@@ -73,6 +73,66 @@ final class SkinLibraryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Copy").path))
     }
 
+    func testDuplicateRejectsRootSymlinkEscapingApprovedRoots() throws {
+        let outside = root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString)")
+        let outsideSkin = outside.appendingPathComponent("Source")
+        try FileManager.default.createDirectory(at: outsideSkin, withIntermediateDirectories: true)
+        try Data(#"{"name":"Source","version":"2.0"}"#.utf8).write(to: outsideSkin.appendingPathComponent("skin.json"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Source"),
+            withDestinationURL: outsideSkin
+        )
+        defer {
+            do { try FileManager.default.removeItem(at: outside) }
+            catch { XCTFail("Failed to clean outside fixture: \(error)") }
+        }
+
+        XCTAssertThrowsError(try library.create(name: "Copy", from: .existing("Source"))) { error in
+            XCTAssertEqual(error as? SkinLibraryError, .unsafePath("Source"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Copy").path))
+    }
+
+    func testDuplicateRejectsDescendantSymlinkWithoutCopyingOutsideFile() throws {
+        let source = root.appendingPathComponent("Source")
+        let outside = root.deletingLastPathComponent().appendingPathComponent("outside-file-\(UUID().uuidString).txt")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data(#"{"name":"Source","version":"2.0"}"#.utf8).write(to: source.appendingPathComponent("skin.json"))
+        try Data("secret".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: source.appendingPathComponent("secret.txt"),
+            withDestinationURL: outside
+        )
+        defer {
+            do { try FileManager.default.removeItem(at: outside) }
+            catch { XCTFail("Failed to clean outside fixture: \(error)") }
+        }
+
+        XCTAssertThrowsError(try library.create(name: "Copy", from: .existing("Source"))) { error in
+            XCTAssertEqual(error as? SkinLibraryError, .invalidSource("Source"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Copy/secret.txt").path))
+        XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "secret")
+    }
+
+    func testDecodableManifestWithEscapingImagePathFailsCompleteValidationAndCleansStaging() throws {
+        let source = root.appendingPathComponent("Source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let manifest = """
+        {"name":"Source","version":"2.0","surfaces":{"window.background":{"fill":{"kind":"image","path":"../outside.png","tile":"stretch"}}}}
+        """
+        try Data(manifest.utf8).write(to: source.appendingPathComponent("skin.json"))
+
+        XCTAssertThrowsError(try library.create(name: "Copy", from: .existing("Source"))) { error in
+            guard case .validationFailure = error as? SkinLibraryError else {
+                return XCTFail("Expected validationFailure, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Copy").path))
+        let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertFalse(entries.contains { $0.lastPathComponent.hasPrefix(".Copy.staging-") })
+    }
+
     func testExistingFilesystemEntryIsNeverOverwritten() throws {
         let occupied = root.appendingPathComponent("Occupied")
         try Data("keep".utf8).write(to: occupied)

@@ -70,6 +70,10 @@ final class SkinLibraryService {
                 guard let sourceDirectory = engine.resolvedSkinDirectoryForManagement(named: sourceName) else {
                     throw SkinLibraryError.sourceMissing(sourceName)
                 }
+                guard isApprovedSourceDirectory(sourceDirectory) else {
+                    throw SkinLibraryError.unsafePath(sourceName)
+                }
+                try rejectSymlinks(in: sourceDirectory, sourceName: sourceName)
                 guard engine.loadSkinDefinition(from: sourceDirectory) != nil else {
                     throw SkinLibraryError.invalidSource(sourceName)
                 }
@@ -83,6 +87,14 @@ final class SkinLibraryService {
             guard definition.name == name else {
                 throw SkinLibraryError.validationFailure("skin.json has an unexpected name")
             }
+
+            let validated: LoadedSkin
+            do {
+                validated = try engine.loadComposite(from: staging, name: name)
+            } catch {
+                throw SkinLibraryError.validationFailure(error.localizedDescription)
+            }
+            engine.unregisterFonts(validated.fonts)
             try synchronizeManifest(in: staging)
 
             // Re-check immediately before the non-overwriting atomic move.
@@ -212,6 +224,54 @@ final class SkinLibraryService {
         let entries = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
         for entry in entries {
             try fileManager.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent))
+        }
+    }
+
+    private func isApprovedSourceDirectory(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return engine.approvedSkinSourceRoots.contains { root in
+            let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+            return resolved != resolvedRoot && resolved.hasPrefix(resolvedRoot + "/")
+        }
+    }
+
+    private func rejectSymlinks(in root: URL, sourceName: String) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw SkinLibraryError.invalidSource(sourceName)
+        }
+        if try fileType(at: root) == .typeSymbolicLink {
+            throw SkinLibraryError.unsafePath(sourceName)
+        }
+
+        let entries: [URL]
+        do {
+            entries = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        } catch {
+            throw SkinLibraryError.invalidSource(sourceName)
+        }
+        for entry in entries {
+            if try fileType(at: entry) == .typeSymbolicLink {
+                throw SkinLibraryError.invalidSource(sourceName)
+            }
+            var childIsDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: entry.path, isDirectory: &childIsDirectory), childIsDirectory.boolValue {
+                try rejectSymlinks(in: entry, sourceName: sourceName)
+            }
+        }
+    }
+
+    private func fileType(at url: URL) throws -> FileAttributeType {
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            guard let type = attributes[.type] as? FileAttributeType else {
+                throw SkinLibraryError.invalidSource(url.lastPathComponent)
+            }
+            return type
+        } catch let error as SkinLibraryError {
+            throw error
+        } catch {
+            throw SkinLibraryError.invalidSource(url.lastPathComponent)
         }
     }
 

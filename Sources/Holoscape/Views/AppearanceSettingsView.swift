@@ -302,6 +302,10 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         // `textForeground` from the skin manifest to the AppearanceConfig.
         if skinName != "Default", let skin = skinEngine.loadSkin(named: skinName) {
             config = skinEngine.apply(skin: skin, to: config)
+        } else if let theme = ColorTheme.named(config.themeName ?? "Dark") ?? ColorTheme.named("Dark") {
+            // Default is not a skin manifest: restore its terminal palette from
+            // the selected theme, while retaining deliberate user overrides.
+            config = theme.apply(to: config, overrides: config.themeOverrides)
         }
         settingsDelegate?.appearanceSettingsDidSelectSkin(skinName)
         loadCurrentValues()
@@ -371,6 +375,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     internal func _performDuplicateForTesting() { duplicateSkin(duplicateSkinButton) }
     internal func _performRevealForTesting() { revealSkin(revealSkinButton) }
     internal func _performDeleteForTesting() { deleteSkin(deleteSkinButton) }
+    internal func _applySelectedSkinForTesting(named name: String) { applySelectedSkin(named: name) }
 
     private func deletableSkinNames() -> [String] {
         let active = config.skinName ?? "Default"

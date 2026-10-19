@@ -104,6 +104,52 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         controller._performCreateForTesting()
         XCTAssertEqual(controller.presentedError as? SkinLibraryError, .invalidName("Default"))
     }
+
+    func testDefaultSelectionRestoresModernDarkPaletteWithoutOverrides() throws {
+        _ = try library.create(name: "Custom")
+        var config = configService.load().appearance
+        config.themeName = "Dark"
+        config.themeOverrides = nil
+        let controller = TestAppearanceController(config: config, configService: configService, skinEngine: engine, skinLibraryService: library)
+        let delegate = AppearanceDelegateSpy()
+        controller.settingsDelegate = delegate
+
+        controller._applySelectedSkinForTesting(named: "Custom")
+        controller._applySelectedSkinForTesting(named: "Default")
+
+        let restored = try XCTUnwrap(delegate.changedConfigs.last)
+        XCTAssertEqual(restored.backgroundColor, "#10151d")
+        XCTAssertEqual(restored.ansiColors?["black"], "#10151d")
+        XCTAssertEqual(restored.ansiColors?["red"], "#ff6b7a")
+        XCTAssertEqual(restored.ansiColors?["foreground"], "#e7f2f8")
+    }
+
+    func testCustomSkinToDefaultRestoresThemePaletteButKeepsOverridesAndUserAppearance() throws {
+        _ = try library.create(name: "Custom")
+        var config = configService.load().appearance
+        config.themeName = "Dark"
+        config.themeOverrides = ["backgroundColor": "#abcdef", "red": "#123456", "foreground": "#fedcba"]
+        config.transparency = 0.62
+        config.fontFamily = "Menlo"
+        config.fontSize = 15
+        config.customShaderPath = "demos/scanlines.glsl"
+        let controller = TestAppearanceController(config: config, configService: configService, skinEngine: engine, skinLibraryService: library)
+        let delegate = AppearanceDelegateSpy()
+        controller.settingsDelegate = delegate
+
+        controller._applySelectedSkinForTesting(named: "Custom")
+        controller._applySelectedSkinForTesting(named: "Default")
+
+        let restored = try XCTUnwrap(delegate.changedConfigs.last)
+        XCTAssertEqual(restored.skinName, "Default")
+        XCTAssertEqual(restored.backgroundColor, "#abcdef")
+        XCTAssertEqual(restored.ansiColors?["red"], "#123456")
+        XCTAssertEqual(restored.ansiColors?["foreground"], "#fedcba")
+        XCTAssertEqual(restored.transparency, 0.62)
+        XCTAssertEqual(restored.fontFamily, "Menlo")
+        XCTAssertEqual(restored.fontSize, 15)
+        XCTAssertEqual(restored.customShaderPath, "demos/scanlines.glsl")
+    }
 }
 
 @MainActor
