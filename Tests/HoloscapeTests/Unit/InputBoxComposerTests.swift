@@ -17,6 +17,31 @@ final class InputBoxComposerTests: XCTestCase {
         XCTAssertEqual(spy.drafts.last, "")
     }
 
+    func testKeypadEnterSubmitsExactText() {
+        let spy = InputBoxDelegateSpy()
+        let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        view.inputDelegate = spy
+        view.string = "echo keypad"
+
+        view.keyDown(with: keyEvent(keyCode: 76, characters: "\r"))
+
+        XCTAssertEqual(spy.submissions, ["echo keypad"])
+        XCTAssertEqual(view.string, "")
+    }
+
+    func testRejectedSubmissionPreservesDraft() {
+        let spy = InputBoxDelegateSpy()
+        spy.acceptsSubmissions = false
+        let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        view.inputDelegate = spy
+        view.string = "not ready"
+
+        view.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+
+        XCTAssertEqual(spy.submissions, ["not ready"])
+        XCTAssertEqual(view.string, "not ready")
+    }
+
     func testEnterRejectsWhitespaceOnlyDraft() {
         let spy = InputBoxDelegateSpy()
         let view = InputBoxView(frame: .zero)
@@ -57,6 +82,24 @@ final class InputBoxComposerTests: XCTestCase {
         view.undoManager?.undo()
 
         XCTAssertEqual(view.string, "")
+    }
+
+    func testProgrammaticDraftReplacementClearsPriorUndoActions() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        window.contentView?.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        view.insertText("alpha", replacementRange: NSRange(location: 0, length: 0))
+
+        view.replaceComposerText("beta")
+        view.undoManager?.undo()
+
+        XCTAssertEqual(view.string, "beta")
     }
 
     func testHistoryOnlyInterceptsAtDocumentEdgesAndRestoresDraft() {
@@ -118,12 +161,14 @@ final class InputBoxComposerTests: XCTestCase {
 @MainActor
 private final class InputBoxDelegateSpy: InputBoxViewDelegate {
     var submissions: [String] = []
+    var acceptsSubmissions = true
     var drafts: [String] = []
     var previousRequests = 0
     var nextRequests = 0
 
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) {
+    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool {
         submissions.append(text)
+        return acceptsSubmissions
     }
 
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView) {

@@ -2079,7 +2079,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
 
         let state = composerStates.state(for: id)
-        inputBox.string = state.draft
+        inputBox.replaceComposerText(state.draft)
         inputBox.exitHistoryNavigation()
         bindAlternateScreenObservation(for: channel)
         applyComposerPresentation(for: channel)
@@ -2891,13 +2891,18 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     // MARK: - InputBoxViewDelegate
 
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) {
+    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool {
         guard let id = activeChannelId,
-              let channel = channelManager.channel(for: id) else { return }
+              let channel = channelManager.channel(for: id) else { return false }
+        guard !ptyChannelTypes.contains(channel.channelType) || channel.state == .active else {
+            NSSound.beep()
+            return false
+        }
         channel.sendInput(text)
         historyBuffer.recordCommand(text, channelName: channel.displayLabel)
         resizeInputBox()
         window.makeFirstResponder(inputBox)
+        return true
     }
 
     func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String) {

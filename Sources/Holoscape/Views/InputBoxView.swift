@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 protocol InputBoxViewDelegate: AnyObject {
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String)
+    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView)
     func inputBoxViewDidRequestNextHistory(_ inputBox: InputBoxView)
     func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String)
@@ -125,19 +125,20 @@ class InputBoxView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        let isSubmitKey = event.keyCode == 36 || event.keyCode == 76
         // Return confirms an active IME composition. Let AppKit commit marked
         // text before Holoscape considers Return a submit gesture.
-        if event.keyCode == 36 && hasActiveMarkedText {
+        if isSubmitKey && hasActiveMarkedText {
             super.keyDown(with: event)
             return
         }
 
         // Enter key — send input
-        if event.keyCode == 36 && !event.modifierFlags.contains(.shift) {
+        if isSubmitKey && !event.modifierFlags.contains(.shift) {
             let text = string
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            inputDelegate?.inputBoxView(self, didSubmitText: text)
-            self.string = ""
+            guard inputDelegate?.inputBoxView(self, didSubmitText: text) == true else { return }
+            replaceComposerText("")
             isNavigatingHistory = false
             draftBeforeHistory = nil
             // Force layout recalculation so the height constraint updates
@@ -168,15 +169,13 @@ class InputBoxView: NSTextView {
     }
 
     func setHistoryText(_ text: String) {
-        self.string = text
+        replaceComposerText(text)
         isNavigatingHistory = !text.isEmpty
-        setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
     }
 
     func restoreDraftAfterHistory() {
         guard isNavigatingHistory else { return }
-        string = draftBeforeHistory ?? ""
-        setSelectedRange(NSRange(location: (string as NSString).length, length: 0))
+        replaceComposerText(draftBeforeHistory ?? "")
         isNavigatingHistory = false
         draftBeforeHistory = nil
         didChangeText()
@@ -185,6 +184,13 @@ class InputBoxView: NSTextView {
     func exitHistoryNavigation() {
         isNavigatingHistory = false
         draftBeforeHistory = nil
+    }
+
+    func replaceComposerText(_ text: String) {
+        undoManager?.removeAllActions()
+        string = text
+        setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        undoManager?.removeAllActions()
     }
 
     override func didChangeText() {

@@ -98,6 +98,36 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertFalse(fixture.controller.inputContainerForTesting.isHidden)
     }
 
+    func testConnectingPTYChannelRejectsSubmissionWithoutClearingDraft() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Connecting", state: .connecting)
+        fixture.controller.switchToChannel(channel.channelId)
+        let input = fixture.controller.inputBoxForTesting
+        input.string = "wait for prompt"
+        input.didChangeText()
+
+        input.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+
+        XCTAssertTrue(channel.sentInputs.isEmpty)
+        XCTAssertEqual(input.string, "wait for prompt")
+        XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: channel.channelId).draft, "wait for prompt")
+    }
+
+    private func keyEvent(keyCode: UInt16, characters: String) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        )!
+    }
+
     private func makeFixture() throws -> ComposerFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MainWindowComposerTests-\(UUID().uuidString)", isDirectory: true)
@@ -128,10 +158,14 @@ private final class ComposerFixture {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    func makeChannel(type: ChannelType, label: String) -> MockChannelController {
+    func makeChannel(
+        type: ChannelType,
+        label: String,
+        state: ChannelState = .active
+    ) -> MockChannelController {
         var result: MockChannelController!
         _ = manager.createChannel(type: type, role: label, workingDirectory: nil) { id, type, label, number, _ in
-            let channel = MockChannelController(id: id, type: type, label: label, instanceNumber: number, state: .active)
+            let channel = MockChannelController(id: id, type: type, label: label, instanceNumber: number, state: state)
             result = channel
             return channel
         }
