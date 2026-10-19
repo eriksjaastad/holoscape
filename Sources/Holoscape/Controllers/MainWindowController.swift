@@ -2738,12 +2738,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - TabBarViewDelegate
 
     func tabBarView(_ tabBar: TabBarView, didSelectChannelWithId id: UUID) {
+        guard id != activeChannelId else { return }
         switchToChannel(id)
     }
 
     // MARK: - SidebarViewDelegate
 
     func sidebarView(_ sidebar: SidebarView, didSelectChannelWithId id: UUID) {
+        guard id != activeChannelId else { return }
         switchToChannel(id)
     }
 

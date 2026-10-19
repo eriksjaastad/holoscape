@@ -113,6 +113,22 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: channel.channelId).draft, "wait for prompt")
     }
 
+    func testReselectingActiveTabOrSidebarPreservesSelectionAndUndo() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Active")
+        fixture.controller.switchToChannel(channel.channelId)
+        let input = fixture.controller.inputBoxForTesting
+        input.insertText("alpha", replacementRange: NSRange(location: 0, length: 0))
+        input.setSelectedRange(NSRange(location: 2, length: 0))
+
+        fixture.controller.tabBarView(TabBarView(frame: .zero), didSelectChannelWithId: channel.channelId)
+        fixture.controller.sidebarView(SidebarView(frame: .zero), didSelectChannelWithId: channel.channelId)
+
+        XCTAssertEqual(input.selectedRange(), NSRange(location: 2, length: 0))
+        input.undoManager?.undo()
+        XCTAssertEqual(input.string, "")
+    }
+
     private func keyEvent(keyCode: UInt16, characters: String) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,
