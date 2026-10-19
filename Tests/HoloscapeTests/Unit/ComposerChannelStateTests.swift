@@ -65,13 +65,24 @@ final class TerminalComposerModeSignalTests: XCTestCase {
         view.onAlternateScreenChanged = { reported.append($0) }
 
         view.feed(text: "\u{1B}[?1049hfull screen")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(waitUntil { reported.last == true })
         XCTAssertTrue(view.isAlternateScreenActive)
         XCTAssertEqual(reported.last, true)
 
         view.feed(text: "\u{1B}[?1049l")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(waitUntil { reported.last == false })
         XCTAssertFalse(view.isAlternateScreenActive)
         XCTAssertEqual(reported.last, false)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 1.0,
+        condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return condition()
     }
 }
