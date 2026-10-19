@@ -68,7 +68,7 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         guard state == .active else { return }
         recordUserInteraction()
         commandHistory.add(text)
-        let bytes = Array((text + "\n").utf8)
+        let bytes = Array((text.hasSuffix("\n") ? text : text + "\n").utf8)
         terminal.send(bytes)
     }
 

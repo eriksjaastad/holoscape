@@ -15,6 +15,11 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
     /// Called when the terminal receives new output. Set by the channel controller.
     var onOutput: (() -> Void)?
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+    var onAlternateScreenChanged: ((Bool) -> Void)? {
+        didSet { configureAlternateScreenMonitoring() }
+    }
+    private var lastReportedAlternateScreenState = false
+    private var alternateScreenMonitor: Timer?
 
     var terminalContentView: NSView { self }
     var currentGridSize: TerminalGridSize {
@@ -98,7 +103,44 @@ open class HoloscapeTerminalView: LocalProcessTerminalView, TerminalProcess {
     }
 
     open override func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        let isAlternate = terminal.isCurrentBufferAlternate
+        if isAlternate != lastReportedAlternateScreenState {
+            lastReportedAlternateScreenState = isAlternate
+            onAlternateScreenChanged?(isAlternate)
+        }
         onOutput?()
+    }
+
+    var isAlternateScreenActive: Bool {
+        terminal.isCurrentBufferAlternate
+    }
+
+    private func configureAlternateScreenMonitoring() {
+        alternateScreenMonitor?.invalidate()
+        alternateScreenMonitor = nil
+        guard onAlternateScreenChanged != nil else { return }
+
+        lastReportedAlternateScreenState = terminal.isCurrentBufferAlternate
+        let timer = Timer(
+            timeInterval: 0.025,
+            target: self,
+            selector: #selector(pollAlternateScreenState(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+        alternateScreenMonitor = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func pollAlternateScreenState(_ timer: Timer) {
+        reportAlternateScreenChangeIfNeeded()
+    }
+
+    private func reportAlternateScreenChangeIfNeeded() {
+        let isAlternate = terminal.isCurrentBufferAlternate
+        guard isAlternate != lastReportedAlternateScreenState else { return }
+        lastReportedAlternateScreenState = isAlternate
+        onAlternateScreenChanged?(isAlternate)
     }
 
     open override func send(source: TerminalView, data: ArraySlice<UInt8>) {

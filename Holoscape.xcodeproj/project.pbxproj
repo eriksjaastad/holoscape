@@ -88,6 +88,10 @@
 		36024E93C6A5216A48018905 /* TopTabBarSidebarMutualExclusionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47CDAB7A9A758A7B659DF199 /* TopTabBarSidebarMutualExclusionTests.swift */; };
 		3628BB4C1611E8CB5D0123DC /* BridgeChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 771158F52C837B55FE8AB38A /* BridgeChannelTests.swift */; };
 		37508AD61F791ED9B32D44DD /* InputBoxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60E2640C327CEFE619F66E23 /* InputBoxView.swift */; };
+		B6C0A1F5D2E34A6789012346 /* ComposerChannelState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C0A1F5D2E34A6789012345 /* ComposerChannelState.swift */; };
+		B6C0A1F5D2E34A6789012348 /* ComposerChannelStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C0A1F5D2E34A6789012347 /* ComposerChannelStateTests.swift */; };
+		B6C0A1F5D2E34A678901234A /* InputBoxComposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C0A1F5D2E34A6789012349 /* InputBoxComposerTests.swift */; };
+		B6C0A1F5D2E34A678901234C /* MainWindowComposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C0A1F5D2E34A678901234B /* MainWindowComposerTests.swift */; };
 		3840D45C700E68751FE812B0 /* AmplifyDescriptorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3182C6D967F3236D1113AAEF /* AmplifyDescriptorTests.swift */; };
 		386733B54689E1BE3BD23117 /* DensityModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D02D80A9298FFF4899D981E /* DensityModeManager.swift */; };
 		388E3941FDA76A28F5B01951 /* libCglslang.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 212041D5FDF1C8CE4CA3DEA1 /* libCglslang.a */; };
@@ -701,6 +705,10 @@
 		60B9FEBCF3526BB4962E1681 /* DragRegionTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragRegionTrackerTests.swift; sourceTree = "<group>"; };
 		60C10765CA388F42432012A8 /* PillCornerClampTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillCornerClampTests.swift; sourceTree = "<group>"; };
 		60E2640C327CEFE619F66E23 /* InputBoxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBoxView.swift; sourceTree = "<group>"; };
+		B6C0A1F5D2E34A6789012345 /* ComposerChannelState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerChannelState.swift; sourceTree = "<group>"; };
+		B6C0A1F5D2E34A6789012347 /* ComposerChannelStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerChannelStateTests.swift; sourceTree = "<group>"; };
+		B6C0A1F5D2E34A6789012349 /* InputBoxComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBoxComposerTests.swift; sourceTree = "<group>"; };
+		B6C0A1F5D2E34A678901234B /* MainWindowComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowComposerTests.swift; sourceTree = "<group>"; };
 		61506DAAA8FB6DEAA099D595 /* CommandHistoryEdgeCaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandHistoryEdgeCaseTests.swift; sourceTree = "<group>"; };
 		620CA86224C6DC1312DA4303 /* SSHChannelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHChannelController.swift; sourceTree = "<group>"; };
 		6326E866A927195F3C196BEB /* SkinLayoutDescriptors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinLayoutDescriptors.swift; sourceTree = "<group>"; };
@@ -1066,6 +1074,9 @@
 		485019853AE0CF04354A7F2F /* Unit */ = {
 			isa = PBXGroup;
 			children = (
+				B6C0A1F5D2E34A6789012347 /* ComposerChannelStateTests.swift */,
+				B6C0A1F5D2E34A6789012349 /* InputBoxComposerTests.swift */,
+				B6C0A1F5D2E34A678901234B /* MainWindowComposerTests.swift */,
 				6D3B7E7E7E49A1C3AB20C611 /* AgentAPIKeyResolverTests.swift */,
 				ED3B6F24B08A99378ED93D50 /* AgentChannelControllerTests.swift */,
 				7A3B12318D376DF104012BC8 /* AgentChannelPromptTests.swift */,
@@ -1560,6 +1571,7 @@
 			isa = PBXGroup;
 			children = (
 				27858CF58A7D094CBD539681 /* AgentAuthType.swift */,
+				B6C0A1F5D2E34A6789012345 /* ComposerChannelState.swift */,
 				34E7A23F23DEADA68A374CCC /* AgentStatusAdapter.swift */,
 				70447BEB529B311BE65C54F9 /* AmplifyDescriptors.swift */,
 				741D277787F558EA16CA93C7 /* BrokerSessionRecord.swift */,
@@ -1895,6 +1907,9 @@
 				A89FAD2B54A46DDAE288FDD6 /* ChromeRegionManagerTests.swift in Sources */,
 				B27AC4CBA4290F49101178B5 /* ChromeViewMigrationTests.swift in Sources */,
 				DC35D3BC7FADB67852C956A7 /* CommandHistoryEdgeCaseTests.swift in Sources */,
+				B6C0A1F5D2E34A6789012348 /* ComposerChannelStateTests.swift in Sources */,
+				B6C0A1F5D2E34A678901234A /* InputBoxComposerTests.swift in Sources */,
+				B6C0A1F5D2E34A678901234C /* MainWindowComposerTests.swift in Sources */,
 				16D7AB6AAAEFA5E4CD048748 /* CommandHistoryTests.swift in Sources */,
 				3C8AA2493BDFA8E5922499E9 /* ConfigServiceDiskTests.swift in Sources */,
 				C925D3FAFE344AF458982BC3 /* ConfigServiceTests.swift in Sources */,
@@ -2163,6 +2178,7 @@
 				6251E4DC99625DA92C03232D /* HoloscapeTerminalView.swift in Sources */,
 				841900000000000000000002 /* HoverTrackingButton.swift in Sources */,
 				37508AD61F791ED9B32D44DD /* InputBoxView.swift in Sources */,
+				B6C0A1F5D2E34A6789012346 /* ComposerChannelState.swift in Sources */,
 				D840130A3EFCC8ADB1FD5BD3 /* InputResizeHandleView.swift in Sources */,
 				CA300FBDEEF35540C25BCC02 /* InteriorView.swift in Sources */,
 				C094823EA87D33F0B56EC1F7 /* LEDArrayLayerRenderer.swift in Sources */,

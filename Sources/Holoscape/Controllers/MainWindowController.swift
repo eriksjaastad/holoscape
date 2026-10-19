@@ -123,7 +123,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
+    private let composerModeControl: NSSegmentedControl
     private let inputResizeHandle = InputResizeHandleView(frame: .zero)
+    private let composerStates = ComposerChannelStateStore()
 
     // External chrome bands — decorative strips around the window content
     // area that a skin can paint graphics into (Winamp-style). Default
@@ -259,6 +261,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     internal var sidebarViewForTesting: SidebarView { sidebarView }
     internal var tabBarForTesting: TabBarView { tabBar }
     internal var inputResizeHandleForTesting: InputResizeHandleView { inputResizeHandle }
+    internal var inputBoxForTesting: InputBoxView { inputBox }
+    internal var inputContainerForTesting: NSScrollView { inputContainer }
+    internal var composerModeControlForTesting: NSSegmentedControl { composerModeControl }
+    internal func composerStateForTesting(channelId: UUID) -> ComposerChannelState {
+        composerStates.state(for: channelId)
+    }
     internal var chromeDragOverlaysForTesting: [WindowDragOverlay] { chromeDragOverlays }
     internal var splitPaneManagerForTesting: SplitPaneManager { splitPaneManager }
 
@@ -294,6 +302,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         // Create input box
         self.inputContainer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1000, height: 40))
         self.inputBox = InputBoxView(frame: inputContainer.contentView.bounds)
+        self.composerModeControl = NSSegmentedControl(labels: ["Composer", "Raw Terminal"], trackingMode: .selectOne, target: nil, action: nil)
         inputContainer.documentView = inputBox
         inputContainer.drawsBackground = false
         inputContainer.borderType = .noBorder
@@ -301,6 +310,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         inputContainer.setAccessibilityElement(false)
         inputBox.isVerticallyResizable = true
         inputBox.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        composerModeControl.segmentStyle = .rounded
+        composerModeControl.setAccessibilityElement(true)
+        composerModeControl.setAccessibilityRole(.radioGroup)
+        composerModeControl.setAccessibilityIdentifier("composer-mode-toggle")
+        composerModeControl.setAccessibilityLabel("Input mode")
+        composerModeControl.setAccessibilityHelp("Composer: Enter sends · Shift-Enter adds a line. Raw Terminal: keystrokes go directly to the terminal.")
+        composerModeControl.setAccessibilityValue("Composer")
+        composerModeControl.toolTip = "Composer: Enter sends · Shift-Enter adds a line"
         inputBox.textContainer?.widthTracksTextView = true
 
         // Load config and restore the internal sidebar's expanded/collapsed
@@ -337,6 +354,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
         super.init()
 
+        composerModeControl.target = self
+        composerModeControl.action = #selector(composerModeControlChanged(_:))
         inputResizeHandle.resizeDelegate = self
 
         // Card #6027 — close the reverse wire (engine → manager).
@@ -535,6 +554,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         splitPaneManager.translatesAutoresizingMaskIntoConstraints = false
         inputResizeHandle.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
+        composerModeControl.translatesAutoresizingMaskIntoConstraints = false
 
         // Tab bar lives in the title-bar strip (Warp-style). It sits directly
         // on contentView, spanning from just past the traffic-light buttons
@@ -543,6 +563,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         rightPaneContentHost.addSubview(splitPaneManager)
         rightPaneContentHost.addSubview(inputResizeHandle)
         rightPaneContentHost.addSubview(inputContainer)
+        rightPaneContentHost.addSubview(composerModeControl)
 
         let tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
         self.tabBarHeightConstraint = tabBarHeight
@@ -569,7 +590,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
             inputContainer.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
             inputContainer.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
-            inputContainer.bottomAnchor.constraint(equalTo: rightPaneContentHost.bottomAnchor),
+            inputContainer.bottomAnchor.constraint(equalTo: composerModeControl.topAnchor),
+            composerModeControl.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor, constant: 12),
+            composerModeControl.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor, constant: -12),
+            composerModeControl.bottomAnchor.constraint(equalTo: rightPaneContentHost.bottomAnchor, constant: -8),
+            composerModeControl.heightAnchor.constraint(equalToConstant: 28),
         ])
 
         // Input box auto-grow: start at min height, grow up to max
@@ -583,6 +608,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             name: NSText.didChangeNotification,
             object: inputBox
         )
+        channelManager.channelDidActuallyRemove = { [weak self] channel in
+            (channel.contentView as? HoloscapeTerminalView)?.onAlternateScreenChanged = nil
+            self?.composerStates.removeState(for: channel.channelId)
+        }
 
         // Add panes to split view
         splitView.addArrangedSubview(sidebarContainer)
@@ -1909,7 +1938,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     func windowDidBecomeKey(_ notification: Notification) {
         if let id = activeChannelId,
            let channel = channelManager.channel(for: id),
-           ptyChannelTypes.contains(channel.channelType) {
+           ptyChannelTypes.contains(channel.channelType),
+           composerStates.state(for: id).effectiveMode == .rawTerminal {
             window.makeFirstResponder(channel.contentView)
         } else {
             window.makeFirstResponder(inputBox)
@@ -2029,6 +2059,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     func switchToChannel(_ id: UUID) {
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
+        if let previousId = activeChannelId {
+            composerStates.updateDraft(inputBox.string, for: previousId)
+            (channelManager.channel(for: previousId)?.contentView as? HoloscapeTerminalView)?.onAlternateScreenChanged = nil
+        }
         activeChannelId = id
         channel.recordUserInteraction(at: Date())
         channel.hasUnread = false
@@ -2038,21 +2072,50 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         refreshAllTabs()
         historyBuffer.recordChannelSwitch(from: previousLabel, to: channel.displayLabel)
 
-        // PTY channels handle their own input — hide InputBox and focus the terminal
-        if ptyChannelTypes.contains(channel.channelType) {
-            inputContainer.isHidden = true
-            inputResizeHandle.isHidden = true
-            inputHeightConstraint?.constant = 0
-            inputResizeHandleHeightConstraint?.constant = 0
+        let state = composerStates.state(for: id)
+        inputBox.string = state.draft
+        inputBox.exitHistoryNavigation()
+        bindAlternateScreenObservation(for: channel)
+        applyComposerPresentation(for: channel)
+        scheduleSaveState()
+    }
+
+    private func bindAlternateScreenObservation(for channel: ChannelController) {
+        guard ptyChannelTypes.contains(channel.channelType),
+              let terminalView = channel.contentView as? HoloscapeTerminalView else { return }
+
+        composerStates.updateAlternateScreenActive(terminalView.isAlternateScreenActive, for: channel.channelId)
+        terminalView.onAlternateScreenChanged = { [weak self, weak channel] active in
+            guard let self, let channel else { return }
+            self.composerStates.updateAlternateScreenActive(active, for: channel.channelId)
+            guard self.activeChannelId == channel.channelId else { return }
+            self.applyComposerPresentation(for: channel)
+        }
+    }
+
+    private func applyComposerPresentation(for channel: ChannelController) {
+        let supportsRaw = ptyChannelTypes.contains(channel.channelType)
+        let mode = supportsRaw ? composerStates.state(for: channel.channelId).effectiveMode : .composer
+
+        composerModeControl.isHidden = false
+        composerModeControl.setEnabled(supportsRaw, forSegment: 1)
+        composerModeControl.selectedSegment = mode == .rawTerminal ? 1 : 0
+        composerModeControl.setAccessibilityValue(mode == .rawTerminal ? "Raw Terminal" : "Composer")
+        composerModeControl.toolTip = mode == .rawTerminal
+            ? "Raw Terminal: keystrokes go directly to the terminal"
+            : "Composer: Enter sends · Shift-Enter adds a line"
+
+        let isRaw = supportsRaw && mode == .rawTerminal
+        inputContainer.isHidden = isRaw
+        inputResizeHandle.isHidden = isRaw
+        inputResizeHandleHeightConstraint?.constant = isRaw ? 0 : inputResizeHandleHeight
+        inputHeightConstraint?.constant = isRaw ? 0 : (userInputPanelHeight ?? inputMinHeight)
+        if isRaw {
             window.makeFirstResponder(channel.contentView)
         } else {
-            inputContainer.isHidden = false
-            inputResizeHandle.isHidden = false
-            inputResizeHandleHeightConstraint?.constant = inputResizeHandleHeight
-            inputHeightConstraint?.constant = userInputPanelHeight ?? inputMinHeight
             window.makeFirstResponder(inputBox)
+            resizeInputBox()
         }
-        scheduleSaveState()
     }
 
     /// Schedule a tab refresh for the end of the current run loop cycle.
@@ -2807,6 +2870,19 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
+    @objc private func composerModeControlChanged(_ control: NSSegmentedControl) {
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id),
+              ptyChannelTypes.contains(channel.channelType) else {
+            control.selectedSegment = 0
+            return
+        }
+        let mode: ComposerPresentationMode = control.selectedSegment == 1 ? .rawTerminal : .composer
+        composerStates.updateDraft(inputBox.string, for: id)
+        composerStates.updateManualMode(mode, for: id)
+        applyComposerPresentation(for: channel)
+    }
+
     // MARK: - InputBoxViewDelegate
 
     func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) {
@@ -2816,6 +2892,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         historyBuffer.recordCommand(text, channelName: channel.displayLabel)
         resizeInputBox()
         window.makeFirstResponder(inputBox)
+    }
+
+    func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String) {
+        guard let id = activeChannelId else { return }
+        composerStates.updateDraft(text, for: id)
+        resizeInputBox()
     }
 
     @objc private func inputTextDidChange(_ notification: Notification) {
@@ -2855,7 +2937,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         if let next = channel.commandHistory.next() {
             inputBox.setHistoryText(next)
         } else {
-            inputBox.string = ""
+            inputBox.restoreDraftAfterHistory()
         }
     }
 

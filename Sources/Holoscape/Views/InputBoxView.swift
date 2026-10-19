@@ -5,12 +5,14 @@ protocol InputBoxViewDelegate: AnyObject {
     func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String)
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView)
     func inputBoxViewDidRequestNextHistory(_ inputBox: InputBoxView)
+    func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String)
 }
 
 @MainActor
 class InputBoxView: NSTextView {
     weak var inputDelegate: InputBoxViewDelegate?
     private var isNavigatingHistory = false
+    private var draftBeforeHistory: String?
 
     /// Skin context source. When nil, the view renders with the hardcoded
     /// the modern built-in Default constants — the standalone fallback path for
@@ -68,6 +70,7 @@ class InputBoxView: NSTextView {
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityIdentifier("input-box")
+        registerForDraggedTypes(TerminalFileInput.readableTypes)
     }
 
     private func setupSkinObserver() {
@@ -122,26 +125,32 @@ class InputBoxView: NSTextView {
     override func keyDown(with event: NSEvent) {
         // Enter key — send input
         if event.keyCode == 36 && !event.modifierFlags.contains(.shift) {
-            let text = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
+            let text = string
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             inputDelegate?.inputBoxView(self, didSubmitText: text)
             self.string = ""
             isNavigatingHistory = false
+            draftBeforeHistory = nil
             // Force layout recalculation so the height constraint updates
             didChangeText()
             return
         }
 
-        // Up arrow — previous history (when empty or already navigating)
-        if event.keyCode == 126 && (string.isEmpty || isNavigatingHistory) {
-            isNavigatingHistory = true
+        // History is only requested at the first/last logical boundary. This
+        // leaves ordinary caret movement intact for multiline drafts.
+        if event.keyCode == 126 && (isNavigatingHistory || isAtFirstLogicalBoundary) {
+            if !isNavigatingHistory { draftBeforeHistory = string }
             inputDelegate?.inputBoxViewDidRequestPreviousHistory(self)
             return
         }
 
-        // Down arrow — next history (when empty or already navigating)
-        if event.keyCode == 125 && (string.isEmpty || isNavigatingHistory) {
+        if event.keyCode == 125 && (isNavigatingHistory || isAtLastLogicalBoundary) {
             inputDelegate?.inputBoxViewDidRequestNextHistory(self)
+            return
+        }
+
+        if event.keyCode == 53 && isNavigatingHistory {
+            restoreDraftAfterHistory()
             return
         }
 
@@ -152,6 +161,66 @@ class InputBoxView: NSTextView {
     func setHistoryText(_ text: String) {
         self.string = text
         isNavigatingHistory = !text.isEmpty
-        setSelectedRange(NSRange(location: text.count, length: 0))
+        setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+    }
+
+    func restoreDraftAfterHistory() {
+        guard isNavigatingHistory else { return }
+        string = draftBeforeHistory ?? ""
+        setSelectedRange(NSRange(location: (string as NSString).length, length: 0))
+        isNavigatingHistory = false
+        draftBeforeHistory = nil
+        didChangeText()
+    }
+
+    func exitHistoryNavigation() {
+        isNavigatingHistory = false
+        draftBeforeHistory = nil
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        inputDelegate?.inputBoxView(self, didChangeDraft: string)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canAcceptFileInput(from: sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        insertFileInput(from: sender.draggingPasteboard)
+    }
+
+    @objc override func paste(_ sender: Any?) {
+        if insertFileInput(from: .general) { return }
+        super.paste(sender)
+    }
+
+    private func canAcceptFileInput(from pasteboard: NSPasteboard) -> Bool {
+        if !TerminalFileInput.fileURLs(from: pasteboard).isEmpty { return true }
+        return pasteboard.availableType(from: [TerminalFileInput.imageType, .png, .tiff]) != nil
+    }
+
+    @discardableResult
+    func insertFileInput(from pasteboard: NSPasteboard) -> Bool {
+        do {
+            guard let text = try TerminalFileInput.inputText(from: pasteboard) else { return false }
+            insertText(text, replacementRange: selectedRange())
+            return true
+        } catch {
+            NSLog("InputBoxView: failed to persist pasted image: \(error)")
+            NSSound.beep()
+            return false
+        }
+    }
+
+    private var isAtFirstLogicalBoundary: Bool {
+        guard selectedRange.length == 0 else { return false }
+        return selectedRange.location == 0
+    }
+
+    private var isAtLastLogicalBoundary: Bool {
+        guard selectedRange.length == 0 else { return false }
+        return selectedRange.location == (string as NSString).length
     }
 }
