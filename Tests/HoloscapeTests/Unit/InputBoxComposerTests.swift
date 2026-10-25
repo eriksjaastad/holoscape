@@ -11,6 +11,7 @@ final class InputBoxComposerTests: XCTestCase {
         view.string = "printf 'x'  \nsecond line  "
 
         view.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+        spy.finishSubmission()
 
         XCTAssertEqual(spy.submissions, ["printf 'x'  \nsecond line  "])
         XCTAssertEqual(view.string, "")
@@ -24,6 +25,7 @@ final class InputBoxComposerTests: XCTestCase {
         view.string = "echo keypad"
 
         view.keyDown(with: keyEvent(keyCode: 76, characters: "\r"))
+        spy.finishSubmission()
 
         XCTAssertEqual(spy.submissions, ["echo keypad"])
         XCTAssertEqual(view.string, "")
@@ -37,6 +39,7 @@ final class InputBoxComposerTests: XCTestCase {
         view.string = "not ready"
 
         view.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+        spy.finishSubmission()
 
         XCTAssertEqual(spy.submissions, ["not ready"])
         XCTAssertEqual(view.string, "not ready")
@@ -165,10 +168,21 @@ private final class InputBoxDelegateSpy: InputBoxViewDelegate {
     var drafts: [String] = []
     var previousRequests = 0
     var nextRequests = 0
+    private var pendingCompletion: (@MainActor (Bool) -> Void)?
 
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool {
+    func inputBoxView(
+        _ inputBox: InputBoxView,
+        didSubmitText text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
         submissions.append(text)
-        return acceptsSubmissions
+        pendingCompletion = completion
+    }
+
+    func finishSubmission() {
+        let completion = pendingCompletion
+        pendingCompletion = nil
+        completion?(acceptsSubmissions)
     }
 
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView) {

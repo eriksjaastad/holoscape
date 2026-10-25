@@ -61,21 +61,45 @@ class BridgeChannelController: NSObject, ChannelController {
     }
 
     func sendInput(_ text: String) {
-        guard !text.isEmpty else { return }
-        recordUserInteraction()
-        commandHistory.add(text)
+        submitInput(text) { _ in }
+    }
 
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        guard !text.isEmpty else {
+            completion(false)
+            return
+        }
         let agents = channelManager.agentChannels()
         if agents.isEmpty {
             appendMessage("[System] No active agent channels to broadcast to.")
+            completion(false)
             return
         }
-
-        let timeString = formatTime(Date())
-        appendMessage("[\(timeString)] \u{2192} broadcast: \(text)")
-
+        var remaining = agents.count
+        var succeeded = 0
         for agent in agents {
-            agent.sendInput(text)
+            agent.submitInput(text) { [weak self] didSubmit in
+                guard let self else {
+                    completion(false)
+                    return
+                }
+                if didSubmit { succeeded += 1 }
+                remaining -= 1
+                guard remaining == 0 else { return }
+                guard succeeded > 0 else {
+                    self.appendMessage("[System] Broadcast failed for every active agent channel.")
+                    completion(false)
+                    return
+                }
+                self.recordUserInteraction()
+                self.commandHistory.add(text)
+                let timeString = self.formatTime(Date())
+                self.appendMessage("[\(timeString)] \u{2192} broadcast: \(text)")
+                if succeeded < agents.count {
+                    self.appendMessage("[System] Broadcast reached \(succeeded) of \(agents.count) active agent channels.")
+                }
+                completion(true)
+            }
         }
     }
 

@@ -290,6 +290,24 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         terminal.send(bytes)
     }
 
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        guard state == .active else {
+            completion(false)
+            return
+        }
+        let bytes = Array((text.hasSuffix("\n") ? text : text + "\n").utf8)
+        terminal.submit(bytes) { [weak self] succeeded in
+            guard let self, succeeded else {
+                completion(false)
+                return
+            }
+            self.recordUserInteraction()
+            self.clearTerminalOutputPersistentState()
+            self.commandHistory.add(text)
+            completion(true)
+        }
+    }
+
     func activate() {
         state = .connecting
         delegate?.channelStateDidChange(self, to: .connecting)

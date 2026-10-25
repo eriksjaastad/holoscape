@@ -2,7 +2,11 @@ import AppKit
 
 @MainActor
 protocol InputBoxViewDelegate: AnyObject {
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool
+    func inputBoxView(
+        _ inputBox: InputBoxView,
+        didSubmitText text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    )
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView)
     func inputBoxViewDidRequestNextHistory(_ inputBox: InputBoxView)
     func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String)
@@ -13,6 +17,8 @@ class InputBoxView: NSTextView {
     weak var inputDelegate: InputBoxViewDelegate?
     private var isNavigatingHistory = false
     private var draftBeforeHistory: String?
+    private var submissionGeneration: UInt = 0
+    private var isSubmissionPending = false
 
     /// Skin context source. When nil, the view renders with the hardcoded
     /// the modern built-in Default constants — the standalone fallback path for
@@ -137,12 +143,22 @@ class InputBoxView: NSTextView {
         if isSubmitKey && !event.modifierFlags.contains(.shift) {
             let text = string
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            guard inputDelegate?.inputBoxView(self, didSubmitText: text) == true else { return }
-            replaceComposerText("")
-            isNavigatingHistory = false
-            draftBeforeHistory = nil
-            // Force layout recalculation so the height constraint updates
-            didChangeText()
+            guard !isSubmissionPending, let inputDelegate else { return }
+            isSubmissionPending = true
+            submissionGeneration &+= 1
+            let generation = submissionGeneration
+            inputDelegate.inputBoxView(self, didSubmitText: text) { [weak self] succeeded in
+                guard let self else { return }
+                self.isSubmissionPending = false
+                guard succeeded,
+                      self.submissionGeneration == generation,
+                      self.string == text else { return }
+                self.replaceComposerText("")
+                self.isNavigatingHistory = false
+                self.draftBeforeHistory = nil
+                // Force layout recalculation so the height constraint updates.
+                self.didChangeText()
+            }
             return
         }
 
@@ -187,6 +203,8 @@ class InputBoxView: NSTextView {
     }
 
     func replaceComposerText(_ text: String) {
+        submissionGeneration &+= 1
+        isSubmissionPending = false
         undoManager?.removeAllActions()
         string = text
         setSelectedRange(NSRange(location: (text as NSString).length, length: 0))

@@ -18,7 +18,7 @@ class MockChannelController: NSObject, ChannelController {
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
     private(set) var lastInteractionAt: Date = Date()
-    private let _contentView = NSView()
+    private let _contentView: NSView
 
     var contentView: NSView { _contentView }
 
@@ -44,24 +44,38 @@ class MockChannelController: NSObject, ChannelController {
     var defersDeactivationCompletion = false
     private var pendingDeactivationCompletion: (@MainActor () -> Void)?
     var sentInputs: [String] = []
+    private var pendingSubmissionCompletion: (@MainActor (Bool) -> Void)?
 
     init(
         id: UUID = UUID(),
         type: ChannelType = .shell,
         label: String = "Mock",
         instanceNumber: Int? = nil,
-        state: ChannelState = .disconnected
+        state: ChannelState = .disconnected,
+        contentView: NSView = NSView()
     ) {
         self.channelId = id
         self.channelType = type
         self.displayLabel = label
         self.instanceNumber = instanceNumber
         self.state = state
+        self._contentView = contentView
         super.init()
     }
 
     func sendInput(_ text: String) {
         sentInputs.append(text)
+    }
+
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        sentInputs.append(text)
+        pendingSubmissionCompletion = completion
+    }
+
+    func finishSubmission(succeeded: Bool) {
+        let completion = pendingSubmissionCompletion
+        pendingSubmissionCompletion = nil
+        completion?(succeeded)
     }
 
     func activate() {

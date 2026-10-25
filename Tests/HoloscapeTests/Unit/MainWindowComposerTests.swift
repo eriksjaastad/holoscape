@@ -113,6 +113,38 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: channel.channelId).draft, "wait for prompt")
     }
 
+    func testFailedAcknowledgedSubmissionPreservesDraft() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Active")
+        fixture.controller.switchToChannel(channel.channelId)
+        let input = fixture.controller.inputBoxForTesting
+        input.string = "keep after failure"
+        input.didChangeText()
+
+        input.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+        XCTAssertEqual(channel.sentInputs, ["keep after failure"])
+        channel.finishSubmission(succeeded: false)
+
+        XCTAssertEqual(input.string, "keep after failure")
+        XCTAssertEqual(
+            fixture.controller.composerStateForTesting(channelId: channel.channelId).draft,
+            "keep after failure"
+        )
+    }
+
+    func testClosingActiveChannelDetachesAlternateScreenMonitorImmediately() throws {
+        let fixture = try makeFixture()
+        let terminal = HoloscapeTerminalView(frame: .zero)
+        let channel = fixture.makeChannel(type: .shell, label: "Closing", contentView: terminal)
+        channel.defersDeactivationCompletion = true
+        fixture.controller.switchToChannel(channel.channelId)
+        XCTAssertNotNil(terminal.onAlternateScreenChanged)
+
+        fixture.controller.closeChannel(id: channel.channelId)
+
+        XCTAssertNil(terminal.onAlternateScreenChanged)
+    }
+
     func testReselectingActiveTabOrSidebarPreservesSelectionAndUndo() throws {
         let fixture = try makeFixture()
         let channel = fixture.makeChannel(type: .shell, label: "Active")
@@ -178,11 +210,19 @@ private final class ComposerFixture {
     func makeChannel(
         type: ChannelType,
         label: String,
-        state: ChannelState = .active
+        state: ChannelState = .active,
+        contentView: NSView = NSView()
     ) -> MockChannelController {
         var result: MockChannelController!
         _ = manager.createChannel(type: type, role: label, workingDirectory: nil) { id, type, label, number, _ in
-            let channel = MockChannelController(id: id, type: type, label: label, instanceNumber: number, state: state)
+            let channel = MockChannelController(
+                id: id,
+                type: type,
+                label: label,
+                instanceNumber: number,
+                state: state,
+                contentView: contentView
+            )
             result = channel
             return channel
         }

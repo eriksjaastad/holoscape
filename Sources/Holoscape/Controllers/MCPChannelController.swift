@@ -87,22 +87,32 @@ class MCPChannelController: NSObject, ChannelController {
     }
 
     func sendInput(_ text: String) {
-        guard !text.isEmpty, state == .active else { return }
-        recordUserInteraction()
-        commandHistory.add(text)
+        submitInput(text) { _ in }
+    }
 
-        let timeString = formatTime(Date())
-        appendMessage("[\(timeString)] you: \(text)")
-
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        guard !text.isEmpty, state == .active else {
+            completion(false)
+            return
+        }
         Task { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                completion(false)
+                return
+            }
             do {
                 let response = try await self.mcpClient.sendMessage(text)
+                self.recordUserInteraction()
+                self.commandHistory.add(text)
+                let timeString = self.formatTime(Date())
+                self.appendMessage("[\(timeString)] you: \(text)")
                 let responseTime = self.formatTime(Date())
                 self.appendMessage("[\(responseTime)] CEO: \(response)")
                 self.delegate?.channelDidReceiveOutput(self)
+                completion(true)
             } catch {
                 self.appendMessage("[Error] Failed to send: \(error.localizedDescription)")
+                completion(false)
             }
         }
     }

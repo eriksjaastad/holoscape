@@ -2538,6 +2538,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     func closeChannel(id: UUID) {
         guard channelMutationEnabled else { return }
+        (channelManager.channel(for: id)?.contentView as? HoloscapeTerminalView)?.onAlternateScreenChanged = nil
         channelManager.closeChannel(id: id)
 
         splitPaneManager.removeChannel(channelId: id)
@@ -2898,18 +2899,39 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     // MARK: - InputBoxViewDelegate
 
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String) -> Bool {
+    func inputBoxView(
+        _ inputBox: InputBoxView,
+        didSubmitText text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
         guard let id = activeChannelId,
-              let channel = channelManager.channel(for: id) else { return false }
+              let channel = channelManager.channel(for: id) else {
+            completion(false)
+            return
+        }
         guard !ptyChannelTypes.contains(channel.channelType) || channel.state == .active else {
             NSSound.beep()
-            return false
+            completion(false)
+            return
         }
-        channel.sendInput(text)
-        historyBuffer.recordCommand(text, channelName: channel.displayLabel)
-        resizeInputBox()
-        window.makeFirstResponder(inputBox)
-        return true
+        let channelName = channel.displayLabel
+        channel.submitInput(text) { [weak self, weak channel] succeeded in
+            guard let self else {
+                completion(false)
+                return
+            }
+            guard succeeded, channel != nil else {
+                NSSound.beep()
+                completion(false)
+                return
+            }
+            self.historyBuffer.recordCommand(text, channelName: channelName)
+            if self.activeChannelId == id {
+                self.resizeInputBox()
+                self.window.makeFirstResponder(inputBox)
+            }
+            completion(true)
+        }
     }
 
     func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String) {
