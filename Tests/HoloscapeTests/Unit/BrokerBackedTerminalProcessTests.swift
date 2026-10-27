@@ -1156,7 +1156,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(try fixture.registry.load().single().lifecycle, .running, "Host loss must not mark a possibly-live session as errored")
     }
 
-    func testSendAfterBrokerHostLossReportsHostFailureInsteadOfTrapping() throws {
+    func testAcknowledgedSendAfterBrokerHostLossReportsFailureAndRejectsSubmission() throws {
         let runtime = HostLossRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008011")
         defer { fixture.cleanup() }
@@ -1164,13 +1164,15 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             return XCTFail("Expected the broker session to start")
         }
         var failures: [TerminalSessionFailure] = []
+        var submissionResults: [Bool] = []
         fixture.terminal.setSessionFailureHandler { failures.append($0) }
 
         runtime.isHostAvailable = false
-        fixture.terminal.send(Array("hello\n".utf8))
-        try waitUntil { failures.count == 1 }
+        fixture.terminal.send(Array("hello\n".utf8)) { submissionResults.append($0) }
+        try waitUntil { failures.count == 1 && submissionResults.count == 1 }
 
         XCTAssertEqual(failures.map(\.kind), [.brokerHostUnavailable])
+        XCTAssertEqual(submissionResults, [false])
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
         XCTAssertNil(fixture.terminal.staleBrokerSessionID)
     }
@@ -1504,6 +1506,33 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         terminal.send(Array("replacement-write".utf8))
         try waitUntil { coordinator.successfulInputWrites == 1 }
         terminal.detachBrokerSession()
+    }
+
+    func testAcknowledgedInputReportsBrokerWriteFailure() throws {
+        let coordinator = BlockingReattachCoordinator()
+        coordinator.blockNextInputWrite(fail: true)
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "acknowledged-input",
+            environmentProfile: .shell,
+            coordinator: coordinator
+        )
+        terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
+        try waitUntil { terminal.brokerSessionID != nil }
+        let completed = expectation(description: "input write acknowledged")
+        var succeeded: Bool?
+
+        terminal.send(Array("failing-write".utf8)) { result in
+            succeeded = result
+            completed.fulfill()
+        }
+        XCTAssertTrue(coordinator.waitForInputWrite())
+        coordinator.finishInputWrite()
+        wait(for: [completed], timeout: 1)
+
+        XCTAssertEqual(succeeded, false)
+        XCTAssertNotNil(terminal.sessionFailure)
     }
 
     func testDelayedResizeFailureIsIgnoredAfterRunOwnershipIsRevoked() throws {
@@ -2382,20 +2411,23 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(terminal.brokerSessionID, sessionID)
     }
 
-    func testBrokerInputSendReturnsBeforeSlowBrokerWriteCompletes() throws {
+    func testAcknowledgedBrokerInputReturnsImmediatelyButCompletesOnlyAfterWrite() throws {
         let runtime = BlockingInputRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008016")
         defer { fixture.cleanup() }
+        var submissionResults: [Bool] = []
 
         let started = Date()
-        fixture.terminal.send(Array("slow-write\n".utf8))
+        fixture.terminal.send(Array("slow-write\n".utf8)) { submissionResults.append($0) }
         let elapsed = Date().timeIntervalSince(started)
 
         XCTAssertLessThan(elapsed, 0.05, "Broker-backed typing must enqueue input without waiting for socket/PTY writes")
         XCTAssertTrue(runtime.waitForFirstWrite(), "The queued write should still reach the broker lane")
+        XCTAssertEqual(submissionResults, [], "Submission must remain pending until the broker accepts the write")
         runtime.unblockWrites()
-        try waitUntil { runtime.sentInputs.count == 1 }
+        try waitUntil { runtime.sentInputs.count == 1 && submissionResults.count == 1 }
         XCTAssertEqual(String(decoding: runtime.sentInputs[0], as: UTF8.self), "slow-write\n")
+        XCTAssertEqual(submissionResults, [true])
     }
 
     func testBrokerInputWriteLanePreservesPerSessionInputOrder() throws {

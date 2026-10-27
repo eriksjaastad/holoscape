@@ -8,7 +8,7 @@ import SwiftTerm
 /// process input/output/resize flow through BrokerSessionCoordinator and the
 /// native PTY runtime behind it.
 @MainActor
-final class BrokerBackedTerminalProcess: TerminalProcess {
+final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalInput {
     enum TerminalError: Error, Equatable {
         case startFailed(String)
         case sessionNotStarted
@@ -857,20 +857,32 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
     }
 
     func send(_ bytes: [UInt8]) {
+        send(bytes) { _ in }
+    }
+
+    func send(
+        _ bytes: [UInt8],
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
         guard let brokerSessionID else {
             // Keystrokes can still reach the view of a stale or disconnected tab.
             // There is no live session to write to, and that is not a broker host
             // outage, so log and ignore rather than trapping the app.
             NSLog("Broker-backed terminal input ignored: no live broker session")
+            completion(false)
             return
         }
         guard sessionFailure == nil else {
             // The outage (or dropped session) was already reported to the tab,
             // which is showing its recovery guidance; late keystrokes are inert.
+            completion(false)
             return
         }
-        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else { return }
-        inputWriteLane.enqueue(
+        guard let deliveryGeneration = outputPresentation.activeDeliveryGeneration else {
+            completion(false)
+            return
+        }
+        let accepted = inputWriteLane.enqueue(
             sessionID: brokerSessionID,
             bytes: bytes,
             write: { [inputCoordinator] id, queuedBytes in
@@ -881,13 +893,21 @@ final class BrokerBackedTerminalProcess: TerminalProcess {
                 // A direct main-actor poll can otherwise overtake a sample whose
                 // bytes were drained off-main but not yet delivered to SwiftTerm.
                 outputReadLane.wake(sessionID: id)
+                Task { @MainActor in completion(true) }
             },
             onFailure: { [weak self] id, error in
                 Task { @MainActor [weak self] in
                     self?.reportSessionFailure(error, for: id, deliveryGeneration: deliveryGeneration)
+                    completion(false)
                 }
+            },
+            onCancellation: { _ in
+                Task { @MainActor in completion(false) }
             }
         )
+        if !accepted {
+            completion(false)
+        }
     }
 
     func setOutputHandler(_ handler: (() -> Void)?) {
@@ -1783,26 +1803,41 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     func enqueue(
         sessionID: BrokerSessionID,
         bytes: [UInt8],
         write: @escaping @Sendable (BrokerSessionID, [UInt8]) throws -> Void,
         onSuccess: @escaping @Sendable (BrokerSessionID) -> Void,
-        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void
-    ) {
-        guard let runGeneration = runGeneration(for: sessionID) else { return }
+        onFailure: @escaping @Sendable (BrokerSessionID, Error) -> Void,
+        onCancellation: @escaping @Sendable (BrokerSessionID) -> Void
+    ) -> Bool {
+        guard let runGeneration = runGeneration(for: sessionID) else { return false }
         queue.async { [weak self] in
-            guard let self, self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+            guard let self else {
+                onCancellation(sessionID)
+                return
+            }
+            guard self.isOpen(for: sessionID, runGeneration: runGeneration) else {
+                onCancellation(sessionID)
+                return
+            }
             do {
                 try write(sessionID, bytes)
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else { return }
+                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else {
+                    onCancellation(sessionID)
+                    return
+                }
                 onSuccess(sessionID)
             } catch {
                 if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
                     onFailure(sessionID, error)
+                } else {
+                    onCancellation(sessionID)
                 }
             }
         }
+        return true
     }
 
     private func runGeneration(for sessionID: BrokerSessionID) -> UInt? {

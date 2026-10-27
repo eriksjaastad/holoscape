@@ -65,6 +65,7 @@ class ChannelManager {
     private(set) var brokerRegistryReadFailure: String?
     private(set) var pinnedChannelIds: Set<UUID> = []
     private(set) var pinnedTimestamps: [UUID: Date] = [:]
+    var channelDidActuallyRemove: (@MainActor (any ChannelController) -> Void)?
     private let persistence: ChannelPersistenceTransactions
     let brokerSessionCoordinator: any BrokerSessionCoordinating
     private let brokerBackedShellCoordinator: any BrokerSessionCoordinating
@@ -344,9 +345,12 @@ class ChannelManager {
         ))
         if result.didSave {
             for id in result.finalizedClosureIDs {
-                channels.removeValue(forKey: id)
+                let removedChannel = channels.removeValue(forKey: id)
                 channelOrder.removeAll { $0 == id }
                 channelLabels.removeValue(forKey: id)
+                if let removedChannel {
+                    channelDidActuallyRemove?(removedChannel)
+                }
             }
         }
         return result.didSave

@@ -152,10 +152,14 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     func sendInput(_ text: String) {
-        guard !text.isEmpty else { return }
-        recordUserInteraction()
-        commandHistory.add(text)
+        submitInput(text) { _ in }
+    }
 
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        guard !text.isEmpty else {
+            completion(false)
+            return
+        }
         let payload: [String: Any] = [
             "sender": sender,
             "body": text,
@@ -164,10 +168,12 @@ class GroupChatChannelController: NSObject, ChannelController {
 
         guard let url = URL(string: "\(apiURL)/send") else {
             appendMessage("[Error] Failed to send: \(GroupChatTransportError.invalidEndpoint.localizedDescription)")
+            completion(false)
             return
         }
         guard let jsonData = try? JSONSerialization.data(withJSONObject: payload) else {
             appendMessage("[Error] Failed to encode message.")
+            completion(false)
             return
         }
 
@@ -179,19 +185,28 @@ class GroupChatChannelController: NSObject, ChannelController {
 
         session.dataTask(with: request) { [weak self] _, response, error in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self else {
+                    completion(false)
+                    return
+                }
                 if let error {
                     self.appendMessage("[Error] Failed to send: \(error.localizedDescription)")
+                    completion(false)
                     return
                 }
                 guard let httpResponse = response as? HTTPURLResponse else {
                     self.appendMessage("[Error] Failed to send: \(GroupChatTransportError.nonHTTPResponse.localizedDescription)")
+                    completion(false)
                     return
                 }
                 guard (200..<300).contains(httpResponse.statusCode) else {
                     self.appendMessage("[Error] Failed to send: \(GroupChatTransportError.httpStatus(httpResponse.statusCode).localizedDescription)")
+                    completion(false)
                     return
                 }
+                self.recordUserInteraction()
+                self.commandHistory.add(text)
+                completion(true)
             }
         }.resume()
     }

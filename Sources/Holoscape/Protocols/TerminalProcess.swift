@@ -84,6 +84,28 @@ protocol TerminalProcess: AnyObject {
     var pendingExitedOutputRetirement: BrokerExitedOutputRetirement? { get }
 }
 
+@MainActor
+protocol AcknowledgedTerminalInput: AnyObject {
+    func send(
+        _ bytes: [UInt8],
+        completion: @escaping @MainActor (Bool) -> Void
+    )
+}
+
+extension TerminalProcess {
+    func submit(
+        _ bytes: [UInt8],
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        if let acknowledgedInput = self as? any AcknowledgedTerminalInput {
+            acknowledgedInput.send(bytes, completion: completion)
+        } else {
+            send(bytes)
+            completion(true)
+        }
+    }
+}
+
 enum TerminalStartFailureKind: String, Codable, Equatable, Sendable {
     case failed
     case brokerHostUnavailable

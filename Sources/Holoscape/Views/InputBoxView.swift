@@ -2,15 +2,23 @@ import AppKit
 
 @MainActor
 protocol InputBoxViewDelegate: AnyObject {
-    func inputBoxView(_ inputBox: InputBoxView, didSubmitText text: String)
+    func inputBoxView(
+        _ inputBox: InputBoxView,
+        didSubmitText text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    )
     func inputBoxViewDidRequestPreviousHistory(_ inputBox: InputBoxView)
     func inputBoxViewDidRequestNextHistory(_ inputBox: InputBoxView)
+    func inputBoxView(_ inputBox: InputBoxView, didChangeDraft text: String)
 }
 
 @MainActor
 class InputBoxView: NSTextView {
     weak var inputDelegate: InputBoxViewDelegate?
     private var isNavigatingHistory = false
+    private var draftBeforeHistory: String?
+    private var submissionGeneration: UInt = 0
+    private var isSubmissionPending = false
 
     /// Skin context source. When nil, the view renders with the hardcoded
     /// the modern built-in Default constants — the standalone fallback path for
@@ -48,6 +56,7 @@ class InputBoxView: NSTextView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+    var hasActiveMarkedText: Bool { hasMarkedText() }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
@@ -60,6 +69,7 @@ class InputBoxView: NSTextView {
         textColor = Self.fieldText
         insertionPointColor = Self.fieldText
         isRichText = false
+        allowsUndo = true
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
@@ -68,6 +78,7 @@ class InputBoxView: NSTextView {
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityIdentifier("input-box")
+        registerForDraggedTypes(TerminalFileInput.readableTypes)
     }
 
     private func setupSkinObserver() {
@@ -120,28 +131,52 @@ class InputBoxView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        // Enter key — send input
-        if event.keyCode == 36 && !event.modifierFlags.contains(.shift) {
-            let text = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
-            inputDelegate?.inputBoxView(self, didSubmitText: text)
-            self.string = ""
-            isNavigatingHistory = false
-            // Force layout recalculation so the height constraint updates
-            didChangeText()
+        let isSubmitKey = event.keyCode == 36 || event.keyCode == 76
+        // Return confirms an active IME composition. Let AppKit commit marked
+        // text before Holoscape considers Return a submit gesture.
+        if isSubmitKey && hasActiveMarkedText {
+            super.keyDown(with: event)
             return
         }
 
-        // Up arrow — previous history (when empty or already navigating)
-        if event.keyCode == 126 && (string.isEmpty || isNavigatingHistory) {
-            isNavigatingHistory = true
+        // Enter key — send input
+        if isSubmitKey && !event.modifierFlags.contains(.shift) {
+            let text = string
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard !isSubmissionPending, let inputDelegate else { return }
+            isSubmissionPending = true
+            submissionGeneration &+= 1
+            let generation = submissionGeneration
+            inputDelegate.inputBoxView(self, didSubmitText: text) { [weak self] succeeded in
+                guard let self else { return }
+                self.isSubmissionPending = false
+                guard succeeded,
+                      self.submissionGeneration == generation,
+                      self.string == text else { return }
+                self.replaceComposerText("")
+                self.isNavigatingHistory = false
+                self.draftBeforeHistory = nil
+                // Force layout recalculation so the height constraint updates.
+                self.didChangeText()
+            }
+            return
+        }
+
+        // History is only requested at the first/last logical boundary. This
+        // leaves ordinary caret movement intact for multiline drafts.
+        if event.keyCode == 126 && (isNavigatingHistory || isAtFirstLogicalBoundary) {
+            if !isNavigatingHistory { draftBeforeHistory = string }
             inputDelegate?.inputBoxViewDidRequestPreviousHistory(self)
             return
         }
 
-        // Down arrow — next history (when empty or already navigating)
-        if event.keyCode == 125 && (string.isEmpty || isNavigatingHistory) {
+        if event.keyCode == 125 && (isNavigatingHistory || isAtLastLogicalBoundary) {
             inputDelegate?.inputBoxViewDidRequestNextHistory(self)
+            return
+        }
+
+        if event.keyCode == 53 && isNavigatingHistory {
+            restoreDraftAfterHistory()
             return
         }
 
@@ -150,8 +185,75 @@ class InputBoxView: NSTextView {
     }
 
     func setHistoryText(_ text: String) {
-        self.string = text
+        replaceComposerText(text)
         isNavigatingHistory = !text.isEmpty
-        setSelectedRange(NSRange(location: text.count, length: 0))
+    }
+
+    func restoreDraftAfterHistory() {
+        guard isNavigatingHistory else { return }
+        replaceComposerText(draftBeforeHistory ?? "")
+        isNavigatingHistory = false
+        draftBeforeHistory = nil
+        didChangeText()
+    }
+
+    func exitHistoryNavigation() {
+        isNavigatingHistory = false
+        draftBeforeHistory = nil
+    }
+
+    func replaceComposerText(_ text: String) {
+        submissionGeneration &+= 1
+        isSubmissionPending = false
+        undoManager?.removeAllActions()
+        string = text
+        setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        undoManager?.removeAllActions()
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        inputDelegate?.inputBoxView(self, didChangeDraft: string)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canAcceptFileInput(from: sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        insertFileInput(from: sender.draggingPasteboard)
+    }
+
+    @objc override func paste(_ sender: Any?) {
+        if insertFileInput(from: .general) { return }
+        super.paste(sender)
+    }
+
+    private func canAcceptFileInput(from pasteboard: NSPasteboard) -> Bool {
+        if !TerminalFileInput.fileURLs(from: pasteboard).isEmpty { return true }
+        return pasteboard.availableType(from: [TerminalFileInput.imageType, .png, .tiff]) != nil
+    }
+
+    @discardableResult
+    func insertFileInput(from pasteboard: NSPasteboard) -> Bool {
+        do {
+            guard let text = try TerminalFileInput.inputText(from: pasteboard) else { return false }
+            insertText(text, replacementRange: selectedRange())
+            return true
+        } catch {
+            NSLog("InputBoxView: failed to persist pasted image: \(error)")
+            NSSound.beep()
+            return false
+        }
+    }
+
+    private var isAtFirstLogicalBoundary: Bool {
+        guard selectedRange.length == 0 else { return false }
+        return selectedRange.location == 0
+    }
+
+    private var isAtLastLogicalBoundary: Bool {
+        guard selectedRange.length == 0 else { return false }
+        return selectedRange.location == (string as NSString).length
     }
 }

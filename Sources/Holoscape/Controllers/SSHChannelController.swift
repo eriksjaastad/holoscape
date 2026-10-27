@@ -68,8 +68,25 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         guard state == .active else { return }
         recordUserInteraction()
         commandHistory.add(text)
-        let bytes = Array((text + "\n").utf8)
+        let bytes = Array((text.hasSuffix("\n") ? text : text + "\n").utf8)
         terminal.send(bytes)
+    }
+
+    func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
+        guard state == .active else {
+            completion(false)
+            return
+        }
+        let bytes = Array((text.hasSuffix("\n") ? text : text + "\n").utf8)
+        terminal.submit(bytes) { [weak self] succeeded in
+            guard let self, succeeded else {
+                completion(false)
+                return
+            }
+            self.recordUserInteraction()
+            self.commandHistory.add(text)
+            completion(true)
+        }
     }
 
     func activate() {

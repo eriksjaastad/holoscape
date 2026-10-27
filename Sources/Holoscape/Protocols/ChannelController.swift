@@ -17,6 +17,10 @@ protocol ChannelController: AnyObject {
     var tabIdentityIndicator: ChannelTabIdentityIndicator? { get }
 
     func sendInput(_ text: String)
+    func submitInput(
+        _ text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    )
     func activate()
     func deactivate()
     func deactivate(completion: @escaping @MainActor () -> Void)
@@ -57,6 +61,13 @@ extension ChannelController {
 
     func applyPersistentState(_ state: PersistentChannelState) {}
     func recordUserInteraction(at date: Date) {}
+    func submitInput(
+        _ text: String,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        sendInput(text)
+        completion(true)
+    }
     func deactivate(completion: @escaping @MainActor () -> Void) {
         deactivate()
         completion()
