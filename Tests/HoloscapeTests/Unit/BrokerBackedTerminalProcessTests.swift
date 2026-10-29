@@ -931,6 +931,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var running = true
         private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
+        private var terminationStatusThreads: [Bool] = []
+        private var exitFinalizationThreads: [Bool] = []
         let supportsOutputAvailabilityMonitoring: Bool
         var terminationError: Error?
         var retirementError: Error?
@@ -948,6 +950,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         var acknowledgedGenerations: [UInt64] {
             lock.withLock { storedAcknowledgedGenerations }
+        }
+
+        var didCheckTerminationOnMainThread: Bool {
+            lock.withLock { terminationStatusThreads.contains(true) }
+        }
+
+        var didFinalizeExitOnMainThread: Bool {
+            lock.withLock { exitFinalizationThreads.contains(true) }
         }
 
         func triggerFinalOutput(_ text: String, afterTerminationCheck lateText: String = "", for id: BrokerSessionID) {
@@ -969,6 +979,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func detachSession(id: BrokerSessionID) throws {}
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
         func terminateSession(id: BrokerSessionID, exitCode: Int32?) throws {
+            lock.withLock { exitFinalizationThreads.append(Thread.isMainThread) }
             if let terminationError { throw terminationError }
         }
         func markSessionErrored(id: BrokerSessionID) throws {
@@ -1024,6 +1035,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func terminationStatus(id: BrokerSessionID) throws -> Int32? {
             if let terminationStatusError { throw terminationStatusError }
             return lock.withLock {
+                terminationStatusThreads.append(Thread.isMainThread)
                 guard !running else { return nil }
                 output.append(outputAfterTerminationCheck)
                 outputAfterTerminationCheck.removeAll()
@@ -1602,6 +1614,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(
             outputLifecycles.allSatisfy { $0 == .running },
             "Durable exit must follow delivery of every final drain callback"
+        )
+        XCTAssertFalse(
+            runtime.didCheckTerminationOnMainThread,
+            "Completed-process termination observation must stay on the broker output lane"
+        )
+        XCTAssertFalse(
+            runtime.didFinalizeExitOnMainThread,
+            "Durable broker exit finalization must stay off the main actor"
         )
         let finalLines = fixture.terminal.lastLines(5).joined(separator: "\n")
         XCTAssertTrue(finalLines.contains("first-final-lane-output"))
