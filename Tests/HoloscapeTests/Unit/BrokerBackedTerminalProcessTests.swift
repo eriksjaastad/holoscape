@@ -2350,6 +2350,14 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         runtime.finishRetirement()
         try waitUntil { fixture.terminal.brokerSessionID == nil }
+        var staleIdentityRetryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.detachBrokerSessionForCleanup { staleIdentityRetryOutcome = $0 }
+        try waitUntil { staleIdentityRetryOutcome != nil }
+        guard case .retryableFailure = staleIdentityRetryOutcome else {
+            return XCTFail("Cleanup retry must remain failed after exit clears live identity")
+        }
+        XCTAssertEqual(runtime.handlerRemovalIDs, [sessionID, sessionID])
+
         fixture.terminal.startProcess(
             executable: "/bin/zsh",
             args: ["--login"],
@@ -2371,8 +2379,8 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         guard case .completed = retryOutcome else {
             return XCTFail("Close retry must remove the old monitor after exit clears live identity")
         }
-        XCTAssertEqual(runtime.handlerRemovalCount, 3)
-        XCTAssertEqual(runtime.handlerRemovalIDs, [sessionID, sessionID, replacementID])
+        XCTAssertEqual(runtime.handlerRemovalCount, 4)
+        XCTAssertEqual(runtime.handlerRemovalIDs, [sessionID, sessionID, sessionID, replacementID])
         XCTAssertEqual(try runtime.listSessions(), [])
     }
 

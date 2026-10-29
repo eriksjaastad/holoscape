@@ -765,10 +765,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try client.isRunning(id: BrokerSessionID(rawValue: "missing-client-session"))) { error in
-            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
-                return XCTFail("Expected hostFailure, got \(error)")
+            guard case let BrokerSessionHostClientRuntime.ClientError.missingSession(id, message) = error else {
+                return XCTFail("Expected missingSession, got \(error)")
             }
-            XCTAssertEqual(code, "missing-session")
+            XCTAssertEqual(id, BrokerSessionID(rawValue: "missing-client-session"))
             XCTAssertTrue(message.contains("missingSession"), message)
         }
     }

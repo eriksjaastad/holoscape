@@ -2129,18 +2129,41 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         runtime.outputHandlerError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(started.id)
         XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
 
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+
+        let otherID = BrokerSessionID(rawValue: started.id.rawValue + "-other")
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            otherID,
+            message: "missingSession(\(otherID.rawValue))"
+        )
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .missingSession(otherID, message: "missingSession(\(otherID.rawValue))")
+            )
+        }
+
         runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
             code: "missing-session",
             message: "missingSession(\(started.id.rawValue))"
         )
-        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .hostFailure(code: "missing-session", message: "missingSession(\(started.id.rawValue))")
+            )
+        }
 
         runtime.outputHandlerError = RuntimeError.failed
         XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
             XCTAssertEqual(error as? RuntimeError, .failed)
         }
-        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.0), [started.id, started.id, started.id])
-        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.installed), [false, false, false])
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.0), Array(repeating: started.id, count: 5))
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.installed), Array(repeating: false, count: 5))
     }
 
     func testLifecycleTransitionsCallRuntimeFacade() throws {
@@ -2552,8 +2575,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
 
         now = Date(timeIntervalSince1970: 786)
-        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "missingSession(\(started.id.rawValue))"
         )
         let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
@@ -2657,8 +2680,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             attachedChannelID: nil
         )
         now = Date(timeIntervalSince1970: 796)
-        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "session not found: \(started.id.rawValue)"
         )
 
@@ -2690,8 +2713,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000797")!
         )
         now = Date(timeIntervalSince1970: 798)
-        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "session not found: \(started.id.rawValue)"
         )
 

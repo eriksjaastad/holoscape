@@ -523,7 +523,7 @@ final class BrokerTerminalLifecycle {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
             freshStartTeardownCompletions.append { [self] in
-                completePreservingOutputDetach(.completed)
+                completePreservingOutputDetach(currentCleanupOutcome())
             }
             return
         }
@@ -588,18 +588,18 @@ final class BrokerTerminalLifecycle {
                         )
                         return
                     }
-                    self.completePreservingOutputDetach(.completed)
+                    self.completePreservingOutputDetach(self.currentCleanupOutcome())
                 }
             }
             return
         }
         if let untrackedBrokerSessionID {
             retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
-                completePreservingOutputDetach(.completed)
+                completePreservingOutputDetach(currentCleanupOutcome())
             }
             return
         }
-        completePreservingOutputDetach(.completed)
+        completePreservingOutputDetach(currentCleanupOutcome())
     }
 
     private func continuePreservingOutputDetach(
@@ -670,7 +670,9 @@ final class BrokerTerminalLifecycle {
         if freshStartPending {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
-            freshStartTeardownCompletions.append { completion(.completed) }
+            freshStartTeardownCompletions.append { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
         host.revokeSessionPresentation()
@@ -749,7 +751,7 @@ final class BrokerTerminalLifecycle {
                     }
                     clearIdentity()
                     pendingExitedOutputRetirement = nil
-                    completion(.completed)
+                    completion(currentCleanupOutcome())
                 }
             }
             return
@@ -761,13 +763,13 @@ final class BrokerTerminalLifecycle {
                         completion(.retryableFailure(cleanupFailure(from: error)))
                     } else {
                         self.untrackedBrokerSessionID = nil
-                        completion(.completed)
+                        completion(self.currentCleanupOutcome())
                     }
                 }
             }
             return
         }
-        completion(.completed)
+        completion(currentCleanupOutcome())
     }
 
     // MARK: - Tab teardown / app detach
@@ -787,7 +789,9 @@ final class BrokerTerminalLifecycle {
             // denied) supersedes any reconnect queued while cleanup was live.
             // Never launch a replacement after termination authority completes.
             restartAfterCancelledFreshStart = nil
-            freshStartTeardownCompletions.append { completion(.completed) }
+            freshStartTeardownCompletions.append { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
         if runningSessionTeardownProbeInFlight {
@@ -881,10 +885,12 @@ final class BrokerTerminalLifecycle {
             }
             return
         } else if let untrackedBrokerSessionID {
-            retireUntrackedForTeardown(untrackedBrokerSessionID) { completion(.completed) }
+            retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
-        completion(.completed)
+        completion(currentCleanupOutcome())
     }
 
     func finishRunningSessionTeardownProbe(
@@ -1116,10 +1122,12 @@ final class BrokerTerminalLifecycle {
            case .outputMonitoringFailed = runtimeError {
             return .brokerSessionStale
         }
-        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error,
            code == "scrollback-persistence-failed"
-               || code == "output-monitoring-failed"
-               || (code == "missing-session" && message.contains("missingSession")) {
+               || code == "output-monitoring-failed" {
+            return .brokerSessionStale
+        }
+        if case BrokerSessionHostClientRuntime.ClientError.missingSession = error {
             return .brokerSessionStale
         }
         return .failed

@@ -1130,7 +1130,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch clientError {
         case .transportFailed, .unexpectedResponse:
             return true
-        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
+        case .hostFailure, .missingSession, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
              .outputTransportFailed:
             return false
         }
@@ -1650,10 +1650,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
             return runtimeError == .missingSession(id)
         }
-        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
-           code == "missing-session",
-           message.contains(id.rawValue) {
-            return true
+        if case let BrokerSessionHostClientRuntime.ClientError.missingSession(missingID, _) = error {
+            return missingID == id
         }
         return false
     }
