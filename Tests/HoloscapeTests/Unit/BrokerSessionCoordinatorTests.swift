@@ -6,7 +6,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
-    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime {
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
             case detach(BrokerSessionID)
@@ -40,6 +40,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var onIsRunning: ((BrokerSessionID) throws -> Void)?
         var onTerminationStatus: ((BrokerSessionID) throws -> Void)?
         var reportedAgentStatusOwnerToken: String?
+        var outputHandlerError: Error?
+        var outputHandlerUpdates: [(BrokerSessionID, installed: Bool)] = []
 
         func listSessions() throws -> [BrokerSessionID] {
             try onList?()
@@ -103,6 +105,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
                 source: .liveBrokerMemory,
                 maxBytes: maxBytes
             )
+        }
+        func setOutputAvailabilityHandler(
+            id: BrokerSessionID,
+            handler: (@Sendable (BrokerSessionID) -> Void)?
+        ) throws {
+            outputHandlerUpdates.append((id, handler != nil))
+            if let outputHandlerError { throw outputHandlerError }
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
             events.append(.resize(id, size))
@@ -2105,6 +2114,33 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         XCTAssertThrowsError(try coordinator.readScrollbackTail(BrokerSessionID(rawValue: "missing"), maxBytes: 4096)) { error in
             XCTAssertEqual(error as? BrokerSessionCoordinator.CoordinatorError, .missingSession(BrokerSessionID(rawValue: "missing")))
         }
+    }
+
+    func testOutputHandlerRemovalAcceptsOnlyTypedMissingSessionAbsence() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 451) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/Users/test/project"),
+            channelType: .shell,
+            label: "typed-monitor-removal",
+            attachedChannelID: UUID()
+        )
+
+        runtime.outputHandlerError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(started.id)
+        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "missing-session",
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+
+        runtime.outputHandlerError = RuntimeError.failed
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(error as? RuntimeError, .failed)
+        }
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.0), [started.id, started.id, started.id])
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.installed), [false, false, false])
     }
 
     func testLifecycleTransitionsCallRuntimeFacade() throws {

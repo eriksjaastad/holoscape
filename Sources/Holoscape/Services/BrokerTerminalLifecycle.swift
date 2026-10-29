@@ -53,8 +53,7 @@ protocol BrokerTerminalLifecycleHost: AnyObject, Sendable {
     func markSessionIONotReady()
     /// Revokes the presentation lease and marks session I/O not ready.
     func revokeSessionPresentation()
-    @discardableResult
-    func stopOutputPump() -> Error?
+    func pauseOutputPump()
     @discardableResult
     func clearOutputAvailabilityHandler(for id: BrokerSessionID) -> Error?
     func finishOutputLaneWithoutConsuming(_ completion: @escaping @Sendable () -> Void)
@@ -264,16 +263,33 @@ final class BrokerTerminalLifecycle {
 
     @discardableResult
     private func stopOutputPump(host: any BrokerTerminalLifecycleHost) -> TerminalSessionFailure? {
-        let activeSessionID = brokerSessionID
+        host.pauseOutputPump()
+        return clearOutputAvailabilityHandlers(host: host)
+    }
+
+    func stopOutputPumpAfterSessionFailure(host: any BrokerTerminalLifecycleHost) {
+        _ = stopOutputPump(host: host)
+    }
+
+    private func clearOutputAvailabilityHandlers(
+        host: any BrokerTerminalLifecycleHost
+    ) -> TerminalSessionFailure? {
         let pendingSessionID = pendingOutputMonitorCleanup?.sessionID
-        let activeRemovalError = host.stopOutputPump()
-        if let activeSessionID {
-            return recordOutputMonitorCleanup(activeRemovalError, sessionID: activeSessionID)
+        if let pendingSessionID {
+            if let failure = recordOutputMonitorCleanup(
+                host.clearOutputAvailabilityHandler(for: pendingSessionID),
+                sessionID: pendingSessionID
+            ) {
+                return failure
+            }
+            if brokerSessionID == pendingSessionID {
+                return nil
+            }
         }
-        guard let pendingSessionID else { return nil }
+        guard let activeSessionID = brokerSessionID else { return nil }
         return recordOutputMonitorCleanup(
-            host.clearOutputAvailabilityHandler(for: pendingSessionID),
-            sessionID: pendingSessionID
+            host.clearOutputAvailabilityHandler(for: activeSessionID),
+            sessionID: activeSessionID
         )
     }
 
@@ -661,11 +677,7 @@ final class BrokerTerminalLifecycle {
         // Revoke presentation immediately, but let the serial output operation
         // already in flight classify an observed exit before the close barrier.
         // `finishForClose` stops the lane once that operation returns.
-        if let outputMonitorSessionID = brokerSessionID ?? pendingOutputMonitorCleanup?.sessionID,
-           let outputMonitorFailure = recordOutputMonitorCleanup(
-               host.clearOutputAvailabilityHandler(for: outputMonitorSessionID),
-               sessionID: outputMonitorSessionID
-           ) {
+        if let outputMonitorFailure = clearOutputAvailabilityHandlers(host: host) {
             host.finishOutputLaneForClose {
                 DispatchQueue.main.async {
                     completion(.retryableFailure(outputMonitorFailure))
@@ -890,7 +902,6 @@ final class BrokerTerminalLifecycle {
             )
         }
         host.revokeSessionPresentation()
-        stopOutputPump(host: host)
         guard let brokerSessionID, !didNotifyTermination else {
             finishRunningSessionTeardown(host: host)
             return
