@@ -23,7 +23,7 @@ protocol ChannelController: AnyObject {
     )
     func activate()
     func deactivate()
-    func deactivate(completion: @escaping @MainActor () -> Void)
+    func deactivate(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void)
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void)
     func deactivateForAppTermination(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
@@ -70,22 +70,22 @@ extension ChannelController {
         sendInput(text)
         completion(true)
     }
-    func deactivate(completion: @escaping @MainActor () -> Void) {
+    func deactivate(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
         deactivate()
-        completion()
+        completion(.completed)
     }
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
-        deactivate { completion(.completed) }
+        deactivate(completion: completion)
     }
     func deactivateForAppTermination(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
-        deactivate { completion(.completed) }
+        deactivate(completion: completion)
     }
     func resumeRestoredCloseCleanup(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
-        deactivate { completion(.completed) }
+        deactivate(completion: completion)
     }
 }
 

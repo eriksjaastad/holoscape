@@ -765,10 +765,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try client.isRunning(id: BrokerSessionID(rawValue: "missing-client-session"))) { error in
-            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
-                return XCTFail("Expected hostFailure, got \(error)")
+            guard case let BrokerSessionHostClientRuntime.ClientError.missingSession(id, message) = error else {
+                return XCTFail("Expected missingSession, got \(error)")
             }
-            XCTAssertEqual(code, "missing-session")
+            XCTAssertEqual(id, BrokerSessionID(rawValue: "missing-client-session"))
             XCTAssertTrue(message.contains("missingSession"), message)
         }
     }
@@ -3329,7 +3329,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
         let brokerSessionID = try XCTUnwrap(firstTerminal.brokerSessionID)
         let detached = expectation(description: "first socket terminal detached")
-        firstTerminal.detachBrokerSession { detached.fulfill() }
+        firstTerminal.detachBrokerSession { _ in detached.fulfill() }
         wait(for: [detached], timeout: 1)
 
         let secondCoordinator = fixture.makeCoordinator(timestamp: Date(timeIntervalSince1970: 9_101))

@@ -6,7 +6,7 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
-    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime {
+    private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
             case detach(BrokerSessionID)
@@ -40,6 +40,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         var onIsRunning: ((BrokerSessionID) throws -> Void)?
         var onTerminationStatus: ((BrokerSessionID) throws -> Void)?
         var reportedAgentStatusOwnerToken: String?
+        var outputHandlerError: Error?
+        var outputHandlerUpdates: [(BrokerSessionID, installed: Bool)] = []
 
         func listSessions() throws -> [BrokerSessionID] {
             try onList?()
@@ -103,6 +105,13 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
                 source: .liveBrokerMemory,
                 maxBytes: maxBytes
             )
+        }
+        func setOutputAvailabilityHandler(
+            id: BrokerSessionID,
+            handler: (@Sendable (BrokerSessionID) -> Void)?
+        ) throws {
+            outputHandlerUpdates.append((id, handler != nil))
+            if let outputHandlerError { throw outputHandlerError }
         }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {
             events.append(.resize(id, size))
@@ -2107,6 +2116,56 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
     }
 
+    func testOutputHandlerRemovalAcceptsOnlyTypedMissingSessionAbsence() throws {
+        let runtime = RecordingBrokerSessionRuntime()
+        let coordinator = makeCoordinator(runtime: runtime, now: { Date(timeIntervalSince1970: 451) })
+        let started = try coordinator.start(
+            launchRequest(workingDirectory: "/Users/test/project"),
+            channelType: .shell,
+            label: "typed-monitor-removal",
+            attachedChannelID: UUID()
+        )
+
+        runtime.outputHandlerError = NativePTYBrokerSessionRuntime.RuntimeError.missingSession(started.id)
+        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        XCTAssertNoThrow(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil))
+
+        let otherID = BrokerSessionID(rawValue: started.id.rawValue + "-other")
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            otherID,
+            message: "missingSession(\(otherID.rawValue))"
+        )
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .missingSession(otherID, message: "missingSession(\(otherID.rawValue))")
+            )
+        }
+
+        runtime.outputHandlerError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
+            code: "missing-session",
+            message: "missingSession(\(started.id.rawValue))"
+        )
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionHostClientRuntime.ClientError,
+                .hostFailure(code: "missing-session", message: "missingSession(\(started.id.rawValue))")
+            )
+        }
+
+        runtime.outputHandlerError = RuntimeError.failed
+        XCTAssertThrowsError(try coordinator.setOutputAvailabilityHandler(started.id, handler: nil)) { error in
+            XCTAssertEqual(error as? RuntimeError, .failed)
+        }
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.0), Array(repeating: started.id, count: 5))
+        XCTAssertEqual(runtime.outputHandlerUpdates.map(\.installed), Array(repeating: false, count: 5))
+    }
+
     func testLifecycleTransitionsCallRuntimeFacade() throws {
         let runtime = RecordingBrokerSessionRuntime()
         let firstChannel = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
@@ -2516,8 +2575,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         }
 
         now = Date(timeIntervalSince1970: 786)
-        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "missingSession(\(started.id.rawValue))"
         )
         let reconciled = try coordinator.reconcileRuntimeStatus(started.id)
@@ -2621,8 +2680,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             attachedChannelID: nil
         )
         now = Date(timeIntervalSince1970: 796)
-        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.attachError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "session not found: \(started.id.rawValue)"
         )
 
@@ -2654,8 +2713,8 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
             attachedChannelID: UUID(uuidString: "00000000-0000-0000-0000-000000000797")!
         )
         now = Date(timeIntervalSince1970: 798)
-        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.hostFailure(
-            code: "missing-session",
+        runtime.statusError = BrokerSessionHostClientRuntime.ClientError.missingSession(
+            started.id,
             message: "session not found: \(started.id.rawValue)"
         )
 

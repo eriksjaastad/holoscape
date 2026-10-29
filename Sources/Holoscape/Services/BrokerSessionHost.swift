@@ -228,6 +228,13 @@ struct BrokerSessionHost {
     }
 
     private func failure(for error: Error) -> BrokerSessionHostFailure {
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id) = error {
+            return BrokerSessionHostFailure(
+                code: failureCode(for: error),
+                message: String(describing: error),
+                sessionID: id
+            )
+        }
         if case let NativePTYBrokerSessionRuntime.RuntimeError.launchCleanupPending(id, reason) = error {
             return BrokerSessionHostFailure(
                 code: failureCode(for: error),

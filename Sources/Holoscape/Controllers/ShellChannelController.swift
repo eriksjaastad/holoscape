@@ -337,10 +337,10 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     func deactivate() {
-        deactivate(completion: {})
+        deactivate { _ in }
     }
 
-    func deactivate(completion: @escaping @MainActor () -> Void) {
+    func deactivate(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
         terminal.setOutputHandler(nil)
         terminal.detachBrokerSession(completion: completion)
         recordBrokerDetach()

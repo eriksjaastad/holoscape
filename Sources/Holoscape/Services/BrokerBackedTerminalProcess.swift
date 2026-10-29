@@ -924,7 +924,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
     func setOutputHandler(_ handler: (() -> Void)?) {
         outputPresentation.setOutputHandler(handler)
         if handler == nil {
-            stopOutputPump()
+            pauseOutputPump()
         } else if brokerSessionID != nil, sessionIOReady, sessionFailure == nil {
             startOutputPump()
         }
@@ -954,8 +954,10 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         terminalView.lastLines(count)
     }
 
-    func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
-        lifecycle.detachForTeardown(host: self) { _ in completion() }
+    func detachBrokerSession(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        lifecycle.detachForTeardown(host: self, completion: completion)
     }
 
     func detachBrokerSessionForCleanup(
@@ -1367,11 +1369,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         lifecycle.retireCompletedSession(id, completion: completion)
     }
 
-    func stopOutputPump() {
+    func pauseOutputPump() {
         outputPresentation.stopHandoff()
-        if let brokerSessionID {
-            try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
-        }
         outputReadLane.stop()
     }
 
@@ -1396,7 +1395,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         let kind = BrokerTerminalLifecycle.classifyStartFailure(error)
         let description = String(describing: error)
         inputWriteLane.close()
-        stopOutputPump()
+        lifecycle.stopOutputPumpAfterSessionFailure(host: self)
         revokeOutputDeliveryOwnership()
 
         if kind == .brokerSessionStale,
@@ -1458,8 +1457,13 @@ extension BrokerBackedTerminalProcess: BrokerTerminalLifecycleHost {
         sessionIOReady = false
     }
 
-    func clearOutputAvailabilityHandler(for id: BrokerSessionID) {
-        try? coordinator.setOutputAvailabilityHandler(id, handler: nil)
+    func clearOutputAvailabilityHandler(for id: BrokerSessionID) -> Error? {
+        do {
+            try coordinator.setOutputAvailabilityHandler(id, handler: nil)
+            return nil
+        } catch {
+            return error
+        }
     }
 
     func finishOutputLaneWithoutConsuming(_ completion: @escaping @Sendable () -> Void) {

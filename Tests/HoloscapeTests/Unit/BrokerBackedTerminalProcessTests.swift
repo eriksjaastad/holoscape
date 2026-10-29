@@ -931,14 +931,21 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var running = true
         private var outputAfterTerminationCheck = Data()
         private var handler: (@Sendable (BrokerSessionID) -> Void)?
+        private var storedHandlerInstallCount = 0
+        private var storedHandlerRemovalCount = 0
+        private var storedHandlerRemovalIDs: [BrokerSessionID] = []
         private var terminationStatusThreads: [Bool] = []
         private var exitFinalizationThreads: [Bool] = []
+        private let retirementRelease = DispatchSemaphore(value: 0)
+        private var shouldBlockRetirement = false
+        private var storedRetirementCallCount = 0
         let supportsOutputAvailabilityMonitoring: Bool
         var terminationError: Error?
         var retirementError: Error?
         var outputSnapshotError: Error?
         var acknowledgementError: Error?
         var terminationStatusError: Error?
+        var handlerRemovalError: Error?
 
         init(
             transactionalChunkSize: Int = .max,
@@ -960,6 +967,30 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             lock.withLock { exitFinalizationThreads.contains(true) }
         }
 
+        var handlerInstallCount: Int {
+            lock.withLock { storedHandlerInstallCount }
+        }
+
+        var handlerRemovalCount: Int {
+            lock.withLock { storedHandlerRemovalCount }
+        }
+
+        var handlerRemovalIDs: [BrokerSessionID] {
+            lock.withLock { storedHandlerRemovalIDs }
+        }
+
+        func blockRetirement() {
+            lock.withLock { shouldBlockRetirement = true }
+        }
+
+        var retirementCallCount: Int {
+            lock.withLock { storedRetirementCallCount }
+        }
+
+        func finishRetirement() {
+            retirementRelease.signal()
+        }
+
         func triggerFinalOutput(_ text: String, afterTerminationCheck lateText: String = "", for id: BrokerSessionID) {
             let currentHandler: (@Sendable (BrokerSessionID) -> Void)? = lock.withLock {
                 output.append(Data(text.utf8))
@@ -974,7 +1005,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             lock.withLock { createdIDs.filter { !retiredIDs.contains($0) } }
         }
         func createSession(id: BrokerSessionID, request: BrokerSessionLaunchRequest) throws {
-            lock.withLock { createdIDs.append(id) }
+            lock.withLock {
+                createdIDs.append(id)
+                running = true
+            }
         }
         func detachSession(id: BrokerSessionID) throws {}
         func attachSession(id: BrokerSessionID, channelID: UUID) throws {}
@@ -983,6 +1017,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             if let terminationError { throw terminationError }
         }
         func markSessionErrored(id: BrokerSessionID) throws {
+            let shouldBlock = lock.withLock {
+                storedRetirementCallCount += 1
+                return shouldBlockRetirement
+            }
+            if shouldBlock {
+                _ = retirementRelease.wait(timeout: .now() + 2)
+            }
             let retirementError = lock.withLock { () -> Error? in
                 retiredIDs.append(id)
                 return self.retirementError
@@ -1027,7 +1068,16 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             )
         }
         func setOutputAvailabilityHandler(id: BrokerSessionID, handler: (@Sendable (BrokerSessionID) -> Void)?) throws {
-            lock.withLock { self.handler = handler }
+            try lock.withLock {
+                if handler == nil {
+                    storedHandlerRemovalCount += 1
+                    storedHandlerRemovalIDs.append(id)
+                    if let handlerRemovalError { throw handlerRemovalError }
+                } else {
+                    storedHandlerInstallCount += 1
+                }
+                self.handler = handler
+            }
         }
         func readScrollbackTail(id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func resizeSession(id: BrokerSessionID, size: TerminalGridSize) throws {}
@@ -1296,7 +1346,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
 
         let detached = expectation(description: "terminal detached")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         coordinator.finishOutputSnapshot()
         wait(for: [detached], timeout: 1)
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
@@ -1443,7 +1493,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         let detached = expectation(description: "queued delivery terminal detached")
         DispatchQueue.main.async {
-            terminal.detachBrokerSession { detached.fulfill() }
+            terminal.detachBrokerSession { _ in detached.fulfill() }
         }
         coordinator.finishOutputSnapshot()
         wait(for: [detached], timeout: 1)
@@ -1470,7 +1520,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
 
         let detached = expectation(description: "old output generation detached")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         coordinator.finishOutputSnapshot()
         wait(for: [detached], timeout: 1)
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
@@ -1484,7 +1534,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(terminal.brokerSessionID, sessionID)
         XCTAssertNil(terminal.sessionFailure)
         let cleanup = expectation(description: "replacement output generation detached")
-        terminal.detachBrokerSession { cleanup.fulfill() }
+        terminal.detachBrokerSession { _ in cleanup.fulfill() }
         coordinator.finishOutputSnapshot()
         wait(for: [cleanup], timeout: 1)
     }
@@ -1506,7 +1556,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForInputWrite())
 
         let detached = expectation(description: "old input generation detached")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         wait(for: [detached], timeout: 1)
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: nil, currentDirectory: "/tmp")
         XCTAssertTrue(coordinator.waitForReattach())
@@ -1572,7 +1622,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         terminal.setOutputHandler {}
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
         let detached = expectation(description: "resize owner detached")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         coordinator.finishResize()
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
 
@@ -2165,6 +2215,76 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(try fixture.coordinator.reattachableSessions().map(\.id), [sessionID])
     }
 
+    func testAppTerminationMonitorRemovalFailureRetainsRetryAuthority() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008031"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        fixture.terminal.setOutputHandler {}
+        try waitUntil { runtime.handlerInstallCount == 1 }
+        runtime.handlerRemovalError = RuntimeError.createFailed
+        var firstOutcome: TerminalCleanupOutcome?
+
+        fixture.terminal.detachBrokerSessionPreservingOutput { firstOutcome = $0 }
+        try waitUntil { firstOutcome != nil }
+
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("Monitor removal failure must keep app-termination cleanup retryable")
+        }
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(runtime.handlerRemovalCount, 1)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .running)
+
+        runtime.handlerRemovalError = nil
+        var retryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.detachBrokerSessionPreservingOutput { retryOutcome = $0 }
+        try waitUntil { retryOutcome != nil }
+
+        guard case .completed = retryOutcome else {
+            return XCTFail("Successful monitor removal retry must complete app-termination cleanup")
+        }
+        XCTAssertEqual(runtime.handlerRemovalCount, 2)
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .detached)
+    }
+
+    func testOrdinaryDetachMonitorRemovalFailureRetainsRetryAuthority() throws {
+        let runtime = FinalOutputRuntime()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008033"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        fixture.terminal.setOutputHandler {}
+        try waitUntil { runtime.handlerInstallCount == 1 }
+        runtime.handlerRemovalError = RuntimeError.createFailed
+        var firstOutcome: TerminalCleanupOutcome?
+
+        fixture.terminal.detachBrokerSession { outcome in firstOutcome = outcome }
+        try waitUntil { firstOutcome != nil }
+
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("Monitor removal failure must keep teardown cleanup retryable")
+        }
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(try fixture.registry.load().single().lifecycle, .detached)
+
+        runtime.handlerRemovalError = nil
+        var retryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.detachBrokerSession { outcome in retryOutcome = outcome }
+        try waitUntil { retryOutcome != nil }
+
+        guard case .completed = retryOutcome else {
+            return XCTFail("Successful monitor removal retry must complete teardown cleanup")
+        }
+        XCTAssertEqual(runtime.handlerRemovalCount, 2)
+        XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
+    }
+
     func testCloseRetirementFailureThenRetryCannotResurrectHiddenSession() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(
@@ -2206,6 +2326,64 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(try fixture.registry.load().single().lifecycle, .errored)
     }
 
+    func testCloseMonitorRemovalFailureSurvivesInFlightExitIdentityClear() throws {
+        let runtime = FinalOutputRuntime()
+        runtime.blockRetirement()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008034"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        fixture.terminal.setOutputHandler {}
+        try waitUntil { runtime.handlerInstallCount == 1 }
+        runtime.triggerFinalOutput("completed before close\n", for: sessionID)
+        try waitUntil { runtime.retirementCallCount == 1 }
+        runtime.handlerRemovalError = RuntimeError.createFailed
+        var firstOutcome: TerminalCleanupOutcome?
+
+        fixture.terminal.retireBrokerSessionForClose { firstOutcome = $0 }
+        try waitUntil { firstOutcome != nil }
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("Close must retain monitor cleanup while exit retirement is in flight")
+        }
+
+        runtime.finishRetirement()
+        try waitUntil { fixture.terminal.brokerSessionID == nil }
+        var staleIdentityRetryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.detachBrokerSessionForCleanup { staleIdentityRetryOutcome = $0 }
+        try waitUntil { staleIdentityRetryOutcome != nil }
+        guard case .retryableFailure = staleIdentityRetryOutcome else {
+            return XCTFail("Cleanup retry must remain failed after exit clears live identity")
+        }
+        XCTAssertEqual(runtime.handlerRemovalIDs, [sessionID, sessionID])
+
+        fixture.terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: nil
+        )
+        try waitUntil {
+            fixture.terminal.brokerSessionID != nil
+                && fixture.terminal.brokerSessionID != sessionID
+        }
+        let replacementID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        try waitUntil { runtime.handlerInstallCount == 2 }
+        runtime.handlerRemovalError = nil
+        var retryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.retireBrokerSessionForClose { retryOutcome = $0 }
+        try waitUntil { retryOutcome != nil }
+
+        guard case .completed = retryOutcome else {
+            return XCTFail("Close retry must remove the old monitor after exit clears live identity")
+        }
+        XCTAssertEqual(runtime.handlerRemovalCount, 4)
+        XCTAssertEqual(runtime.handlerRemovalIDs, [sessionID, sessionID, sessionID, replacementID])
+        XCTAssertEqual(try runtime.listSessions(), [])
+    }
+
     func testTabCloseDrainsExitedSessionBeforeDetaching() throws {
         let runtime = FinalOutputRuntime(supportsOutputAvailabilityMonitoring: false)
         let fixture = try makeMidSessionFixture(
@@ -2224,7 +2402,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         fixture.terminal.setOutputHandler(nil)
         let detached = expectation(description: "exited session teardown completed")
-        fixture.terminal.detachBrokerSession {
+        fixture.terminal.detachBrokerSession { _ in
             events.append("teardown")
             detached.fulfill()
         }
@@ -2249,7 +2427,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.setOutputHandler(nil)
         let detached = expectation(description: "read failure cleanup completed")
 
-        fixture.terminal.detachBrokerSession { detached.fulfill() }
+        fixture.terminal.detachBrokerSession { _ in detached.fulfill() }
 
         wait(for: [detached], timeout: 2)
         XCTAssertNil(fixture.terminal.brokerSessionID)
@@ -2276,7 +2454,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         fixture.terminal.setOutputHandler(nil)
         let detached = expectation(description: "acknowledgement failure cleanup completed")
 
-        fixture.terminal.detachBrokerSession { detached.fulfill() }
+        fixture.terminal.detachBrokerSession { _ in detached.fulfill() }
 
         wait(for: [detached], timeout: 2)
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
@@ -2314,7 +2492,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { !terminal.completesStartAsynchronously }
         let detached = expectation(description: "finalization failure cleanup completed")
 
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
 
         wait(for: [detached], timeout: 2)
         XCTAssertEqual(coordinator.acknowledgedGenerations, [24, 48])
@@ -2462,7 +2640,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(coordinator.scrollbackSnapshotCount, 1)
 
         let detached = expectation(description: "detach after replay delivery")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         coordinator.finishAcknowledgment()
         wait(for: [detached], timeout: 1)
 
@@ -2855,7 +3033,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertNil(terminal.untrackedBrokerSessionID)
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         try waitUntil { teardownCompleted }
     }
 
@@ -3110,7 +3288,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         // termination).
         fixture.runtime.mode = .hostUnavailable
         let detached = expectation(description: "host outage detach completed")
-        terminal.detachBrokerSession { detached.fulfill() }
+        terminal.detachBrokerSession { _ in detached.fulfill() }
         wait(for: [detached], timeout: 1)
 
         XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID], "The detach attempt must still reach the coordinator")
@@ -3290,7 +3468,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForStart())
         var completionCount = 0
 
-        terminal.detachBrokerSession { completionCount += 1 }
+        terminal.detachBrokerSession { _ in completionCount += 1 }
         coordinator.finishStart()
 
         try waitUntil { completionCount == 1 }
@@ -3390,7 +3568,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForStart())
         var teardownCompleted = false
 
-        terminal.detachBrokerSession {
+        terminal.detachBrokerSession { _ in
             teardownCompleted = true
         }
 
@@ -3463,7 +3641,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp/original")
         XCTAssertTrue(coordinator.waitForStart())
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
 
         // A denied quit can reopen reconnect while teardown still owns the
         // cancelled launch. The retry must wait for retirement, not disappear.
@@ -3506,7 +3684,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForOutputSnapshot())
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
         XCTAssertTrue(terminal.completesStartAsynchronously)
         coordinator.finishOutputSnapshot()
@@ -3539,9 +3717,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { !terminal.completesStartAsynchronously }
 
         var teardownCompletionCount = 0
-        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        terminal.detachBrokerSession { _ in teardownCompletionCount += 1 }
         try waitUntil { coordinator.detachCalls == [sessionID] }
-        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        terminal.detachBrokerSession { _ in teardownCompletionCount += 1 }
 
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         XCTAssertEqual(teardownCompletionCount, 0)
@@ -3649,7 +3827,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
         try waitUntil { startCompletionCount == 1 }
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp")
 
         try waitUntil { teardownCompleted && startCompletionCount == 2 }
@@ -3687,7 +3865,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             currentDirectory: "/tmp"
         )
         try waitUntil { startCompletionCount == 1 }
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: [],
@@ -3745,12 +3923,12 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp/original")
         XCTAssertTrue(coordinator.waitForStart())
-        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        terminal.detachBrokerSession { _ in teardownCompletionCount += 1 }
         terminal.startProcess(executable: "/bin/zsh", args: [], environment: nil, execName: "zsh", currentDirectory: "/tmp/retry")
 
         // A second quit owns final termination authority. It must cancel the
         // reconnect queued after the first quit was denied.
-        terminal.detachBrokerSession { teardownCompletionCount += 1 }
+        terminal.detachBrokerSession { _ in teardownCompletionCount += 1 }
         coordinator.finishStart()
 
         try waitUntil { teardownCompletionCount == 2 }
@@ -3806,7 +3984,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         coordinator.failUntrackedTeardown(attempts: 7)
         var completionCount = 0
 
-        terminal.detachBrokerSession { completionCount += 1 }
+        terminal.detachBrokerSession { _ in completionCount += 1 }
 
         try waitUntil { completionCount == 1 }
         XCTAssertEqual(requestedFailureCounts, Array(1...7))
@@ -4480,7 +4658,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession {
+        terminal.detachBrokerSession { _ in
             teardownCompleted = true
             lifecycleEvents.append("teardown")
         }
@@ -4515,7 +4693,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         XCTAssertFalse(teardownCompleted)
         XCTAssertFalse(terminal.completesStartAsynchronously)
 
@@ -4579,7 +4757,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             currentDirectory: "/tmp"
         )
         try waitUntil { coordinator.outputReadCount == 1 }
-        terminal.detachBrokerSession {}
+        terminal.detachBrokerSession { _ in }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: ["--login"],
@@ -4618,7 +4796,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             currentDirectory: "/tmp"
         )
         try waitUntil { coordinator.acknowledgedGenerations == [24] }
-        terminal.detachBrokerSession {}
+        terminal.detachBrokerSession { _ in }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: ["--login"],
@@ -4660,7 +4838,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
 
         var teardownCompleted = false
-        restoredTerminal.detachBrokerSession { teardownCompleted = true }
+        restoredTerminal.detachBrokerSession { _ in teardownCompleted = true }
         coordinator.finishRetirement()
 
         try waitUntil { teardownCompleted && restoredTerminal.brokerSessionID == nil }
@@ -4701,7 +4879,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.outputReadCount == 1 }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession {
+        terminal.detachBrokerSession { _ in
             teardownCompleted = true
             lifecycleEvents.append("teardown")
         }
@@ -4744,7 +4922,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.acknowledgedGenerations == [24] }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession {
+        terminal.detachBrokerSession { _ in
             teardownCompleted = true
             lifecycleEvents.append("teardown")
         }
@@ -4919,7 +5097,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.outputReadCount == 1 }
 
         var teardownCompleted = false
-        terminal?.detachBrokerSession { teardownCompleted = true }
+        terminal?.detachBrokerSession { _ in teardownCompleted = true }
         terminal = nil
         XCTAssertNotNil(weakTerminal)
         XCTAssertFalse(teardownCompleted)
@@ -4957,7 +5135,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
 
         var teardownCompleted = false
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
         XCTAssertFalse(teardownCompleted)
         coordinator.finishRetirement()
 
@@ -5032,7 +5210,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
         var teardownCompleted = false
 
-        terminal.detachBrokerSession { teardownCompleted = true }
+        terminal.detachBrokerSession { _ in teardownCompleted = true }
 
         XCTAssertFalse(teardownCompleted)
         coordinator.finishRetirement()
@@ -5187,7 +5365,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
 
         let detached = expectation(description: "exited delivery terminal detached")
         DispatchQueue.main.async {
-            restoredTerminal.detachBrokerSession { detached.fulfill() }
+            restoredTerminal.detachBrokerSession { _ in detached.fulfill() }
         }
         coordinator.finishOutputRead()
         wait(for: [detached], timeout: 1)
@@ -5342,6 +5520,64 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let stale = try registry.load().single()
         XCTAssertEqual(stale.lifecycle, .stale)
         XCTAssertNil(stale.lastAttachedChannelID)
+    }
+
+    func testReattachWrongMissingRuntimeSessionKeepsExpectedIdentityRetryable() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerBackedTerminalProcessWrongStaleReattachTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let sessionID = BrokerSessionID(rawValue: "expected-restored-agent-session")
+        let otherID = BrokerSessionID(rawValue: "different-missing-agent-session")
+        let registry = BrokerSessionRegistry(fileURL: tempDirectory.appendingPathComponent("sessions.json"))
+        let record = BrokerSessionRecord(
+            id: sessionID,
+            channelType: .agentDirect,
+            label: "Codex",
+            command: "/usr/bin/env",
+            arguments: ["codex"],
+            workingDirectory: "/tmp/expected-agent",
+            environmentProfile: .agentOAuth,
+            lifecycle: .detached,
+            exitCode: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastAttachedChannelID: nil
+        )
+        try registry.upsert(record)
+        let coordinator = BrokerSessionCoordinator(
+            registry: registry,
+            runtime: FailingReattachRuntime(
+                reattachError: BrokerSessionHostClientRuntime.ClientError.missingSession(
+                    otherID,
+                    message: "missingSession(\(otherID.rawValue))"
+                )
+            ),
+            now: { Date(timeIntervalSince1970: 2) }
+        )
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008036")!,
+            channelType: .agentDirect,
+            label: "Codex",
+            environmentProfile: .agentOAuth,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+
+        terminal.startProcess(
+            executable: "/usr/bin/env",
+            args: ["codex"],
+            environment: nil,
+            execName: "codex",
+            currentDirectory: "/tmp/expected-agent"
+        )
+
+        XCTAssertEqual(terminal.brokerSessionID, sessionID)
+        XCTAssertEqual(terminal.startFailureKind, .failed)
+        XCTAssertNil(terminal.staleBrokerSessionID)
+        XCTAssertEqual(try registry.load(), [record])
     }
 
     func testReattachBrokerHostUnavailablePreservesSessionIDForRetry() throws {

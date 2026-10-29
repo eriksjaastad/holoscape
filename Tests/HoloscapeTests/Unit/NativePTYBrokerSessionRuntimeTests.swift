@@ -1331,10 +1331,10 @@ final class NativePTYBrokerSessionRuntimeTests: XCTestCase {
         XCTAssertEqual(try coordinator.loadAll().first?.lifecycle, .errored)
         XCTAssertEqual(closer.attemptCount, 1)
         XCTAssertThrowsError(try client.isRunning(id: record.id)) { error in
-            guard case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error else {
+            guard case let BrokerSessionHostClientRuntime.ClientError.missingSession(id, message) = error else {
                 return XCTFail("Expected missing-session host failure, got \(error)")
             }
-            XCTAssertEqual(code, "missing-session")
+            XCTAssertEqual(id, record.id)
             XCTAssertTrue(message.contains("missingSession"), message)
         }
     }

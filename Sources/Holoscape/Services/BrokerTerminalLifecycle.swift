@@ -53,8 +53,9 @@ protocol BrokerTerminalLifecycleHost: AnyObject, Sendable {
     func markSessionIONotReady()
     /// Revokes the presentation lease and marks session I/O not ready.
     func revokeSessionPresentation()
-    func stopOutputPump()
-    func clearOutputAvailabilityHandler(for id: BrokerSessionID)
+    func pauseOutputPump()
+    @discardableResult
+    func clearOutputAvailabilityHandler(for id: BrokerSessionID) -> Error?
     func finishOutputLaneWithoutConsuming(_ completion: @escaping @Sendable () -> Void)
     func finishOutputLaneForClose(_ completion: @escaping @Sendable () -> Void)
     /// Joins an exit outcome the output lane already claimed; `false` stops
@@ -93,6 +94,10 @@ final class BrokerTerminalLifecycle {
     var recoveringBrokerSessionID: BrokerSessionID?
     var startFailureDescription: String?
     var startFailureKind: TerminalStartFailureKind?
+    private var pendingOutputMonitorCleanup: (
+        sessionID: BrokerSessionID,
+        failure: TerminalSessionFailure
+    )?
     /// Cleanup authority survives presentation-lease revocation. A retry resumes
     /// retirement instead of rendering unacknowledged final bytes again.
     var pendingExitedOutputRetirement: BrokerExitedOutputRetirement?
@@ -198,6 +203,17 @@ final class BrokerTerminalLifecycle {
 
     func recordReattachFailure(_ error: Error, sessionID: BrokerSessionID) {
         recordStartFailure(error)
+        let missingSessionID: BrokerSessionID?
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id) = error {
+            missingSessionID = id
+        } else if case let BrokerSessionHostClientRuntime.ClientError.missingSession(id, _) = error {
+            missingSessionID = id
+        } else {
+            missingSessionID = nil
+        }
+        if let missingSessionID, missingSessionID != sessionID {
+            startFailureKind = .failed
+        }
         switch startFailureKind {
         case .brokerHostUnavailable:
             brokerSessionID = sessionID
@@ -224,6 +240,9 @@ final class BrokerTerminalLifecycle {
     }
 
     func currentCleanupOutcome() -> TerminalCleanupOutcome {
+        if let pendingOutputMonitorCleanup {
+            return .retryableFailure(pendingOutputMonitorCleanup.failure)
+        }
         guard pendingExitedOutputRetirement != nil else { return .completed }
         return .retryableFailure(TerminalSessionFailure(
             kind: startFailureKind ?? .failed,
@@ -235,6 +254,53 @@ final class BrokerTerminalLifecycle {
         TerminalSessionFailure(
             kind: Self.classifyStartFailure(error),
             description: String(describing: error)
+        )
+    }
+
+    private func recordOutputMonitorCleanup(
+        _ error: Error?,
+        sessionID: BrokerSessionID
+    ) -> TerminalSessionFailure? {
+        if let error {
+            let failure = cleanupFailure(from: error)
+            pendingOutputMonitorCleanup = (sessionID, failure)
+            return failure
+        }
+        if pendingOutputMonitorCleanup?.sessionID == sessionID {
+            pendingOutputMonitorCleanup = nil
+        }
+        return nil
+    }
+
+    @discardableResult
+    private func stopOutputPump(host: any BrokerTerminalLifecycleHost) -> TerminalSessionFailure? {
+        host.pauseOutputPump()
+        return clearOutputAvailabilityHandlers(host: host)
+    }
+
+    func stopOutputPumpAfterSessionFailure(host: any BrokerTerminalLifecycleHost) {
+        _ = stopOutputPump(host: host)
+    }
+
+    private func clearOutputAvailabilityHandlers(
+        host: any BrokerTerminalLifecycleHost
+    ) -> TerminalSessionFailure? {
+        let pendingSessionID = pendingOutputMonitorCleanup?.sessionID
+        if let pendingSessionID {
+            if let failure = recordOutputMonitorCleanup(
+                host.clearOutputAvailabilityHandler(for: pendingSessionID),
+                sessionID: pendingSessionID
+            ) {
+                return failure
+            }
+            if brokerSessionID == pendingSessionID {
+                return nil
+            }
+        }
+        guard let activeSessionID = brokerSessionID else { return nil }
+        return recordOutputMonitorCleanup(
+            host.clearOutputAvailabilityHandler(for: activeSessionID),
+            sessionID: activeSessionID
         )
     }
 
@@ -468,7 +534,7 @@ final class BrokerTerminalLifecycle {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
             freshStartTeardownCompletions.append { [self] in
-                completePreservingOutputDetach(.completed)
+                completePreservingOutputDetach(currentCleanupOutcome())
             }
             return
         }
@@ -479,9 +545,13 @@ final class BrokerTerminalLifecycle {
         startCompletionPending = false
         preservesUnreadOutputForTermination = true
         host.revokeSessionPresentation()
-        host.stopOutputPump()
+        let outputMonitorFailure = stopOutputPump(host: host)
         host.finishOutputLaneWithoutConsuming { [self] in
             DispatchQueue.main.async {
+                if let outputMonitorFailure {
+                    self.completePreservingOutputDetach(.retryableFailure(outputMonitorFailure))
+                    return
+                }
                 self.finishPreservingOutputDetach(host: host)
             }
         }
@@ -529,18 +599,18 @@ final class BrokerTerminalLifecycle {
                         )
                         return
                     }
-                    self.completePreservingOutputDetach(.completed)
+                    self.completePreservingOutputDetach(self.currentCleanupOutcome())
                 }
             }
             return
         }
         if let untrackedBrokerSessionID {
             retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
-                completePreservingOutputDetach(.completed)
+                completePreservingOutputDetach(currentCleanupOutcome())
             }
             return
         }
-        completePreservingOutputDetach(.completed)
+        completePreservingOutputDetach(currentCleanupOutcome())
     }
 
     private func continuePreservingOutputDetach(
@@ -611,15 +681,22 @@ final class BrokerTerminalLifecycle {
         if freshStartPending {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
-            freshStartTeardownCompletions.append { completion(.completed) }
+            freshStartTeardownCompletions.append { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
         host.revokeSessionPresentation()
         // Revoke presentation immediately, but let the serial output operation
         // already in flight classify an observed exit before the close barrier.
         // `finishForClose` stops the lane once that operation returns.
-        if let brokerSessionID {
-            host.clearOutputAvailabilityHandler(for: brokerSessionID)
+        if let outputMonitorFailure = clearOutputAvailabilityHandlers(host: host) {
+            host.finishOutputLaneForClose {
+                DispatchQueue.main.async {
+                    completion(.retryableFailure(outputMonitorFailure))
+                }
+            }
+            return
         }
         if reattachWorkInFlight {
             reattachWorkCompletionWaiters.append { [self] in
@@ -685,7 +762,7 @@ final class BrokerTerminalLifecycle {
                     }
                     clearIdentity()
                     pendingExitedOutputRetirement = nil
-                    completion(.completed)
+                    completion(currentCleanupOutcome())
                 }
             }
             return
@@ -697,13 +774,13 @@ final class BrokerTerminalLifecycle {
                         completion(.retryableFailure(cleanupFailure(from: error)))
                     } else {
                         self.untrackedBrokerSessionID = nil
-                        completion(.completed)
+                        completion(self.currentCleanupOutcome())
                     }
                 }
             }
             return
         }
-        completion(.completed)
+        completion(currentCleanupOutcome())
     }
 
     // MARK: - Tab teardown / app detach
@@ -723,7 +800,9 @@ final class BrokerTerminalLifecycle {
             // denied) supersedes any reconnect queued while cleanup was live.
             // Never launch a replacement after termination authority completes.
             restartAfterCancelledFreshStart = nil
-            freshStartTeardownCompletions.append { completion(.completed) }
+            freshStartTeardownCompletions.append { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
         if runningSessionTeardownProbeInFlight {
@@ -742,7 +821,7 @@ final class BrokerTerminalLifecycle {
             // presentation immediately; the teardown-only live-exit probe below is
             // the sole path allowed to render after close begins.
             host.revokeSessionPresentation()
-            host.stopOutputPump()
+            stopOutputPump(host: host)
             startCompletionPending = false
             notifyStartAfterExitedOutputResolution = false
             exitedOutputTeardownCompletions.append(completion)
@@ -753,7 +832,7 @@ final class BrokerTerminalLifecycle {
             // actor publication. Join that claimed generation instead of racing
             // it with a teardown probe during the queue handoff window.
             host.revokeSessionPresentation()
-            host.stopOutputPump()
+            stopOutputPump(host: host)
             startCompletionPending = false
             notifyStartAfterExitedOutputResolution = false
             exitedOutputResolutionInFlight = true
@@ -773,7 +852,7 @@ final class BrokerTerminalLifecycle {
             // cannot publish after close or quit begins. Exit resolution keeps its
             // independent claim and remains authorized to drain final bytes.
             host.revokeSessionPresentation()
-            host.stopOutputPump()
+            stopOutputPump(host: host)
             exitedOutputResolutionInFlight = true
             runningSessionTeardownProbeInFlight = true
             exitedOutputTeardownCompletions.append(completion)
@@ -781,7 +860,7 @@ final class BrokerTerminalLifecycle {
             return
         }
         host.revokeSessionPresentation()
-        host.stopOutputPump()
+        stopOutputPump(host: host)
         if let brokerSessionID, !didNotifyTermination {
             if coordinator.requiresOffMainBrokerWork {
                 recovery.detach(brokerSessionID) { error in
@@ -792,7 +871,7 @@ final class BrokerTerminalLifecycle {
                         if let error {
                             completion(.retryableFailure(cleanupFailure(from: error)))
                         } else {
-                            completion(.completed)
+                            completion(currentCleanupOutcome())
                         }
                     }
                 }
@@ -813,14 +892,16 @@ final class BrokerTerminalLifecycle {
             if let detachError {
                 completion(.retryableFailure(cleanupFailure(from: detachError)))
             } else {
-                completion(.completed)
+                completion(currentCleanupOutcome())
             }
             return
         } else if let untrackedBrokerSessionID {
-            retireUntrackedForTeardown(untrackedBrokerSessionID) { completion(.completed) }
+            retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
+                completion(currentCleanupOutcome())
+            }
             return
         }
-        completion(.completed)
+        completion(currentCleanupOutcome())
     }
 
     func finishRunningSessionTeardownProbe(
@@ -838,7 +919,6 @@ final class BrokerTerminalLifecycle {
             )
         }
         host.revokeSessionPresentation()
-        host.stopOutputPump()
         guard let brokerSessionID, !didNotifyTermination else {
             finishRunningSessionTeardown(host: host)
             return
@@ -1053,10 +1133,12 @@ final class BrokerTerminalLifecycle {
            case .outputMonitoringFailed = runtimeError {
             return .brokerSessionStale
         }
-        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
+        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, _) = error,
            code == "scrollback-persistence-failed"
-               || code == "output-monitoring-failed"
-               || (code == "missing-session" && message.contains("missingSession")) {
+               || code == "output-monitoring-failed" {
+            return .brokerSessionStale
+        }
+        if case BrokerSessionHostClientRuntime.ClientError.missingSession = error {
             return .brokerSessionStale
         }
         return .failed

@@ -1130,7 +1130,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         switch clientError {
         case .transportFailed, .unexpectedResponse:
             return true
-        case .hostFailure, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
+        case .hostFailure, .missingSession, .launchCleanupPending, .exitCompletedWithInputCloseFailure,
              .outputTransportFailed:
             return false
         }
@@ -1452,8 +1452,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
     ) throws {
-        _ = try record(for: id)
         guard let runtime = runtime as? BrokerOutputAvailabilityMonitoringRuntime else { return }
+        if handler == nil {
+            do {
+                try runtime.setOutputAvailabilityHandler(id: id, handler: nil)
+            } catch {
+                guard isMissingRuntimeSessionError(error, id: id) else { throw error }
+                // A retired session has no remaining handler to remove.
+            }
+            return
+        }
+        _ = try record(for: id)
         try runtime.setOutputAvailabilityHandler(id: id, handler: handler)
     }
 
@@ -1641,10 +1650,8 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         if let runtimeError = error as? NativePTYBrokerSessionRuntime.RuntimeError {
             return runtimeError == .missingSession(id)
         }
-        if case let BrokerSessionHostClientRuntime.ClientError.hostFailure(code, message) = error,
-           code == "missing-session",
-           message.contains(id.rawValue) {
-            return true
+        if case let BrokerSessionHostClientRuntime.ClientError.missingSession(missingID, _) = error {
+            return missingID == id
         }
         return false
     }

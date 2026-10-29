@@ -43,7 +43,7 @@ class MockChannelController: NSObject, ChannelController {
     var appTerminationDeactivationCallCount = 0
     var appTerminationOutcome: TerminalCleanupOutcome = .completed
     var defersDeactivationCompletion = false
-    private var pendingDeactivationCompletion: (@MainActor () -> Void)?
+    private var pendingDeactivationCompletion: (@MainActor (TerminalCleanupOutcome) -> Void)?
     var sentInputs: [String] = []
     private var pendingSubmissionCompletion: (@MainActor (Bool) -> Void)?
 
@@ -91,20 +91,18 @@ class MockChannelController: NSObject, ChannelController {
         delegate?.channelStateDidChange(self, to: .disconnected)
     }
 
-    func deactivate(completion: @escaping @MainActor () -> Void) {
+    func deactivate(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
         deactivate()
         if defersDeactivationCompletion {
             pendingDeactivationCompletion = completion
         } else {
-            completion()
+            completion(.completed)
         }
     }
 
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
         closeDeactivationCallCount += 1
-        deactivate {
-            completion(.completed)
-        }
+        deactivate(completion: completion)
     }
 
     func deactivateForAppTermination(
@@ -112,13 +110,13 @@ class MockChannelController: NSObject, ChannelController {
     ) {
         appTerminationDeactivationCallCount += 1
         let outcome = appTerminationOutcome
-        deactivate { completion(outcome) }
+        deactivate { _ in completion(outcome) }
     }
 
     func finishDeactivation() {
         let completion = pendingDeactivationCompletion
         pendingDeactivationCompletion = nil
-        completion?()
+        completion?(.completed)
     }
 
     func retry() {
