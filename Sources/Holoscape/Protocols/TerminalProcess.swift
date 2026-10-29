@@ -152,6 +152,26 @@ enum TerminalCleanupOutcome: Equatable, Sendable {
     case retryableFailure(TerminalSessionFailure)
 }
 
+enum BrokerSessionCleanup {
+    static func detach(
+        _ id: BrokerSessionID?,
+        using coordinator: (any BrokerSessionCoordinating)?,
+        logPrefix: String
+    ) -> TerminalCleanupOutcome {
+        guard let coordinator, let id else { return .completed }
+        do {
+            _ = try coordinator.detach(id)
+            return .completed
+        } catch {
+            NSLog("%@ broker session detach failed: %@", logPrefix, String(describing: error))
+            return .retryableFailure(TerminalSessionFailure(
+                kind: BrokerTerminalLifecycle.classifyStartFailure(error),
+                description: String(describing: error)
+            ))
+        }
+    }
+}
+
 extension TerminalProcess {
     func resumeBrokerSessionForCleanup() {}
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
