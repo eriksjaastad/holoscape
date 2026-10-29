@@ -625,6 +625,31 @@ final class SSHChannelControllerTests: XCTestCase {
         XCTAssertEqual(try fixture.singleRecord().lifecycle, .detached)
     }
 
+    @MainActor
+    func testAppTerminationRunsHostBackedSSHDetachOffMain() async throws {
+        let fixture = try CoordinatorBackedBrokerFixture(requiresOffMainBrokerWork: true)
+        defer { fixture.cleanup() }
+        let controller = SSHChannelController(
+            id: UUID(),
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: MockTerminalProcess(),
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+
+        let completion = expectation(description: "SSH detach completes")
+        var outcome: TerminalCleanupOutcome?
+        controller.deactivateForAppTermination {
+            outcome = $0
+            completion.fulfill()
+        }
+        await fulfillment(of: [completion], timeout: 1)
+
+        XCTAssertEqual(outcome, .completed)
+        XCTAssertEqual(fixture.runtime.detachRanOnMainThread, [false])
+    }
+
     // MARK: - #7375 coordinator broker-record failures
 
     private static func macbookProfile() -> SessionProfile {

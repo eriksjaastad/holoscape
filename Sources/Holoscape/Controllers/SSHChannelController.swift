@@ -153,7 +153,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
                 completion(outcome)
                 return
             }
-            completion(self.brokerDetachOutcome())
+            BrokerSessionCleanup.detachForAppTermination(
+                self.brokerSessionID,
+                using: self.brokerSessionCoordinator,
+                logPrefix: "SSH",
+                completion: completion
+            )
         }
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)

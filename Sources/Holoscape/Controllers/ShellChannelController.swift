@@ -366,7 +366,12 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
                 completion(outcome)
                 return
             }
-            completion(self.brokerDetachOutcome())
+            BrokerSessionCleanup.detachForAppTermination(
+                self.brokerSessionID,
+                using: self.brokerSessionCoordinator,
+                logPrefix: "Shell",
+                completion: completion
+            )
         }
         state = .disconnected
         delegate?.channelStateDidChange(self, to: .disconnected)

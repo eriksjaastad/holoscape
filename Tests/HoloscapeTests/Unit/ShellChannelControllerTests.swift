@@ -482,6 +482,31 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(try fixture.singleRecord().lifecycle, .detached)
     }
 
+    func testAppTerminationRunsHostBackedShellDetachOffMain() async throws {
+        let fixture = try CoordinatorBackedBrokerFixture(requiresOffMainBrokerWork: true)
+        defer { fixture.cleanup() }
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            label: "work",
+            workingDirectory: "/Users/test/work",
+            terminal: MockTerminalProcess(),
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+
+        let completion = expectation(description: "shell detach completes")
+        var outcome: TerminalCleanupOutcome?
+        controller.deactivateForAppTermination {
+            outcome = $0
+            completion.fulfill()
+        }
+        await fulfillment(of: [completion], timeout: 1)
+
+        XCTAssertEqual(outcome, .completed)
+        XCTAssertEqual(fixture.runtime.detachRanOnMainThread, [false])
+    }
+
     func testCoordinatorBackedShellExitWithBrokerHostOutageKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }

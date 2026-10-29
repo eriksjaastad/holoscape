@@ -163,12 +163,42 @@ enum BrokerSessionCleanup {
             _ = try coordinator.detach(id)
             return .completed
         } catch {
-            NSLog("%@ broker session detach failed: %@", logPrefix, String(describing: error))
-            return .retryableFailure(TerminalSessionFailure(
-                kind: BrokerTerminalLifecycle.classifyStartFailure(error),
-                description: String(describing: error)
-            ))
+            return detachFailureOutcome(error, logPrefix: logPrefix)
         }
+    }
+
+    @MainActor
+    static func detachForAppTermination(
+        _ id: BrokerSessionID?,
+        using coordinator: (any BrokerSessionCoordinating)?,
+        logPrefix: String,
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        guard let coordinator, let id else {
+            completion(.completed)
+            return
+        }
+        guard coordinator.requiresOffMainBrokerWork else {
+            completion(detach(id, using: coordinator, logPrefix: logPrefix))
+            return
+        }
+        BrokerFailureRecoveryCoordinator(coordinator).detach(id) { error in
+            let outcome = error.map { detachFailureOutcome($0, logPrefix: logPrefix) } ?? .completed
+            DispatchQueue.main.async {
+                completion(outcome)
+            }
+        }
+    }
+
+    private static func detachFailureOutcome(
+        _ error: Error,
+        logPrefix: String
+    ) -> TerminalCleanupOutcome {
+        NSLog("%@ broker session detach failed: %@", logPrefix, String(describing: error))
+        return .retryableFailure(TerminalSessionFailure(
+            kind: BrokerTerminalLifecycle.classifyStartFailure(error),
+            description: String(describing: error)
+        ))
     }
 }
 
