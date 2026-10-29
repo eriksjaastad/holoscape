@@ -36,6 +36,37 @@ final class TerminationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isComplete)
     }
 
+    func testDetachFailureDeniesQuitAndLaterQuitRetriesCleanup() {
+        let host = RecordingTerminationHost(saveResults: [true, true, true])
+        host.defersDetach = true
+        let coordinator = TerminationCoordinator(host: host)
+        var firstReplies: [Bool] = []
+        var retryReplies: [Bool] = []
+
+        coordinator.begin { firstReplies.append($0) }
+        host.finishDetach(.retryableFailure(TerminalSessionFailure(
+            kind: .brokerHostUnavailable,
+            description: "broker unavailable"
+        )))
+
+        XCTAssertEqual(firstReplies, [false])
+        XCTAssertFalse(coordinator.hasStarted)
+        XCTAssertFalse(coordinator.blocksExternalChannelCreation)
+
+        coordinator.begin { retryReplies.append($0) }
+        host.finishDetach()
+
+        XCTAssertEqual(retryReplies, [true])
+        XCTAssertEqual(
+            host.events,
+            [
+                "interaction:false", "save", "detach", "interaction:true",
+                "interaction:false", "save", "detach", "save",
+            ]
+        )
+        XCTAssertTrue(coordinator.isComplete)
+    }
+
     func testQuitAfterTimeoutJoinsExistingDetachAndUsesItsCompletion() {
         let host = RecordingTerminationHost(saveResults: [true, true, true])
         host.defersDetach = true
@@ -131,7 +162,7 @@ private final class RecordingTerminationHost: TerminationCoordinatorHost {
     var events: [String] = []
     var defersDetach = false
     private var saveResults: [Bool]
-    private var detachCompletion: (() -> Void)?
+    private var detachCompletion: ((TerminalCleanupOutcome) -> Void)?
 
     init(saveResults: [Bool]) {
         self.saveResults = saveResults
@@ -146,18 +177,20 @@ private final class RecordingTerminationHost: TerminationCoordinatorHost {
         return saveResults.removeFirst()
     }
 
-    func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
+    func terminationDetachChannels(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         events.append("detach")
         if defersDetach {
             detachCompletion = completion
         } else {
-            completion()
+            completion(.completed)
         }
     }
 
-    func finishDetach() {
+    func finishDetach(_ outcome: TerminalCleanupOutcome = .completed) {
         let completion = detachCompletion
         detachCompletion = nil
-        completion?()
+        completion?(outcome)
     }
 }

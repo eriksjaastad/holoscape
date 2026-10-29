@@ -261,7 +261,9 @@ class ChannelManager {
     /// saved tab registry. Broker-backed sessions must remain durable and
     /// reattachable after the UI process exits; this is intentionally different
     /// from `closeChannel`, which removes a tab from Holoscape's model.
-    func detachAllChannelsForAppTermination(completion: @escaping @MainActor () -> Void = {}) {
+    func detachAllChannelsForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void = { _ in }
+    ) {
         // A disconnected tab can still own an untracked broker generation when
         // startup created the process but registry persistence and rollback both
         // failed. Give every controller its teardown opportunity; deactivate is
@@ -271,15 +273,23 @@ class ChannelManager {
         // in-flight close has published its final cleanup truth.
         let channels = channelOrder.compactMap { self.channels[$0] }
         guard !channels.isEmpty else {
-            completion()
+            completion(.completed)
             return
         }
         var remaining = channels.count
+        var firstFailure: TerminalSessionFailure?
         for channel in channels {
-            channel.deactivateForAppTermination {
+            channel.deactivateForAppTermination { outcome in
+                if case .retryableFailure(let failure) = outcome, firstFailure == nil {
+                    firstFailure = failure
+                }
                 remaining -= 1
                 if remaining == 0 {
-                    completion()
+                    if let firstFailure {
+                        completion(.retryableFailure(firstFailure))
+                    } else {
+                        completion(.completed)
+                    }
                 }
             }
         }

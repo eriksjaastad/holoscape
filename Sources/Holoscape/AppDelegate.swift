@@ -882,9 +882,11 @@ extension AppDelegate: TerminationCoordinatorHost {
         return channelManagerRef?.saveState() ?? false
     }
 
-    func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
+    func terminationDetachChannels(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         guard let channelManager = windowController?.channelManager ?? channelManagerRef else {
-            completion()
+            completion(.completed)
             return
         }
         channelManager.detachAllChannelsForAppTermination(completion: completion)

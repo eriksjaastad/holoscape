@@ -996,6 +996,40 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
     }
 
+    func testAppTerminationRetriesCoordinatorBackedAgentDetachAfterHostRecovery() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: MockTerminalProcess(),
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        let sessionID = try XCTUnwrap(controller.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        var firstOutcome: TerminalCleanupOutcome?
+        controller.deactivateForAppTermination { firstOutcome = $0 }
+
+        guard case .retryableFailure(let failure) = firstOutcome else {
+            return XCTFail("A broker host outage must deny app termination")
+        }
+        XCTAssertEqual(failure.kind, .brokerHostUnavailable)
+        XCTAssertEqual(controller.brokerSessionID, sessionID)
+
+        fixture.runtime.mode = .healthy
+        var retryOutcome: TerminalCleanupOutcome?
+        controller.deactivateForAppTermination { retryOutcome = $0 }
+
+        XCTAssertEqual(retryOutcome, .completed)
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID, sessionID])
+        XCTAssertEqual(try fixture.singleRecord().lifecycle, .detached)
+    }
+
     func testCoordinatorBackedAgentExitWithLostBrokerResponseKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }

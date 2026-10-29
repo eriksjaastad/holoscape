@@ -177,6 +177,12 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         )
     }
 
+    func retryPendingExitedOutputRetirementForCleanup(
+        _ pending: BrokerExitedOutputRetirement
+    ) {
+        retryExitedOutputRetirement(pending, notifyStartCompletion: false)
+    }
+
     private func continueStartProcess(
         executable: String,
         args: [String],
@@ -768,8 +774,13 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         }
     }
 
-    private func retryExitedOutputRetirement(_ pending: BrokerExitedOutputRetirement) {
-        lifecycle.startCompletionPending = true
+    private func retryExitedOutputRetirement(
+        _ pending: BrokerExitedOutputRetirement,
+        notifyStartCompletion: Bool = true
+    ) {
+        if notifyStartCompletion {
+            lifecycle.startCompletionPending = true
+        }
         lifecycle.exitedOutputRetirementInFlight = true
         lifecycle.exitedOutputResolutionInFlight = true
         failureRecoveryCoordinator.retireCompletedSession(pending.sessionID) { [self] retirementError in
@@ -777,7 +788,7 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
                 self.finishExitedOutputRetirement(
                     pending,
                     retirementError: retirementError,
-                    notifyStartCompletion: true
+                    notifyStartCompletion: notifyStartCompletion
                 )
             }
         }
@@ -953,7 +964,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         lifecycle.detachForTeardown(host: self, completion: completion)
     }
 
-    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+    func detachBrokerSessionPreservingOutput(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         lifecycle.detachPreservingOutput(host: self, completion: completion)
     }
 

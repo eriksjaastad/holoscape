@@ -489,10 +489,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         transitionToDisconnected()
     }
 
-    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
-        terminal.detachBrokerSessionPreservingOutput { [weak self] in
-            self?.recordBrokerDetach()
-            completion()
+    func deactivateForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        terminal.detachBrokerSessionPreservingOutput { [weak self] outcome in
+            guard outcome == .completed, let self else {
+                completion(outcome)
+                return
+            }
+            completion(self.brokerDetachOutcome())
         }
         transitionToDisconnected()
     }
@@ -759,16 +764,15 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
     }
 
     private func recordBrokerDetach() {
-        guard let brokerSessionCoordinator, let brokerSessionID else { return }
-        do {
-            _ = try brokerSessionCoordinator.detach(brokerSessionID)
-        } catch {
-            // Detach runs on tab teardown and during app termination. If the
-            // broker host is unavailable, the durable record keeps its current
-            // lifecycle — still reattachable and reconciled on the next launch —
-            // so log loudly rather than trapping the app while it is closing.
-            NSLog("Agent broker session detach failed: \(error)")
-        }
+        _ = brokerDetachOutcome()
+    }
+
+    private func brokerDetachOutcome() -> TerminalCleanupOutcome {
+        BrokerSessionCleanup.detach(
+            brokerSessionID,
+            using: brokerSessionCoordinator,
+            logPrefix: "Agent"
+        )
     }
 
     private func recordBrokerExit(exitCode: Int32?) {

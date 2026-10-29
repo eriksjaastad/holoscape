@@ -1466,7 +1466,7 @@ final class ChannelManagerTests: XCTestCase {
 
         firstManager.saveState()
         let detachedExpectation = expectation(description: "original manager detached broker channels")
-        firstManager.detachAllChannelsForAppTermination { detachedExpectation.fulfill() }
+        firstManager.detachAllChannelsForAppTermination { _ in detachedExpectation.fulfill() }
         wait(for: [detachedExpectation], timeout: 1)
 
         let detachedRecords = try registry.load()
@@ -1603,7 +1603,7 @@ final class ChannelManagerTests: XCTestCase {
         manager.closeChannel(id: channel.channelId)
         var quitBarrierCompleted = false
 
-        manager.detachAllChannelsForAppTermination {
+        manager.detachAllChannelsForAppTermination { _ in
             quitBarrierCompleted = true
         }
 
@@ -1983,7 +1983,7 @@ final class ChannelManagerTests: XCTestCase {
         deferred.defersDeactivationCompletion = true
         var didComplete = false
 
-        manager.detachAllChannelsForAppTermination {
+        manager.detachAllChannelsForAppTermination { _ in
             didComplete = true
         }
 
@@ -1994,6 +1994,21 @@ final class ChannelManagerTests: XCTestCase {
         deferred.finishDeactivation()
 
         XCTAssertTrue(didComplete)
+    }
+
+    func testDetachAllChannelsForAppTerminationPropagatesRetryableFailure() {
+        let failure = TerminalSessionFailure(
+            kind: .brokerHostUnavailable,
+            description: "broker unavailable"
+        )
+        let failing = createMockChannel(type: .shell, role: "Failing") as! MockChannelController
+        _ = createMockChannel(type: .agentDirect, role: "Successful")
+        failing.appTerminationOutcome = .retryableFailure(failure)
+        var outcome: TerminalCleanupOutcome?
+
+        manager.detachAllChannelsForAppTermination { outcome = $0 }
+
+        XCTAssertEqual(outcome, .retryableFailure(failure))
     }
 
     // MARK: - Close Confirmation

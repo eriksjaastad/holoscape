@@ -136,7 +136,7 @@ final class StaleBrokerRelaunchTests: XCTestCase {
         ) {
             manager.saveState()
             var completed = false
-            manager.detachAllChannelsForAppTermination {
+            manager.detachAllChannelsForAppTermination { _ in
                 completed = true
             }
             let deadline = Date().addingTimeInterval(timeout)

@@ -7,7 +7,9 @@ import Foundation
 protocol TerminationCoordinatorHost: AnyObject {
     func terminationSetInteractionEnabled(_ enabled: Bool)
     func terminationSaveChannelState() -> Bool
-    func terminationDetachChannels(completion: @escaping @MainActor () -> Void)
+    func terminationDetachChannels(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
 }
 
 /// Owns the single bounded transaction that makes an AppKit quit truthful:
@@ -120,8 +122,8 @@ final class TerminationCoordinator {
         self.timeoutWorkItem = timeoutWorkItem
 
         if startsDetach {
-            host.terminationDetachChannels { [weak self] in
-                self?.finishDetach(generation: activeGeneration)
+            host.terminationDetachChannels { [weak self] outcome in
+                self?.finishDetach(outcome, generation: activeGeneration)
             }
         }
 
@@ -131,10 +133,26 @@ final class TerminationCoordinator {
         )
     }
 
-    private func finishDetach(generation expectedGeneration: UInt) {
+    private func finishDetach(
+        _ outcome: TerminalCleanupOutcome,
+        generation expectedGeneration: UInt
+    ) {
         guard isCurrent(expectedGeneration), let host else { return }
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
+
+        if case .retryableFailure(let failure) = outcome {
+            let reply = pendingReply
+            pendingReply = nil
+            phase = .idle
+            NSLog(
+                "Broker session cleanup failed during app termination; keeping Holoscape open: %@",
+                failure.description
+            )
+            host.terminationSetInteractionEnabled(true)
+            reply?(false)
+            return
+        }
 
         guard host.terminationSaveChannelState() else {
             let reply = pendingReply

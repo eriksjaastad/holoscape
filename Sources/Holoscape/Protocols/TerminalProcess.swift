@@ -50,7 +50,9 @@ protocol TerminalProcess: AnyObject {
     )
     /// Detach for app termination without consuming unread broker output. Any
     /// final bytes remain broker-owned for replay on the next launch.
-    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void)
+    func detachBrokerSessionPreservingOutput(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Retire a session for a user-requested tab close. Success means no durable
     /// broker record can later resurrect the hidden tab.
     func retireBrokerSessionForClose(
@@ -150,6 +152,26 @@ enum TerminalCleanupOutcome: Equatable, Sendable {
     case retryableFailure(TerminalSessionFailure)
 }
 
+enum BrokerSessionCleanup {
+    static func detach(
+        _ id: BrokerSessionID?,
+        using coordinator: (any BrokerSessionCoordinating)?,
+        logPrefix: String
+    ) -> TerminalCleanupOutcome {
+        guard let coordinator, let id else { return .completed }
+        do {
+            _ = try coordinator.detach(id)
+            return .completed
+        } catch {
+            NSLog("%@ broker session detach failed: %@", logPrefix, String(describing: error))
+            return .retryableFailure(TerminalSessionFailure(
+                kind: BrokerTerminalLifecycle.classifyStartFailure(error),
+                description: String(describing: error)
+            ))
+        }
+    }
+}
+
 extension TerminalProcess {
     func resumeBrokerSessionForCleanup() {}
     func setHostCurrentDirectoryHandler(_ handler: ((String?) -> Void)?) {}
@@ -163,8 +185,10 @@ extension TerminalProcess {
     ) {
         detachBrokerSession { completion(.completed) }
     }
-    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
-        detachBrokerSession(completion: completion)
+    func detachBrokerSessionPreservingOutput(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        detachBrokerSession { completion(.completed) }
     }
     func retireBrokerSessionForClose(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
