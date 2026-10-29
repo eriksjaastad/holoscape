@@ -1329,6 +1329,86 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(savedChannels[1].command, "codex")
     }
 
+    func testPartialUnmatchedBrokerRestorePreservesSkippedSurvivorForNextLaunch() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChannelManagerPartialUnmatchedRestoreTests-")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let shellSessionID = BrokerSessionID(rawValue: "partial-unmatched-shell")
+        let agentSessionID = BrokerSessionID(rawValue: "partial-unmatched-agent")
+        let coordinator = RecordingBrokerSessionCoordinator()
+        coordinator.reattachableSessionRecords = [
+            BrokerSessionRecord(
+                id: shellSessionID,
+                channelType: .shell,
+                label: "Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/partial-unmatched-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: nil
+            ),
+            BrokerSessionRecord(
+                id: agentSessionID,
+                channelType: .agentAPI,
+                label: "Recovered API Agent",
+                command: "/usr/bin/env",
+                arguments: ["claude"],
+                workingDirectory: "/tmp/partial-unmatched-agent",
+                environmentProfile: .agentAPI,
+                lifecycle: .detached,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 2),
+                updatedAt: Date(timeIntervalSince1970: 2),
+                lastAttachedChannelID: nil
+            ),
+        ]
+        let configService = ConfigService(configDir: tempDirectory)
+        var initialConfig = configService.load()
+        initialConfig.channels = [ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP")]
+        XCTAssertTrue(configService.save(initialConfig))
+        let firstManager = ChannelManager(
+            configService: configService,
+            brokerBackedShellCoordinator: coordinator
+        )
+        firstManager.restoreState { metadata in
+            MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { metadata in
+            guard metadata.type == .shell else { return nil }
+            return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }, 1)
+        XCTAssertEqual(
+            configService.load().channels.map(\.brokerSessionID),
+            [nil, shellSessionID, agentSessionID]
+        )
+        XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { _ in
+            XCTFail("A deferred survivor must not be rediscovered during the same launch")
+            return nil
+        }, 0)
+
+        let secondManager = ChannelManager(
+            configService: ConfigService(configDir: tempDirectory),
+            brokerBackedShellCoordinator: coordinator
+        )
+        secondManager.restoreState { metadata in
+            MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
+        }
+
+        XCTAssertEqual(secondManager.allChannels().map(\.channelType), [.mcp, .shell, .agentAPI])
+        XCTAssertEqual(secondManager.restoreUnmatchedBrokerBackedSessions { _ in
+            XCTFail("Saved survivors must not restore as duplicate unmatched tabs")
+            return nil
+        }, 0)
+    }
+
     func testSaveStateDoesNotResurrectRetiredRestoredBrokerIdentity() throws {
         let sessionID = BrokerSessionID(rawValue: "completed-restored-shell")
         let coordinator = RecordingBrokerSessionCoordinator()

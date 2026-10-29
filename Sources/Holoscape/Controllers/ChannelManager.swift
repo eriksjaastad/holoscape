@@ -543,8 +543,10 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) -> Int {
         let records = unmatchedBrokerBackedSessionsToRestore()
+        let firstRecoveredPersistenceIndex = channelOrder.count + persistence.unrestoredChannelCount
         var restoredCount = 0
-        for record in records {
+        var deferredCount = 0
+        for (index, record) in records.enumerated() {
             let role = restoredRole(for: record)
             let instanceNumber = nextInstanceNumber(for: role)
             let metadata = ChannelMetadata(
@@ -557,7 +559,11 @@ class ChannelManager {
                 command: restoredCommand(for: record),
                 brokerSessionID: record.id
             )
-            guard let controller = factory(metadata) else { continue }
+            guard let controller = factory(metadata) else {
+                persistence.recordUnrestored(metadata, at: firstRecoveredPersistenceIndex + index)
+                deferredCount += 1
+                continue
+            }
             channels[controller.channelId] = controller
             channelOrder.append(controller.channelId)
             channelLabels[controller.channelId] = metadata.role
@@ -565,7 +571,7 @@ class ChannelManager {
             persistence.recordRestoredBrokerSession(record.id, for: controller.channelId, suppressRecovery: false)
             restoredCount += 1
         }
-        if restoredCount > 0 {
+        if restoredCount > 0 || deferredCount > 0 {
             saveState()
         }
         return restoredCount
@@ -624,6 +630,7 @@ class ChannelManager {
         let knownBrokerSessionIDs = restoredBrokerSessionIdentities
             .union(liveBrokerSessionIDs)
             .union(persistence.suppressedRecoveredBrokerSessionIDs)
+            .union(persistence.unrestoredBrokerSessionIDs)
 
         return sessions.filter { record in
             switch record.channelType {
