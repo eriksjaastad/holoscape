@@ -1367,12 +1367,20 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         lifecycle.retireCompletedSession(id, completion: completion)
     }
 
-    func stopOutputPump() {
+    @discardableResult
+    func stopOutputPump() -> Error? {
         outputPresentation.stopHandoff()
+        var outputMonitorError: Error?
         if let brokerSessionID {
-            try? coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
+            do {
+                try coordinator.setOutputAvailabilityHandler(brokerSessionID, handler: nil)
+            } catch {
+                NSLog("Broker output-monitor removal failed: \(error)")
+                outputMonitorError = error
+            }
         }
         outputReadLane.stop()
+        return outputMonitorError
     }
 
     /// Record a mid-session broker failure once, stop polling, and report it so
@@ -1458,8 +1466,13 @@ extension BrokerBackedTerminalProcess: BrokerTerminalLifecycleHost {
         sessionIOReady = false
     }
 
-    func clearOutputAvailabilityHandler(for id: BrokerSessionID) {
-        try? coordinator.setOutputAvailabilityHandler(id, handler: nil)
+    func clearOutputAvailabilityHandler(for id: BrokerSessionID) -> Error? {
+        do {
+            try coordinator.setOutputAvailabilityHandler(id, handler: nil)
+            return nil
+        } catch {
+            return error
+        }
     }
 
     func finishOutputLaneWithoutConsuming(_ completion: @escaping @Sendable () -> Void) {
