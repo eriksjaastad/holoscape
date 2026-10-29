@@ -477,22 +477,34 @@ final class BrokerTerminalLifecycle {
         host.stopOutputPump()
         host.finishOutputLaneWithoutConsuming { [self] in
             DispatchQueue.main.async {
-                self.finishPreservingOutputDetach()
+                self.finishPreservingOutputDetach(host: host)
             }
         }
     }
 
-    private func finishPreservingOutputDetach() {
+    private func finishPreservingOutputDetach(host: any BrokerTerminalLifecycleHost) {
         if reattachWorkInFlight {
             reattachWorkCompletionWaiters.append { [self] in
-                finishPreservingOutputDetach()
+                finishPreservingOutputDetach(host: host)
             }
             return
         }
         if exitedOutputResolutionInFlight || runningSessionTeardownProbeInFlight {
-            exitedOutputTeardownCompletions.append { [self] _ in
-                finishPreservingOutputDetach()
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                continuePreservingOutputDetach(after: outcome, host: host)
             }
+            return
+        }
+        if let brokerSessionID, host.joinClaimedExitResolution(for: brokerSessionID) {
+            exitedOutputResolutionInFlight = true
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                continuePreservingOutputDetach(after: outcome, host: host)
+            }
+            return
+        }
+        let cleanupOutcome = currentCleanupOutcome()
+        if case .retryableFailure = cleanupOutcome {
+            completePreservingOutputDetach(cleanupOutcome)
             return
         }
         if let brokerSessionID {
@@ -517,6 +529,18 @@ final class BrokerTerminalLifecycle {
             return
         }
         completePreservingOutputDetach(.completed)
+    }
+
+    private func continuePreservingOutputDetach(
+        after outcome: TerminalCleanupOutcome,
+        host: any BrokerTerminalLifecycleHost
+    ) {
+        switch outcome {
+        case .completed:
+            finishPreservingOutputDetach(host: host)
+        case .retryableFailure:
+            completePreservingOutputDetach(outcome)
+        }
     }
 
     private func completePreservingOutputDetach(_ outcome: TerminalCleanupOutcome) {

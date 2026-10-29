@@ -1942,6 +1942,47 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
     }
 
+    func testAppTerminationPropagatesInFlightExitedOutputRetirementFailure() throws {
+        let coordinator = ExitedUnreadOutputCoordinator()
+        coordinator.outputSnapshotError = RuntimeError.outputReadFailed
+        coordinator.retirementError = RuntimeError.createFailed
+        coordinator.blockRetirement()
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "quit-during-exited-output-failure",
+            environmentProfile: .shell,
+            existingBrokerSessionID: coordinator.sessionID,
+            coordinator: coordinator
+        )
+        terminal.setOutputHandler {}
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        try waitUntil { coordinator.retiredSessionIDs == [coordinator.sessionID] }
+        var appTerminationOutcome: TerminalCleanupOutcome?
+
+        terminal.detachBrokerSessionPreservingOutput { appTerminationOutcome = $0 }
+        XCTAssertNil(appTerminationOutcome)
+        coordinator.finishRetirement()
+        try waitUntil { appTerminationOutcome != nil }
+
+        guard case .retryableFailure(let failure) = appTerminationOutcome else {
+            return XCTFail(
+                "Quit must retain the in-flight output and retirement failures; got \(String(describing: appTerminationOutcome))"
+            )
+        }
+        XCTAssertTrue(failure.description.contains("outputReadFailed"))
+        XCTAssertTrue(failure.description.contains("createFailed"))
+        XCTAssertTrue(terminal.pendingExitedOutputRetirement?.outputFailureDescription.contains("outputReadFailed") == true)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
+        XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+    }
+
     func testAppTerminationJoinsCloseReadFailureWithoutCancellingItsOutputBarrier() throws {
         let coordinator = ExitedUnreadOutputCoordinator()
         coordinator.restoredLifecycle = .running
