@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 final class ShellChannelControllerTests: XCTestCase {
+    func testDeactivatePropagatesRetryableTerminalCleanupFailure() {
+        let terminal = MockTerminalProcess()
+        let failure = TerminalSessionFailure(kind: .failed, description: "monitor removal failed")
+        terminal.detachOutcome = .retryableFailure(failure)
+        let controller = ShellChannelController(
+            id: UUID(),
+            instanceNumber: nil,
+            workingDirectory: "/tmp",
+            terminal: terminal
+        )
+        var outcome: TerminalCleanupOutcome?
+
+        controller.deactivate { outcome = $0 }
+
+        XCTAssertEqual(outcome, .retryableFailure(failure))
+    }
+
     func testCloseKeepsOutputLaneInstalledUntilRetirementCompletes() {
         let terminal = MockTerminalProcess()
         let controller = ShellChannelController(
@@ -584,7 +601,7 @@ final class ShellChannelControllerTests: XCTestCase {
         XCTAssertEqual(try registry.load().count, 1)
 
         let detachedExpectation = expectation(description: "broker shell detached")
-        controller.deactivate { detachedExpectation.fulfill() }
+        controller.deactivate { _ in detachedExpectation.fulfill() }
         wait(for: [detachedExpectation], timeout: 1)
 
         let detached = try registry.load().single()

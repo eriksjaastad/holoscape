@@ -104,7 +104,6 @@ final class ChannelManagerTests: XCTestCase {
         private(set) var startCallCount = 0
         private(set) var detachCallCount = 0
         private var startCompletionHandler: (() -> Void)?
-        private var detachCompletions: [@MainActor () -> Void] = []
         private var cleanupDetachCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
         private var userInputHandler: ((ArraySlice<UInt8>) -> Void)?
 
@@ -140,12 +139,14 @@ final class ChannelManagerTests: XCTestCase {
         func setStartCompletionHandler(_ handler: (() -> Void)?) { startCompletionHandler = handler }
         var completesStartAsynchronously: Bool { defersStartCompletion }
         func lastLines(_ count: Int) -> [String] { [] }
-        func detachBrokerSession(completion: @escaping @MainActor () -> Void) {
+        func detachBrokerSession(
+            completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+        ) {
             detachCallCount += 1
             if defersDetachCompletion {
-                detachCompletions.append(completion)
+                cleanupDetachCompletions.append(completion)
             } else {
-                completion()
+                completion(cleanupOutcome)
             }
         }
         func detachBrokerSessionForCleanup(
@@ -164,9 +165,6 @@ final class ChannelManagerTests: XCTestCase {
         }
         func finishDetach(with pending: BrokerExitedOutputRetirement?) {
             pendingExitedOutputRetirement = pending
-            let completions = detachCompletions
-            detachCompletions.removeAll()
-            completions.forEach { $0() }
             let cleanupCompletions = cleanupDetachCompletions
             cleanupDetachCompletions.removeAll()
             cleanupCompletions.forEach { $0(cleanupOutcome) }

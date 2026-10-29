@@ -203,6 +203,17 @@ final class BrokerTerminalLifecycle {
 
     func recordReattachFailure(_ error: Error, sessionID: BrokerSessionID) {
         recordStartFailure(error)
+        let missingSessionID: BrokerSessionID?
+        if case let NativePTYBrokerSessionRuntime.RuntimeError.missingSession(id) = error {
+            missingSessionID = id
+        } else if case let BrokerSessionHostClientRuntime.ClientError.missingSession(id, _) = error {
+            missingSessionID = id
+        } else {
+            missingSessionID = nil
+        }
+        if let missingSessionID, missingSessionID != sessionID {
+            startFailureKind = .failed
+        }
         switch startFailureKind {
         case .brokerHostUnavailable:
             brokerSessionID = sessionID

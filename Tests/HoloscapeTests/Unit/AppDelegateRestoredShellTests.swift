@@ -1578,7 +1578,7 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.retiredSessionIDs, [sessionID])
 
         var teardownCompleted = false
-        controller.deactivate { teardownCompleted = true }
+        controller.deactivate { _ in teardownCompleted = true }
         XCTAssertFalse(teardownCompleted)
 
         controller.retry()

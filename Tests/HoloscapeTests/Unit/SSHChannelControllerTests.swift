@@ -32,6 +32,7 @@ class MockTerminalProcess: TerminalProcess {
     var workingDirectoryUpdateError: Error?
     var closeRetirementCallCount = 0
     var closeRetirementCompletion: ((TerminalCleanupOutcome) -> Void)?
+    var detachOutcome: TerminalCleanupOutcome = .completed
 
     func startProcess(executable: String, args: [String], environment: [String]?, execName: String?, currentDirectory: String?) {
         sessionFailure = nil
@@ -104,6 +105,12 @@ class MockTerminalProcess: TerminalProcess {
     func updateWorkingDirectory(_ directory: String) throws {
         if let workingDirectoryUpdateError { throw workingDirectoryUpdateError }
         workingDirectoryUpdates.append(directory)
+    }
+
+    func detachBrokerSession(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        completion(detachOutcome)
     }
 
     func retireBrokerSessionForClose(

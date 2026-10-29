@@ -41,7 +41,9 @@ protocol TerminalProcess: AnyObject {
     func setUserInputHandler(_ handler: ((ArraySlice<UInt8>) -> Void)?)
     func setTerminationHandler(_ handler: ((Int32?) -> Void)?)
     func lastLines(_ count: Int) -> [String]
-    func detachBrokerSession(completion: @escaping @MainActor () -> Void)
+    func detachBrokerSession(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Detach for a presentation-hidden close and report whether cleanup is
     /// durably complete. A retryable failure must keep the close tombstone and
     /// broker identity persisted so a later launch can resume cleanup.
@@ -209,23 +211,27 @@ extension TerminalProcess {
     func setSessionFailureHandler(_ handler: ((TerminalSessionFailure) -> Void)?) {}
     func setStartCompletionHandler(_ handler: (() -> Void)?) {}
     var completesStartAsynchronously: Bool { false }
-    func detachBrokerSession(completion: @escaping @MainActor () -> Void) { completion() }
+    func detachBrokerSession(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        completion(.completed)
+    }
     func detachBrokerSessionForCleanup(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
-        detachBrokerSession { completion(.completed) }
+        detachBrokerSession(completion: completion)
     }
     func detachBrokerSessionPreservingOutput(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
-        detachBrokerSession { completion(.completed) }
+        detachBrokerSession(completion: completion)
     }
     func retireBrokerSessionForClose(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
         detachBrokerSessionForCleanup(completion: completion)
     }
-    func detachBrokerSession() { detachBrokerSession(completion: {}) }
+    func detachBrokerSession() { detachBrokerSession { _ in } }
     func updateWorkingDirectory(_ directory: String) throws {}
     func resizeToCurrentGrid() {}
     var brokerOwnedSessionID: BrokerSessionID? { nil }
