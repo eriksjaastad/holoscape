@@ -67,6 +67,14 @@ final class ChannelPersistenceTransactions {
         unrestoredSavedChannels.contains { $0.metadata.id == id }
     }
 
+    var unrestoredBrokerSessionIDs: Set<BrokerSessionID> {
+        Set(unrestoredSavedChannels.compactMap { $0.metadata.brokerSessionID })
+    }
+
+    var unrestoredChannelCount: Int {
+        unrestoredSavedChannels.count
+    }
+
     func recordRestoredInstanceNumber(_ instanceNumber: Int?, for label: String) {
         let key = label.lowercased()
         highWaterMarks[key] = max(highWaterMarks[key, default: 0], instanceNumber ?? 1)
