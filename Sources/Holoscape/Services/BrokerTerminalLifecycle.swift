@@ -62,6 +62,7 @@ protocol BrokerTerminalLifecycleHost: AnyObject, Sendable {
     func joinClaimedExitResolution(for id: BrokerSessionID) -> Bool
     var canProbeRunningSessionAtTeardown: Bool { get }
     func beginRunningSessionTeardownProbe(for id: BrokerSessionID)
+    func retryPendingExitedOutputRetirementForCleanup(_ pending: BrokerExitedOutputRetirement)
     func publishSessionFailure(_ failure: TerminalSessionFailure)
     func publishStartCompletion()
 }
@@ -112,6 +113,7 @@ final class BrokerTerminalLifecycle {
     /// in-flight restored-session drain to acknowledge and retire it unseen.
     private(set) var preservesUnreadOutputForTermination = false
     private var preservingOutputDetachInFlight = false
+    private var preservingOutputDetachMayRetryPendingRetirement = false
     private var preservingOutputDetachCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
     private var restartAfterPreservingOutputDetach: (@MainActor () -> Void)?
     /// Tab close owns terminal retirement through final output classification and
@@ -458,6 +460,9 @@ final class BrokerTerminalLifecycle {
             return
         }
         preservingOutputDetachInFlight = true
+        preservingOutputDetachMayRetryPendingRetirement = pendingExitedOutputRetirement != nil
+            && !exitedOutputResolutionInFlight
+            && !exitedOutputRetirementInFlight
         preservingOutputDetachCompletions = [completion]
         if freshStartPending {
             freshStartCancelled = true
@@ -502,9 +507,16 @@ final class BrokerTerminalLifecycle {
             }
             return
         }
-        let cleanupOutcome = currentCleanupOutcome()
-        if case .retryableFailure = cleanupOutcome {
-            completePreservingOutputDetach(cleanupOutcome)
+        if let pendingExitedOutputRetirement {
+            guard preservingOutputDetachMayRetryPendingRetirement else {
+                completePreservingOutputDetach(currentCleanupOutcome())
+                return
+            }
+            exitedOutputResolutionInFlight = true
+            exitedOutputTeardownCompletions.append { [self] outcome in
+                continuePreservingOutputDetach(after: outcome, host: host)
+            }
+            host.retryPendingExitedOutputRetirementForCleanup(pendingExitedOutputRetirement)
             return
         }
         if let brokerSessionID {
@@ -546,6 +558,7 @@ final class BrokerTerminalLifecycle {
     private func completePreservingOutputDetach(_ outcome: TerminalCleanupOutcome) {
         preservesUnreadOutputForTermination = false
         preservingOutputDetachInFlight = false
+        preservingOutputDetachMayRetryPendingRetirement = false
         let completions = preservingOutputDetachCompletions
         preservingOutputDetachCompletions.removeAll()
         completions.forEach { $0(outcome) }

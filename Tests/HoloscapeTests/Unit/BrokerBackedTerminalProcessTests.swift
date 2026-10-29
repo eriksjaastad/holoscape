@@ -309,7 +309,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         func blockOutputRead() { shouldBlockOutputRead = true }
         func finishOutputRead() { outputReadRelease.signal() }
         func blockRetirement() { shouldBlockRetirement = true }
-        func finishRetirement() { retirementRelease.signal() }
+        func finishRetirement() {
+            shouldBlockRetirement = false
+            retirementRelease.signal()
+        }
         func blockAcknowledgement() { shouldBlockAcknowledgement = true }
         func finishAcknowledgement() { acknowledgementRelease.signal() }
 
@@ -1981,6 +1984,16 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(terminal.pendingExitedOutputRetirement?.outputFailureDescription.contains("outputReadFailed") == true)
         XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID])
         XCTAssertEqual(terminal.brokerSessionID, coordinator.sessionID)
+
+        coordinator.retirementError = nil
+        var retryOutcome: TerminalCleanupOutcome?
+        terminal.detachBrokerSessionPreservingOutput { retryOutcome = $0 }
+        try waitUntil { retryOutcome != nil }
+
+        XCTAssertEqual(retryOutcome, .completed)
+        XCTAssertEqual(coordinator.retiredSessionIDs, [coordinator.sessionID, coordinator.sessionID])
+        XCTAssertNil(terminal.pendingExitedOutputRetirement)
+        XCTAssertNil(terminal.brokerSessionID)
     }
 
     func testAppTerminationJoinsCloseReadFailureWithoutCancellingItsOutputBarrier() throws {
