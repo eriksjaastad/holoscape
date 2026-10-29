@@ -3217,7 +3217,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         let brokerSessionID = try XCTUnwrap((firstShell as? ShellChannelController)?.brokerSessionID)
         firstLaunchManager.saveState()
         var detachCompleted = false
-        firstLaunchManager.detachAllChannelsForAppTermination {
+        firstLaunchManager.detachAllChannelsForAppTermination { _ in
             detachCompleted = true
         }
         let detachDeadline = Date().addingTimeInterval(1)

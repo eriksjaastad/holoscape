@@ -953,7 +953,9 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         lifecycle.detachForTeardown(host: self, completion: completion)
     }
 
-    func detachBrokerSessionPreservingOutput(completion: @escaping @MainActor () -> Void) {
+    func detachBrokerSessionPreservingOutput(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         lifecycle.detachPreservingOutput(host: self, completion: completion)
     }
 

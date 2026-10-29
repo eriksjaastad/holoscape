@@ -844,12 +844,18 @@ private final class SocketTerminationHost: TerminationCoordinatorHost {
         saveCallCount += 1
         return true
     }
-    func terminationDetachChannels(completion: @escaping @MainActor () -> Void) {
+    func terminationDetachChannels(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         do {
             try client.detachSession(id: sessionID)
-            completion()
+            completion(.completed)
         } catch {
             onDetachFailure(error)
+            completion(.retryableFailure(TerminalSessionFailure(
+                kind: .brokerHostUnavailable,
+                description: String(describing: error)
+            )))
         }
     }
 }

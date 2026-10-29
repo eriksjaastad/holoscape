@@ -25,7 +25,9 @@ protocol ChannelController: AnyObject {
     func deactivate()
     func deactivate(completion: @escaping @MainActor () -> Void)
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void)
-    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void)
+    func deactivateForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    )
     /// Resume lifecycle cleanup for a persisted, presentation-hidden close.
     /// Implementations with asynchronous attach must not detach until attach has
     /// committed, and must never launch a replacement process.
@@ -75,8 +77,10 @@ extension ChannelController {
     func deactivateForClose(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {
         deactivate { completion(.completed) }
     }
-    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
-        deactivate(completion: completion)
+    func deactivateForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        deactivate { completion(.completed) }
     }
     func resumeRestoredCloseCleanup(
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void

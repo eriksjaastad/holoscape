@@ -112,7 +112,7 @@ final class BrokerTerminalLifecycle {
     /// in-flight restored-session drain to acknowledge and retire it unseen.
     private(set) var preservesUnreadOutputForTermination = false
     private var preservingOutputDetachInFlight = false
-    private var preservingOutputDetachCompletions: [@MainActor () -> Void] = []
+    private var preservingOutputDetachCompletions: [@MainActor (TerminalCleanupOutcome) -> Void] = []
     private var restartAfterPreservingOutputDetach: (@MainActor () -> Void)?
     /// Tab close owns terminal retirement through final output classification and
     /// persistence-facing cleanup truth. App termination must join that owner
@@ -443,10 +443,10 @@ final class BrokerTerminalLifecycle {
 
     func detachPreservingOutput(
         host: any BrokerTerminalLifecycleHost,
-        completion: @escaping @MainActor () -> Void
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
         if closeRetirementInFlight {
-            closeRetirementCompletions.append { _ in completion() }
+            closeRetirementCompletions.append(completion)
             return
         }
         if preservingOutputDetachInFlight {
@@ -463,7 +463,7 @@ final class BrokerTerminalLifecycle {
             freshStartCancelled = true
             restartAfterCancelledFreshStart = nil
             freshStartTeardownCompletions.append { [self] in
-                completePreservingOutputDetach()
+                completePreservingOutputDetach(.completed)
             }
             return
         }
@@ -500,27 +500,31 @@ final class BrokerTerminalLifecycle {
                 DispatchQueue.main.async {
                     if let error {
                         NSLog("Broker-backed terminal app-termination detach failed: \(error)")
+                        self.completePreservingOutputDetach(
+                            .retryableFailure(self.cleanupFailure(from: error))
+                        )
+                        return
                     }
-                    self.completePreservingOutputDetach()
+                    self.completePreservingOutputDetach(.completed)
                 }
             }
             return
         }
         if let untrackedBrokerSessionID {
             retireUntrackedForTeardown(untrackedBrokerSessionID) { [self] in
-                completePreservingOutputDetach()
+                completePreservingOutputDetach(.completed)
             }
             return
         }
-        completePreservingOutputDetach()
+        completePreservingOutputDetach(.completed)
     }
 
-    private func completePreservingOutputDetach() {
+    private func completePreservingOutputDetach(_ outcome: TerminalCleanupOutcome) {
         preservesUnreadOutputForTermination = false
         preservingOutputDetachInFlight = false
         let completions = preservingOutputDetachCompletions
         preservingOutputDetachCompletions.removeAll()
-        completions.forEach { $0() }
+        completions.forEach { $0(outcome) }
         let restart = restartAfterPreservingOutputDetach
         restartAfterPreservingOutputDetach = nil
         restart?()
@@ -555,7 +559,7 @@ final class BrokerTerminalLifecycle {
         restartAfterPreservingOutputDetach = nil
         if preservingOutputDetachInFlight {
             startCompletionPending = false
-            preservingOutputDetachCompletions.append { [self] in
+            preservingOutputDetachCompletions.append { [self] _ in
                 continueRetireForClose(host: host, completion: completion)
             }
             return

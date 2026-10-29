@@ -41,6 +41,7 @@ class MockChannelController: NSObject, ChannelController {
     var deactivateCallCount = 0
     var closeDeactivationCallCount = 0
     var appTerminationDeactivationCallCount = 0
+    var appTerminationOutcome: TerminalCleanupOutcome = .completed
     var defersDeactivationCompletion = false
     private var pendingDeactivationCompletion: (@MainActor () -> Void)?
     var sentInputs: [String] = []
@@ -106,9 +107,12 @@ class MockChannelController: NSObject, ChannelController {
         }
     }
 
-    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
+    func deactivateForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
         appTerminationDeactivationCallCount += 1
-        deactivate(completion: completion)
+        let outcome = appTerminationOutcome
+        deactivate { completion(outcome) }
     }
 
     func finishDeactivation() {

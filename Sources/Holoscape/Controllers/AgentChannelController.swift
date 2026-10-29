@@ -489,10 +489,14 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         transitionToDisconnected()
     }
 
-    func deactivateForAppTermination(completion: @escaping @MainActor () -> Void) {
-        terminal.detachBrokerSessionPreservingOutput { [weak self] in
-            self?.recordBrokerDetach()
-            completion()
+    func deactivateForAppTermination(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        terminal.detachBrokerSessionPreservingOutput { [weak self] outcome in
+            if outcome == .completed {
+                self?.recordBrokerDetach()
+            }
+            completion(outcome)
         }
         transitionToDisconnected()
     }

@@ -1635,7 +1635,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         let detached = expectation(description: "quit detach waits for reattach drain")
         var didDetach = false
 
-        terminal.detachBrokerSessionPreservingOutput {
+        terminal.detachBrokerSessionPreservingOutput { _ in
             didDetach = true
             detached.fulfill()
         }
@@ -1673,7 +1673,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         XCTAssertTrue(coordinator.waitForReattach())
 
-        terminal.detachBrokerSessionPreservingOutput { detachCompleted = true }
+        terminal.detachBrokerSessionPreservingOutput { _ in detachCompleted = true }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: [],
@@ -1720,7 +1720,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
         XCTAssertTrue(coordinator.waitForReattach())
 
-        terminal.detachBrokerSessionPreservingOutput { detachCompletions += 1 }
+        terminal.detachBrokerSessionPreservingOutput { _ in detachCompletions += 1 }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: [],
@@ -1728,7 +1728,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             execName: "zsh",
             currentDirectory: "/tmp"
         )
-        terminal.detachBrokerSessionPreservingOutput { detachCompletions += 1 }
+        terminal.detachBrokerSessionPreservingOutput { _ in detachCompletions += 1 }
 
         coordinator.finishReattach()
         try waitUntil { coordinator.detachCalls == [sessionID] }
@@ -1762,7 +1762,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             currentDirectory: "/tmp"
         )
         XCTAssertTrue(coordinator.waitForReattach())
-        terminal.detachBrokerSessionPreservingOutput {}
+        terminal.detachBrokerSessionPreservingOutput { _ in }
         terminal.startProcess(
             executable: "/bin/zsh",
             args: [],
@@ -1969,7 +1969,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var appTerminationDetached = false
 
         terminal.retireBrokerSessionForClose { closeOutcome = $0 }
-        terminal.detachBrokerSessionPreservingOutput { appTerminationDetached = true }
+        terminal.detachBrokerSessionPreservingOutput { _ in appTerminationDetached = true }
         XCTAssertNil(closeOutcome)
         XCTAssertFalse(appTerminationDetached)
         coordinator.finishOutputRead()
@@ -2012,7 +2012,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         var appTerminationDetached = false
 
         terminal.retireBrokerSessionForClose { closeOutcome = $0 }
-        terminal.detachBrokerSessionPreservingOutput { appTerminationDetached = true }
+        terminal.detachBrokerSessionPreservingOutput { _ in appTerminationDetached = true }
         XCTAssertNil(closeOutcome)
         XCTAssertFalse(appTerminationDetached)
         coordinator.finishAcknowledgement()
@@ -2078,7 +2078,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         runtime.triggerFinalOutput("quit-time-unread-output\n", for: sessionID)
         let detached = expectation(description: "app termination detach completed")
 
-        fixture.terminal.detachBrokerSessionPreservingOutput { detached.fulfill() }
+        fixture.terminal.detachBrokerSessionPreservingOutput { _ in detached.fulfill() }
 
         wait(for: [detached], timeout: 2)
         XCTAssertEqual(runtime.acknowledgedGenerations, [])
@@ -3052,6 +3052,53 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         )
     }
 
+    func testAppTerminationDetachFailureIsRetryableAndKeepsRecordReattachable() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(uuidString: "00000000-0000-0000-0000-000000008029")!,
+            channelType: .shell,
+            label: "termination-detach-outage",
+            environmentProfile: .shell,
+            coordinator: fixture.coordinator
+        )
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: ["--login"],
+            environment: nil,
+            execName: "zsh",
+            currentDirectory: "/tmp"
+        )
+        let sessionID = try XCTUnwrap(terminal.brokerSessionID)
+
+        fixture.runtime.mode = .hostUnavailable
+        var firstOutcome: TerminalCleanupOutcome?
+        let firstDetach = expectation(description: "failed termination detach completed")
+        terminal.detachBrokerSessionPreservingOutput {
+            firstOutcome = $0
+            firstDetach.fulfill()
+        }
+        wait(for: [firstDetach], timeout: 1)
+
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("A failed termination detach must remain retryable")
+        }
+        XCTAssertEqual(terminal.brokerOwnedSessionID, sessionID)
+        XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
+
+        fixture.runtime.mode = .healthy
+        var retryOutcome: TerminalCleanupOutcome?
+        let retryDetach = expectation(description: "retried termination detach completed")
+        terminal.detachBrokerSessionPreservingOutput {
+            retryOutcome = $0
+            retryDetach.fulfill()
+        }
+        wait(for: [retryDetach], timeout: 1)
+
+        XCTAssertEqual(retryOutcome, .completed)
+        XCTAssertEqual(fixture.runtime.detachedIDs, [sessionID, sessionID])
+    }
+
     func testDetachInvalidatesPendingReattachCompletion() throws {
         let sessionID = BrokerSessionID(rawValue: "pending-reattach")
         let coordinator = BlockingReattachCoordinator()
@@ -3317,7 +3364,7 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertTrue(coordinator.waitForStart())
         var detachCompleted = false
 
-        terminal.detachBrokerSessionPreservingOutput { detachCompleted = true }
+        terminal.detachBrokerSessionPreservingOutput { _ in detachCompleted = true }
 
         XCTAssertFalse(detachCompleted)
         coordinator.finishStart()
