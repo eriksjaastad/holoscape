@@ -935,6 +935,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var storedHandlerRemovalCount = 0
         private var terminationStatusThreads: [Bool] = []
         private var exitFinalizationThreads: [Bool] = []
+        private let retirementRelease = DispatchSemaphore(value: 0)
+        private var shouldBlockRetirement = false
+        private var storedRetirementCallCount = 0
         let supportsOutputAvailabilityMonitoring: Bool
         var terminationError: Error?
         var retirementError: Error?
@@ -971,6 +974,18 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             lock.withLock { storedHandlerRemovalCount }
         }
 
+        func blockRetirement() {
+            lock.withLock { shouldBlockRetirement = true }
+        }
+
+        var retirementCallCount: Int {
+            lock.withLock { storedRetirementCallCount }
+        }
+
+        func finishRetirement() {
+            retirementRelease.signal()
+        }
+
         func triggerFinalOutput(_ text: String, afterTerminationCheck lateText: String = "", for id: BrokerSessionID) {
             let currentHandler: (@Sendable (BrokerSessionID) -> Void)? = lock.withLock {
                 output.append(Data(text.utf8))
@@ -994,6 +1009,13 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             if let terminationError { throw terminationError }
         }
         func markSessionErrored(id: BrokerSessionID) throws {
+            let shouldBlock = lock.withLock {
+                storedRetirementCallCount += 1
+                return shouldBlockRetirement
+            }
+            if shouldBlock {
+                _ = retirementRelease.wait(timeout: .now() + 2)
+            }
             let retirementError = lock.withLock { () -> Error? in
                 retiredIDs.append(id)
                 return self.retirementError
@@ -2328,6 +2350,42 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         XCTAssertEqual(runtime.handlerRemovalCount, 2)
         XCTAssertNil(fixture.terminal.brokerSessionID)
+        XCTAssertEqual(try runtime.listSessions(), [])
+    }
+
+    func testCloseMonitorRemovalFailureSurvivesInFlightExitIdentityClear() throws {
+        let runtime = FinalOutputRuntime()
+        runtime.blockRetirement()
+        let fixture = try makeMidSessionFixture(
+            runtime: runtime,
+            channelID: "00000000-0000-0000-0000-000000008034"
+        )
+        defer { fixture.cleanup() }
+        let sessionID = try XCTUnwrap(fixture.terminal.brokerSessionID)
+        fixture.terminal.setOutputHandler {}
+        try waitUntil { runtime.handlerInstallCount == 1 }
+        runtime.triggerFinalOutput("completed before close\n", for: sessionID)
+        try waitUntil { runtime.retirementCallCount == 1 }
+        runtime.handlerRemovalError = RuntimeError.createFailed
+        var firstOutcome: TerminalCleanupOutcome?
+
+        fixture.terminal.retireBrokerSessionForClose { firstOutcome = $0 }
+        try waitUntil { firstOutcome != nil }
+        guard case .retryableFailure = firstOutcome else {
+            return XCTFail("Close must retain monitor cleanup while exit retirement is in flight")
+        }
+
+        runtime.finishRetirement()
+        try waitUntil { fixture.terminal.brokerSessionID == nil }
+        runtime.handlerRemovalError = nil
+        var retryOutcome: TerminalCleanupOutcome?
+        fixture.terminal.retireBrokerSessionForClose { retryOutcome = $0 }
+        try waitUntil { retryOutcome != nil }
+
+        guard case .completed = retryOutcome else {
+            return XCTFail("Close retry must remove the old monitor after exit clears live identity")
+        }
+        XCTAssertEqual(runtime.handlerRemovalCount, 2)
         XCTAssertEqual(try runtime.listSessions(), [])
     }
 

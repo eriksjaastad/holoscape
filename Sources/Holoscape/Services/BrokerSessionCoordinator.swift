@@ -1452,8 +1452,17 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
         _ id: BrokerSessionID,
         handler: (@Sendable (BrokerSessionID) -> Void)?
     ) throws {
-        _ = try record(for: id)
         guard let runtime = runtime as? BrokerOutputAvailabilityMonitoringRuntime else { return }
+        if handler == nil {
+            do {
+                try runtime.setOutputAvailabilityHandler(id: id, handler: nil)
+            } catch {
+                guard isMissingRuntimeSessionError(error, id: id) else { throw error }
+                // A retired session has no remaining handler to remove.
+            }
+            return
+        }
+        _ = try record(for: id)
         try runtime.setOutputAvailabilityHandler(id: id, handler: handler)
     }
 
