@@ -1030,6 +1030,32 @@ final class AgentChannelControllerTests: XCTestCase {
         XCTAssertEqual(try fixture.singleRecord().lifecycle, .detached)
     }
 
+    func testAppTerminationRunsHostBackedAgentDetachOffMain() async throws {
+        let fixture = try CoordinatorBackedBrokerFixture(requiresOffMainBrokerWork: true)
+        defer { fixture.cleanup() }
+        let controller = AgentChannelController(
+            id: UUID(),
+            authType: .oauth,
+            workingDirectory: nil,
+            userLabel: "Codex",
+            instanceNumber: nil,
+            terminal: MockTerminalProcess(),
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+
+        let completion = expectation(description: "agent detach completes")
+        var outcome: TerminalCleanupOutcome?
+        controller.deactivateForAppTermination {
+            outcome = $0
+            completion.fulfill()
+        }
+        await fulfillment(of: [completion], timeout: 1)
+
+        XCTAssertEqual(outcome, .completed)
+        XCTAssertEqual(fixture.runtime.detachRanOnMainThread, [false])
+    }
+
     func testCoordinatorBackedAgentExitWithLostBrokerResponseKeepsRetirementIntent() throws {
         let fixture = try CoordinatorBackedBrokerFixture()
         defer { fixture.cleanup() }

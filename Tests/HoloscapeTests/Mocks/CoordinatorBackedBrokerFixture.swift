@@ -15,16 +15,28 @@ final class CoordinatorBackedBrokerFixture {
     let runtime: FailingBrokerSessionRuntime
     let coordinator: BrokerSessionCoordinator
 
-    init(timestamp: Date = Date(timeIntervalSince1970: 900)) throws {
+    init(
+        timestamp: Date = Date(timeIntervalSince1970: 900),
+        requiresOffMainBrokerWork: Bool = false
+    ) throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CoordinatorBackedBrokerFixture-")
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         registry = BrokerSessionRegistry(fileURL: directory.appendingPathComponent("sessions.json"))
         runtime = FailingBrokerSessionRuntime()
+        let coordinatorRuntime: any BrokerSessionRuntime
+        if requiresOffMainBrokerWork {
+            let host = BrokerSessionHost(runtime: runtime)
+            coordinatorRuntime = BrokerSessionHostClientRuntime(startsOutputAvailabilityMonitor: false) { frame in
+                try host.handle(frame)
+            }
+        } else {
+            coordinatorRuntime = runtime
+        }
         coordinator = BrokerSessionCoordinator(
             registry: registry,
-            runtime: runtime,
+            runtime: coordinatorRuntime,
             now: { timestamp }
         )
     }

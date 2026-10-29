@@ -20,6 +20,7 @@ final class FailingBrokerSessionRuntime: BrokerSessionRuntime {
     private(set) var createdIDs: [BrokerSessionID] = []
     private(set) var attachedIDs: [BrokerSessionID] = []
     private(set) var detachedIDs: [BrokerSessionID] = []
+    private(set) var detachRanOnMainThread: [Bool] = []
     private(set) var exitedIDs: [BrokerSessionID] = []
     private(set) var erroredIDs: [BrokerSessionID] = []
     private(set) var isRunningCalls: [BrokerSessionID] = []
@@ -46,6 +47,7 @@ final class FailingBrokerSessionRuntime: BrokerSessionRuntime {
 
     func detachSession(id: BrokerSessionID) throws {
         detachedIDs.append(id)
+        detachRanOnMainThread.append(Thread.isMainThread)
         try failIfNeeded(id)
     }
 

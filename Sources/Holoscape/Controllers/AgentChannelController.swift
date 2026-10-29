@@ -497,7 +497,12 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
                 completion(outcome)
                 return
             }
-            completion(self.brokerDetachOutcome())
+            BrokerSessionCleanup.detachForAppTermination(
+                self.brokerSessionID,
+                using: self.brokerSessionCoordinator,
+                logPrefix: "Agent",
+                completion: completion
+            )
         }
         transitionToDisconnected()
     }
