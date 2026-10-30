@@ -79,6 +79,20 @@ final class HoloscapeClientTests: XCTestCase {
         _ = try await client.readOutput(id: label, lines: 12)
     }
 
+    func testReadOutputRejectsNegativeLineCountBeforeRequest() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            XCTFail("Negative line count must be rejected before an HTTP request")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+
+        do {
+            _ = try await client.readOutput(id: "channel-1", lines: -1)
+            XCTFail("Expected negative line count to be rejected")
+        } catch {
+            XCTAssertEqual(error as? HoloscapeError, .invalidOutputLineCount)
+        }
+    }
+
     func testObjectEndpointsRejectMalformedOrWrongShapedJSON() async {
         await assertInvalidResponse(body: "not-json") {
             try await client.createChannel(type: "shell", dir: nil, label: nil, cmd: nil)

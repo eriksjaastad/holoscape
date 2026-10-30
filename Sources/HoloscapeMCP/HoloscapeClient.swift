@@ -54,6 +54,9 @@ struct HoloscapeClient: Sendable {
     }
 
     func readOutput(id: String, lines: Int = 50) async throws -> [String: Any] {
+        guard lines >= 0 else {
+            throw HoloscapeError.invalidOutputLineCount
+        }
         let data = try await get(channelPath(id: id, suffix: "/output?lines=\(lines)"))
         return try decodeObject(from: data)
     }
@@ -159,6 +162,7 @@ struct HoloscapeClient: Sendable {
 
 enum HoloscapeError: Error, Equatable {
     case invalidResponse
+    case invalidOutputLineCount
     case connectionFailed
     case inputOutcomeUnknown
     case closeOutcomeUnknown
@@ -170,6 +174,8 @@ extension HoloscapeError: LocalizedError {
         switch self {
         case .invalidResponse:
             return "Holoscape returned an invalid response"
+        case .invalidOutputLineCount:
+            return "Output line count must not be negative"
         case .connectionFailed:
             return "Could not connect to Holoscape"
         case .inputOutcomeUnknown:
