@@ -45,7 +45,7 @@ struct HoloscapeClient: Sendable {
         let data = try await post(
             "/channels/\(id)/input",
             body: ["text": text],
-            timeout: Self.acknowledgedInputRequestTimeout
+            timeoutError: .inputOutcomeUnknown
         )
         return try decodeObject(from: data)
     }
@@ -64,14 +64,14 @@ struct HoloscapeClient: Sendable {
     private func post(
         _ path: String,
         body: [String: Any]?,
-        timeout: TimeInterval = localAPIRequestTimeout
+        timeoutError: HoloscapeError? = nil
     ) async throws -> Data {
-        var request = try request(path: path, method: "POST", timeout: timeout)
+        var request = try request(path: path, method: "POST")
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        return try await perform(request)
+        return try await perform(request, timeoutError: timeoutError)
     }
 
     private func delete(_ path: String) async throws -> Data {
@@ -79,27 +79,21 @@ struct HoloscapeClient: Sendable {
     }
 
     private static let localAPIRequestTimeout: TimeInterval = 5
-    // Input acknowledgement can include one production URLSession round trip,
-    // whose default request deadline is 60 seconds. Keep the local caller alive
-    // long enough to receive that authoritative outcome instead of reporting a
-    // retryable failure while the original submission can still succeed.
-    private static let acknowledgedInputRequestTimeout: TimeInterval = 65
 
-    private func request(
-        path: String,
-        method: String,
-        timeout: TimeInterval = localAPIRequestTimeout
-    ) throws -> URLRequest {
+    private func request(path: String, method: String) throws -> URLRequest {
         guard let url = URL(string: baseURL + path) else {
             throw HoloscapeError.invalidResponse
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = timeout
+        request.timeoutInterval = Self.localAPIRequestTimeout
         return request
     }
 
-    private func perform(_ request: URLRequest) async throws -> Data {
+    private func perform(
+        _ request: URLRequest,
+        timeoutError: HoloscapeError? = nil
+    ) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -107,6 +101,9 @@ struct HoloscapeClient: Sendable {
         } catch {
             if Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 throw CancellationError()
+            }
+            if (error as? URLError)?.code == .timedOut, let timeoutError {
+                throw timeoutError
             }
             throw HoloscapeError.connectionFailed
         }
@@ -142,6 +139,7 @@ struct HoloscapeClient: Sendable {
 enum HoloscapeError: Error, Equatable {
     case invalidResponse
     case connectionFailed
+    case inputOutcomeUnknown
     case httpError(statusCode: Int, message: String?)
 }
 
@@ -152,6 +150,8 @@ extension HoloscapeError: LocalizedError {
             return "Holoscape returned an invalid response"
         case .connectionFailed:
             return "Could not connect to Holoscape"
+        case .inputOutcomeUnknown:
+            return "Holoscape did not confirm whether the input was delivered; do not retry automatically"
         case let .httpError(statusCode, message):
             if let message {
                 return "Holoscape returned HTTP status \(statusCode): \(message)"

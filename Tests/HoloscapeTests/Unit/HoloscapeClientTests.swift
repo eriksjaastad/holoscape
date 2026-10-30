@@ -162,13 +162,21 @@ final class HoloscapeClientTests: XCTestCase {
         _ = try await client.closeChannel(id: "channel-1")
     }
 
-    func testSendInputOutlivesProductionChannelRequestDeadline() async throws {
-        HoloscapeClientURLProtocolStub.setHandler { request in
-            XCTAssertGreaterThan(request.timeoutInterval, 60)
-            return Self.response(statusCode: 200, body: #"{"status":"sent"}"#)
+    func testSendInputTimeoutReportsUnknownOutcomeInsteadOfConnectionFailure() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            throw URLError(.timedOut)
         }
 
-        _ = try await client.sendInput(id: "channel-1", text: "pwd")
+        do {
+            _ = try await client.sendInput(id: "channel-1", text: "pwd")
+            XCTFail("Expected unknown input outcome")
+        } catch {
+            XCTAssertEqual(error as? HoloscapeError, .inputOutcomeUnknown)
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Holoscape did not confirm whether the input was delivered; do not retry automatically"
+            )
+        }
     }
 
     func testTransportFailureUsesStableConnectionFailedError() async {
