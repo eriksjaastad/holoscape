@@ -1,4 +1,5 @@
 import Darwin
+import MCP
 import XCTest
 @testable import HoloscapeMCP
 
@@ -7,6 +8,27 @@ final class ProcessToolTests: XCTestCase {
         Bundle(for: Self.self).bundleURL
             .deletingLastPathComponent()
             .appendingPathComponent("HoloscapeMCP")
+    }
+
+    func testProcessToolTimeoutParsingRejectsInvalidValues() throws {
+        let invalidTimeouts: [Value] = [
+            .string("30"), .double(.infinity), .double(.nan), .int(0), .int(-1),
+        ]
+        for timeout in invalidTimeouts {
+            XCTAssertNil(positiveTimeoutSeconds(from: timeout))
+        }
+        XCTAssertEqual(positiveTimeoutSeconds(from: nil), 30)
+        XCTAssertEqual(positiveTimeoutSeconds(from: .int(2)), 2)
+        XCTAssertEqual(positiveTimeoutSeconds(from: .double(0.5)), 0.5)
+
+        XCTAssertThrowsError(try processToolRequest(from: [
+            "command": .string("true"),
+            "timeoutSeconds": .string("30"),
+        ])) { error in
+            guard case .invalidTimeout = error as? ProcessToolError else {
+                return XCTFail("Expected invalid timeout, got \(error)")
+            }
+        }
     }
 
     func testToolHandlerLetsCancellationEscapeToMCPServer() async throws {

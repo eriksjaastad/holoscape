@@ -38,7 +38,7 @@ enum ProcessToolError: LocalizedError {
         case .missingCommand:
             return "Missing 'command' parameter"
         case .invalidTimeout:
-            return "timeoutSeconds must be greater than 0"
+            return "timeoutSeconds must be a finite number greater than 0"
         case .invalidWorkingDirectory(let path):
             return "Working directory does not exist or is not a directory: \(path)"
         case .launchFailed(let reason):
@@ -53,6 +53,16 @@ enum ProcessToolError: LocalizedError {
             return "Process cancellation could not prove that the owned process group was terminated"
         }
     }
+}
+
+func positiveTimeoutSeconds(from value: Value?) -> Double? {
+    guard let value else { return 30 }
+    guard let timeout = value.doubleValue ?? value.intValue.map(Double.init),
+          timeout.isFinite,
+          timeout > 0 else {
+        return nil
+    }
+    return timeout
 }
 
 final class ProcessToolOutputBuffer: @unchecked Sendable {
@@ -1118,10 +1128,7 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
         throw ProcessToolError.missingCommand
     }
 
-    let timeout = args["timeoutSeconds"]?.doubleValue
-        ?? args["timeoutSeconds"]?.intValue.map(Double.init)
-        ?? 30
-    guard timeout > 0 else {
+    guard let timeout = positiveTimeoutSeconds(from: args["timeoutSeconds"]) else {
         throw ProcessToolError.invalidTimeout
     }
 
