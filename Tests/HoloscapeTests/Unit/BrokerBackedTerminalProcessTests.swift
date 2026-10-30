@@ -4,7 +4,8 @@ import XCTest
 @MainActor
 final class BrokerBackedTerminalProcessTests: XCTestCase {
     private final class BlockingReattachCoordinator: BrokerSessionCoordinating, @unchecked Sendable {
-        let requiresOffMainBrokerWork = true
+        let requiresOffMainBrokerWork: Bool
+        let requiresOffMainScrollbackReplay: Bool
         private let entered = DispatchSemaphore(value: 0)
         private let release = DispatchSemaphore(value: 0)
         private let returned = DispatchSemaphore(value: 0)
@@ -40,12 +41,21 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         private var untrackedTeardownFailuresRemaining = 0
         private var storedAcknowledgedOutputGenerations: [UInt64] = []
         private var storedScrollbackSnapshotCount = 0
+        private var storedScrollbackSnapshotRanOnMainThread: Bool?
         private var storedSuccessfulInputWrites = 0
         var untrackedStartID: BrokerSessionID?
         var outputAvailabilityMonitoringError: Error?
         var detachError: Error?
         private(set) var reattachCallCount = 0
         private(set) var outputAvailabilityMonitoringQueryCount = 0
+
+        init(
+            requiresOffMainBrokerWork: Bool = true,
+            requiresOffMainScrollbackReplay: Bool = false
+        ) {
+            self.requiresOffMainBrokerWork = requiresOffMainBrokerWork
+            self.requiresOffMainScrollbackReplay = requiresOffMainScrollbackReplay
+        }
 
         func waitForReattach(timeout: TimeInterval = 1) -> Bool {
             entered.wait(timeout: .now() + timeout) == .success
@@ -101,6 +111,9 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
             lock.withLock { storedAcknowledgedOutputGenerations }
         }
         var scrollbackSnapshotCount: Int { lock.withLock { storedScrollbackSnapshotCount } }
+        var scrollbackSnapshotRanOnMainThread: Bool? {
+            lock.withLock { storedScrollbackSnapshotRanOnMainThread }
+        }
         func blockAcknowledgment() { lock.withLock { shouldBlockAcknowledgment = true } }
         func finishAcknowledgment() { acknowledgmentRelease.signal() }
 
@@ -234,7 +247,10 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         }
         func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
         func snapshotScrollbackReplay(_ id: BrokerSessionID, maxBytes: Int) throws -> BrokerScrollbackReplaySnapshot {
-            lock.withLock { storedScrollbackSnapshotCount += 1 }
+            lock.withLock {
+                storedScrollbackSnapshotCount += 1
+                storedScrollbackSnapshotRanOnMainThread = Thread.isMainThread
+            }
             return BrokerScrollbackReplaySnapshot(
                 replay: ScrollbackReplay(
                     data: Data("one-time-replay\n".utf8),
@@ -1240,6 +1256,42 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(submissionResults, [false])
         XCTAssertEqual(fixture.terminal.brokerSessionID, sessionID)
         XCTAssertNil(fixture.terminal.staleBrokerSessionID)
+    }
+
+    func testRestoredNativeScrollbackReplayIsAcquiredOffMainThread() throws {
+        let coordinator = BlockingReattachCoordinator(
+            requiresOffMainBrokerWork: false,
+            requiresOffMainScrollbackReplay: true
+        )
+        let sessionID = BrokerSessionID(rawValue: "native-restored-replay")
+        let terminal = BrokerBackedTerminalProcess(
+            channelID: UUID(),
+            channelType: .shell,
+            label: "native restored replay",
+            environmentProfile: .shell,
+            existingBrokerSessionID: sessionID,
+            coordinator: coordinator
+        )
+        defer { terminal.detachBrokerSession() }
+
+        terminal.startProcess(
+            executable: "/bin/zsh",
+            args: [],
+            environment: nil,
+            execName: nil,
+            currentDirectory: "/tmp"
+        )
+
+        XCTAssertTrue(coordinator.waitForReattach())
+        XCTAssertTrue(terminal.completesStartAsynchronously)
+        XCTAssertNil(terminal.lastScrollbackReplay)
+
+        coordinator.finishReattach()
+        try waitUntil { !terminal.completesStartAsynchronously }
+
+        XCTAssertEqual(coordinator.scrollbackSnapshotRanOnMainThread, false)
+        XCTAssertEqual(terminal.lastScrollbackReplay?.data, Data("one-time-replay\n".utf8))
+        XCTAssertEqual(coordinator.scrollbackSnapshotCount, 1)
     }
 
     func testOutputPumpReadsBrokerOutputOffMainThread() throws {

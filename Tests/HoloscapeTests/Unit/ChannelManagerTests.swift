@@ -1580,6 +1580,10 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(restoredChannels.count, 1)
         let restored = restoredChannels.first as? AgentChannelController
         restored?.activate()
+        let reattachDeadline = Date().addingTimeInterval(1)
+        while restored?.brokerSessionID != brokerSessionID, Date() < reattachDeadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
 
         XCTAssertEqual(restored?.brokerSessionID, brokerSessionID)
         let reattachedRecords = try registry.load()

@@ -6,6 +6,14 @@ final class BrokerSessionCoordinatorTests: XCTestCase {
         case failed
     }
 
+    func testOnlyNativeRuntimeRequiresOffMainScrollbackReplay() {
+        let nativeCoordinator = BrokerSessionCoordinator(runtime: NativePTYBrokerSessionRuntime())
+        let metadataCoordinator = BrokerSessionCoordinator(runtime: MetadataOnlyBrokerSessionRuntime())
+
+        XCTAssertTrue(nativeCoordinator.requiresOffMainScrollbackReplay)
+        XCTAssertFalse(metadataCoordinator.requiresOffMainScrollbackReplay)
+    }
+
     private final class RecordingBrokerSessionRuntime: BrokerSessionRuntime, BrokerSessionAgentStatusOwnerTokenAcknowledgingRuntime, BrokerSessionAgentStatusOwnerTokenReportingRuntime, ScrollbackReplayReportingRuntime, BrokerOutputAvailabilityMonitoringRuntime {
         enum Event: Equatable {
             case create(BrokerSessionID, BrokerSessionLaunchRequest)
