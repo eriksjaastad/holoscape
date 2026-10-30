@@ -21,12 +21,18 @@ final class LaunchRecoveryCoordinatorTests: XCTestCase {
         var events: [String] = []
         var restore: () -> Void = {}
         private var pendingInventory: CheckedContinuation<Bool, Never>?
+        private var pendingFailureResolution: CheckedContinuation<LaunchRecoveryInventoryFailureResolution, Never>?
 
         var isAwaitingInventory: Bool { pendingInventory != nil }
 
         func resolveInventory(_ succeeded: Bool) {
             pendingInventory?.resume(returning: succeeded)
             pendingInventory = nil
+        }
+
+        func resolveInventoryFailure(_ resolution: LaunchRecoveryInventoryFailureResolution) {
+            pendingFailureResolution?.resume(returning: resolution)
+            pendingFailureResolution = nil
         }
 
         func launchRecoverySetInteractionEnabled(_ enabled: Bool) { events.append("interaction:\(enabled)") }
@@ -40,6 +46,11 @@ final class LaunchRecoveryCoordinatorTests: XCTestCase {
         }
         func launchRecoveryEnsureInitialChannel() { events.append("ensureInitial") }
         func launchRecoveryDidComplete() { events.append("complete") }
+        func launchRecoveryResolveInventoryFailure() async -> LaunchRecoveryInventoryFailureResolution {
+            events.append("resolveInventoryFailure")
+            return await withCheckedContinuation { pendingFailureResolution = $0 }
+        }
+        func launchRecoveryQuit() { events.append("quit") }
     }
 
     /// Polls until `condition` holds. A missed condition fails the test and
@@ -150,6 +161,63 @@ final class LaunchRecoveryCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.state.isCompleted)
         XCTAssertEqual(host.events.suffix(4), ["restore", "ensureInitial", "interaction:true", "complete"])
+    }
+
+    func testPersistentInventoryFailureStopsAtBoundBeforePrompting() async throws {
+        let host = SuspendedHost()
+        let coordinator = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .awaitingInventory),
+            host: host,
+            inventoryRetryDelay: .milliseconds(1),
+            automaticInventoryAttemptLimit: 2
+        )
+
+        coordinator.begin(restoringSavedChannels: true)
+        try await waitForInventoryRequest(host)
+        host.resolveInventory(false)
+        try await waitForInventoryRequest(host)
+        host.resolveInventory(false)
+        try await waitUntil("the inventory failure prompt") {
+            host.events.contains("resolveInventoryFailure")
+        }
+
+        XCTAssertEqual(host.events.filter { $0 == "inventory" }.count, 2)
+        XCTAssertFalse(host.events.contains("restore"))
+        XCTAssertFalse(host.events.contains("interaction:true"))
+
+        host.resolveInventoryFailure(.retry)
+        try await waitForInventoryRequest(host)
+        host.resolveInventory(true)
+        let finished = try await recoveryFinished(coordinator)
+        XCTAssertTrue(finished)
+        XCTAssertTrue(coordinator.state.isCompleted)
+    }
+
+    func testQuitAfterPersistentInventoryFailureAbandonsWithoutRestoring() async throws {
+        let configService = ConfigService(configDir: tempDirectory)
+        XCTAssertTrue(makeManagerSavingChannel("Saved", state: LaunchRecoveryState(phase: .completed)).saveState())
+        let host = SuspendedHost()
+        let coordinator = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .awaitingInventory),
+            host: host,
+            automaticInventoryAttemptLimit: 1
+        )
+        let manager = ChannelManager(configService: configService, launchRecoveryState: coordinator.state)
+
+        coordinator.begin(restoringSavedChannels: true)
+        try await waitForInventoryRequest(host)
+        host.resolveInventory(false)
+        try await waitUntil("the inventory failure prompt") {
+            host.events.contains("resolveInventoryFailure")
+        }
+        host.resolveInventoryFailure(.quit)
+        let finished = try await recoveryFinished(coordinator)
+        XCTAssertTrue(finished)
+
+        XCTAssertEqual(coordinator.state.phase, .abandoned)
+        XCTAssertEqual(host.events, ["interaction:false", "inventory", "resolveInventoryFailure", "quit"])
+        XCTAssertFalse(manager.saveState())
+        XCTAssertEqual(savedLabels(configService), ["Saved"])
     }
 
     func testTerminationDuringInventoryPreventsLateRestoreAndSave() async throws {

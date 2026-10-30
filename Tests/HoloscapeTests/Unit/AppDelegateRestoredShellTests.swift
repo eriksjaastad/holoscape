@@ -4,6 +4,30 @@ import XCTest
 
 @MainActor
 final class AppDelegateRestoredShellTests: XCTestCase {
+    func testLaunchRecoveryInventoryFailureUsesInjectedResolutionPrompt() async {
+        let appDelegate = AppDelegate()
+        var promptCallCount = 0
+        appDelegate.launchRecoveryInventoryFailurePrompt = {
+            promptCallCount += 1
+            return .retry
+        }
+
+        let resolution = await appDelegate.launchRecoveryResolveInventoryFailure()
+
+        XCTAssertEqual(resolution, .retry)
+        XCTAssertEqual(promptCallCount, 1)
+    }
+
+    func testLaunchRecoveryQuitUsesInjectedTerminationHandler() {
+        let appDelegate = AppDelegate()
+        var didRequestQuit = false
+        appDelegate.launchRecoveryQuitHandler = { didRequestQuit = true }
+
+        appDelegate.launchRecoveryQuit()
+
+        XCTAssertTrue(didRequestQuit)
+    }
+
     func testCrashContextReportsUnavailablePersistedHistory() {
         let failure = HistorySnapshotLoadFailure(
             operation: .decode,

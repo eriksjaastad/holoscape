@@ -38,6 +38,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
     private var pendingExternalURLs: [URL] = []
     private var launchRecoveryMenuItemStates: [(item: NSMenuItem, wasEnabled: Bool)] = []
+    var launchRecoveryInventoryFailurePrompt: () -> LaunchRecoveryInventoryFailureResolution = {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Terminal Session Recovery Is Unavailable"
+        alert.informativeText = "Holoscape could not verify which terminal sessions survived. Your saved tabs have not been changed. Retry recovery or quit Holoscape and try again."
+        alert.addButton(withTitle: "Retry")
+        alert.addButton(withTitle: "Quit")
+        return alert.runModal() == .alertFirstButtonReturn ? .retry : .quit
+    }
+    var launchRecoveryQuitHandler: () -> Void = {
+        NSApp.terminate(nil)
+    }
 
     private var isUITesting: Bool {
         CommandLine.arguments.contains("--ui-testing")
@@ -859,6 +871,14 @@ extension AppDelegate: LaunchRecoveryHost {
         }
         showMainWindow()
         drainPendingExternalURLs()
+    }
+
+    func launchRecoveryResolveInventoryFailure() async -> LaunchRecoveryInventoryFailureResolution {
+        launchRecoveryInventoryFailurePrompt()
+    }
+
+    func launchRecoveryQuit() {
+        launchRecoveryQuitHandler()
     }
 }
 
