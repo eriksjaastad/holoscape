@@ -171,7 +171,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                         "command": .object(["type": .string("string"), "description": .string("Shell command to execute")]),
                         "workingDirectory": .object(["type": .string("string"), "description": .string("Optional working directory")]),
                         "env": .object(["type": .string("object"), "description": .string("Optional string environment variable overrides")]),
-                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "exclusiveMinimum": .int(0), "description": .string("Timeout in seconds; default 30")]),
                     ]),
                     "required": .array([.string("command")]),
                 ])
@@ -183,7 +183,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "type": .string("object"),
                     "properties": .object([
                         "source": .object(["type": .string("string"), "description": .string("AppleScript source to execute")]),
-                        "timeoutSeconds": .object(["type": .string("number"), "description": .string("Timeout in seconds; default 30")]),
+                        "timeoutSeconds": .object(["type": .string("number"), "exclusiveMinimum": .int(0), "description": .string("Timeout in seconds; default 30")]),
                     ]),
                     "required": .array([.string("source")]),
                 ])

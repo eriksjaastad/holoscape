@@ -18,6 +18,12 @@ final class AppleScriptToolTests: XCTestCase {
         XCTAssertEqual(source, "return 1")
     }
 
+    func testAppleScriptTimeoutRejectsSuppliedInvalidValue() {
+        XCTAssertThrowsError(try appleScriptTimeout(from: ["timeoutSeconds": .string("30")])) { error in
+            XCTAssertEqual(error as? AppleScriptToolError, .invalidTimeout)
+        }
+    }
+
     func testRunAppleScriptToolReturnsResultText() async throws {
         let result = try await runAppleScriptTool(
             args: ["source": .string("return \"holoscape\"")],

@@ -22,7 +22,7 @@ enum AppleScriptToolError: LocalizedError, Equatable {
         case .missingSource:
             return "Missing 'source' parameter"
         case .invalidTimeout:
-            return "timeoutSeconds must be greater than 0"
+            return "timeoutSeconds must be a finite number greater than 0"
         case .compileFailed(let message):
             return "AppleScript compile failed: \(message)"
         case .executionFailed(let number, let message):
@@ -49,10 +49,7 @@ func appleScriptSource(from args: [String: Value]) throws -> String {
 }
 
 func appleScriptTimeout(from args: [String: Value]) throws -> Double {
-    let timeout = args["timeoutSeconds"]?.doubleValue
-        ?? args["timeoutSeconds"]?.intValue.map(Double.init)
-        ?? 30
-    guard timeout > 0 else {
+    guard let timeout = positiveTimeoutSeconds(from: args["timeoutSeconds"]) else {
         throw AppleScriptToolError.invalidTimeout
     }
     return timeout
