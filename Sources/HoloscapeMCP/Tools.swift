@@ -107,7 +107,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "type": .string("object"),
                     "properties": .object([
                         "path": .object(["type": .string("string"), "description": .string("File path")]),
-                        "maxBytes": .object(["type": .string("integer"), "description": .string("Maximum bytes to return; default 128000")]),
+                        "maxBytes": .object(["type": .string("integer"), "minimum": .int(0), "description": .string("Maximum bytes to return; default 128000")]),
                     ]),
                     "required": .array([.string("path")]),
                 ])

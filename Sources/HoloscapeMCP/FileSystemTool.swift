@@ -5,6 +5,7 @@ enum FileSystemToolError: LocalizedError {
     case missingPath
     case missingPattern
     case missingContent
+    case invalidMaxBytes(Int)
     case invalidLimit(Int)
     case notDirectory(String)
     case notText(String)
@@ -20,6 +21,8 @@ enum FileSystemToolError: LocalizedError {
             return "Missing 'pattern' parameter"
         case .missingContent:
             return "Missing 'content' parameter"
+        case .invalidMaxBytes(let value):
+            return "'maxBytes' must be non-negative, got \(value)"
         case .invalidLimit(let value):
             return "'limit' must be non-negative, got \(value)"
         case .notDirectory(let path):
@@ -58,8 +61,11 @@ func requiredPath(from args: [String: Value]) throws -> String {
 func readFileTool(args: [String: Value]) throws -> String {
     let path = try requiredPath(from: args)
     let maxBytes = args["maxBytes"]?.intValue ?? 128_000
+    guard maxBytes >= 0 else {
+        throw FileSystemToolError.invalidMaxBytes(maxBytes)
+    }
     let data = try Data(contentsOf: URL(fileURLWithPath: path))
-    let limited = data.prefix(max(0, min(maxBytes, data.count)))
+    let limited = data.prefix(min(maxBytes, data.count))
     guard var text = String(data: limited, encoding: .utf8) else {
         throw FileSystemToolError.notText(path)
     }
