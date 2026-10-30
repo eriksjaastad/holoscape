@@ -33,6 +33,8 @@ struct BrokerSessionRegistry {
         let replaceFile: (URL, URL) throws -> Void
         let synchronizeDirectory: (URL) throws -> Void
         let removeTemporaryFile: (URL) throws -> Void
+        let readOpenedFile: (Int32) throws -> Data
+        let closeOpenedFile: (Int32) -> Int32
         let unlockFileLock: (Int32) -> Int32
         let closeFileLock: (Int32) -> Int32
 
@@ -41,6 +43,8 @@ struct BrokerSessionRegistry {
             replaceFile: @escaping (URL, URL) throws -> Void,
             synchronizeDirectory: @escaping (URL) throws -> Void,
             removeTemporaryFile: @escaping (URL) throws -> Void,
+            readOpenedFile: @escaping (Int32) throws -> Data = BrokerSessionRegistry.readOpenedFile,
+            closeOpenedFile: @escaping (Int32) -> Int32 = Darwin.close,
             unlockFileLock: @escaping (Int32) -> Int32 = { flock($0, LOCK_UN) },
             closeFileLock: @escaping (Int32) -> Int32 = Darwin.close
         ) {
@@ -48,6 +52,8 @@ struct BrokerSessionRegistry {
             self.replaceFile = replaceFile
             self.synchronizeDirectory = synchronizeDirectory
             self.removeTemporaryFile = removeTemporaryFile
+            self.readOpenedFile = readOpenedFile
+            self.closeOpenedFile = closeOpenedFile
             self.unlockFileLock = unlockFileLock
             self.closeFileLock = closeFileLock
         }
@@ -192,15 +198,14 @@ struct BrokerSessionRegistry {
         } else if metadata.st_mode & S_IFMT != S_IFREG {
             result = .failure(RegistryError.unsafeRegistryFile(fileURL.path))
         } else {
-            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
             do {
-                result = .success(try handle.readToEnd() ?? Data())
+                result = .success(try persistence.readOpenedFile(descriptor))
             } catch {
                 result = .failure(error)
             }
         }
 
-        if Darwin.close(descriptor) != 0 {
+        if persistence.closeOpenedFile(descriptor) != 0 {
             let closeCode = errno
             let closeFailure = String(cString: strerror(closeCode))
             switch result {
@@ -214,6 +219,11 @@ struct BrokerSessionRegistry {
             }
         }
         return try result.get()
+    }
+
+    private static func readOpenedFile(_ descriptor: Int32) throws -> Data {
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        return try handle.readToEnd() ?? Data()
     }
 
     private func withOperationLock<T>(_ operation: () throws -> T) throws -> T {

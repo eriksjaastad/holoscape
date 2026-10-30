@@ -115,6 +115,46 @@ final class BrokerSessionRegistryTests: XCTestCase {
         }
     }
 
+    func testLoadRejectsNamedPipeRegistryLeafWithoutBlocking() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        XCTAssertEqual(mkfifo(registryURL.path, S_IRUSR | S_IWUSR), 0)
+
+        XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionRegistry.RegistryError,
+                .unsafeRegistryFile(registryURL.path)
+            )
+        }
+    }
+
+    func testLoadReportsBothReadAndCloseFailures() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try Data("[]".utf8).write(to: registryURL)
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in },
+            replaceFile: { _, _ in },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { _ in },
+            readOpenedFile: { _ in throw RegistryPersistenceFailure.fileRead },
+            closeOpenedFile: { _ in
+                errno = EIO
+                return -1
+            }
+        )
+
+        XCTAssertThrowsError(
+            try BrokerSessionRegistry(fileURL: registryURL, persistence: persistence).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionRegistry.RegistryError,
+                .readAndCloseFailed(
+                    operation: String(describing: RegistryPersistenceFailure.fileRead),
+                    close: String(cString: strerror(EIO))
+                )
+            )
+        }
+    }
+
     func testSaveSynchronizesTemporaryFileBeforeReplacementAndDirectoryAfterReplacement() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         try Data().write(to: registryURL.appendingPathExtension("lock"))
@@ -724,6 +764,7 @@ final class BrokerSessionRegistryTests: XCTestCase {
 }
 
 private enum RegistryPersistenceFailure: Error, Equatable {
+    case fileRead
     case fileSync
     case replace
     case directorySync
