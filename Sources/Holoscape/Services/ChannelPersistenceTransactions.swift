@@ -186,6 +186,8 @@ final class ChannelPersistenceTransactions {
         } else if let agentChannel = channel as? AgentChannelController,
                   agentChannel.brokerSessionPersistenceIsAuthoritative {
             brokerSessionID = agentChannel.brokerSessionID
+        } else if closeTombstone, let sshChannel = channel as? SSHChannelController {
+            brokerSessionID = sshChannel.brokerSessionID
         } else {
             brokerSessionID = (channel as? ShellChannelController)?.brokerSessionID
                 ?? (channel as? AgentChannelController)?.brokerSessionID

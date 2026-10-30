@@ -25,6 +25,7 @@ final class ChannelManagerTests: XCTestCase {
         var requiresOffMainBrokerWork = false
         var reattachableSessionRecords: [BrokerSessionRecord] = []
         var reattachableSessionsError: Error?
+        var detachError: Error?
         private(set) var reattachableSessionsCallCount = 0
 
         func start(
@@ -57,6 +58,7 @@ final class ChannelManagerTests: XCTestCase {
 
         func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord {
             detachCalls.append(id)
+            if let detachError { throw detachError }
             return BrokerSessionRecord(
                 id: id,
                 channelType: .shell,
@@ -1637,6 +1639,65 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(outcomes, [.completed])
         XCTAssertTrue(configService.load().channels.isEmpty)
+    }
+
+    func testSSHCloseFailurePersistsIdentityUntilRestoredCleanupSucceeds() throws {
+        let coordinator = RecordingBrokerSessionCoordinator()
+        let firstManager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: coordinator
+        )
+        let profile = SessionProfile(
+            label: "Remote",
+            connection: .ssh,
+            command: "zsh",
+            directory: "~",
+            host: "remote.example",
+            user: "erik"
+        )
+        let channel = firstManager.createChannel(
+            type: .ssh,
+            role: profile.label,
+            workingDirectory: nil
+        ) { id, _, _, instanceNumber, _ in
+            SSHChannelController(
+                id: id,
+                profile: profile,
+                instanceNumber: instanceNumber,
+                terminal: MockTerminalProcess(),
+                brokerSessionCoordinator: coordinator
+            )
+        } as! SSHChannelController
+        channel.activate()
+        let sessionID = try XCTUnwrap(channel.brokerSessionID)
+        coordinator.detachError = NSError(domain: "ssh-close", code: 1)
+
+        firstManager.closeChannel(id: channel.channelId)
+
+        let failedClose = try XCTUnwrap(configService.load().channels.first)
+        XCTAssertEqual(failedClose.brokerSessionID, sessionID)
+        XCTAssertEqual(failedClose.closeTombstone, true)
+
+        let secondManager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: coordinator
+        )
+        let secondDelegate = AppDelegate()
+        secondDelegate.channelManagerRef = secondManager
+        secondManager.restoreState { secondDelegate.createChannelFromMetadata($0) }
+        XCTAssertEqual(configService.load().channels.first?.brokerSessionID, sessionID)
+
+        coordinator.detachError = nil
+        let thirdManager = ChannelManager(
+            configService: configService,
+            brokerSessionCoordinator: coordinator
+        )
+        let thirdDelegate = AppDelegate()
+        thirdDelegate.channelManagerRef = thirdManager
+        thirdManager.restoreState { thirdDelegate.createChannelFromMetadata($0) }
+
+        XCTAssertTrue(configService.load().channels.isEmpty)
+        XCTAssertEqual(coordinator.detachCalls, [sessionID, sessionID, sessionID])
     }
 
     func testCloseChannelPersistsRetirementAuthorityPublishedByTeardown() throws {

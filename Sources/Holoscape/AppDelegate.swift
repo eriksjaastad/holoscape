@@ -547,7 +547,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
                 id: metadata.id,
                 profile: profile,
                 instanceNumber: metadata.instanceNumber,
-                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator
+                brokerSessionCoordinator: channelManagerRef?.brokerSessionCoordinator,
+                restoredBrokerSessionID: metadata.closeTombstone == true ? metadata.brokerSessionID : nil
             )
             return controller
         case .mcp:

@@ -48,13 +48,15 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         profile: SessionProfile,
         instanceNumber: Int?,
         terminal: TerminalProcess? = nil,
-        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
+        restoredBrokerSessionID: BrokerSessionID? = nil
     ) {
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.brokerSessionCoordinator = brokerSessionCoordinator
+        self.brokerSessionID = restoredBrokerSessionID
         super.init()
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self
@@ -145,6 +147,12 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
     ) {
         completion(disconnect())
+    }
+
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        deactivateForClose(completion: completion)
     }
 
     func deactivateForAppTermination(
