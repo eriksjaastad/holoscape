@@ -1842,10 +1842,6 @@ private final class BrokerInputWriteLane: @unchecked Sendable {
             }
             do {
                 try write(sessionID, bytes)
-                guard self.isOpen(for: sessionID, runGeneration: runGeneration) else {
-                    onCancellation(sessionID)
-                    return
-                }
                 onSuccess(sessionID)
             } catch {
                 if self.closeIfCurrent(sessionID, runGeneration: runGeneration) {
