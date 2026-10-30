@@ -2734,6 +2734,28 @@ final class BrokerBackedTerminalProcessTests: XCTestCase {
         XCTAssertEqual(submissionResults, [true])
     }
 
+    func testBrokerInputWriteLanePreservesSuccessfulAcknowledgmentAcrossConcurrentClose() throws {
+        let runtime = BlockingInputRuntime()
+        let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008020")
+        defer { fixture.cleanup() }
+        var submissionResults: [Bool] = []
+
+        fixture.terminal.send(Array("delivered\n".utf8)) { submissionResults.append($0) }
+        fixture.terminal.send(Array("not-started\n".utf8)) { submissionResults.append($0) }
+
+        XCTAssertTrue(runtime.waitForFirstWrite(), "Expected the first queued write to enter the lane")
+        fixture.terminal.closeInputWrites()
+        runtime.unblockWrites()
+        try waitUntil { submissionResults.count == 2 }
+
+        XCTAssertEqual(runtime.sentInputs.map { String(decoding: $0, as: UTF8.self) }, ["delivered\n"])
+        XCTAssertEqual(
+            submissionResults,
+            [true, false],
+            "A completed write remains acknowledged, while queued work that never started is cancelled"
+        )
+    }
+
     func testBrokerInputWriteLanePreservesPerSessionInputOrder() throws {
         let runtime = BlockingInputRuntime()
         let fixture = try makeMidSessionFixture(runtime: runtime, channelID: "00000000-0000-0000-0000-000000008017")
