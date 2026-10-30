@@ -100,6 +100,21 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertEqual(try reloaded.load(), [record])
     }
 
+    func testLoadRejectsSymbolicLinkRegistryLeaf() throws {
+        let outsideURL = tempDirectory.appendingPathComponent("outside.json")
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let outsideRecord = makeRecord(id: "outside-session", lifecycle: .running, updatedAt: 2)
+        try BrokerSessionRegistry(fileURL: outsideURL).save([outsideRecord])
+        try FileManager.default.createSymbolicLink(at: registryURL, withDestinationURL: outsideURL)
+
+        XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionRegistry.RegistryError,
+                .unsafeRegistryFile(registryURL.path)
+            )
+        }
+    }
+
     func testSaveSynchronizesTemporaryFileBeforeReplacementAndDirectoryAfterReplacement() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         try Data().write(to: registryURL.appendingPathExtension("lock"))
