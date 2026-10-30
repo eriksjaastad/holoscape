@@ -38,6 +38,27 @@ final class FileSystemToolTests: XCTestCase {
         XCTAssertFalse(text.contains("Is Holoscape running?"))
     }
 
+    func testReadFileRejectsNegativeMaxBytesBeforeFilesystemAccess() {
+        XCTAssertThrowsError(try readFileTool(args: [
+            "path": .string("/missing"),
+            "maxBytes": .int(-1),
+        ])) { error in
+            guard case .invalidMaxBytes(-1) = error as? FileSystemToolError else {
+                return XCTFail("Expected invalidMaxBytes, got \(error)")
+            }
+        }
+    }
+
+    func testReadFileAllowsZeroMaxBytes() throws {
+        let file = temporaryDirectory.appendingPathComponent("content.txt")
+        try Data("content".utf8).write(to: file)
+
+        XCTAssertEqual(try readFileTool(args: [
+            "path": .string(file.path),
+            "maxBytes": .int(0),
+        ]), "\n… truncated at 0 of 7 bytes")
+    }
+
     func testListDirectoryRejectsNegativeLimitBeforeFilesystemAccess() {
         assertNegativeLimitRejected {
             try listDirectoryTool(args: ["path": .string("/missing"), "limit": .int(-1)])
