@@ -48,13 +48,15 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         profile: SessionProfile,
         instanceNumber: Int?,
         terminal: TerminalProcess? = nil,
-        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil
+        brokerSessionCoordinator: (any BrokerSessionCoordinating)? = nil,
+        restoredBrokerSessionID: BrokerSessionID? = nil
     ) {
         self.channelId = id
         self.profile = profile
         self.instanceNumber = instanceNumber
         self.terminal = terminal ?? HoloscapeTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         self.brokerSessionCoordinator = brokerSessionCoordinator
+        self.brokerSessionID = restoredBrokerSessionID
         super.init()
         if let termView = self.terminal as? LocalProcessTerminalView {
             termView.processDelegate = self
@@ -138,10 +140,19 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func deactivate() {
-        terminal.setOutputHandler(nil)
-        recordBrokerDetach()
-        state = .disconnected
-        delegate?.channelStateDidChange(self, to: .disconnected)
+        _ = disconnect()
+    }
+
+    func deactivateForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        completion(disconnect())
+    }
+
+    func resumeRestoredCloseCleanup(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        deactivateForClose(completion: completion)
     }
 
     func deactivateForAppTermination(
@@ -272,16 +283,20 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         }
     }
 
-    private func recordBrokerDetach() {
-        _ = brokerDetachOutcome()
-    }
-
     private func brokerDetachOutcome() -> TerminalCleanupOutcome {
         BrokerSessionCleanup.detach(
             brokerSessionID,
             using: brokerSessionCoordinator,
             logPrefix: "SSH"
         )
+    }
+
+    private func disconnect() -> TerminalCleanupOutcome {
+        terminal.setOutputHandler(nil)
+        let outcome = brokerDetachOutcome()
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
+        return outcome
     }
 
     private func recordBrokerExit(exitCode: Int32?) {

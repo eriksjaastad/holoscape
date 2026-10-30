@@ -700,6 +700,28 @@ final class SSHChannelControllerTests: XCTestCase {
         )
     }
 
+    @MainActor func testSSHCloseReportsBrokerDetachFailure() throws {
+        let fixture = try CoordinatorBackedBrokerFixture()
+        defer { fixture.cleanup() }
+        let controller = SSHChannelController(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000743")!,
+            profile: Self.macbookProfile(),
+            instanceNumber: nil,
+            terminal: MockTerminalProcess(),
+            brokerSessionCoordinator: fixture.coordinator
+        )
+        controller.activate()
+        fixture.runtime.mode = .hostUnavailable
+        var outcome: TerminalCleanupOutcome?
+
+        controller.deactivateForClose { outcome = $0 }
+
+        guard case .retryableFailure = outcome else {
+            return XCTFail("Close must surface the broker detach failure")
+        }
+        XCTAssertEqual(try fixture.singleRecord().lifecycle, .running)
+    }
+
     /// The process-exit path is the other place SSH tabs record broker metadata,
     /// and it also runs from a delegate callback rather than a user action.
     @MainActor func testSSHProcessTerminationWithBrokerHostOutageKeepsRetirementIntent() throws {

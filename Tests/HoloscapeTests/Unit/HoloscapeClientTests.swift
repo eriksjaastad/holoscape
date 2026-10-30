@@ -179,6 +179,23 @@ final class HoloscapeClientTests: XCTestCase {
         }
     }
 
+    func testCloseTimeoutReportsUnknownOutcomeInsteadOfConnectionFailure() async {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            throw URLError(.timedOut)
+        }
+
+        do {
+            _ = try await client.closeChannel(id: "channel-1")
+            XCTFail("Expected unknown close outcome")
+        } catch {
+            XCTAssertEqual(error as? HoloscapeError, .closeOutcomeUnknown)
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Holoscape did not confirm whether the channel was closed; do not retry automatically"
+            )
+        }
+    }
+
     func testTransportFailureUsesStableConnectionFailedError() async {
         HoloscapeClientURLProtocolStub.setHandler { _ in
             throw URLError(.cannotConnectToHost)
