@@ -138,10 +138,13 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
     }
 
     func deactivate() {
-        terminal.setOutputHandler(nil)
-        recordBrokerDetach()
-        state = .disconnected
-        delegate?.channelStateDidChange(self, to: .disconnected)
+        _ = disconnect()
+    }
+
+    func deactivateForClose(
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void
+    ) {
+        completion(disconnect())
     }
 
     func deactivateForAppTermination(
@@ -272,16 +275,20 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
         }
     }
 
-    private func recordBrokerDetach() {
-        _ = brokerDetachOutcome()
-    }
-
     private func brokerDetachOutcome() -> TerminalCleanupOutcome {
         BrokerSessionCleanup.detach(
             brokerSessionID,
             using: brokerSessionCoordinator,
             logPrefix: "SSH"
         )
+    }
+
+    private func disconnect() -> TerminalCleanupOutcome {
+        terminal.setOutputHandler(nil)
+        let outcome = brokerDetachOutcome()
+        state = .disconnected
+        delegate?.channelStateDidChange(self, to: .disconnected)
+        return outcome
     }
 
     private func recordBrokerExit(exitCode: Int32?) {

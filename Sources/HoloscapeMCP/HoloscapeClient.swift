@@ -37,7 +37,10 @@ struct HoloscapeClient: Sendable {
     }
 
     func closeChannel(id: String) async throws -> [String: Any] {
-        let data = try await delete("/channels/\(id)")
+        let data = try await delete(
+            "/channels/\(id)",
+            timeoutError: .closeOutcomeUnknown
+        )
         return try decodeObject(from: data)
     }
 
@@ -74,8 +77,14 @@ struct HoloscapeClient: Sendable {
         return try await perform(request, timeoutError: timeoutError)
     }
 
-    private func delete(_ path: String) async throws -> Data {
-        try await perform(request(path: path, method: "DELETE"))
+    private func delete(
+        _ path: String,
+        timeoutError: HoloscapeError? = nil
+    ) async throws -> Data {
+        try await perform(
+            request(path: path, method: "DELETE"),
+            timeoutError: timeoutError
+        )
     }
 
     private static let localAPIRequestTimeout: TimeInterval = 5
@@ -140,6 +149,7 @@ enum HoloscapeError: Error, Equatable {
     case invalidResponse
     case connectionFailed
     case inputOutcomeUnknown
+    case closeOutcomeUnknown
     case httpError(statusCode: Int, message: String?)
 }
 
@@ -152,6 +162,8 @@ extension HoloscapeError: LocalizedError {
             return "Could not connect to Holoscape"
         case .inputOutcomeUnknown:
             return "Holoscape did not confirm whether the input was delivered; do not retry automatically"
+        case .closeOutcomeUnknown:
+            return "Holoscape did not confirm whether the channel was closed; do not retry automatically"
         case let .httpError(statusCode, message):
             if let message {
                 return "Holoscape returned HTTP status \(statusCode): \(message)"
