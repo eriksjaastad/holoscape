@@ -131,7 +131,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "type": .string("object"),
                     "properties": .object([
                         "path": .object(["type": .string("string"), "description": .string("Directory path")]),
-                        "limit": .object(["type": .string("integer"), "description": .string("Maximum entries; default 200")]),
+                        "limit": .object(["type": .string("integer"), "minimum": .int(0), "description": .string("Maximum entries; default 200")]),
                     ]),
                     "required": .array([.string("path")]),
                 ])
@@ -144,7 +144,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "properties": .object([
                         "path": .object(["type": .string("string"), "description": .string("Directory path")]),
                         "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against file names")]),
-                        "limit": .object(["type": .string("integer"), "description": .string("Maximum matches; default 100")]),
+                        "limit": .object(["type": .string("integer"), "minimum": .int(0), "description": .string("Maximum matches; default 100")]),
                     ]),
                     "required": .array([.string("path"), .string("pattern")]),
                 ])
@@ -157,7 +157,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                     "properties": .object([
                         "path": .object(["type": .string("string"), "description": .string("Directory path")]),
                         "pattern": .object(["type": .string("string"), "description": .string("Regular expression matched against text lines")]),
-                        "limit": .object(["type": .string("integer"), "description": .string("Maximum line matches; default 100")]),
+                        "limit": .object(["type": .string("integer"), "minimum": .int(0), "description": .string("Maximum line matches; default 100")]),
                     ]),
                     "required": .array([.string("path"), .string("pattern")]),
                 ])

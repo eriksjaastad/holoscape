@@ -5,6 +5,7 @@ enum FileSystemToolError: LocalizedError {
     case missingPath
     case missingPattern
     case missingContent
+    case invalidLimit(Int)
     case notDirectory(String)
     case notText(String)
     case metadataReadFailed(path: String, message: String)
@@ -19,6 +20,8 @@ enum FileSystemToolError: LocalizedError {
             return "Missing 'pattern' parameter"
         case .missingContent:
             return "Missing 'content' parameter"
+        case .invalidLimit(let value):
+            return "'limit' must be non-negative, got \(value)"
         case .notDirectory(let path):
             return "Not a directory: \(path)"
         case .notText(let path):
@@ -35,6 +38,14 @@ enum FileSystemToolError: LocalizedError {
 
 func expandedFileSystemPath(_ rawPath: String) -> String {
     (rawPath as NSString).expandingTildeInPath
+}
+
+func nonnegativeResultLimit(from args: [String: Value], default defaultValue: Int) throws -> Int {
+    let limit = args["limit"]?.intValue ?? defaultValue
+    guard limit >= 0 else {
+        throw FileSystemToolError.invalidLimit(limit)
+    }
+    return limit
 }
 
 func requiredPath(from args: [String: Value]) throws -> String {
@@ -71,7 +82,7 @@ func writeFileTool(args: [String: Value]) throws -> String {
 
 func listDirectoryTool(args: [String: Value]) throws -> String {
     let path = try requiredPath(from: args)
-    let limit = args["limit"]?.intValue ?? 200
+    let limit = try nonnegativeResultLimit(from: args, default: 200)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
         throw FileSystemToolError.notDirectory(path)
@@ -95,7 +106,7 @@ func searchFilesTool(args: [String: Value]) throws -> String {
     guard let pattern = args["pattern"]?.stringValue, !pattern.isEmpty else {
         throw FileSystemToolError.missingPattern
     }
-    let limit = args["limit"]?.intValue ?? 100
+    let limit = try nonnegativeResultLimit(from: args, default: 100)
     let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     var matches: [String] = []
     var enumerationFailure: FileSystemToolError?
@@ -111,6 +122,7 @@ func searchFilesTool(args: [String: Value]) throws -> String {
     ) else {
         throw FileSystemToolError.notDirectory(root)
     }
+    guard limit > 0 else { return "(no matching files)" }
     for case let url as URL in enumerator {
         let name = url.lastPathComponent
         let range = NSRange(name.startIndex..<name.endIndex, in: name)
@@ -130,7 +142,7 @@ func searchContentTool(args: [String: Value]) throws -> String {
     guard let pattern = args["pattern"]?.stringValue, !pattern.isEmpty else {
         throw FileSystemToolError.missingPattern
     }
-    let limit = args["limit"]?.intValue ?? 100
+    let limit = try nonnegativeResultLimit(from: args, default: 100)
     let regex = try NSRegularExpression(pattern: pattern)
     let rootURL = URL(fileURLWithPath: root)
     var matches: [String] = []
@@ -146,6 +158,7 @@ func searchContentTool(args: [String: Value]) throws -> String {
     ) else {
         throw FileSystemToolError.notDirectory(root)
     }
+    guard limit > 0 else { return "(no content matches)" }
     for case let url as URL in enumerator {
         let values: URLResourceValues
         do {
