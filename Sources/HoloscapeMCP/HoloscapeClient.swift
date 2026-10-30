@@ -32,13 +32,13 @@ struct HoloscapeClient: Sendable {
     }
 
     func switchChannel(id: String) async throws -> [String: Any] {
-        let data = try await post("/channels/\(id)/switch", body: nil)
+        let data = try await post(channelPath(id: id, suffix: "/switch"), body: nil)
         return try decodeObject(from: data)
     }
 
     func closeChannel(id: String) async throws -> [String: Any] {
         let data = try await delete(
-            "/channels/\(id)",
+            channelPath(id: id),
             timeoutError: .closeOutcomeUnknown
         )
         return try decodeObject(from: data)
@@ -46,7 +46,7 @@ struct HoloscapeClient: Sendable {
 
     func sendInput(id: String, text: String) async throws -> [String: Any] {
         let data = try await post(
-            "/channels/\(id)/input",
+            channelPath(id: id, suffix: "/input"),
             body: ["text": text],
             timeoutError: .inputOutcomeUnknown
         )
@@ -54,7 +54,7 @@ struct HoloscapeClient: Sendable {
     }
 
     func readOutput(id: String, lines: Int = 50) async throws -> [String: Any] {
-        let data = try await get("/channels/\(id)/output?lines=\(lines)")
+        let data = try await get(channelPath(id: id, suffix: "/output?lines=\(lines)"))
         return try decodeObject(from: data)
     }
 
@@ -88,6 +88,18 @@ struct HoloscapeClient: Sendable {
     }
 
     private static let localAPIRequestTimeout: TimeInterval = 5
+    private static let pathSegmentAllowedCharacters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@"
+    )
+
+    private func channelPath(id: String, suffix: String = "") throws -> String {
+        guard let component = id.addingPercentEncoding(
+            withAllowedCharacters: Self.pathSegmentAllowedCharacters
+        ) else {
+            throw HoloscapeError.invalidResponse
+        }
+        return "/channels/\(component)\(suffix)"
+    }
 
     private func request(path: String, method: String) throws -> URLRequest {
         guard let url = URL(string: baseURL + path) else {
