@@ -47,6 +47,19 @@ final class HoloscapeAPIServerSecurityTests: XCTestCase {
     }
 
     @MainActor
+    func testReadOutputRejectsNegativeLineCountBeforeResolvingChannel() {
+        var resolutionCount = 0
+
+        let response = HoloscapeAPIServer.readOutput(id: "API", lines: -1) { _ in
+            resolutionCount += 1
+            return self.makeChannel()
+        }
+
+        XCTAssertEqual(response.status, 400)
+        XCTAssertEqual(resolutionCount, 0)
+    }
+
+    @MainActor
     private func makeChannel() -> MockChannelController {
         MockChannelController(
             type: .shell,

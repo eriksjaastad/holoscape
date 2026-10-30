@@ -396,7 +396,18 @@ class HoloscapeAPIServer {
     }
 
     private func handleReadOutput(id: String, lines: Int) -> HTTPResponse {
-        guard let channel = resolveChannel(id: id) else {
+        Self.readOutput(id: id, lines: lines, resolveChannel: resolveChannel(id:))
+    }
+
+    static func readOutput(
+        id: String,
+        lines: Int,
+        resolveChannel: (String) -> (any ChannelController)?
+    ) -> HTTPResponse {
+        guard lines >= 0 else {
+            return .error("Line count must not be negative", status: 400)
+        }
+        guard let channel = resolveChannel(id) else {
             return .error("Channel not found", status: 404)
         }
         let output = channel.lastLines(lines)
