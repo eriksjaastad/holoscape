@@ -38,6 +38,47 @@ final class FileSystemToolTests: XCTestCase {
         XCTAssertFalse(text.contains("Is Holoscape running?"))
     }
 
+    func testListDirectoryRejectsNegativeLimitBeforeFilesystemAccess() {
+        assertNegativeLimitRejected {
+            try listDirectoryTool(args: ["path": .string("/missing"), "limit": .int(-1)])
+        }
+    }
+
+    func testSearchFilesRejectsNegativeLimitBeforeFilesystemAccess() {
+        assertNegativeLimitRejected {
+            try searchFilesTool(args: [
+                "path": .string("/missing"),
+                "pattern": .string("anything"),
+                "limit": .int(-1),
+            ])
+        }
+    }
+
+    func testSearchContentRejectsNegativeLimitBeforeFilesystemAccess() {
+        assertNegativeLimitRejected {
+            try searchContentTool(args: [
+                "path": .string("/missing"),
+                "pattern": .string("anything"),
+                "limit": .int(-1),
+            ])
+        }
+    }
+
+    func testZeroSearchLimitsReturnNoResults() throws {
+        try Data("needle\n".utf8).write(to: temporaryDirectory.appendingPathComponent("needle.txt"))
+
+        XCTAssertEqual(try searchFilesTool(args: [
+            "path": .string(temporaryDirectory.path),
+            "pattern": .string("needle"),
+            "limit": .int(0),
+        ]), "(no matching files)")
+        XCTAssertEqual(try searchContentTool(args: [
+            "path": .string(temporaryDirectory.path),
+            "pattern": .string("needle"),
+            "limit": .int(0),
+        ]), "(no content matches)")
+    }
+
     func testSearchContentSkipsValidNonUTF8Files() throws {
         try Data([0xFF, 0xFE, 0xFD]).write(to: temporaryDirectory.appendingPathComponent("binary.dat"))
         try Data("needle\n".utf8).write(to: temporaryDirectory.appendingPathComponent("text.txt"))
@@ -104,6 +145,18 @@ final class FileSystemToolTests: XCTestCase {
             }
             XCTAssertEqual(URL(fileURLWithPath: path).lastPathComponent, unreadableDirectory.lastPathComponent)
             XCTAssertTrue(path.contains(temporaryDirectory.lastPathComponent))
+        }
+    }
+
+    private func assertNegativeLimitRejected(
+        operation: () throws -> String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(try operation(), file: file, line: line) { error in
+            guard case .invalidLimit = error as? FileSystemToolError else {
+                return XCTFail("Expected invalidLimit, got \(error)", file: file, line: line)
+            }
         }
     }
 }
