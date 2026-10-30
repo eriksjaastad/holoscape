@@ -304,7 +304,8 @@ final class BrokerBackedTerminalProcess: TerminalProcess, AcknowledgedTerminalIn
         let shouldReplayScrollback = explicitReplayPolicy ?? (outputPresentation.presentedBrokerSessionID != sessionID)
         lifecycle.reattachGeneration &+= 1
         let generation = lifecycle.reattachGeneration
-        guard coordinator.requiresOffMainBrokerWork else {
+        let requiresOffMainReplay = shouldReplayScrollback && coordinator.requiresOffMainScrollbackReplay
+        guard coordinator.requiresOffMainBrokerWork || requiresOffMainReplay else {
             finishReattach(
                 sessionID: sessionID,
                 result: Result { try coordinator.reattach(sessionID, attachedChannelID: channelID) },

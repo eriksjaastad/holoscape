@@ -21,6 +21,9 @@ private final class BrokerSessionLaunchClaims: @unchecked Sendable {
 
 protocol BrokerSessionCoordinating {
     var requiresOffMainBrokerWork: Bool { get }
+    /// Replay acquisition may perform blocking persistence I/O even when the
+    /// lifecycle coordinator itself is safe to call synchronously.
+    var requiresOffMainScrollbackReplay: Bool { get }
     func start(
         _ request: BrokerSessionLaunchRequest,
         channelType: ChannelType,
@@ -58,6 +61,7 @@ protocol BrokerSessionCoordinating {
 
 extension BrokerSessionCoordinating {
     var requiresOffMainBrokerWork: Bool { false }
+    var requiresOffMainScrollbackReplay: Bool { false }
 
     func setOutputAvailabilityHandler(
         _ id: BrokerSessionID,
@@ -141,6 +145,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     var requiresOffMainBrokerWork: Bool { runtime is BrokerSessionHostClientRuntime }
+    var requiresOffMainScrollbackReplay: Bool { runtime is NativePTYBrokerSessionRuntime }
 
     func loadAll() throws -> [BrokerSessionRecord] {
         try registry.load()
