@@ -50,6 +50,35 @@ final class HoloscapeClientTests: XCTestCase {
         XCTAssertEqual(result["label"] as? String, "Build")
     }
 
+    func testChannelToolsEncodeDisplayLabelAsOnePathSegment() async throws {
+        let encodedLabel = "build%2Frelease%3F100%25%20caf%C3%A9"
+        let label = "build/release?100% café"
+
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertEqual(request.url?.absoluteString, "http://holoscape.test/channels/\(encodedLabel)/switch")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+        _ = try await client.switchChannel(id: label)
+
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertEqual(request.url?.absoluteString, "http://holoscape.test/channels/\(encodedLabel)")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+        _ = try await client.closeChannel(id: label)
+
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertEqual(request.url?.absoluteString, "http://holoscape.test/channels/\(encodedLabel)/input")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+        _ = try await client.sendInput(id: label, text: "pwd")
+
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertEqual(request.url?.absoluteString, "http://holoscape.test/channels/\(encodedLabel)/output?lines=12")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+        _ = try await client.readOutput(id: label, lines: 12)
+    }
+
     func testObjectEndpointsRejectMalformedOrWrongShapedJSON() async {
         await assertInvalidResponse(body: "not-json") {
             try await client.createChannel(type: "shell", dir: nil, label: nil, cmd: nil)

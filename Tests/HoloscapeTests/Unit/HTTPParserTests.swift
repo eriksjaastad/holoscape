@@ -274,6 +274,25 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(request.queryParams["filter"], "ready?now")
     }
 
+    func testPathComponentDecodesExactlyOneEncodedSegment() throws {
+        let decision = HoloscapeAPIServer.requestReceiveDecision(
+            accumulated: Data(),
+            incoming: Data(
+                "POST /channels/build%252Frelease%3F100%25%20caf%C3%A9/switch HTTP/1.1\r\n\r\n".utf8
+            ),
+            isComplete: false,
+            maximumBytes: 256
+        )
+
+        guard case .route(let request) = decision else {
+            return XCTFail("Expected route, got \(decision)")
+        }
+        XCTAssertEqual(
+            request.pathComponent(after: "/channels/"),
+            "build%2Frelease?100% café"
+        )
+    }
+
     func testRequestTargetWithEmptyQueryRoutes() {
         let decision = HoloscapeAPIServer.requestReceiveDecision(
             accumulated: Data(),

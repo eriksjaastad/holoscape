@@ -16,9 +16,11 @@ struct HTTPRequest {
         // segments so /channels//input yields "" → caller treats as missing.
         if let slash = remainder.firstIndex(of: "/") {
             let component = String(remainder[..<slash])
-            return component.isEmpty ? nil : component
+            guard !component.isEmpty else { return nil }
+            return component.removingPercentEncoding
         }
-        return remainder.isEmpty ? nil : remainder
+        guard !remainder.isEmpty else { return nil }
+        return remainder.removingPercentEncoding
     }
 }
 
