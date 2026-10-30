@@ -116,15 +116,51 @@ final class BrokerSessionRegistryTests: XCTestCase {
     }
 
     func testLoadRejectsNamedPipeRegistryLeafWithoutBlocking() throws {
+        if let registryPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_FIFO_CHILD_PATH"] {
+            let registryURL = URL(fileURLWithPath: registryPath)
+            XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
+                XCTAssertEqual(
+                    error as? BrokerSessionRegistry.RegistryError,
+                    .unsafeRegistryFile(registryURL.path)
+                )
+            }
+            return
+        }
+
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         XCTAssertEqual(mkfifo(registryURL.path, S_IRUSR | S_IWUSR), 0)
+        let child = Process()
+        let output = Pipe()
+        let exited = DispatchSemaphore(value: 0)
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerSessionRegistryTests/testLoadRejectsNamedPipeRegistryLeafWithoutBlocking",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_REGISTRY_FIFO_CHILD_PATH": registryURL.path,
+        ]) { _, childValue in childValue }
+        child.standardOutput = output
+        child.standardError = output
+        child.terminationHandler = { _ in exited.signal() }
+        try child.run()
 
-        XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
-            XCTAssertEqual(
-                error as? BrokerSessionRegistry.RegistryError,
-                .unsafeRegistryFile(registryURL.path)
-            )
+        let waitResult = exited.wait(timeout: .now() + 5)
+        if waitResult == .timedOut {
+            child.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                _ = Darwin.kill(child.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
         }
+        let diagnostic = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(waitResult, .success, "Registry load blocked on a named pipe: \(diagnostic)")
+        XCTAssertEqual(child.terminationReason, .exit, "Child process was signaled: \(diagnostic)")
+        XCTAssertEqual(child.terminationStatus, 0, "Child process failed: \(diagnostic)")
     }
 
     func testLoadReportsBothReadAndCloseFailures() throws {
@@ -136,7 +172,8 @@ final class BrokerSessionRegistryTests: XCTestCase {
             synchronizeDirectory: { _ in },
             removeTemporaryFile: { _ in },
             readOpenedFile: { _ in throw RegistryPersistenceFailure.fileRead },
-            closeOpenedFile: { _ in
+            closeOpenedFile: { descriptor in
+                XCTAssertEqual(Darwin.close(descriptor), 0)
                 errno = EIO
                 return -1
             }
