@@ -100,6 +100,101 @@ final class BrokerSessionRegistryTests: XCTestCase {
         XCTAssertEqual(try reloaded.load(), [record])
     }
 
+    func testLoadRejectsSymbolicLinkRegistryLeaf() throws {
+        let outsideURL = tempDirectory.appendingPathComponent("outside.json")
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let outsideRecord = makeRecord(id: "outside-session", lifecycle: .running, updatedAt: 2)
+        try BrokerSessionRegistry(fileURL: outsideURL).save([outsideRecord])
+        try FileManager.default.createSymbolicLink(at: registryURL, withDestinationURL: outsideURL)
+
+        XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionRegistry.RegistryError,
+                .unsafeRegistryFile(registryURL.path)
+            )
+        }
+    }
+
+    func testLoadRejectsNamedPipeRegistryLeafWithoutBlocking() throws {
+        if let registryPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_FIFO_CHILD_PATH"] {
+            let registryURL = URL(fileURLWithPath: registryPath)
+            XCTAssertThrowsError(try BrokerSessionRegistry(fileURL: registryURL).load()) { error in
+                XCTAssertEqual(
+                    error as? BrokerSessionRegistry.RegistryError,
+                    .unsafeRegistryFile(registryURL.path)
+                )
+            }
+            return
+        }
+
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        XCTAssertEqual(mkfifo(registryURL.path, S_IRUSR | S_IWUSR), 0)
+        let child = Process()
+        let exited = DispatchSemaphore(value: 0)
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerSessionRegistryTests/testLoadRejectsNamedPipeRegistryLeafWithoutBlocking",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_REGISTRY_FIFO_CHILD_PATH": registryURL.path,
+        ]) { _, childValue in childValue }
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        child.terminationHandler = { _ in exited.signal() }
+        try child.run()
+
+        let waitResult = exited.wait(timeout: .now() + 5)
+        if waitResult == .timedOut {
+            child.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                errno = 0
+                let killResult = Darwin.kill(child.processIdentifier, SIGKILL)
+                let killCode = errno
+                XCTAssertTrue(
+                    killResult == 0 || killCode == ESRCH,
+                    "Failed to kill blocked registry-load child: \(String(cString: strerror(killCode)))"
+                )
+                let finalWait = exited.wait(timeout: .now() + 1)
+                XCTAssertEqual(finalWait, .success, "Blocked registry-load child did not exit after SIGKILL")
+                guard finalWait == .success else { return }
+            }
+        }
+        XCTAssertEqual(waitResult, .success, "Registry load blocked on a named pipe")
+        XCTAssertEqual(child.terminationReason, .exit, "Child process was signaled")
+        XCTAssertEqual(child.terminationStatus, 0, "Child process failed")
+    }
+
+    func testLoadReportsBothReadAndCloseFailures() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        try Data("[]".utf8).write(to: registryURL)
+        let persistence = BrokerSessionRegistry.Persistence(
+            writeAndSynchronizeTemporaryFile: { _, _ in },
+            replaceFile: { _, _ in },
+            synchronizeDirectory: { _ in },
+            removeTemporaryFile: { _ in },
+            readOpenedFile: { _ in throw RegistryPersistenceFailure.fileRead },
+            closeOpenedFile: { descriptor in
+                XCTAssertEqual(Darwin.close(descriptor), 0)
+                errno = EIO
+                return -1
+            }
+        )
+
+        XCTAssertThrowsError(
+            try BrokerSessionRegistry(fileURL: registryURL, persistence: persistence).load()
+        ) { error in
+            XCTAssertEqual(
+                error as? BrokerSessionRegistry.RegistryError,
+                .readAndCloseFailed(
+                    operation: String(describing: RegistryPersistenceFailure.fileRead),
+                    close: String(cString: strerror(EIO))
+                )
+            )
+        }
+    }
+
     func testSaveSynchronizesTemporaryFileBeforeReplacementAndDirectoryAfterReplacement() throws {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         try Data().write(to: registryURL.appendingPathExtension("lock"))
@@ -709,6 +804,7 @@ final class BrokerSessionRegistryTests: XCTestCase {
 }
 
 private enum RegistryPersistenceFailure: Error, Equatable {
+    case fileRead
     case fileSync
     case replace
     case directorySync
