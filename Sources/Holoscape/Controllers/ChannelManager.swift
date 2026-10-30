@@ -204,36 +204,63 @@ class ChannelManager {
     }
 
     /// Remove a channel from the registry.
-    func closeChannel(id: UUID) {
-        guard let channel = channels[id], persistence.beginClosing(id) else { return }
+    func closeChannel(
+        id: UUID,
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void = { _ in }
+    ) {
+        guard let channel = channels[id] else {
+            completion(.completed)
+            return
+        }
+        guard persistence.beginClosing(id) else {
+            completion(.retryableFailure(TerminalSessionFailure(
+                kind: .failed,
+                description: "Channel close is already in progress"
+            )))
+            return
+        }
         // Presentation removal and lifecycle ownership are separate. Keep this
         // controller in the saved order until teardown has serialized behind the
         // output lane and published any retirement-only broker authority.
-        channel.deactivateForClose { [weak self] outcome in
-            self?.handleClosingOutcome(outcome, id: id)
+        channel.deactivateForClose { [self] outcome in
+            completion(handleClosingOutcome(outcome, id: id))
         }
         // Note: highWaterMarks are NOT decremented on close (no renumbering)
     }
 
-    private func finishClosingChannel(id: UUID) {
-        guard persistence.closingChannelIDs.contains(id), let channel = channels[id] else { return }
+    private func finishClosingChannel(id: UUID) -> TerminalCleanupOutcome {
+        guard persistence.closingChannelIDs.contains(id), let channel = channels[id] else {
+            return .completed
+        }
         let ownsPendingRetirement = (channel as? ShellChannelController)?.pendingExitedOutputRetirement != nil
             || (channel as? AgentChannelController)?.pendingExitedOutputRetirement != nil
         if ownsPendingRetirement {
             // A failed completed-session retirement is hidden but durable. The
             // next launch restores its cleanup-only authority instead of losing
             // the broker ID when the tab-close callback releases its controller.
-            persistClosingState(context: "retirement authority")
-            return
+            guard persistClosingState(context: "retirement authority") else {
+                return closePersistenceFailure(
+                    fallback: "Channel state save failed while persisting retirement authority"
+                )
+            }
+            return .retryableFailure(TerminalSessionFailure(
+                kind: .failed,
+                description: "Channel cleanup remains pending"
+            ))
         }
         persistence.markClosingCompleted(id)
-        persistClosingState(context: "completed removal")
+        guard persistClosingState(context: "completed removal") else {
+            return closePersistenceFailure(
+                fallback: "Channel state save failed while persisting completed removal"
+            )
+        }
+        return .completed
     }
 
-    private func handleClosingOutcome(_ outcome: TerminalCleanupOutcome, id: UUID) {
+    private func handleClosingOutcome(_ outcome: TerminalCleanupOutcome, id: UUID) -> TerminalCleanupOutcome {
         switch outcome {
         case .completed:
-            finishClosingChannel(id: id)
+            return finishClosingChannel(id: id)
         case .retryableFailure(let failure):
             let didSave = saveState()
             let message = didSave
@@ -243,18 +270,31 @@ class ChannelManager {
                 )
             persistence.retainCleanupFailure(message)
             NSLog("ChannelManager retained closed-channel cleanup authority: \(message)")
+            if didSave {
+                return outcome
+            }
+            return .retryableFailure(TerminalSessionFailure(kind: .failed, description: message))
         }
     }
 
-    private func persistClosingState(context: String) {
+    @discardableResult
+    private func persistClosingState(context: String) -> Bool {
         guard saveState() else {
             let message = persistence.persistenceFailure(
                 fallback: "Channel state save failed while persisting \(context)"
             )
             persistence.retainCleanupFailure(message)
             NSLog("ChannelManager could not persist closed-channel \(context): \(message)")
-            return
+            return false
         }
+        return true
+    }
+
+    private func closePersistenceFailure(fallback: String) -> TerminalCleanupOutcome {
+        .retryableFailure(TerminalSessionFailure(
+            kind: .failed,
+            description: persistence.persistenceFailure(fallback: fallback)
+        ))
     }
 
     /// Detach live channel views during app termination without mutating the
@@ -420,7 +460,7 @@ class ChannelManager {
         }
         for controller in restoredCloseCleanupControllers {
             controller.resumeRestoredCloseCleanup { [weak self] outcome in
-                self?.handleClosingOutcome(outcome, id: controller.channelId)
+                _ = self?.handleClosingOutcome(outcome, id: controller.channelId)
             }
         }
     }

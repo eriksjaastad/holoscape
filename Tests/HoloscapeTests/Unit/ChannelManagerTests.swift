@@ -1625,6 +1625,20 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNil(retainedChannel)
     }
 
+    func testCloseCompletionWaitsForDurableRemoval() {
+        let channel = createMockChannel(type: .shell, role: "Acknowledged Close") as! MockChannelController
+        channel.defersDeactivationCompletion = true
+        var outcomes: [TerminalCleanupOutcome] = []
+
+        manager.closeChannel(id: channel.channelId) { outcomes.append($0) }
+
+        XCTAssertTrue(outcomes.isEmpty)
+        channel.finishDeactivation()
+
+        XCTAssertEqual(outcomes, [.completed])
+        XCTAssertTrue(configService.load().channels.isEmpty)
+    }
+
     func testCloseChannelPersistsRetirementAuthorityPublishedByTeardown() throws {
         let sessionID = BrokerSessionID(rawValue: "closing-pending-retirement")
         let pending = BrokerExitedOutputRetirement(
@@ -1941,12 +1955,16 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertTrue(closeManager.saveState())
         service.shouldFailSaves = true
 
-        closeManager.closeChannel(id: channel.channelId)
+        var closeOutcome: TerminalCleanupOutcome?
+        closeManager.closeChannel(id: channel.channelId) { closeOutcome = $0 }
 
         XCTAssertEqual(closeManager.count, 0)
         XCTAssertNil(closeManager.channel(for: channel.channelId))
         XCTAssertNotNil(closeManager.closePersistenceFailure)
         XCTAssertEqual(service.load().channels.map(\.id), [channel.channelId])
+        guard case .retryableFailure = closeOutcome else {
+            return XCTFail("Close must report the retained persistence failure")
+        }
 
         service.shouldFailSaves = false
         XCTAssertTrue(closeManager.saveState())

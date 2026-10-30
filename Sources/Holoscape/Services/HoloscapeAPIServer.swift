@@ -255,7 +255,7 @@ class HoloscapeAPIServer {
             guard let id = request.pathComponent(after: "/channels/") else {
                 return .error("Missing channel ID")
             }
-            return handleCloseChannel(id: id)
+            return await handleCloseChannel(id: id)
 
         case ("POST", let path) where path.hasSuffix("/switch"):
             guard let id = request.pathComponent(after: "/channels/") else {
@@ -335,12 +335,32 @@ class HoloscapeAPIServer {
         }
     }
 
-    private func handleCloseChannel(id: String) -> HTTPResponse {
+    private func handleCloseChannel(id: String) async -> HTTPResponse {
         guard let channel = resolveChannel(id: id) else {
             return .error("Channel not found", status: 404)
         }
-        windowController?.closeChannel(id: channel.channelId)
-        return .json(["status": "closed"])
+        guard let windowController else {
+            return .error("Not ready", status: 500)
+        }
+        return await Self.closeChannel { completion in
+            windowController.closeChannel(id: channel.channelId, completion: completion)
+        }
+    }
+
+    static func closeChannel(
+        _ requestClose: (@escaping @MainActor (TerminalCleanupOutcome) -> Void) -> Void
+    ) async -> HTTPResponse {
+        let outcome = await withCheckedContinuation { continuation in
+            requestClose { outcome in
+                continuation.resume(returning: outcome)
+            }
+        }
+        switch outcome {
+        case .completed:
+            return .json(["status": "closed"])
+        case .retryableFailure(let failure):
+            return .error(failure.description, status: 503)
+        }
     }
 
     private func handleSwitchChannel(id: String) -> HTTPResponse {

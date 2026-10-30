@@ -26,6 +26,27 @@ final class HoloscapeAPIServerSecurityTests: XCTestCase {
     }
 
     @MainActor
+    func testCloseWaitsForAcknowledgementAndRejectsRetryableFailure() async {
+        var pendingCompletion: ((TerminalCleanupOutcome) -> Void)?
+        let responseTask = Task { @MainActor in
+            await HoloscapeAPIServer.closeChannel { completion in
+                pendingCompletion = completion
+            }
+        }
+        await Task.yield()
+
+        XCTAssertNotNil(pendingCompletion)
+        pendingCompletion?(.retryableFailure(TerminalSessionFailure(
+            kind: .brokerHostUnavailable,
+            description: "cleanup failed"
+        )))
+        let response = await responseTask.value
+
+        XCTAssertEqual(response.status, 503)
+        XCTAssertEqual(response.statusText, "Service Unavailable")
+    }
+
+    @MainActor
     private func makeChannel() -> MockChannelController {
         MockChannelController(
             type: .shell,

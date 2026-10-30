@@ -2536,10 +2536,19 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         closeChannel(id: id)
     }
 
-    func closeChannel(id: UUID) {
-        guard channelMutationEnabled else { return }
+    func closeChannel(
+        id: UUID,
+        completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void = { _ in }
+    ) {
+        guard channelMutationEnabled else {
+            completion(.retryableFailure(TerminalSessionFailure(
+                kind: .failed,
+                description: "Channel close is temporarily unavailable"
+            )))
+            return
+        }
         (channelManager.channel(for: id)?.contentView as? HoloscapeTerminalView)?.onAlternateScreenChanged = nil
-        channelManager.closeChannel(id: id)
+        channelManager.closeChannel(id: id, completion: completion)
 
         splitPaneManager.removeChannel(channelId: id)
         if activeChannelId == id {
