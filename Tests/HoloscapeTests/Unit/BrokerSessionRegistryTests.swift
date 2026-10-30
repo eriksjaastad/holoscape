@@ -130,7 +130,6 @@ final class BrokerSessionRegistryTests: XCTestCase {
         let registryURL = tempDirectory.appendingPathComponent("sessions.json")
         XCTAssertEqual(mkfifo(registryURL.path, S_IRUSR | S_IWUSR), 0)
         let child = Process()
-        let output = Pipe()
         let exited = DispatchSemaphore(value: 0)
         child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         child.arguments = [
@@ -141,8 +140,8 @@ final class BrokerSessionRegistryTests: XCTestCase {
         child.environment = ProcessInfo.processInfo.environment.merging([
             "HOLOSCAPE_REGISTRY_FIFO_CHILD_PATH": registryURL.path,
         ]) { _, childValue in childValue }
-        child.standardOutput = output
-        child.standardError = output
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
         child.terminationHandler = { _ in exited.signal() }
         try child.run()
 
@@ -150,17 +149,21 @@ final class BrokerSessionRegistryTests: XCTestCase {
         if waitResult == .timedOut {
             child.terminate()
             if exited.wait(timeout: .now() + 1) == .timedOut {
-                _ = Darwin.kill(child.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + 1)
+                errno = 0
+                let killResult = Darwin.kill(child.processIdentifier, SIGKILL)
+                let killCode = errno
+                XCTAssertTrue(
+                    killResult == 0 || killCode == ESRCH,
+                    "Failed to kill blocked registry-load child: \(String(cString: strerror(killCode)))"
+                )
+                let finalWait = exited.wait(timeout: .now() + 1)
+                XCTAssertEqual(finalWait, .success, "Blocked registry-load child did not exit after SIGKILL")
+                guard finalWait == .success else { return }
             }
         }
-        let diagnostic = String(
-            data: output.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        XCTAssertEqual(waitResult, .success, "Registry load blocked on a named pipe: \(diagnostic)")
-        XCTAssertEqual(child.terminationReason, .exit, "Child process was signaled: \(diagnostic)")
-        XCTAssertEqual(child.terminationStatus, 0, "Child process failed: \(diagnostic)")
+        XCTAssertEqual(waitResult, .success, "Registry load blocked on a named pipe")
+        XCTAssertEqual(child.terminationReason, .exit, "Child process was signaled")
+        XCTAssertEqual(child.terminationStatus, 0, "Child process failed")
     }
 
     func testLoadReportsBothReadAndCloseFailures() throws {
