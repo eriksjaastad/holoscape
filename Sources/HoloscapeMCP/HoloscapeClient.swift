@@ -42,7 +42,11 @@ struct HoloscapeClient: Sendable {
     }
 
     func sendInput(id: String, text: String) async throws -> [String: Any] {
-        let data = try await post("/channels/\(id)/input", body: ["text": text])
+        let data = try await post(
+            "/channels/\(id)/input",
+            body: ["text": text],
+            timeout: Self.acknowledgedInputRequestTimeout
+        )
         return try decodeObject(from: data)
     }
 
@@ -57,8 +61,12 @@ struct HoloscapeClient: Sendable {
         try await perform(request(path: path, method: "GET"))
     }
 
-    private func post(_ path: String, body: [String: Any]?) async throws -> Data {
-        var request = try request(path: path, method: "POST")
+    private func post(
+        _ path: String,
+        body: [String: Any]?,
+        timeout: TimeInterval = localAPIRequestTimeout
+    ) async throws -> Data {
+        var request = try request(path: path, method: "POST", timeout: timeout)
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -71,14 +79,23 @@ struct HoloscapeClient: Sendable {
     }
 
     private static let localAPIRequestTimeout: TimeInterval = 5
+    // Input acknowledgement can include one production URLSession round trip,
+    // whose default request deadline is 60 seconds. Keep the local caller alive
+    // long enough to receive that authoritative outcome instead of reporting a
+    // retryable failure while the original submission can still succeed.
+    private static let acknowledgedInputRequestTimeout: TimeInterval = 65
 
-    private func request(path: String, method: String) throws -> URLRequest {
+    private func request(
+        path: String,
+        method: String,
+        timeout: TimeInterval = localAPIRequestTimeout
+    ) throws -> URLRequest {
         guard let url = URL(string: baseURL + path) else {
             throw HoloscapeError.invalidResponse
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = Self.localAPIRequestTimeout
+        request.timeoutInterval = timeout
         return request
     }
 

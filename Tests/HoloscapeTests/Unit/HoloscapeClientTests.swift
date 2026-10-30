@@ -162,6 +162,15 @@ final class HoloscapeClientTests: XCTestCase {
         _ = try await client.closeChannel(id: "channel-1")
     }
 
+    func testSendInputOutlivesProductionChannelRequestDeadline() async throws {
+        HoloscapeClientURLProtocolStub.setHandler { request in
+            XCTAssertGreaterThan(request.timeoutInterval, 60)
+            return Self.response(statusCode: 200, body: #"{"status":"sent"}"#)
+        }
+
+        _ = try await client.sendInput(id: "channel-1", text: "pwd")
+    }
+
     func testTransportFailureUsesStableConnectionFailedError() async {
         HoloscapeClientURLProtocolStub.setHandler { _ in
             throw URLError(.cannotConnectToHost)
