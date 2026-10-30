@@ -1,5 +1,10 @@
 import Foundation
 
+enum LaunchRecoveryInventoryFailureResolution: Equatable {
+    case retry
+    case quit
+}
+
 /// Launch-recovery phase shared by the coordinator that advances it and every
 /// consumer that must not act on a half-restored channel graph.
 @MainActor
@@ -37,6 +42,8 @@ protocol LaunchRecoveryHost: AnyObject {
     func launchRecoveryRestoreChannels()
     func launchRecoveryEnsureInitialChannel()
     func launchRecoveryDidComplete()
+    func launchRecoveryResolveInventoryFailure() async -> LaunchRecoveryInventoryFailureResolution
+    func launchRecoveryQuit()
 }
 
 /// Owns launch-recovery orchestration: gate interaction, wait for a trustworthy
@@ -46,16 +53,20 @@ final class LaunchRecoveryCoordinator {
     let state: LaunchRecoveryState
     private weak var host: (any LaunchRecoveryHost)?
     private let inventoryRetryDelay: Duration
+    private let automaticInventoryAttemptLimit: Int
     private(set) var recoveryTask: Task<Void, Never>?
 
     init(
         state: LaunchRecoveryState,
         host: any LaunchRecoveryHost,
-        inventoryRetryDelay: Duration = .milliseconds(500)
+        inventoryRetryDelay: Duration = .milliseconds(500),
+        automaticInventoryAttemptLimit: Int = 2
     ) {
+        precondition(automaticInventoryAttemptLimit > 0)
         self.state = state
         self.host = host
         self.inventoryRetryDelay = inventoryRetryDelay
+        self.automaticInventoryAttemptLimit = automaticInventoryAttemptLimit
     }
 
     func begin(restoringSavedChannels: Bool) {
@@ -83,14 +94,34 @@ final class LaunchRecoveryCoordinator {
 
     private func recover() async {
         guard let host else { return }
-        while await host.launchRecoveryPrepareBrokerInventory() == false {
-            do {
-                try await Task.sleep(for: inventoryRetryDelay)
-            } catch {
-                return
+        while state.phase == .awaitingInventory {
+            for attempt in 1...automaticInventoryAttemptLimit {
+                if await host.launchRecoveryPrepareBrokerInventory() {
+                    restore(host)
+                    return
+                }
+                guard state.phase == .awaitingInventory else { return }
+                guard attempt < automaticInventoryAttemptLimit else { break }
+                do {
+                    try await Task.sleep(for: inventoryRetryDelay)
+                } catch {
+                    return
+                }
             }
             guard state.phase == .awaitingInventory else { return }
+            switch await host.launchRecoveryResolveInventoryFailure() {
+            case .retry:
+                continue
+            case .quit:
+                guard state.phase == .awaitingInventory else { return }
+                state.phase = .abandoned
+                host.launchRecoveryQuit()
+                return
+            }
         }
+    }
+
+    private func restore(_ host: any LaunchRecoveryHost) {
         guard state.phase == .awaitingInventory else { return }
         state.phase = .restoring
         host.launchRecoveryRestoreChannels()
