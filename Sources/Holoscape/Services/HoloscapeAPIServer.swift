@@ -267,7 +267,7 @@ class HoloscapeAPIServer {
             guard let id = request.pathComponent(after: "/channels/") else {
                 return .error("Missing channel ID")
             }
-            return handleSendInput(id: id, request: request)
+            return await handleSendInput(id: id, request: request)
 
         case ("GET", let path) where path.hasSuffix("/output"):
             guard let id = request.pathComponent(after: "/channels/") else {
@@ -351,7 +351,7 @@ class HoloscapeAPIServer {
         return .json(["status": "switched", "label": channel.displayLabel])
     }
 
-    private func handleSendInput(id: String, request: HTTPRequest) -> HTTPResponse {
+    private func handleSendInput(id: String, request: HTTPRequest) async -> HTTPResponse {
         guard let channel = resolveChannel(id: id) else {
             return .error("Channel not found", status: 404)
         }
@@ -360,7 +360,18 @@ class HoloscapeAPIServer {
               let text = json["text"] as? String else {
             return .error("Missing 'text' in body")
         }
-        channel.sendInput(text)
+        return await Self.submitInput(text, to: channel)
+    }
+
+    static func submitInput(_ text: String, to channel: any ChannelController) async -> HTTPResponse {
+        let accepted = await withCheckedContinuation { continuation in
+            channel.submitInput(text) { succeeded in
+                continuation.resume(returning: succeeded)
+            }
+        }
+        guard accepted else {
+            return .error("Channel rejected input", status: 503)
+        }
         return .json(["status": "sent"])
     }
 

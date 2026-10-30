@@ -42,7 +42,11 @@ struct HoloscapeClient: Sendable {
     }
 
     func sendInput(id: String, text: String) async throws -> [String: Any] {
-        let data = try await post("/channels/\(id)/input", body: ["text": text])
+        let data = try await post(
+            "/channels/\(id)/input",
+            body: ["text": text],
+            timeoutError: .inputOutcomeUnknown
+        )
         return try decodeObject(from: data)
     }
 
@@ -57,13 +61,17 @@ struct HoloscapeClient: Sendable {
         try await perform(request(path: path, method: "GET"))
     }
 
-    private func post(_ path: String, body: [String: Any]?) async throws -> Data {
+    private func post(
+        _ path: String,
+        body: [String: Any]?,
+        timeoutError: HoloscapeError? = nil
+    ) async throws -> Data {
         var request = try request(path: path, method: "POST")
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        return try await perform(request)
+        return try await perform(request, timeoutError: timeoutError)
     }
 
     private func delete(_ path: String) async throws -> Data {
@@ -82,7 +90,10 @@ struct HoloscapeClient: Sendable {
         return request
     }
 
-    private func perform(_ request: URLRequest) async throws -> Data {
+    private func perform(
+        _ request: URLRequest,
+        timeoutError: HoloscapeError? = nil
+    ) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -90,6 +101,9 @@ struct HoloscapeClient: Sendable {
         } catch {
             if Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 throw CancellationError()
+            }
+            if (error as? URLError)?.code == .timedOut, let timeoutError {
+                throw timeoutError
             }
             throw HoloscapeError.connectionFailed
         }
@@ -125,6 +139,7 @@ struct HoloscapeClient: Sendable {
 enum HoloscapeError: Error, Equatable {
     case invalidResponse
     case connectionFailed
+    case inputOutcomeUnknown
     case httpError(statusCode: Int, message: String?)
 }
 
@@ -135,6 +150,8 @@ extension HoloscapeError: LocalizedError {
             return "Holoscape returned an invalid response"
         case .connectionFailed:
             return "Could not connect to Holoscape"
+        case .inputOutcomeUnknown:
+            return "Holoscape did not confirm whether the input was delivered; do not retry automatically"
         case let .httpError(statusCode, message):
             if let message {
                 return "Holoscape returned HTTP status \(statusCode): \(message)"
