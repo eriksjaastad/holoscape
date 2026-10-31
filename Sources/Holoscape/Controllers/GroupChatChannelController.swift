@@ -156,7 +156,7 @@ class GroupChatChannelController: NSObject, ChannelController {
     }
 
     func submitInput(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
-        guard !text.isEmpty else {
+        guard state == .active, !text.isEmpty else {
             completion(false)
             return
         }
