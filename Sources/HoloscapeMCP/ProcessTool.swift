@@ -26,6 +26,7 @@ struct ProcessToolResult: Sendable {
 enum ProcessToolError: LocalizedError {
     case missingCommand
     case invalidTimeout
+    case invalidEnvironment
     case invalidWorkingDirectory(String)
     case launchFailed(String)
     case executionStatusUnavailable(String)
@@ -39,6 +40,8 @@ enum ProcessToolError: LocalizedError {
             return "Missing 'command' parameter"
         case .invalidTimeout:
             return "timeoutSeconds must be a finite number greater than 0"
+        case .invalidEnvironment:
+            return "env must be an object with string values"
         case .invalidWorkingDirectory(let path):
             return "Working directory does not exist or is not a directory: \(path)"
         case .launchFailed(let reason):
@@ -918,7 +921,7 @@ private func processToolFailure(
         return .cancellationSignalFailed(
             "\(signalingFailure); controller also could not prove process-group cleanup"
         )
-    case .missingCommand, .invalidTimeout, .invalidWorkingDirectory:
+    case .missingCommand, .invalidTimeout, .invalidEnvironment, .invalidWorkingDirectory:
         return primary
     }
 }
@@ -1133,11 +1136,15 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
     }
 
     var environment: [String: String] = [:]
-    if let envObject = args["env"]?.objectValue {
+    if let env = args["env"] {
+        guard let envObject = env.objectValue else {
+            throw ProcessToolError.invalidEnvironment
+        }
         for (key, value) in envObject {
-            if let string = value.stringValue {
-                environment[key] = string
+            guard let string = value.stringValue else {
+                throw ProcessToolError.invalidEnvironment
             }
+            environment[key] = string
         }
     }
 

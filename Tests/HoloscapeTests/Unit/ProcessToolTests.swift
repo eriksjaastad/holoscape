@@ -31,6 +31,37 @@ final class ProcessToolTests: XCTestCase {
         }
     }
 
+    func testProcessToolRequestRejectsMalformedEnvironment() throws {
+        let malformedEnvironments: [Value] = [
+            .string("MODE=test"),
+            .object(["MODE": .int(1)]),
+        ]
+
+        for environment in malformedEnvironments {
+            XCTAssertThrowsError(try processToolRequest(from: [
+                "command": .string("true"),
+                "env": environment,
+            ])) { error in
+                XCTAssertEqual(
+                    error.localizedDescription,
+                    "env must be an object with string values"
+                )
+            }
+        }
+
+        XCTAssertEqual(
+            try processToolRequest(from: ["command": .string("true")]).environment,
+            [:]
+        )
+        XCTAssertEqual(
+            try processToolRequest(from: [
+                "command": .string("true"),
+                "env": .object(["MODE": .string("test")]),
+            ]).environment,
+            ["MODE": "test"]
+        )
+    }
+
     func testToolHandlerLetsCancellationEscapeToMCPServer() async throws {
         do {
             _ = try await executeToolHandler {
