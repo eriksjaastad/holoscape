@@ -420,8 +420,13 @@ class ChannelManager {
             // discarded duplicate cannot launch or reattach a hidden process.
             guard channels[metadata.id] == nil,
                   !persistence.hasUnrestoredChannel(id: metadata.id) else { continue }
-            if let brokerSessionID = metadata.brokerSessionID {
-                guard !claimedBrokerSessionIDs.contains(brokerSessionID) else { continue }
+            if let brokerSessionID = metadata.brokerSessionID,
+               claimedBrokerSessionIDs.contains(brokerSessionID) {
+                // Do not construct a second controller for one durable process,
+                // but retain the skipped tab metadata so a later save cannot
+                // erase it before the persisted identity conflict is resolved.
+                persistence.recordUnrestored(metadata, at: index)
+                continue
             }
             guard let controller = factory(metadata) else {
                 // The entry stays saved, so its ordinal stays reserved: a new
