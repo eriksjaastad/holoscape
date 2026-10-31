@@ -93,6 +93,40 @@ final class HoloscapeClientTests: XCTestCase {
         }
     }
 
+    func testOpenChannelToolRejectsInvalidTypeBeforeRequest() async throws {
+        HoloscapeClientURLProtocolStub.setHandler { _ in
+            XCTFail("Invalid channel type must be rejected before an HTTP request")
+            return Self.response(statusCode: 200, body: "{}")
+        }
+
+        for args: [String: Value] in [
+            [:],
+            ["type": .null],
+            ["type": .int(1)],
+            ["type": .string("robot")],
+        ] {
+            let result = try await openChannelTool(args: args, client: client)
+            XCTAssertEqual(result.isError, true)
+        }
+    }
+
+    func testOpenChannelToolAcceptsSupportedTypes() async throws {
+        for type in ["shell", "agent"] {
+            HoloscapeClientURLProtocolStub.setHandler { request in
+                let body = try Self.requestBody(from: request)
+                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+                XCTAssertEqual(json["type"], type)
+                return Self.response(statusCode: 201, body: "{}")
+            }
+
+            let result = try await openChannelTool(
+                args: ["type": .string(type)],
+                client: client
+            )
+            XCTAssertNotEqual(result.isError, true)
+        }
+    }
+
     func testObjectEndpointsRejectMalformedOrWrongShapedJSON() async {
         await assertInvalidResponse(body: "not-json") {
             try await client.createChannel(type: "shell", dir: nil, label: nil, cmd: nil)
