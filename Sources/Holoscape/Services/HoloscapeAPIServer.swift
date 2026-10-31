@@ -273,8 +273,10 @@ class HoloscapeAPIServer {
             guard let id = request.pathComponent(after: "/channels/") else {
                 return .error("Missing channel ID")
             }
-            let lines = Int(request.queryParams["lines"] ?? "50") ?? 50
-            return handleReadOutput(id: id, lines: lines)
+            return handleReadOutput(
+                id: id,
+                linesParameter: request.queryParams["lines"]
+            )
 
         case ("POST", "/notify"):
             return handleNotify(request)
@@ -395,8 +397,29 @@ class HoloscapeAPIServer {
         return .json(["status": "sent"])
     }
 
-    private func handleReadOutput(id: String, lines: Int) -> HTTPResponse {
-        Self.readOutput(id: id, lines: lines, resolveChannel: resolveChannel(id:))
+    private func handleReadOutput(id: String, linesParameter: String?) -> HTTPResponse {
+        Self.readOutput(
+            id: id,
+            linesParameter: linesParameter,
+            resolveChannel: resolveChannel(id:)
+        )
+    }
+
+    static func outputLineCount(from parameter: String?) -> Int? {
+        guard let parameter else { return 50 }
+        guard let lines = Int(parameter), lines >= 0 else { return nil }
+        return lines
+    }
+
+    static func readOutput(
+        id: String,
+        linesParameter: String?,
+        resolveChannel: (String) -> (any ChannelController)?
+    ) -> HTTPResponse {
+        guard let lines = outputLineCount(from: linesParameter) else {
+            return .error("Line count must be a nonnegative integer", status: 400)
+        }
+        return readOutput(id: id, lines: lines, resolveChannel: resolveChannel)
     }
 
     static func readOutput(

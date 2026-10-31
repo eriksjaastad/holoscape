@@ -60,6 +60,31 @@ final class HoloscapeAPIServerSecurityTests: XCTestCase {
     }
 
     @MainActor
+    func testReadOutputRejectsMalformedLineParametersBeforeResolvingChannel() {
+        for linesParameter in ["invalid", "1e3", "999999999999999999999999"] {
+            var resolutionCount = 0
+
+            let response = HoloscapeAPIServer.readOutput(
+                id: "API",
+                linesParameter: linesParameter
+            ) { _ in
+                resolutionCount += 1
+                return self.makeChannel()
+            }
+
+            XCTAssertEqual(response.status, 400, linesParameter)
+            XCTAssertEqual(resolutionCount, 0, linesParameter)
+        }
+    }
+
+    @MainActor
+    func testOutputLineParameterDefaultsOnlyWhenOmitted() {
+        XCTAssertEqual(HoloscapeAPIServer.outputLineCount(from: nil), 50)
+        XCTAssertEqual(HoloscapeAPIServer.outputLineCount(from: "0"), 0)
+        XCTAssertNil(HoloscapeAPIServer.outputLineCount(from: "-1"))
+    }
+
+    @MainActor
     private func makeChannel() -> MockChannelController {
         MockChannelController(
             type: .shell,
