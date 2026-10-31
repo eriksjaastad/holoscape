@@ -273,8 +273,10 @@ class HoloscapeAPIServer {
             guard let id = request.pathComponent(after: "/channels/") else {
                 return .error("Missing channel ID")
             }
-            let lines = Int(request.queryParams["lines"] ?? "50") ?? 50
-            return handleReadOutput(id: id, lines: lines)
+            return handleReadOutput(
+                id: id,
+                queryItems: request.queryItems
+            )
 
         case ("POST", "/notify"):
             return handleNotify(request)
@@ -395,17 +397,33 @@ class HoloscapeAPIServer {
         return .json(["status": "sent"])
     }
 
-    private func handleReadOutput(id: String, lines: Int) -> HTTPResponse {
-        Self.readOutput(id: id, lines: lines, resolveChannel: resolveChannel(id:))
+    private func handleReadOutput(id: String, queryItems: [HTTPQueryItem]) -> HTTPResponse {
+        Self.readOutput(
+            id: id,
+            queryItems: queryItems,
+            resolveChannel: resolveChannel(id:)
+        )
+    }
+
+    static func outputLineCount(from queryItems: [HTTPQueryItem]) -> Int? {
+        let lineItems = queryItems.filter { $0.name == "lines" }
+        guard !lineItems.isEmpty else { return 50 }
+        guard lineItems.count == 1,
+              let parameter = lineItems[0].value,
+              !parameter.isEmpty else {
+            return nil
+        }
+        guard let lines = Int(parameter), lines >= 0 else { return nil }
+        return lines
     }
 
     static func readOutput(
         id: String,
-        lines: Int,
+        queryItems: [HTTPQueryItem],
         resolveChannel: (String) -> (any ChannelController)?
     ) -> HTTPResponse {
-        guard lines >= 0 else {
-            return .error("Line count must not be negative", status: 400)
+        guard let lines = outputLineCount(from: queryItems) else {
+            return .error("Line count must be a nonnegative integer", status: 400)
         }
         guard let channel = resolveChannel(id) else {
             return .error("Channel not found", status: 404)
