@@ -1141,10 +1141,14 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
             throw ProcessToolError.invalidEnvironment
         }
         for (key, value) in envObject {
-            guard let string = value.stringValue else {
+            switch value {
+            case .string(let string):
+                environment[key] = string
+            case .data:
+                environment[key] = value.description
+            default:
                 throw ProcessToolError.invalidEnvironment
             }
-            environment[key] = string
         }
     }
 

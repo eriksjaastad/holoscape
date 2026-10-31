@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 import MCP
 import XCTest
 @testable import HoloscapeMCP
@@ -53,12 +54,16 @@ final class ProcessToolTests: XCTestCase {
             try processToolRequest(from: ["command": .string("true")]).environment,
             [:]
         )
+        let decodedEnvironment = try JSONDecoder().decode(
+            Value.self,
+            from: Data(#"{"MODE":"test","PAYLOAD":"data:text/plain;base64,SGVsbG8="}"#.utf8)
+        )
         XCTAssertEqual(
             try processToolRequest(from: [
                 "command": .string("true"),
-                "env": .object(["MODE": .string("test")]),
+                "env": decodedEnvironment,
             ]).environment,
-            ["MODE": "test"]
+            ["MODE": "test", "PAYLOAD": "data:text/plain;base64,SGVsbG8="]
         )
     }
 
