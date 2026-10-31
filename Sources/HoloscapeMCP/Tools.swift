@@ -1,5 +1,100 @@
 import Foundation
+import Logging
 import MCP
+
+private let processEnvironmentStringPrefix = "\u{001F}holoscape-process-environment-string:"
+
+/// Protects process-environment strings before MCP's type-erased request
+/// decoder can reinterpret data-URL-looking JSON strings as binary values.
+actor ProcessEnvironmentPreservingTransport<Base: Transport>: Transport {
+    nonisolated let logger: Logger
+    private let base: Base
+
+    init(base: Base) {
+        self.base = base
+        logger = Logger(label: "holoscape.transport.process-environment-preserving")
+    }
+
+    func connect() async throws {
+        try await base.connect()
+    }
+
+    func disconnect() async {
+        await base.disconnect()
+    }
+
+    func send(_ data: Data) async throws {
+        try await base.send(data)
+    }
+
+    func receive() -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let stream = await base.receive()
+                    for try await data in stream {
+                        continuation.yield(try preserveProcessEnvironmentStrings(in: data))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+}
+
+func preserveProcessEnvironmentStrings(in data: Data) throws -> Data {
+    let json: Any
+    do {
+        json = try JSONSerialization.jsonObject(with: data)
+    } catch {
+        return data
+    }
+
+    func preservingMessage(_ value: Any) -> (value: Any, changed: Bool) {
+        guard var message = value as? [String: Any],
+              message["method"] as? String == CallTool.name,
+              var parameters = message["params"] as? [String: Any],
+              parameters["name"] as? String == "holoscape_run_process",
+              var arguments = parameters["arguments"] as? [String: Any],
+              var environment = arguments["env"] as? [String: Any] else {
+            return (value, false)
+        }
+
+        var changed = false
+        for (key, value) in environment {
+            if let string = value as? String {
+                environment[key] = processEnvironmentStringPrefix + string
+                changed = true
+            }
+        }
+        guard changed else { return (value, false) }
+        arguments["env"] = environment
+        parameters["arguments"] = arguments
+        message["params"] = parameters
+        return (message, true)
+    }
+
+    let preserved: Any
+    let changed: Bool
+    if let batch = json as? [Any] {
+        let messages = batch.map(preservingMessage)
+        preserved = messages.map(\.value)
+        changed = messages.contains(where: \.changed)
+    } else {
+        let message = preservingMessage(json)
+        preserved = message.value
+        changed = message.changed
+    }
+    guard changed else { return data }
+    return try JSONSerialization.data(withJSONObject: preserved)
+}
+
+func preservedProcessEnvironmentString(_ value: String) -> String {
+    guard value.hasPrefix(processEnvironmentStringPrefix) else { return value }
+    return String(value.dropFirst(processEnvironmentStringPrefix.count))
+}
 
 func executeToolHandler(
     _ operation: () async throws -> CallTool.Result
