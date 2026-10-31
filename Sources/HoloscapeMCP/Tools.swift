@@ -32,6 +32,35 @@ func executeToolHandler(
     }
 }
 
+func openChannelTool(
+    args: [String: Value],
+    client: HoloscapeClient
+) async throws -> CallTool.Result {
+    guard let type = args["type"]?.stringValue,
+          type == "shell" || type == "agent" else {
+        return CallTool.Result(
+            content: [.text(
+                text: "Invalid 'type' parameter: expected 'shell' or 'agent'",
+                annotations: nil,
+                _meta: nil
+            )],
+            isError: true
+        )
+    }
+
+    let dir = args["dir"]?.stringValue
+    let label = args["label"]?.stringValue
+    let cmd = args["cmd"]?.stringValue
+    _ = try await client.createChannel(type: type, dir: dir, label: label, cmd: cmd)
+    return CallTool.Result(
+        content: [.text(
+            text: "Created \(type) channel\(dir.map { " in \($0)" } ?? "")",
+            annotations: nil,
+            _meta: nil
+        )]
+    )
+}
+
 func registerTools(on server: Server, client: HoloscapeClient) async {
     await server.withMethodHandler(ListTools.self) { _ in
         ListTools.Result(tools: [
@@ -46,7 +75,11 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "type": .object(["type": .string("string"), "description": .string("Channel type: 'shell' or 'agent'")]),
+                        "type": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("shell"), .string("agent")]),
+                            "description": .string("Channel type: 'shell' or 'agent'"),
+                        ]),
                         "dir": .object(["type": .string("string"), "description": .string("Working directory path")]),
                         "label": .object(["type": .string("string"), "description": .string("Custom tab label")]),
                         "cmd": .object(["type": .string("string"), "description": .string("Command to run after opening (e.g. 'claude')")]),
@@ -208,12 +241,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
                 return CallTool.Result(content: [.text(text: text.isEmpty ? "No channels open" : text, annotations: nil, _meta: nil)])
 
             case "holoscape_open_channel":
-                let type = args["type"]?.stringValue ?? "shell"
-                let dir = args["dir"]?.stringValue
-                let label = args["label"]?.stringValue
-                let cmd = args["cmd"]?.stringValue
-                _ = try await client.createChannel(type: type, dir: dir, label: label, cmd: cmd)
-                return CallTool.Result(content: [.text(text: "Created \(type) channel\(dir.map { " in \($0)" } ?? "")", annotations: nil, _meta: nil)])
+                return try await openChannelTool(args: args, client: client)
 
             case "holoscape_switch_channel":
                 guard let channel = args["channel"]?.stringValue else {
