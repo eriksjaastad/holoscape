@@ -10,15 +10,16 @@ final class GroupChatV2Tests: XCTestCase {
     }
 
     @MainActor
-    func testSendInputSurfacesNonSuccessHTTPResponse() async throws {
-        let requestReceived = expectation(description: "send request received")
+    func testSubmitInputRejectsDisconnectedChannelWithoutSending() async {
+        let sendRequest = expectation(description: "send request")
+        sendRequest.isInverted = true
         let session = makeStubbedSession()
         defer { session.invalidateAndCancel() }
         GroupChatURLProtocolStub.setHandler { request in
-            XCTAssertEqual(request.url?.path, "/send")
-            XCTAssertEqual(request.httpMethod, "POST")
-            requestReceived.fulfill()
-            return Self.httpResponse(for: request, statusCode: 503, body: #"{"error":"unavailable"}"#)
+            if request.url?.path == "/send" {
+                sendRequest.fulfill()
+            }
+            return Self.httpResponse(for: request, statusCode: 204, body: "")
         }
         let controller = GroupChatChannelController(
             id: UUID(),
@@ -29,6 +30,47 @@ final class GroupChatV2Tests: XCTestCase {
             session: session
         )
 
+        var accepted: Bool?
+        controller.submitInput("should wait") { accepted = $0 }
+
+        XCTAssertEqual(accepted, false)
+        await fulfillment(of: [sendRequest], timeout: 0.1)
+        XCTAssertEqual(controller.commandHistory.count, 0)
+    }
+
+    @MainActor
+    func testSendInputSurfacesNonSuccessHTTPResponse() async throws {
+        let requestReceived = expectation(description: "send request received")
+        let pollReceived = expectation(description: "poll request received")
+        let session = makeStubbedSession()
+        defer { session.invalidateAndCancel() }
+        GroupChatURLProtocolStub.setHandler { request in
+            switch request.url?.path {
+            case "/messages":
+                pollReceived.fulfill()
+                return Self.httpResponse(for: request, statusCode: 200, body: #"{"messages":[]}"#)
+            case "/send":
+                XCTAssertEqual(request.httpMethod, "POST")
+                requestReceived.fulfill()
+                return Self.httpResponse(for: request, statusCode: 503, body: #"{"error":"unavailable"}"#)
+            default:
+                XCTFail("Unexpected request: \(request.url?.absoluteString ?? "nil")")
+                return Self.httpResponse(for: request, statusCode: 404, body: "")
+            }
+        }
+        let controller = GroupChatChannelController(
+            id: UUID(),
+            apiURL: "https://chat.example.com",
+            apiKey: "key",
+            label: "Chat",
+            instanceNumber: nil,
+            session: session
+        )
+        defer { controller.deactivate() }
+
+        controller.activate()
+        await fulfillment(of: [pollReceived], timeout: 1)
+        try await waitUntilActive(controller)
         controller.sendInput("hello")
 
         await fulfillment(of: [requestReceived], timeout: 1)
@@ -273,12 +315,12 @@ final class GroupChatV2Tests: XCTestCase {
         )
         defer { controller.deactivate() }
 
-        controller.sendInput("hello")
         controller.activate()
-
-        await fulfillment(of: [sendReceived, pollReceived], timeout: 1)
+        await fulfillment(of: [pollReceived], timeout: 1)
         try await waitForLine(containing: "ready", in: controller)
         XCTAssertEqual(controller.state, .active)
+        controller.sendInput("hello")
+        await fulfillment(of: [sendReceived], timeout: 1)
         XCTAssertNotNil(controller.activatedAt)
         XCTAssertFalse(controller.lastLines(20).contains { $0.contains("[Error]") })
     }
@@ -321,6 +363,18 @@ final class GroupChatV2Tests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Timed out waiting for line containing: \(expected). Lines: \(controller.lastLines(20))")
+    }
+
+    @MainActor
+    private func waitUntilActive(_ controller: GroupChatChannelController) async throws {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while ContinuousClock.now < deadline {
+            if controller.state == .active {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for group chat to become active; state: \(controller.state)")
     }
 
     @MainActor
