@@ -275,7 +275,7 @@ class HoloscapeAPIServer {
             }
             return handleReadOutput(
                 id: id,
-                linesParameter: request.queryParams["lines"]
+                queryItems: request.queryItems
             )
 
         case ("POST", "/notify"):
@@ -397,38 +397,33 @@ class HoloscapeAPIServer {
         return .json(["status": "sent"])
     }
 
-    private func handleReadOutput(id: String, linesParameter: String?) -> HTTPResponse {
+    private func handleReadOutput(id: String, queryItems: [HTTPQueryItem]) -> HTTPResponse {
         Self.readOutput(
             id: id,
-            linesParameter: linesParameter,
+            queryItems: queryItems,
             resolveChannel: resolveChannel(id:)
         )
     }
 
-    static func outputLineCount(from parameter: String?) -> Int? {
-        guard let parameter else { return 50 }
+    static func outputLineCount(from queryItems: [HTTPQueryItem]) -> Int? {
+        let lineItems = queryItems.filter { $0.name == "lines" }
+        guard !lineItems.isEmpty else { return 50 }
+        guard lineItems.count == 1,
+              let parameter = lineItems[0].value,
+              !parameter.isEmpty else {
+            return nil
+        }
         guard let lines = Int(parameter), lines >= 0 else { return nil }
         return lines
     }
 
     static func readOutput(
         id: String,
-        linesParameter: String?,
+        queryItems: [HTTPQueryItem],
         resolveChannel: (String) -> (any ChannelController)?
     ) -> HTTPResponse {
-        guard let lines = outputLineCount(from: linesParameter) else {
+        guard let lines = outputLineCount(from: queryItems) else {
             return .error("Line count must be a nonnegative integer", status: 400)
-        }
-        return readOutput(id: id, lines: lines, resolveChannel: resolveChannel)
-    }
-
-    static func readOutput(
-        id: String,
-        lines: Int,
-        resolveChannel: (String) -> (any ChannelController)?
-    ) -> HTTPResponse {
-        guard lines >= 0 else {
-            return .error("Line count must not be negative", status: 400)
         }
         guard let channel = resolveChannel(id) else {
             return .error("Channel not found", status: 404)

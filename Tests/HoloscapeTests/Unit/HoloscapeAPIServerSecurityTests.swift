@@ -50,7 +50,10 @@ final class HoloscapeAPIServerSecurityTests: XCTestCase {
     func testReadOutputRejectsNegativeLineCountBeforeResolvingChannel() {
         var resolutionCount = 0
 
-        let response = HoloscapeAPIServer.readOutput(id: "API", lines: -1) { _ in
+        let response = HoloscapeAPIServer.readOutput(
+            id: "API",
+            queryItems: [HTTPQueryItem(name: "lines", value: "-1")]
+        ) { _ in
             resolutionCount += 1
             return self.makeChannel()
         }
@@ -60,28 +63,57 @@ final class HoloscapeAPIServerSecurityTests: XCTestCase {
     }
 
     @MainActor
-    func testReadOutputRejectsMalformedLineParametersBeforeResolvingChannel() {
-        for linesParameter in ["invalid", "1e3", "999999999999999999999999"] {
+    func testReadOutputRejectsMalformedLineParametersBeforeResolvingChannel() throws {
+        let requestTargets = [
+            "/channels/API/output?lines=",
+            "/channels/API/output?lines",
+            "/channels/API/output?lines=invalid",
+            "/channels/API/output?lines=999999999999999999999999",
+            "/channels/API/output?lines=invalid&lines=0",
+            "/channels/API/output?%6cines=invalid&lines=5"
+        ]
+
+        for requestTarget in requestTargets {
             var resolutionCount = 0
+            let request = try parsedRequest(target: requestTarget)
 
             let response = HoloscapeAPIServer.readOutput(
                 id: "API",
-                linesParameter: linesParameter
+                queryItems: request.queryItems
             ) { _ in
                 resolutionCount += 1
                 return self.makeChannel()
             }
 
-            XCTAssertEqual(response.status, 400, linesParameter)
-            XCTAssertEqual(resolutionCount, 0, linesParameter)
+            XCTAssertEqual(response.status, 400, requestTarget)
+            XCTAssertEqual(resolutionCount, 0, requestTarget)
         }
     }
 
     @MainActor
     func testOutputLineParameterDefaultsOnlyWhenOmitted() {
-        XCTAssertEqual(HoloscapeAPIServer.outputLineCount(from: nil), 50)
-        XCTAssertEqual(HoloscapeAPIServer.outputLineCount(from: "0"), 0)
-        XCTAssertNil(HoloscapeAPIServer.outputLineCount(from: "-1"))
+        XCTAssertEqual(HoloscapeAPIServer.outputLineCount(from: []), 50)
+        XCTAssertEqual(
+            HoloscapeAPIServer.outputLineCount(
+                from: [HTTPQueryItem(name: "lines", value: "0")]
+            ),
+            0
+        )
+        XCTAssertNil(HoloscapeAPIServer.outputLineCount(
+            from: [HTTPQueryItem(name: "lines", value: "-1")]
+        ))
+    }
+
+    private func parsedRequest(target: String) throws -> HTTPRequest {
+        let data = Data("GET \(target) HTTP/1.1\r\n\r\n".utf8)
+        guard case .request(let request) = HTTPParser.parse(data, maximumRequestBytes: 1024) else {
+            throw ParsingError.notRouted
+        }
+        return request
+    }
+
+    private enum ParsingError: Error {
+        case notRouted
     }
 
     @MainActor

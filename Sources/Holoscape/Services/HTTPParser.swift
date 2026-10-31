@@ -1,10 +1,39 @@
 import Foundation
 
+struct HTTPQueryItem: Equatable {
+    let name: String
+    let value: String?
+}
+
 struct HTTPRequest {
     let method: String
     let path: String
     let queryParams: [String: String]
+    let queryItems: [HTTPQueryItem]
     let body: Data?
+
+    init(method: String, path: String, queryParams: [String: String], body: Data?) {
+        self.method = method
+        self.path = path
+        self.queryParams = queryParams
+        self.queryItems = queryParams.map { HTTPQueryItem(name: $0.key, value: $0.value) }
+        self.body = body
+    }
+
+    init(method: String, path: String, queryItems: [HTTPQueryItem], body: Data?) {
+        self.method = method
+        self.path = path
+        self.queryItems = queryItems
+        self.body = body
+
+        var queryParams: [String: String] = [:]
+        for item in queryItems {
+            if let value = item.value {
+                queryParams[item.name] = value
+            }
+        }
+        self.queryParams = queryParams
+    }
 
     /// Extract a path component after a prefix, e.g. "/channels/abc" with prefix "/channels/" returns "abc".
     /// Returns nil (not an arbitrary non-empty later segment) when the component is literally empty,
@@ -171,16 +200,20 @@ enum HTTPParser {
         // Split path and query string.
         let querySeparator = fullPath.firstIndex(of: "?")
         let path = querySeparator.map { String(fullPath[..<$0]) } ?? fullPath
-        var queryParams: [String: String] = [:]
+        var queryItems: [HTTPQueryItem] = []
         if let querySeparator {
             let queryString = fullPath[fullPath.index(after: querySeparator)...]
-            for pair in queryString.split(separator: "&") {
-                let kv = pair.split(separator: "=", maxSplits: 1)
-                if kv.count == 2 {
-                    let key = String(kv[0]).removingPercentEncoding ?? String(kv[0])
-                    let value = String(kv[1]).removingPercentEncoding ?? String(kv[1])
-                    queryParams[key] = value
-                }
+            for pair in queryString.split(separator: "&", omittingEmptySubsequences: false) {
+                let keyValue = pair.split(
+                    separator: "=",
+                    maxSplits: 1,
+                    omittingEmptySubsequences: false
+                )
+                let name = String(keyValue[0]).removingPercentEncoding ?? String(keyValue[0])
+                let value = keyValue.count == 2
+                    ? String(keyValue[1]).removingPercentEncoding ?? String(keyValue[1])
+                    : nil
+                queryItems.append(HTTPQueryItem(name: name, value: value))
             }
         }
 
@@ -195,7 +228,7 @@ enum HTTPParser {
             body = nil
         }
 
-        return .request(HTTPRequest(method: method, path: path, queryParams: queryParams, body: body))
+        return .request(HTTPRequest(method: method, path: path, queryItems: queryItems, body: body))
     }
 
     private static func isToken(_ value: Substring) -> Bool {
