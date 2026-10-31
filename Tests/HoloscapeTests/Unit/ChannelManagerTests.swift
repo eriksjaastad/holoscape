@@ -2700,6 +2700,11 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(restoredRoles, ["First"])
         XCTAssertEqual(newManager.count, 1)
+
+        XCTAssertTrue(newManager.saveState())
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["First", "Duplicate Broker Owner"])
+        XCTAssertEqual(savedChannels.map(\.brokerSessionID), [brokerSessionID, brokerSessionID])
     }
 
     func testRestoreStateFailedFactoryDoesNotClaimBrokerSessionIdentity() {
