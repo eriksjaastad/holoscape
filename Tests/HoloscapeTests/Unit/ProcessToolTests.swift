@@ -36,6 +36,7 @@ final class ProcessToolTests: XCTestCase {
         let malformedEnvironments: [Value] = [
             .string("MODE=test"),
             .object(["MODE": .int(1)]),
+            .object(["MODE": .data(Data())]),
         ]
 
         for environment in malformedEnvironments {
@@ -54,16 +55,15 @@ final class ProcessToolTests: XCTestCase {
             try processToolRequest(from: ["command": .string("true")]).environment,
             [:]
         )
-        let decodedEnvironment = try JSONDecoder().decode(
-            Value.self,
-            from: Data(#"{"MODE":"test","PAYLOAD":"data:text/plain;base64,SGVsbG8="}"#.utf8)
+        let decodedCall = try JSONDecoder().decode(
+            HoloscapeCallTool.Parameters.self,
+            from: Data(
+                #"{"name":"holoscape_run_process","arguments":{"command":"true","env":{"MODE":"test","PAYLOAD":"data:,A%20brief%20note"}}}"#.utf8
+            )
         )
         XCTAssertEqual(
-            try processToolRequest(from: [
-                "command": .string("true"),
-                "env": decodedEnvironment,
-            ]).environment,
-            ["MODE": "test", "PAYLOAD": "data:text/plain;base64,SGVsbG8="]
+            try processToolRequest(from: try XCTUnwrap(decodedCall.arguments)).environment,
+            ["MODE": "test", "PAYLOAD": "data:,A%20brief%20note"]
         )
     }
 

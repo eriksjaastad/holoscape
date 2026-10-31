@@ -1144,8 +1144,6 @@ func processToolRequest(from args: [String: Value]) throws -> ProcessToolRequest
             switch value {
             case .string(let string):
                 environment[key] = string
-            case .data:
-                environment[key] = value.description
             default:
                 throw ProcessToolError.invalidEnvironment
             }

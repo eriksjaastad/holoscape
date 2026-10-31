@@ -1,6 +1,118 @@
 import Foundation
 import MCP
 
+/// Mirrors MCP `Value` for tool-call parameters while preserving every JSON
+/// string verbatim. MCP 0.12.1 otherwise converts data-URL-looking strings to
+/// binary values before a tool can interpret schema-defined string arguments.
+enum ToolArgumentValue: Hashable, Sendable, Codable {
+    case null
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+    case array([ToolArgumentValue])
+    case object([String: ToolArgumentValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([ToolArgumentValue].self) {
+            self = .array(value)
+        } else if let value = try? container.decode([String: ToolArgumentValue].self) {
+            self = .object(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Tool argument value type not found"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null:
+            try container.encodeNil()
+        case .bool(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        }
+    }
+
+    var mcpValue: Value {
+        switch self {
+        case .null:
+            return .null
+        case .bool(let value):
+            return .bool(value)
+        case .int(let value):
+            return .int(value)
+        case .double(let value):
+            return .double(value)
+        case .string(let value):
+            return .string(value)
+        case .array(let value):
+            return .array(value.map(\.mcpValue))
+        case .object(let value):
+            return .object(value.mapValues(\.mcpValue))
+        }
+    }
+}
+
+enum HoloscapeCallTool: MCP.Method {
+    static let name = CallTool.name
+    typealias Result = CallTool.Result
+
+    struct Parameters: Hashable, Sendable, Codable {
+        let _meta: Metadata?
+        let name: String
+        private let rawArguments: [String: ToolArgumentValue]?
+
+        var arguments: [String: Value]? {
+            rawArguments?.mapValues(\.mcpValue)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case _meta, name, arguments
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            _meta = try container.decodeIfPresent(Metadata.self, forKey: ._meta)
+            name = try container.decode(String.self, forKey: .name)
+            rawArguments = try container.decodeIfPresent(
+                [String: ToolArgumentValue].self,
+                forKey: .arguments
+            )
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(_meta, forKey: ._meta)
+            try container.encode(name, forKey: .name)
+            try container.encodeIfPresent(rawArguments, forKey: .arguments)
+        }
+    }
+}
+
 func executeToolHandler(
     _ operation: () async throws -> CallTool.Result
 ) async throws -> CallTool.Result {
@@ -224,7 +336,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
         ])
     }
 
-    await server.withMethodHandler(CallTool.self) { params in
+    await server.withMethodHandler(HoloscapeCallTool.self) { params in
         let args = params.arguments ?? [:]
 
         return try await executeToolHandler {
