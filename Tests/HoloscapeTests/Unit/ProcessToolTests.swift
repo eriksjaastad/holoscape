@@ -4,6 +4,14 @@ import MCP
 import XCTest
 @testable import HoloscapeMCP
 
+private actor ProcessEnvironmentRecorder {
+    private(set) var environment: [String: String]?
+
+    func record(_ environment: [String: String]) {
+        self.environment = environment
+    }
+}
+
 final class ProcessToolTests: XCTestCase {
     private var launcherExecutableURL: URL {
         Bundle(for: Self.self).bundleURL
@@ -32,7 +40,7 @@ final class ProcessToolTests: XCTestCase {
         }
     }
 
-    func testProcessToolRequestRejectsMalformedEnvironment() throws {
+    func testProcessToolRequestRejectsMalformedEnvironment() async throws {
         let malformedEnvironments: [Value] = [
             .string("MODE=test"),
             .object(["MODE": .int(1)]),
@@ -55,15 +63,49 @@ final class ProcessToolTests: XCTestCase {
             try processToolRequest(from: ["command": .string("true")]).environment,
             [:]
         )
-        let decodedCall = try JSONDecoder().decode(
-            HoloscapeCallTool.Parameters.self,
-            from: Data(
-                #"{"name":"holoscape_run_process","arguments":{"command":"true","env":{"MODE":"test","PAYLOAD":"data:,A%20brief%20note"}}}"#.utf8
-            )
+        let unrelatedRequest = Data(
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#.utf8
         )
         XCTAssertEqual(
-            try processToolRequest(from: try XCTUnwrap(decodedCall.arguments)).environment,
-            ["MODE": "test", "PAYLOAD": "data:,A%20brief%20note"]
+            try preserveProcessEnvironmentStrings(in: unrelatedRequest),
+            unrelatedRequest
+        )
+
+        let transports = await InMemoryTransport.createConnectedPair()
+        let server = Server(name: "process-environment-test", version: "1")
+        let recorder = ProcessEnvironmentRecorder()
+        await server.withMethodHandler(CallTool.self) { params in
+            let environment = try processToolRequest(from: params.arguments ?? [:]).environment
+            await recorder.record(environment)
+            return CallTool.Result(content: [.text(
+                text: "ok",
+                annotations: nil,
+                _meta: nil
+            )])
+        }
+        try await server.start(transport: ProcessEnvironmentPreservingTransport(base: transports.server))
+        try await transports.client.connect()
+
+        let responses = await transports.client.receive()
+        var responseIterator = responses.makeAsyncIterator()
+        let requestData = Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"holoscape_run_process","arguments":{"command":"true","env":{"MODE":"test","PAYLOAD":"data:,A%20brief%20note","PREFIX":"\u001fholoscape-process-environment-string:original"}}}}"#.utf8
+        )
+        try await transports.client.send(requestData)
+        let nextResponse = try await responseIterator.next()
+        let responseData = try XCTUnwrap(nextResponse)
+        await server.stop()
+        await transports.client.disconnect()
+
+        _ = try XCTUnwrap(JSONSerialization.jsonObject(with: responseData) as? [String: Any])
+        let recordedEnvironment = await recorder.environment
+        XCTAssertEqual(
+            recordedEnvironment,
+            [
+                "MODE": "test",
+                "PAYLOAD": "data:,A%20brief%20note",
+                "PREFIX": "\u{001F}holoscape-process-environment-string:original",
+            ]
         )
     }
 

@@ -37,7 +37,7 @@ let client = HoloscapeClient()
 await registerTools(on: server, client: client)
 log("Tools registered")
 
-let transport = StdioTransport()
+let transport = ProcessEnvironmentPreservingTransport(base: StdioTransport())
 log("Transport created, starting...")
 try await server.start(transport: transport)
 log("Server started, waiting for messages...")

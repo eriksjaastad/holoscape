@@ -1,116 +1,99 @@
 import Foundation
+import Logging
 import MCP
 
-/// Mirrors MCP `Value` for tool-call parameters while preserving every JSON
-/// string verbatim. MCP 0.12.1 otherwise converts data-URL-looking strings to
-/// binary values before a tool can interpret schema-defined string arguments.
-enum ToolArgumentValue: Hashable, Sendable, Codable {
-    case null
-    case bool(Bool)
-    case int(Int)
-    case double(Double)
-    case string(String)
-    case array([ToolArgumentValue])
-    case object([String: ToolArgumentValue])
+private let processEnvironmentStringPrefix = "\u{001F}holoscape-process-environment-string:"
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() {
-            self = .null
-        } else if let value = try? container.decode(Bool.self) {
-            self = .bool(value)
-        } else if let value = try? container.decode(Int.self) {
-            self = .int(value)
-        } else if let value = try? container.decode(Double.self) {
-            self = .double(value)
-        } else if let value = try? container.decode(String.self) {
-            self = .string(value)
-        } else if let value = try? container.decode([ToolArgumentValue].self) {
-            self = .array(value)
-        } else if let value = try? container.decode([String: ToolArgumentValue].self) {
-            self = .object(value)
-        } else {
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Tool argument value type not found"
-            )
-        }
+/// Protects process-environment strings before MCP's type-erased request
+/// decoder can reinterpret data-URL-looking JSON strings as binary values.
+actor ProcessEnvironmentPreservingTransport<Base: Transport>: Transport {
+    nonisolated let logger: Logger
+    private let base: Base
+
+    init(base: Base) {
+        self.base = base
+        logger = Logger(label: "holoscape.transport.process-environment-preserving")
     }
 
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .null:
-            try container.encodeNil()
-        case .bool(let value):
-            try container.encode(value)
-        case .int(let value):
-            try container.encode(value)
-        case .double(let value):
-            try container.encode(value)
-        case .string(let value):
-            try container.encode(value)
-        case .array(let value):
-            try container.encode(value)
-        case .object(let value):
-            try container.encode(value)
-        }
+    func connect() async throws {
+        try await base.connect()
     }
 
-    var mcpValue: Value {
-        switch self {
-        case .null:
-            return .null
-        case .bool(let value):
-            return .bool(value)
-        case .int(let value):
-            return .int(value)
-        case .double(let value):
-            return .double(value)
-        case .string(let value):
-            return .string(value)
-        case .array(let value):
-            return .array(value.map(\.mcpValue))
-        case .object(let value):
-            return .object(value.mapValues(\.mcpValue))
+    func disconnect() async {
+        await base.disconnect()
+    }
+
+    func send(_ data: Data) async throws {
+        try await base.send(data)
+    }
+
+    func receive() -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let stream = await base.receive()
+                    for try await data in stream {
+                        continuation.yield(try preserveProcessEnvironmentStrings(in: data))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
     }
 }
 
-enum HoloscapeCallTool: MCP.Method {
-    static let name = CallTool.name
-    typealias Result = CallTool.Result
-
-    struct Parameters: Hashable, Sendable, Codable {
-        let _meta: Metadata?
-        let name: String
-        private let rawArguments: [String: ToolArgumentValue]?
-
-        var arguments: [String: Value]? {
-            rawArguments?.mapValues(\.mcpValue)
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case _meta, name, arguments
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            _meta = try container.decodeIfPresent(Metadata.self, forKey: ._meta)
-            name = try container.decode(String.self, forKey: .name)
-            rawArguments = try container.decodeIfPresent(
-                [String: ToolArgumentValue].self,
-                forKey: .arguments
-            )
-        }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encodeIfPresent(_meta, forKey: ._meta)
-            try container.encode(name, forKey: .name)
-            try container.encodeIfPresent(rawArguments, forKey: .arguments)
-        }
+func preserveProcessEnvironmentStrings(in data: Data) throws -> Data {
+    let json: Any
+    do {
+        json = try JSONSerialization.jsonObject(with: data)
+    } catch {
+        return data
     }
+
+    func preservingMessage(_ value: Any) -> (value: Any, changed: Bool) {
+        guard var message = value as? [String: Any],
+              message["method"] as? String == CallTool.name,
+              var parameters = message["params"] as? [String: Any],
+              parameters["name"] as? String == "holoscape_run_process",
+              var arguments = parameters["arguments"] as? [String: Any],
+              var environment = arguments["env"] as? [String: Any] else {
+            return (value, false)
+        }
+
+        var changed = false
+        for (key, value) in environment {
+            if let string = value as? String {
+                environment[key] = processEnvironmentStringPrefix + string
+                changed = true
+            }
+        }
+        guard changed else { return (value, false) }
+        arguments["env"] = environment
+        parameters["arguments"] = arguments
+        message["params"] = parameters
+        return (message, true)
+    }
+
+    let preserved: Any
+    let changed: Bool
+    if let batch = json as? [Any] {
+        let messages = batch.map(preservingMessage)
+        preserved = messages.map(\.value)
+        changed = messages.contains(where: \.changed)
+    } else {
+        let message = preservingMessage(json)
+        preserved = message.value
+        changed = message.changed
+    }
+    guard changed else { return data }
+    return try JSONSerialization.data(withJSONObject: preserved)
+}
+
+func preservedProcessEnvironmentString(_ value: String) -> String {
+    guard value.hasPrefix(processEnvironmentStringPrefix) else { return value }
+    return String(value.dropFirst(processEnvironmentStringPrefix.count))
 }
 
 func executeToolHandler(
@@ -336,7 +319,7 @@ func registerTools(on server: Server, client: HoloscapeClient) async {
         ])
     }
 
-    await server.withMethodHandler(HoloscapeCallTool.self) { params in
+    await server.withMethodHandler(CallTool.self) { params in
         let args = params.arguments ?? [:]
 
         return try await executeToolHandler {
