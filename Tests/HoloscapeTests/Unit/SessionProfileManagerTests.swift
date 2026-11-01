@@ -361,9 +361,68 @@ final class SessionProfileManagerTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
         try Data("not a directory".utf8).write(to: root)
 
-        let projectsAfterFailure = await manager.refreshDiscoveredSessions()
-        XCTAssertEqual(projectsAfterFailure.map(\.label), ["holoscape"])
+        let result = await manager.refreshDiscoveredSessionsWithStatus()
+        XCTAssertEqual(result.profiles.map(\.label), ["holoscape"])
+        guard case .failure(let message) = result.outcome else {
+            return XCTFail("Expected local discovery failure, got \(result.outcome)")
+        }
+        XCTAssertFalse(message.isEmpty)
         XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
+    }
+
+    @MainActor
+    func testRefreshReportsMalformedSessionConfigurationAsUnavailable() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-refresh-malformed-config-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        try "{ malformed".write(
+            to: configDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let configService = ConfigService(configDir: configDir)
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        let result = await manager.refreshDiscoveredSessionsWithStatus()
+
+        guard case .unavailable(let message) = result.outcome else {
+            return XCTFail("Expected unavailable configuration, got \(result.outcome)")
+        }
+        XCTAssertTrue(message.contains("Session configuration could not be loaded"))
+        XCTAssertTrue(message.contains("correct format"))
+        XCTAssertTrue(result.profiles.isEmpty)
+    }
+
+    @MainActor
+    func testSSHRefreshPreservesFailureDetail() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-ssh-refresh-error-config-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        var config = HoloscapeConfig.default
+        config.sshDefaults = SSHDefaults(host: "remote.example", user: "erik")
+        config.projectDiscovery = ProjectDiscoveryConfig(
+            enabled: true,
+            root: "/remote/projects",
+            connection: "ssh",
+            command: "claude"
+        )
+        configService.save(config)
+        let discoveryService = ProjectDiscoveryService(
+            configService: configService,
+            remoteDirectoryLister: { _, _, _ in
+                throw ProjectDiscoveryService.DiscoveryError.processFailed(
+                    exitCode: 42,
+                    stderr: "permission denied"
+                )
+            }
+        )
+
+        let result = await discoveryService.refreshWithStatus()
+
+        XCTAssertEqual(result.outcome, .failure("SSH discovery failed with exit code 42: permission denied"))
     }
 
     @MainActor
@@ -480,23 +539,25 @@ final class SessionProfileManagerTests: XCTestCase {
             }
         )
 
-        let obsoleteRefresh = Task { await discoveryService.refresh() }
+        let obsoleteRefresh = Task { await discoveryService.refreshWithStatus() }
         await lister.waitForRequest(root: "/remote/a")
 
         config.sshDefaults = SSHDefaults(host: "source-b.local", user: "erik")
         config.projectDiscovery?.root = "/remote/b"
         configService.save(config)
 
-        let currentRefresh = Task { await discoveryService.refresh() }
+        let currentRefresh = Task { await discoveryService.refreshWithStatus() }
         await lister.waitForRequest(root: "/remote/b")
         await lister.succeed(root: "/remote/b", directories: ["current-project"])
-        let currentProjects = await currentRefresh.value
+        let currentResult = await currentRefresh.value
 
         await lister.succeed(root: "/remote/a", directories: ["obsolete-project"])
         let obsoleteResult = await obsoleteRefresh.value
 
-        XCTAssertEqual(currentProjects.map(\.label), ["current-project"])
-        XCTAssertEqual(obsoleteResult.map(\.label), ["current-project"])
+        XCTAssertEqual(currentResult.profiles.map(\.label), ["current-project"])
+        XCTAssertEqual(currentResult.outcome, .success)
+        XCTAssertEqual(obsoleteResult.profiles.map(\.label), ["current-project"])
+        XCTAssertEqual(obsoleteResult.outcome, .superseded)
         XCTAssertEqual(discoveryService.cached().map(\.label), ["current-project"])
         XCTAssertEqual(discoveryService.cached().map(\.host), ["source-b.local"])
     }

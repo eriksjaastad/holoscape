@@ -37,6 +37,8 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     private var recentSessions: [RecentSession] = []
     private var selectedRoot: URL = DefaultWorkingDirectory.preferredURL
     private var followsSuggestedRoot = true
+    private var refreshInProgress = false
+    private var refreshOutcome: ProjectDiscoveryService.RefreshOutcome?
 
     var comboBoxForTesting: NSSearchField { searchField }
     var refreshButtonForTesting: NSButton { refreshButton }
@@ -66,6 +68,11 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         return (scrollView.documentView?.frame.width ?? .greatestFiniteMagnitude)
             <= scrollView.contentView.bounds.width + 0.5
     }
+    var refreshStatusTextForTesting: String? { refreshStatusText }
+    var refreshFailureDescriptionForTesting: String? { refreshFailureDescription }
+    var refreshOutcomeForTesting: ProjectDiscoveryService.RefreshOutcome? { refreshOutcome }
+    var visibleItemLabelsForTesting: [String] { visibleItems.map(\.label) }
+    var visibleResultButtonsEnabledForTesting: Bool { resultButtons.allSatisfy(\.isEnabled) }
 
     private(set) var refreshButtonHovered = false
     private(set) var refreshButtonPressed = false
@@ -334,9 +341,35 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     }
 
     @objc private func refreshClicked() {
-        reloadSnapshot()
+        guard beginRefresh() else { return }
         showPopover()
         launcherDelegate?.sessionLauncherDidRequestRefresh(self)
+    }
+
+    func requestRefreshForTesting() {
+        guard beginRefresh() else { return }
+        launcherDelegate?.sessionLauncherDidRequestRefresh(self)
+    }
+
+    private func beginRefresh() -> Bool {
+        guard !refreshInProgress, launcherDelegate != nil else { return false }
+        refreshInProgress = true
+        refreshOutcome = nil
+        refreshButton.isEnabled = false
+        refreshButton.setAccessibilityLabel("Refreshing launcher")
+        refreshButton.setAccessibilityHelp("Launcher directories and configured sessions are refreshing")
+        reloadSnapshot()
+        return true
+    }
+
+    func completeRefresh(outcome: ProjectDiscoveryService.RefreshOutcome) {
+        guard refreshInProgress else { return }
+        refreshInProgress = false
+        refreshOutcome = outcome
+        refreshButton.isEnabled = true
+        refreshButton.setAccessibilityLabel("Refresh launcher")
+        refreshButton.setAccessibilityHelp("Reload the current root directory and configured sessions")
+        renderResults()
     }
 
     @objc private func chooseRoot() {
@@ -399,6 +432,15 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         resultButtons.removeAll()
         selectedResultIndex = nil
 
+        if let refreshStatusText {
+            let message = NSTextField(labelWithString: refreshStatusText)
+            message.textColor = refreshInProgress ? .secondaryLabelColor : .systemOrange
+            message.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            message.toolTip = refreshFailureDescription
+            message.setAccessibilityIdentifier("launcher-refresh-status")
+            resultsStack.addArrangedSubview(message)
+        }
+
         let filtered = snapshot?.filtered(by: searchField.stringValue)
         if let directoryError = filtered?.directoryError {
             let text = filtered?.hasAvailableDirectories == true
@@ -454,6 +496,31 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
             updateSelectionAppearance()
         }
         scrollResultsToTop()
+    }
+
+    private var refreshStatusText: String? {
+        if refreshInProgress {
+            return "Refreshing channels and sessions…"
+        }
+        switch refreshOutcome {
+        case .failure:
+            return "Refresh failed. Showing last known sessions."
+        case .superseded:
+            return "Refresh superseded. Showing latest sessions."
+        case .unavailable:
+            return "Refresh unavailable. Showing current sessions."
+        case .success, .none:
+            return nil
+        }
+    }
+
+    private var refreshFailureDescription: String? {
+        switch refreshOutcome {
+        case .failure(let description), .unavailable(let description):
+            return description
+        case .success, .superseded, .none:
+            return nil
+        }
     }
 
     func moveSelectionForTesting(by delta: Int) {
