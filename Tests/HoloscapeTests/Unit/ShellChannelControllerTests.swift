@@ -266,6 +266,7 @@ final class ShellChannelControllerTests: XCTestCase {
         terminal.userInputHandler?(Array("cd /tmp\n".utf8)[...])
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertEqual(controller.navigationContext.locationPath, NSHomeDirectory())
         XCTAssertTrue(terminal.workingDirectoryUpdates.isEmpty)
     }
 
@@ -283,6 +284,7 @@ final class ShellChannelControllerTests: XCTestCase {
         terminal.hostCurrentDirectoryHandler?("file://localhost/tmp")
 
         XCTAssertEqual(controller.workingDirectory, "/tmp")
+        XCTAssertEqual(controller.navigationContext.locationPath, "/tmp")
         XCTAssertEqual(terminal.workingDirectoryUpdates, ["/tmp"])
     }
 

@@ -49,7 +49,7 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         ChannelNavigationContext(
             typeLabel: channelType.sidebarPrefix,
             identityLabel: nil,
-            locationPath: workingDirectory
+            locationPath: persistedWorkingDirectory
         )
     }
 
