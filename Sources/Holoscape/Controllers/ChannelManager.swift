@@ -416,10 +416,14 @@ class ChannelManager {
         persistence.beginRestore(config)
         for (index, metadata) in config.channels.enumerated() {
             // The factory may activate a controller and mutate broker ownership.
-            // Reject duplicate persisted identities before invoking it so a
-            // discarded duplicate cannot launch or reattach a hidden process.
-            guard channels[metadata.id] == nil,
-                  !persistence.hasUnrestoredChannel(id: metadata.id) else { continue }
+            // Retain duplicate persisted identities without invoking it so a
+            // discarded duplicate cannot launch a hidden process or disappear
+            // from the next successful save.
+            if channels[metadata.id] != nil
+                || persistence.hasUnrestoredChannel(id: metadata.id) {
+                persistence.recordUnrestored(metadata, at: index)
+                continue
+            }
             if let brokerSessionID = metadata.brokerSessionID,
                claimedBrokerSessionIDs.contains(brokerSessionID) {
                 // Do not construct a second controller for one durable process,
@@ -440,6 +444,7 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
+                persistence.recordRestoredSavedChannel(controller.channelId, at: index)
                 persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
                     claimedBrokerSessionIDs.insert(brokerSessionID)
@@ -588,7 +593,9 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) -> Int {
         let records = unmatchedBrokerBackedSessionsToRestore()
-        let firstRecoveredPersistenceIndex = channelOrder.count + persistence.unrestoredChannelCount
+        let firstRecoveredPersistenceIndex = persistence.nextSavedChannelIndex(
+            liveChannelCount: channelOrder.count
+        )
         var restoredCount = 0
         var deferredCount = 0
         for (index, record) in records.enumerated() {
@@ -612,6 +619,10 @@ class ChannelManager {
             channels[controller.channelId] = controller
             channelOrder.append(controller.channelId)
             channelLabels[controller.channelId] = metadata.role
+            persistence.recordRestoredSavedChannel(
+                controller.channelId,
+                at: firstRecoveredPersistenceIndex + index
+            )
             persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
             persistence.recordRestoredBrokerSession(record.id, for: controller.channelId, suppressRecovery: false)
             restoredCount += 1

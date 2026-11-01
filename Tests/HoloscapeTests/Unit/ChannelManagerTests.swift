@@ -527,7 +527,7 @@ final class ChannelManagerTests: XCTestCase {
         }
         XCTAssertEqual(factoryCalls, 1, "A repeated saved ID must not reach the factory again")
         XCTAssertTrue(manager.saveState())
-        XCTAssertEqual(configService.load().channels.map(\.id), [metadata.id])
+        XCTAssertEqual(configService.load().channels.map(\.id), [metadata.id, metadata.id])
     }
 
     func testClosedHighestInstanceNumberIsNotReusedAfterRelaunch() throws {
@@ -1340,6 +1340,7 @@ final class ChannelManagerTests: XCTestCase {
 
         let shellSessionID = BrokerSessionID(rawValue: "partial-unmatched-shell")
         let agentSessionID = BrokerSessionID(rawValue: "partial-unmatched-agent")
+        let laterShellSessionID = BrokerSessionID(rawValue: "partial-unmatched-later-shell")
         let coordinator = RecordingBrokerSessionCoordinator()
         coordinator.reattachableSessionRecords = [
             BrokerSessionRecord(
@@ -1370,10 +1371,27 @@ final class ChannelManagerTests: XCTestCase {
                 updatedAt: Date(timeIntervalSince1970: 2),
                 lastAttachedChannelID: nil
             ),
+            BrokerSessionRecord(
+                id: laterShellSessionID,
+                channelType: .shell,
+                label: "Later Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/partial-unmatched-later-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 3),
+                updatedAt: Date(timeIntervalSince1970: 3),
+                lastAttachedChannelID: nil
+            ),
         ]
         let configService = ConfigService(configDir: tempDirectory)
         var initialConfig = configService.load()
-        initialConfig.channels = [ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP")]
+        initialConfig.channels = [
+            ChannelMetadata(id: UUID(), type: .shell, role: "Closed Shell", closeTombstone: true),
+            ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP"),
+        ]
         XCTAssertTrue(configService.save(initialConfig))
         let firstManager = ChannelManager(
             configService: configService,
@@ -1383,18 +1401,29 @@ final class ChannelManagerTests: XCTestCase {
             MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
+        var firstRecoveredChannelID: UUID?
         XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { metadata in
             guard metadata.type == .shell else { return nil }
+            if metadata.brokerSessionID == shellSessionID {
+                firstRecoveredChannelID = metadata.id
+            }
             return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
-        }, 1)
+        }, 2)
         XCTAssertEqual(
             configService.load().channels.map(\.brokerSessionID),
-            [nil, shellSessionID, agentSessionID]
+            [nil, shellSessionID, agentSessionID, laterShellSessionID]
         )
         XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { _ in
             XCTFail("A deferred survivor must not be rediscovered during the same launch")
             return nil
         }, 0)
+
+        firstManager.closeChannel(id: try XCTUnwrap(firstRecoveredChannelID))
+        XCTAssertEqual(
+            configService.load().channels.map(\.brokerSessionID),
+            [nil, agentSessionID, laterShellSessionID]
+        )
+        coordinator.reattachableSessionRecords.removeAll { $0.id == shellSessionID }
 
         let secondManager = ChannelManager(
             configService: ConfigService(configDir: tempDirectory),
@@ -1404,7 +1433,7 @@ final class ChannelManagerTests: XCTestCase {
             MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
-        XCTAssertEqual(secondManager.allChannels().map(\.channelType), [.mcp, .shell, .agentAPI])
+        XCTAssertEqual(secondManager.allChannels().map(\.channelType), [.mcp, .agentAPI, .shell])
         XCTAssertEqual(secondManager.restoreUnmatchedBrokerBackedSessions { _ in
             XCTFail("Saved survivors must not restore as duplicate unmatched tabs")
             return nil
@@ -2654,10 +2683,12 @@ final class ChannelManagerTests: XCTestCase {
 
     func testRestoreStateSkipsDuplicateSavedIDBeforeInvokingFactory() {
         let duplicateID = UUID(uuidString: "00000000-0000-0000-0000-000000000765")!
+        let laterID = UUID(uuidString: "00000000-0000-0000-0000-000000000768")!
         var config = configService.load()
         config.channels = [
             ChannelMetadata(id: duplicateID, type: .shell, role: "First"),
-            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate")
+            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate"),
+            ChannelMetadata(id: laterID, type: .shell, role: "Later")
         ]
         configService.save(config)
 
@@ -2668,8 +2699,18 @@ final class ChannelManagerTests: XCTestCase {
             return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
-        XCTAssertEqual(restoredRoles, ["First"])
-        XCTAssertEqual(newManager.count, 1)
+        XCTAssertEqual(restoredRoles, ["First", "Later"])
+        XCTAssertEqual(newManager.count, 2)
+
+        XCTAssertTrue(newManager.saveState())
+        var savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["First", "Duplicate", "Later"])
+        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, duplicateID, laterID])
+
+        newManager.closeChannel(id: duplicateID)
+        savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["Duplicate", "Later"])
+        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, laterID])
     }
 
     func testRestoreStateSkipsDuplicateBrokerSessionIDBeforeInvokingFactory() {
