@@ -2654,10 +2654,12 @@ final class ChannelManagerTests: XCTestCase {
 
     func testRestoreStateSkipsDuplicateSavedIDBeforeInvokingFactory() {
         let duplicateID = UUID(uuidString: "00000000-0000-0000-0000-000000000765")!
+        let laterID = UUID(uuidString: "00000000-0000-0000-0000-000000000768")!
         var config = configService.load()
         config.channels = [
             ChannelMetadata(id: duplicateID, type: .shell, role: "First"),
-            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate")
+            ChannelMetadata(id: duplicateID, type: .shell, role: "Duplicate"),
+            ChannelMetadata(id: laterID, type: .shell, role: "Later")
         ]
         configService.save(config)
 
@@ -2668,13 +2670,18 @@ final class ChannelManagerTests: XCTestCase {
             return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
-        XCTAssertEqual(restoredRoles, ["First"])
-        XCTAssertEqual(newManager.count, 1)
+        XCTAssertEqual(restoredRoles, ["First", "Later"])
+        XCTAssertEqual(newManager.count, 2)
 
         XCTAssertTrue(newManager.saveState())
-        let savedChannels = configService.load().channels
-        XCTAssertEqual(savedChannels.map(\.role), ["First", "Duplicate"])
-        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, duplicateID])
+        var savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["First", "Duplicate", "Later"])
+        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, duplicateID, laterID])
+
+        newManager.closeChannel(id: duplicateID)
+        savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["Duplicate", "Later"])
+        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, laterID])
     }
 
     func testRestoreStateSkipsDuplicateBrokerSessionIDBeforeInvokingFactory() {

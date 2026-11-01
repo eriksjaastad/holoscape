@@ -23,6 +23,7 @@ final class ChannelPersistenceTransactions {
     private(set) var suppressedRecoveredBrokerSessionIDs: Set<BrokerSessionID> = []
     private(set) var restoredBrokerSessionIDs: [UUID: BrokerSessionID] = [:]
     private var unrestoredSavedChannels: [(index: Int, metadata: ChannelMetadata)] = []
+    private var restoredSavedChannelIndices: [UUID: Int] = [:]
     private var highWaterMarks: [String: Int] = [:]
     private(set) var closePersistenceFailure: String?
 
@@ -56,11 +57,16 @@ final class ChannelPersistenceTransactions {
             highWaterMarks[key] = max(highWaterMarks[key, default: 0], highWaterMark)
         }
         unrestoredSavedChannels = []
+        restoredSavedChannelIndices = [:]
     }
 
     func recordUnrestored(_ metadata: ChannelMetadata, at index: Int) {
         unrestoredSavedChannels.append((index, metadata))
         recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
+    }
+
+    func recordRestoredSavedChannel(_ id: UUID, at index: Int) {
+        restoredSavedChannelIndices[id] = index
     }
 
     func hasUnrestoredChannel(id: UUID) -> Bool {
@@ -115,8 +121,21 @@ final class ChannelPersistenceTransactions {
                 closeTombstone: closingChannelIDs.contains(id)
             )
         }
+        let persistedLiveChannelIDs = Set(config.channels.map(\.id))
+        // Original indices include restored entries that may now be durably
+        // closed. Discount those predecessors so retained metadata does not
+        // drift behind surviving channels after a close.
+        let removedRestoredIndices = restoredSavedChannelIndices.compactMap { id, index in
+            persistedLiveChannelIDs.contains(id) ? nil : index
+        }.sorted()
+        var removedIndexCursor = 0
         for (index, metadata) in unrestoredSavedChannels {
-            config.channels.insert(metadata, at: min(index, config.channels.count))
+            while removedIndexCursor < removedRestoredIndices.count,
+                  removedRestoredIndices[removedIndexCursor] < index {
+                removedIndexCursor += 1
+            }
+            let retainedIndex = index - removedIndexCursor
+            config.channels.insert(metadata, at: min(retainedIndex, config.channels.count))
         }
         config.channelInstanceHighWaterMarks = highWaterMarks
         if let splitLayout = snapshot.splitLayout {

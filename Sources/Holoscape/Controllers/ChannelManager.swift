@@ -444,6 +444,7 @@ class ChannelManager {
                 channels[controller.channelId] = controller
                 channelOrder.append(controller.channelId)
                 channelLabels[controller.channelId] = metadata.role
+                persistence.recordRestoredSavedChannel(controller.channelId, at: index)
                 persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
                 if let brokerSessionID = metadata.brokerSessionID {
                     claimedBrokerSessionIDs.insert(brokerSessionID)
