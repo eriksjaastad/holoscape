@@ -323,6 +323,10 @@ class HoloscapeAPIServer {
         } else {
             type = "shell"
         }
+
+        for field in ["dir", "label", "cmd"] where json[field] != nil && !(json[field] is String) {
+            return .error("Channel \(field) must be a string", status: 400)
+        }
         let dir = json["dir"] as? String
         let label = json["label"] as? String
         let cmd = json["cmd"] as? String
