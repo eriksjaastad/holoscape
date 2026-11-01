@@ -617,6 +617,10 @@ class ChannelManager {
             channels[controller.channelId] = controller
             channelOrder.append(controller.channelId)
             channelLabels[controller.channelId] = metadata.role
+            persistence.recordRestoredSavedChannel(
+                controller.channelId,
+                at: firstRecoveredPersistenceIndex + index
+            )
             persistence.recordRestoredInstanceNumber(metadata.instanceNumber, for: metadata.role)
             persistence.recordRestoredBrokerSession(record.id, for: controller.channelId, suppressRecovery: false)
             restoredCount += 1

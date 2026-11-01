@@ -1340,6 +1340,7 @@ final class ChannelManagerTests: XCTestCase {
 
         let shellSessionID = BrokerSessionID(rawValue: "partial-unmatched-shell")
         let agentSessionID = BrokerSessionID(rawValue: "partial-unmatched-agent")
+        let laterShellSessionID = BrokerSessionID(rawValue: "partial-unmatched-later-shell")
         let coordinator = RecordingBrokerSessionCoordinator()
         coordinator.reattachableSessionRecords = [
             BrokerSessionRecord(
@@ -1370,6 +1371,20 @@ final class ChannelManagerTests: XCTestCase {
                 updatedAt: Date(timeIntervalSince1970: 2),
                 lastAttachedChannelID: nil
             ),
+            BrokerSessionRecord(
+                id: laterShellSessionID,
+                channelType: .shell,
+                label: "Later Recovered Shell",
+                command: "/bin/zsh",
+                arguments: [],
+                workingDirectory: "/tmp/partial-unmatched-later-shell",
+                environmentProfile: .shell,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 3),
+                updatedAt: Date(timeIntervalSince1970: 3),
+                lastAttachedChannelID: nil
+            ),
         ]
         let configService = ConfigService(configDir: tempDirectory)
         var initialConfig = configService.load()
@@ -1383,18 +1398,29 @@ final class ChannelManagerTests: XCTestCase {
             MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
+        var firstRecoveredChannelID: UUID?
         XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { metadata in
             guard metadata.type == .shell else { return nil }
+            if metadata.brokerSessionID == shellSessionID {
+                firstRecoveredChannelID = metadata.id
+            }
             return MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
-        }, 1)
+        }, 2)
         XCTAssertEqual(
             configService.load().channels.map(\.brokerSessionID),
-            [nil, shellSessionID, agentSessionID]
+            [nil, shellSessionID, agentSessionID, laterShellSessionID]
         )
         XCTAssertEqual(firstManager.restoreUnmatchedBrokerBackedSessions { _ in
             XCTFail("A deferred survivor must not be rediscovered during the same launch")
             return nil
         }, 0)
+
+        firstManager.closeChannel(id: try XCTUnwrap(firstRecoveredChannelID))
+        XCTAssertEqual(
+            configService.load().channels.map(\.brokerSessionID),
+            [nil, agentSessionID, laterShellSessionID]
+        )
+        coordinator.reattachableSessionRecords.removeAll { $0.id == shellSessionID }
 
         let secondManager = ChannelManager(
             configService: ConfigService(configDir: tempDirectory),
@@ -1404,7 +1430,7 @@ final class ChannelManagerTests: XCTestCase {
             MockChannelController(id: metadata.id, type: metadata.type, label: metadata.role)
         }
 
-        XCTAssertEqual(secondManager.allChannels().map(\.channelType), [.mcp, .shell, .agentAPI])
+        XCTAssertEqual(secondManager.allChannels().map(\.channelType), [.mcp, .agentAPI, .shell])
         XCTAssertEqual(secondManager.restoreUnmatchedBrokerBackedSessions { _ in
             XCTFail("Saved survivors must not restore as duplicate unmatched tabs")
             return nil
