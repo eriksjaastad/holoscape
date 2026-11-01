@@ -416,10 +416,14 @@ class ChannelManager {
         persistence.beginRestore(config)
         for (index, metadata) in config.channels.enumerated() {
             // The factory may activate a controller and mutate broker ownership.
-            // Reject duplicate persisted identities before invoking it so a
-            // discarded duplicate cannot launch or reattach a hidden process.
-            guard channels[metadata.id] == nil,
-                  !persistence.hasUnrestoredChannel(id: metadata.id) else { continue }
+            // Retain duplicate persisted identities without invoking it so a
+            // discarded duplicate cannot launch a hidden process or disappear
+            // from the next successful save.
+            if channels[metadata.id] != nil
+                || persistence.hasUnrestoredChannel(id: metadata.id) {
+                persistence.recordUnrestored(metadata, at: index)
+                continue
+            }
             if let brokerSessionID = metadata.brokerSessionID,
                claimedBrokerSessionIDs.contains(brokerSessionID) {
                 // Do not construct a second controller for one durable process,

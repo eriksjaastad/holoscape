@@ -527,7 +527,7 @@ final class ChannelManagerTests: XCTestCase {
         }
         XCTAssertEqual(factoryCalls, 1, "A repeated saved ID must not reach the factory again")
         XCTAssertTrue(manager.saveState())
-        XCTAssertEqual(configService.load().channels.map(\.id), [metadata.id])
+        XCTAssertEqual(configService.load().channels.map(\.id), [metadata.id, metadata.id])
     }
 
     func testClosedHighestInstanceNumberIsNotReusedAfterRelaunch() throws {
@@ -2670,6 +2670,11 @@ final class ChannelManagerTests: XCTestCase {
 
         XCTAssertEqual(restoredRoles, ["First"])
         XCTAssertEqual(newManager.count, 1)
+
+        XCTAssertTrue(newManager.saveState())
+        let savedChannels = configService.load().channels
+        XCTAssertEqual(savedChannels.map(\.role), ["First", "Duplicate"])
+        XCTAssertEqual(savedChannels.map(\.id), [duplicateID, duplicateID])
     }
 
     func testRestoreStateSkipsDuplicateBrokerSessionIDBeforeInvokingFactory() {
