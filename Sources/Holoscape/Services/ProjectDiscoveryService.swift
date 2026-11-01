@@ -3,6 +3,18 @@ import Darwin
 
 @MainActor
 class ProjectDiscoveryService {
+    enum RefreshOutcome: Equatable {
+        case success
+        case failure(String)
+        case superseded
+        case unavailable(String)
+    }
+
+    struct RefreshResult {
+        let profiles: [SessionProfile]
+        let outcome: RefreshOutcome
+    }
+
     private var cachedProjects: [SessionProfile] = []
     private var cachedSource: CacheSource?
     private var latestRequestID: UInt64 = 0
@@ -24,10 +36,20 @@ class ProjectDiscoveryService {
     /// Local discovery lists real directories under `projectDiscovery.root`.
     /// SSH discovery returns cached results on network failure.
     func discover() async -> [SessionProfile] {
+        await discoverWithStatus().profiles
+    }
+
+    private func discoverWithStatus() async -> RefreshResult {
         let config = configService.load()
+        if let diagnostic = configService.lastDiagnostic, diagnostic.operation == .load {
+            return RefreshResult(
+                profiles: cachedProjects,
+                outcome: .unavailable("Session configuration could not be loaded: \(diagnostic.message)")
+            )
+        }
         guard let discovery = config.projectDiscovery, discovery.enabled else {
             clearCache()
-            return []
+            return RefreshResult(profiles: [], outcome: .success)
         }
 
         let defaults = config.sshDefaults ?? .default
@@ -41,26 +63,27 @@ class ProjectDiscoveryService {
                 lastRefresh = Date()
             } catch {
                 NSLog("ProjectDiscovery: local project root read failed (\(error)). Using cache.")
+                return RefreshResult(profiles: cachedProjects, outcome: .failure(error.localizedDescription))
             }
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, outcome: .success)
         }
 
         do {
             let dirs = try await remoteDirectoryLister(defaults.host, defaults.user, discovery.root)
             let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return activeProjects
+                return RefreshResult(profiles: activeProjects, outcome: .superseded)
             }
             cachedProjects = profilesFromDirectoryNames(dirs, discovery: discovery, defaults: defaults)
             lastRefresh = Date()
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, outcome: .success)
         } catch {
             let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return activeProjects
+                return RefreshResult(profiles: activeProjects, outcome: .superseded)
             }
             NSLog("ProjectDiscovery: SSH failed (\(error)). Using cache.")
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, outcome: .failure(error.localizedDescription))
         }
     }
 
@@ -68,7 +91,11 @@ class ProjectDiscoveryService {
     /// the configured source cannot be read. A successful empty result still
     /// replaces the cache.
     func refresh() async -> [SessionProfile] {
-        return await discover()
+        await discoverWithStatus().profiles
+    }
+
+    func refreshWithStatus() async -> RefreshResult {
+        await discoverWithStatus()
     }
 
     /// Return cached projects without SSH call.
@@ -324,11 +351,27 @@ class ProjectDiscoveryService {
         )
     }
 
-    enum DiscoveryError: Error, Equatable {
+    enum DiscoveryError: Error, Equatable, LocalizedError {
         case processFailed(exitCode: Int32, stderr: String)
         case processTimedOut
         case outputLimitExceeded(stream: String, maxBytes: Int)
         case outputReadFailed(stream: String, message: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .processFailed(let exitCode, let stderr):
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail.isEmpty
+                    ? "SSH discovery failed with exit code \(exitCode)."
+                    : "SSH discovery failed with exit code \(exitCode): \(detail)"
+            case .processTimedOut:
+                return "SSH discovery timed out."
+            case .outputLimitExceeded(let stream, let maxBytes):
+                return "SSH discovery \(stream) exceeded the \(maxBytes)-byte output limit."
+            case .outputReadFailed(let stream, let message):
+                return "Could not read SSH discovery \(stream): \(message)"
+            }
+        }
     }
 
     private struct CacheSource: Equatable {

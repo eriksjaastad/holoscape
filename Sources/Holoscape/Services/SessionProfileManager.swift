@@ -38,6 +38,10 @@ class SessionProfileManager {
         await discoveryService.refresh()
     }
 
+    func refreshDiscoveredSessionsWithStatus() async -> ProjectDiscoveryService.RefreshResult {
+        await discoveryService.refreshWithStatus()
+    }
+
     /// Resolve a label to a SessionProfile.
     /// Checks preconfigured → discovered → creates new SSH project session from ssh_defaults.
     func resolve(label: String) -> SessionProfile {
