@@ -593,7 +593,9 @@ class ChannelManager {
         factory: (ChannelMetadata) -> (any ChannelController)?
     ) -> Int {
         let records = unmatchedBrokerBackedSessionsToRestore()
-        let firstRecoveredPersistenceIndex = channelOrder.count + persistence.unrestoredChannelCount
+        let firstRecoveredPersistenceIndex = persistence.nextSavedChannelIndex(
+            liveChannelCount: channelOrder.count
+        )
         var restoredCount = 0
         var deferredCount = 0
         for (index, record) in records.enumerated() {

@@ -1388,7 +1388,10 @@ final class ChannelManagerTests: XCTestCase {
         ]
         let configService = ConfigService(configDir: tempDirectory)
         var initialConfig = configService.load()
-        initialConfig.channels = [ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP")]
+        initialConfig.channels = [
+            ChannelMetadata(id: UUID(), type: .shell, role: "Closed Shell", closeTombstone: true),
+            ChannelMetadata(id: UUID(), type: .mcp, role: "Saved MCP"),
+        ]
         XCTAssertTrue(configService.save(initialConfig))
         let firstManager = ChannelManager(
             configService: configService,

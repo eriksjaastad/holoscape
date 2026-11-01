@@ -77,8 +77,15 @@ final class ChannelPersistenceTransactions {
         Set(unrestoredSavedChannels.compactMap { $0.metadata.brokerSessionID })
     }
 
-    var unrestoredChannelCount: Int {
-        unrestoredSavedChannels.count
+    /// Returns the next index in the original saved-order coordinate space.
+    /// Completed restored closures can compress the live list before recovered
+    /// sessions are appended, so the highest tracked index remains authoritative.
+    func nextSavedChannelIndex(liveChannelCount: Int) -> Int {
+        let highestTrackedIndex = max(
+            restoredSavedChannelIndices.values.max() ?? -1,
+            unrestoredSavedChannels.map(\.index).max() ?? -1
+        )
+        return max(highestTrackedIndex + 1, liveChannelCount + unrestoredSavedChannels.count)
     }
 
     func recordRestoredInstanceNumber(_ instanceNumber: Int?, for label: String) {
