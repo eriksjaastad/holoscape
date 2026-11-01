@@ -38,7 +38,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     private var selectedRoot: URL = DefaultWorkingDirectory.preferredURL
     private var followsSuggestedRoot = true
     private var refreshInProgress = false
-    private var refreshFailureDescription: String?
+    private var refreshOutcome: ProjectDiscoveryService.RefreshOutcome?
 
     var comboBoxForTesting: NSSearchField { searchField }
     var refreshButtonForTesting: NSButton { refreshButton }
@@ -70,6 +70,9 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     }
     var refreshStatusTextForTesting: String? { refreshStatusText }
     var refreshFailureDescriptionForTesting: String? { refreshFailureDescription }
+    var refreshOutcomeForTesting: ProjectDiscoveryService.RefreshOutcome? { refreshOutcome }
+    var visibleItemLabelsForTesting: [String] { visibleItems.map(\.label) }
+    var visibleResultButtonsEnabledForTesting: Bool { resultButtons.allSatisfy(\.isEnabled) }
 
     private(set) var refreshButtonHovered = false
     private(set) var refreshButtonPressed = false
@@ -351,7 +354,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
     private func beginRefresh() -> Bool {
         guard !refreshInProgress, launcherDelegate != nil else { return false }
         refreshInProgress = true
-        refreshFailureDescription = nil
+        refreshOutcome = nil
         refreshButton.isEnabled = false
         refreshButton.setAccessibilityLabel("Refreshing launcher")
         refreshButton.setAccessibilityHelp("Launcher directories and configured sessions are refreshing")
@@ -359,10 +362,10 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         return true
     }
 
-    func completeRefresh(errorDescription: String?) {
+    func completeRefresh(outcome: ProjectDiscoveryService.RefreshOutcome) {
         guard refreshInProgress else { return }
         refreshInProgress = false
-        refreshFailureDescription = errorDescription
+        refreshOutcome = outcome
         refreshButton.isEnabled = true
         refreshButton.setAccessibilityLabel("Refresh launcher")
         refreshButton.setAccessibilityHelp("Reload the current root directory and configured sessions")
@@ -499,10 +502,25 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         if refreshInProgress {
             return "Refreshing channels and sessions…"
         }
-        if refreshFailureDescription != nil {
+        switch refreshOutcome {
+        case .failure:
             return "Refresh failed. Showing last known sessions."
+        case .superseded:
+            return "Refresh superseded. Showing latest sessions."
+        case .unavailable:
+            return "Refresh unavailable. Showing current sessions."
+        case .success, .none:
+            return nil
         }
-        return nil
+    }
+
+    private var refreshFailureDescription: String? {
+        switch refreshOutcome {
+        case .failure(let description), .unavailable(let description):
+            return description
+        case .success, .superseded, .none:
+            return nil
+        }
     }
 
     func moveSelectionForTesting(by delta: Int) {

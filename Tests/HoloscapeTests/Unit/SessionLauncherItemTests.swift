@@ -188,7 +188,7 @@ final class SessionLauncherItemTests: XCTestCase {
         XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refreshing channels and sessions…")
         XCTAssertEqual(launcher.refreshButtonForTesting.accessibilityLabel(), "Refreshing launcher")
 
-        launcher.completeRefresh(errorDescription: nil)
+        launcher.completeRefresh(outcome: .success)
 
         XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
         XCTAssertNil(launcher.refreshStatusTextForTesting)
@@ -202,15 +202,40 @@ final class SessionLauncherItemTests: XCTestCase {
         let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
         let spy = DelegateSpy()
         launcher.launcherDelegate = spy
-        launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
-        let sectionsBeforeRefresh = launcher.visibleSectionTitlesForTesting
+        let cachedProfile = SessionProfile(
+            label: "cached-project",
+            connection: .local,
+            command: "/bin/zsh",
+            directory: root.path
+        )
+        launcher.updateItems(configured: [], builtIn: [], discovered: [cachedProfile], recent: [], root: root)
 
         launcher.requestRefreshForTesting()
-        launcher.completeRefresh(errorDescription: "permission denied")
+        launcher.completeRefresh(outcome: .failure("permission denied"))
 
-        XCTAssertEqual(launcher.visibleSectionTitlesForTesting, sectionsBeforeRefresh)
+        XCTAssertEqual(launcher.visibleItemLabelsForTesting, ["cached-project"])
+        XCTAssertTrue(launcher.visibleResultButtonsEnabledForTesting)
         XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refresh failed. Showing last known sessions.")
         XCTAssertEqual(launcher.refreshFailureDescriptionForTesting, "permission denied")
+        XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
+    }
+
+    func testMissingProfileManagerCompletesRefreshAsUnavailable() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launcher-refresh-unavailable-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        let configService = ConfigService(configDir: configDir)
+        let controller = MainWindowController(
+            channelManager: ChannelManager(configService: configService),
+            configService: configService
+        )
+        let launcher = controller.sessionLauncherForTesting
+
+        launcher.requestRefreshForTesting()
+        await Task.yield()
+
+        XCTAssertEqual(launcher.refreshOutcomeForTesting, .unavailable("Session profiles are unavailable."))
+        XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refresh unavailable. Showing current sessions.")
         XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
     }
 }

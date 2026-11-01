@@ -2887,12 +2887,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
         Task {
             guard let profileManager else {
-                launcher.completeRefresh(errorDescription: nil)
+                launcher.completeRefresh(outcome: .unavailable("Session profiles are unavailable."))
                 return
             }
             let result = await profileManager.refreshDiscoveredSessionsWithStatus()
             refreshLauncher()
-            launcher.completeRefresh(errorDescription: result.errorDescription)
+            launcher.completeRefresh(outcome: result.outcome)
         }
     }
 
