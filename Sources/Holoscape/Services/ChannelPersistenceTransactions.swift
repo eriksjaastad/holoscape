@@ -193,6 +193,7 @@ final class ChannelPersistenceTransactions {
             staleBrokerSessionID = agentChannel.staleBrokerSessionID
             pendingExitedOutputRetirement = agentChannel.pendingExitedOutputRetirement
         } else if let sshChannel = channel as? SSHChannelController {
+            workingDirectory = sshChannel.profile.directory
             host = sshChannel.profile.host
             user = sshChannel.profile.user
             command = sshChannel.profile.command

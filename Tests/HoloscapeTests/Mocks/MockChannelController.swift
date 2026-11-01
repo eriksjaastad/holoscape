@@ -15,6 +15,7 @@ class MockChannelController: NSObject, ChannelController {
     private(set) var customDisplayLabel: String?
     let instanceNumber: Int?
     var tabIdentityIndicatorOverride: ChannelTabIdentityIndicator?
+    var navigationContextOverride: ChannelNavigationContext?
     var recoveryActionOverride: ChannelRecoveryAction?
     var persistentStateOverride: PersistentChannelState?
     private(set) var lastInteractionAt: Date = Date()
@@ -24,6 +25,14 @@ class MockChannelController: NSObject, ChannelController {
 
     var tabIdentityIndicator: ChannelTabIdentityIndicator? {
         tabIdentityIndicatorOverride
+    }
+
+    var navigationContext: ChannelNavigationContext {
+        navigationContextOverride ?? ChannelNavigationContext(
+            typeLabel: channelType.sidebarPrefix,
+            identityLabel: tabIdentityIndicator?.accessibilityLabel,
+            locationPath: nil
+        )
     }
 
     var recoveryAction: ChannelRecoveryAction? {

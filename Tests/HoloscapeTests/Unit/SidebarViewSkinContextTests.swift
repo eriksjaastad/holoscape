@@ -121,6 +121,28 @@ final class SidebarViewSkinContextTests: XCTestCase {
                                 reason: "didSet forwarding loop must propagate context to existing rows")
     }
 
+    func testSidebarRowsExposeTypeIdentityAndProjectContext() throws {
+        let view = SidebarView(frame: NSRect(x: 0, y: 0, width: 220, height: 400))
+        let channel = MockChannelController(type: .agentDirect, label: "Floor Manager", state: .active)
+        channel.navigationContextOverride = ChannelNavigationContext(
+            typeLabel: "Agent",
+            identityLabel: "Codex",
+            locationPath: "/Users/test/projects/holoscape-agent"
+        )
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        guard let scroll = view.subviews.compactMap({ $0 as? NSScrollView }).first,
+              let stack = scroll.documentView as? NSStackView,
+              let entry = stack.arrangedSubviews.first as? SidebarTabEntry else {
+            XCTFail("Expected one SidebarTabEntry after updateTabs")
+            return
+        }
+
+        XCTAssertEqual(entry.detailTextForTesting, "Agent • Codex • holoscape-agent")
+        XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
+    }
+
     // MARK: - Unread regression guard
 
     /// Unread state flows through a `channelUnread: { $gte: 1 }` state
@@ -195,7 +217,11 @@ final class SidebarViewSkinContextTests: XCTestCase {
 
         XCTAssertEqual(channel.state, .active)
         XCTAssertNil(entry.toolTip)
-        XCTAssertNil(entry.accessibilityHelp(), "Recovered row must not keep stale recovery instructions: \(entry.accessibilityHelp() ?? "nil")")
+        XCTAssertEqual(entry.accessibilityHelp(), "Shell")
+        XCTAssertFalse(
+            entry.accessibilityHelp()?.contains("Broker host is unavailable") == true,
+            "Recovered row must clear stale recovery instructions: \(entry.accessibilityHelp() ?? "nil")"
+        )
         XCTAssertEqual(entry.accessibilityValue() as? String, "active")
     }
 

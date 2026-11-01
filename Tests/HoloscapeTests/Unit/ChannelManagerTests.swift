@@ -268,6 +268,33 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertEqual(roundTripped.pendingExitedOutputRetirement, pending)
     }
 
+    func testSSHWorkspaceDirectorySurvivesPersistenceAndRestore() throws {
+        let workspace = "~/projects/holoscape"
+        let profile = SessionProfile(
+            label: "Mini",
+            connection: .ssh,
+            command: "claude",
+            directory: workspace,
+            host: "mini.local",
+            user: "erik"
+        )
+        let channel = try manager.createChannel(from: profile)
+
+        XCTAssertTrue(manager.saveState())
+        let metadata = try XCTUnwrap(
+            configService.load().channels.first { $0.id == channel.channelId }
+        )
+        XCTAssertEqual(metadata.workingDirectory, workspace)
+
+        let appDelegate = AppDelegate()
+        appDelegate.channelManagerRef = manager
+        let restored = try XCTUnwrap(
+            appDelegate.createChannelFromMetadata(metadata) as? SSHChannelController
+        )
+        XCTAssertEqual(restored.profile.directory, workspace)
+        XCTAssertEqual(restored.navigationContext.locationPath, workspace)
+    }
+
     func testRenameChannelTrimsAndPersistsCustomLabel() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ChannelManagerRenameTests-")

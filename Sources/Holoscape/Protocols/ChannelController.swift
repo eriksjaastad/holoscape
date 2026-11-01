@@ -15,6 +15,7 @@ protocol ChannelController: AnyObject {
     var contentView: NSView { get }
     var recoveryAction: ChannelRecoveryAction? { get }
     var tabIdentityIndicator: ChannelTabIdentityIndicator? { get }
+    var navigationContext: ChannelNavigationContext { get }
 
     func sendInput(_ text: String)
     func submitInput(
@@ -57,6 +58,13 @@ extension ChannelController {
         PersistentChannelState.fromRuntimeState(state, recoveryAction: recoveryAction)
     }
     var tabIdentityIndicator: ChannelTabIdentityIndicator? { nil }
+    var navigationContext: ChannelNavigationContext {
+        ChannelNavigationContext(
+            typeLabel: channelType.sidebarPrefix,
+            identityLabel: tabIdentityIndicator?.accessibilityLabel,
+            locationPath: nil
+        )
+    }
     var recoveryAction: ChannelRecoveryAction? {
         state == .disconnected ? .reconnect : nil
     }

@@ -20,3 +20,35 @@ enum ChannelType: String, Codable, Sendable {
         }
     }
 }
+
+struct ChannelNavigationContext: Equatable, Sendable {
+    let typeLabel: String
+    let identityLabel: String?
+    let locationPath: String?
+
+    var detailText: String {
+        [typeLabel, identityLabel, compactLocation]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: " • ")
+    }
+
+    var accessibilityDescription: String {
+        [typeLabel, identityLabel, locationPath]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: ", ")
+    }
+
+    private var compactLocation: String? {
+        guard let locationPath, !locationPath.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: locationPath).standardizedFileURL
+        let components = url.pathComponents.filter { $0 != "/" }
+        guard !components.isEmpty else { return "/" }
+        return components.last
+    }
+}

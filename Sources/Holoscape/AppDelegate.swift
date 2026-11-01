@@ -542,7 +542,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             )
         case .ssh:
             guard let host = metadata.host, let user = metadata.user, let cmd = metadata.command else { return nil }
-            let profile = SessionProfile(label: metadata.role, connection: .ssh, command: cmd, directory: "", host: host, user: user)
+            let profile = SessionProfile(
+                label: metadata.role,
+                connection: .ssh,
+                command: cmd,
+                directory: metadata.workingDirectory ?? "",
+                host: host,
+                user: user
+            )
             let controller = SSHChannelController(
                 id: metadata.id,
                 profile: profile,
