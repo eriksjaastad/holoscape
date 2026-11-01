@@ -41,6 +41,12 @@ class ProjectDiscoveryService {
 
     private func discoverWithStatus() async -> RefreshResult {
         let config = configService.load()
+        if let diagnostic = configService.lastDiagnostic, diagnostic.operation == .load {
+            return RefreshResult(
+                profiles: cachedProjects,
+                outcome: .unavailable("Session configuration could not be loaded: \(diagnostic.message)")
+            )
+        }
         guard let discovery = config.projectDiscovery, discovery.enabled else {
             clearCache()
             return RefreshResult(profiles: [], outcome: .success)

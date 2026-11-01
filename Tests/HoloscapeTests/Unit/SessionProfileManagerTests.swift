@@ -371,6 +371,31 @@ final class SessionProfileManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshReportsMalformedSessionConfigurationAsUnavailable() async throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("holoscape-refresh-malformed-config-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDir) }
+        try "{ malformed".write(
+            to: configDir.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let configService = ConfigService(configDir: configDir)
+        let discoveryService = ProjectDiscoveryService(configService: configService)
+        let manager = SessionProfileManager(configService: configService, discoveryService: discoveryService)
+
+        let result = await manager.refreshDiscoveredSessionsWithStatus()
+
+        guard case .unavailable(let message) = result.outcome else {
+            return XCTFail("Expected unavailable configuration, got \(result.outcome)")
+        }
+        XCTAssertTrue(message.contains("Session configuration could not be loaded"))
+        XCTAssertTrue(message.contains("correct format"))
+        XCTAssertTrue(result.profiles.isEmpty)
+    }
+
+    @MainActor
     func testSSHRefreshPreservesFailureDetail() async throws {
         let configDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("holoscape-ssh-refresh-error-config-\(UUID().uuidString)", isDirectory: true)
