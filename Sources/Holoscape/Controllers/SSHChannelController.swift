@@ -41,6 +41,14 @@ class SSHChannelController: NSObject, ChannelController, LocalProcessTerminalVie
 
     var tabIdentityIndicator: ChannelTabIdentityIndicator? { .ssh }
 
+    var navigationContext: ChannelNavigationContext {
+        ChannelNavigationContext(
+            typeLabel: channelType.sidebarPrefix,
+            identityLabel: profile.host,
+            locationPath: profile.directory
+        )
+    }
+
     var contentView: NSView { terminal.terminalContentView }
 
     init(

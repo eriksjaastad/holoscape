@@ -45,6 +45,14 @@ class ShellChannelController: NSObject, ChannelController, LocalProcessTerminalV
         workingDirectory
     }
 
+    var navigationContext: ChannelNavigationContext {
+        ChannelNavigationContext(
+            typeLabel: channelType.sidebarPrefix,
+            identityLabel: nil,
+            locationPath: workingDirectory
+        )
+    }
+
     var displayBaseLabel: String {
         if let customDisplayLabel {
             return customDisplayLabel

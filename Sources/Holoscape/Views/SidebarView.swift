@@ -29,7 +29,7 @@ class SidebarView: NSView {
     private var tabEntries: [UUID: SidebarTabEntry] = [:]
     private var activeChannelId: UUID?
 
-    private let entryHeight: CGFloat = 36
+    private let entryHeight: CGFloat = 48
     private let sidebarWidth: CGFloat = 220
 
     override init(frame: NSRect) {
@@ -146,6 +146,7 @@ class SidebarView: NSView {
                 existing.configure(
                     label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
+                    navigationContext: channel.navigationContext,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
                     persistentState: channel.persistentState,
@@ -169,6 +170,7 @@ class SidebarView: NSView {
                 entry.configure(
                     label: resolvedLabels[channel.channelId] ?? channel.displayLabel,
                     channelType: channel.channelType,
+                    navigationContext: channel.navigationContext,
                     hasUnread: channel.hasUnread,
                     state: channel.state,
                     persistentState: channel.persistentState,
@@ -271,9 +273,12 @@ class SidebarTabEntry: HoverTrackingButton {
     private var stableTypePrefix = "Shell"
 
     private let labelField = NSTextField(labelWithString: "")
+    private let metadataField = NSTextField(labelWithString: "")
     private let statusTextField = NSTextField(labelWithString: "")
     private let unreadDot = NSView()
     private let statusIndicator = NSView()
+
+    var detailTextForTesting: String { metadataField.stringValue }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -331,6 +336,10 @@ class SidebarTabEntry: HoverTrackingButton {
             // statusTextField stays smaller; derive by scaling if
             // the skin didn't ship a per-surface font for it.
             statusTextField.font = NSFontManager.shared.convert(
+                font,
+                toSize: font.pointSize * 0.85
+            )
+            metadataField.font = NSFontManager.shared.convert(
                 font,
                 toSize: font.pointSize * 0.85
             )
@@ -404,6 +413,11 @@ class SidebarTabEntry: HoverTrackingButton {
         labelField.lineBreakMode = .byTruncatingTail
         labelField.translatesAutoresizingMaskIntoConstraints = false
 
+        metadataField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        metadataField.textColor = NSColor.secondaryLabelColor
+        metadataField.lineBreakMode = .byTruncatingMiddle
+        metadataField.translatesAutoresizingMaskIntoConstraints = false
+
         unreadDot.wantsLayer = true
         unreadDot.layer?.backgroundColor = NSColor.systemBlue.cgColor
         unreadDot.layer?.cornerRadius = 4
@@ -422,13 +436,14 @@ class SidebarTabEntry: HoverTrackingButton {
         // Subviews are decorative parts of a single accessible button — they must
         // not be accessibility elements, otherwise the hit test resolves to the
         // child NSTextField instead of the entry.
-        for child in [unreadDot, statusIndicator, labelField, statusTextField] as [NSView] {
+        for child in [unreadDot, statusIndicator, labelField, metadataField, statusTextField] as [NSView] {
             child.setAccessibilityElement(false)
         }
 
         addSubview(unreadDot)
         addSubview(statusIndicator)
         addSubview(labelField)
+        addSubview(metadataField)
         addSubview(statusTextField)
 
         NSLayoutConstraint.activate([
@@ -443,20 +458,24 @@ class SidebarTabEntry: HoverTrackingButton {
             statusIndicator.heightAnchor.constraint(equalToConstant: 6),
 
             labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
-            labelField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            labelField.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            labelField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
 
-            statusTextField.leadingAnchor.constraint(equalTo: labelField.trailingAnchor, constant: 4),
-            statusTextField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            statusTextField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            metadataField.leadingAnchor.constraint(equalTo: labelField.leadingAnchor),
+            metadataField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            metadataField.trailingAnchor.constraint(lessThanOrEqualTo: statusTextField.leadingAnchor, constant: -6),
+
+            statusTextField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            statusTextField.bottomAnchor.constraint(equalTo: metadataField.bottomAnchor),
         ])
     }
 
-    func configure(label: String, channelType: ChannelType = .shell, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState? = nil, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil, hasStaleInteraction: Bool = false) {
+    func configure(label: String, channelType: ChannelType = .shell, navigationContext: ChannelNavigationContext? = nil, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState? = nil, isActive: Bool, elapsedTime: String? = nil, isPinned: Bool = false, notificationType: String? = nil, recoveryAction: ChannelRecoveryAction? = nil, hasStaleInteraction: Bool = false) {
         // Stash the call so a later skin swap can re-apply the same
         // state without the caller re-running updateTabs.
         lastConfigure = { [weak self] in
             self?.applyConfigure(
-                label: label, channelType: channelType, hasUnread: hasUnread,
+                label: label, channelType: channelType, navigationContext: navigationContext, hasUnread: hasUnread,
                 state: state, persistentState: persistentState, isActive: isActive, elapsedTime: elapsedTime,
                 isPinned: isPinned, notificationType: notificationType,
                 recoveryAction: recoveryAction,
@@ -466,9 +485,10 @@ class SidebarTabEntry: HoverTrackingButton {
         lastConfigure?()
     }
 
-    private func applyConfigure(label: String, channelType: ChannelType, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState?, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?, hasStaleInteraction: Bool) {
+    private func applyConfigure(label: String, channelType: ChannelType, navigationContext: ChannelNavigationContext?, hasUnread: Bool, state: ChannelState, persistentState: PersistentChannelState?, isActive: Bool, elapsedTime: String?, isPinned: Bool, notificationType: String?, recoveryAction: ChannelRecoveryAction?, hasStaleInteraction: Bool) {
         self.stableTypePrefix = channelType.sidebarPrefix
         labelField.stringValue = isPinned ? "\u{1F4CC} \(label)" : label
+        metadataField.stringValue = navigationContext?.detailText ?? channelType.sidebarPrefix
         unreadDot.isHidden = true  // No dots — use background colors
 
         // Map durable persistent tab truth into this row's snapshot so
@@ -566,10 +586,11 @@ class SidebarTabEntry: HoverTrackingButton {
             let guidance = recoveryAction.operatorGuidance
             toolTip = guidance
             setAccessibilityValue("stale: \(recoveryAction.surfaceStatusText)")
-            setAccessibilityHelp(guidance)
+            let context = navigationContext?.accessibilityDescription
+            setAccessibilityHelp([context, guidance].compactMap { $0 }.joined(separator: ". "))
         } else {
-            toolTip = nil
-            setAccessibilityHelp(nil)
+            toolTip = navigationContext?.locationPath
+            setAccessibilityHelp(navigationContext?.accessibilityDescription)
         }
 
         if recoveryAction == nil, let notificationType {

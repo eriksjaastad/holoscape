@@ -90,6 +90,14 @@ class AgentChannelController: NSObject, ChannelController, LocalProcessTerminalV
         workingDirectory?.path
     }
 
+    var navigationContext: ChannelNavigationContext {
+        ChannelNavigationContext(
+            typeLabel: channelType.sidebarPrefix,
+            identityLabel: tabIdentityIndicator?.accessibilityLabel,
+            locationPath: workingDirectory?.path
+        )
+    }
+
     var persistedCommand: String {
         command
     }
