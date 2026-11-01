@@ -2886,10 +2886,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
         Task {
-            if let profileManager {
-                _ = await profileManager.refreshDiscoveredSessions()
-                refreshLauncher()
+            guard let profileManager else {
+                launcher.completeRefresh(errorDescription: nil)
+                return
             }
+            let result = await profileManager.refreshDiscoveredSessionsWithStatus()
+            refreshLauncher()
+            launcher.completeRefresh(errorDescription: result.errorDescription)
         }
     }
 

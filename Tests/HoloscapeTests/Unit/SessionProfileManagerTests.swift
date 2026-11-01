@@ -361,8 +361,9 @@ final class SessionProfileManagerTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
         try Data("not a directory".utf8).write(to: root)
 
-        let projectsAfterFailure = await manager.refreshDiscoveredSessions()
-        XCTAssertEqual(projectsAfterFailure.map(\.label), ["holoscape"])
+        let result = await manager.refreshDiscoveredSessionsWithStatus()
+        XCTAssertEqual(result.profiles.map(\.label), ["holoscape"])
+        XCTAssertNotNil(result.errorDescription)
         XCTAssertEqual(manager.allSessions().discovered.map(\.label), ["holoscape"])
     }
 

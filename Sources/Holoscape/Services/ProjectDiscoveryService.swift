@@ -3,6 +3,11 @@ import Darwin
 
 @MainActor
 class ProjectDiscoveryService {
+    struct RefreshResult {
+        let profiles: [SessionProfile]
+        let errorDescription: String?
+    }
+
     private var cachedProjects: [SessionProfile] = []
     private var cachedSource: CacheSource?
     private var latestRequestID: UInt64 = 0
@@ -24,10 +29,14 @@ class ProjectDiscoveryService {
     /// Local discovery lists real directories under `projectDiscovery.root`.
     /// SSH discovery returns cached results on network failure.
     func discover() async -> [SessionProfile] {
+        await discoverWithStatus().profiles
+    }
+
+    private func discoverWithStatus() async -> RefreshResult {
         let config = configService.load()
         guard let discovery = config.projectDiscovery, discovery.enabled else {
             clearCache()
-            return []
+            return RefreshResult(profiles: [], errorDescription: nil)
         }
 
         let defaults = config.sshDefaults ?? .default
@@ -41,26 +50,27 @@ class ProjectDiscoveryService {
                 lastRefresh = Date()
             } catch {
                 NSLog("ProjectDiscovery: local project root read failed (\(error)). Using cache.")
+                return RefreshResult(profiles: cachedProjects, errorDescription: error.localizedDescription)
             }
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, errorDescription: nil)
         }
 
         do {
             let dirs = try await remoteDirectoryLister(defaults.host, defaults.user, discovery.root)
             let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return activeProjects
+                return RefreshResult(profiles: activeProjects, errorDescription: nil)
             }
             cachedProjects = profilesFromDirectoryNames(dirs, discovery: discovery, defaults: defaults)
             lastRefresh = Date()
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, errorDescription: nil)
         } catch {
             let activeProjects = cached()
             guard requestID == latestRequestID, cachedSource == source else {
-                return activeProjects
+                return RefreshResult(profiles: activeProjects, errorDescription: nil)
             }
             NSLog("ProjectDiscovery: SSH failed (\(error)). Using cache.")
-            return cachedProjects
+            return RefreshResult(profiles: cachedProjects, errorDescription: error.localizedDescription)
         }
     }
 
@@ -68,7 +78,11 @@ class ProjectDiscoveryService {
     /// the configured source cannot be read. A successful empty result still
     /// replaces the cache.
     func refresh() async -> [SessionProfile] {
-        return await discover()
+        await discoverWithStatus().profiles
+    }
+
+    func refreshWithStatus() async -> RefreshResult {
+        await discoverWithStatus()
     }
 
     /// Return cached projects without SSH call.

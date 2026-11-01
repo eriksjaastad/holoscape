@@ -7,6 +7,7 @@ final class SessionLauncherItemTests: XCTestCase {
     private final class DelegateSpy: SessionLauncherDelegate {
         var selectedBuiltIn: SessionProfile?
         var selectedRecent: RecentSession?
+        var refreshRequestCount = 0
 
         func sessionLauncherWillPresent(_ launcher: SessionLauncherView) {}
         func sessionLauncher(_ launcher: SessionLauncherView, didSelectBuiltInProfile profile: SessionProfile, root: URL) {
@@ -17,7 +18,9 @@ final class SessionLauncherItemTests: XCTestCase {
             selectedRecent = recent
         }
         func sessionLauncher(_ launcher: SessionLauncherView, didTypeNewName name: String) {}
-        func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {}
+        func sessionLauncherDidRequestRefresh(_ launcher: SessionLauncherView) {
+            refreshRequestCount += 1
+        }
     }
     func testBuiltInItemsUseConciseDescriptionsInChannelSection() throws {
         let root = FileManager.default.temporaryDirectory
@@ -166,5 +169,48 @@ final class SessionLauncherItemTests: XCTestCase {
 
         XCTAssertEqual(launcher.firstResultFontForTesting?.fontDescriptor.postscriptName, expected.fontDescriptor.postscriptName)
         XCTAssertEqual(launcher.firstResultFontForTesting?.pointSize, 17)
+    }
+
+    func testRefreshPublishesProgressAndCoalescesRepeatedRequests() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("launcher-refresh-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
+        let spy = DelegateSpy()
+        launcher.launcherDelegate = spy
+        launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
+
+        launcher.requestRefreshForTesting()
+        launcher.requestRefreshForTesting()
+
+        XCTAssertEqual(spy.refreshRequestCount, 1)
+        XCTAssertFalse(launcher.refreshButtonForTesting.isEnabled)
+        XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refreshing channels and sessions…")
+        XCTAssertEqual(launcher.refreshButtonForTesting.accessibilityLabel(), "Refreshing launcher")
+
+        launcher.completeRefresh(errorDescription: nil)
+
+        XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
+        XCTAssertNil(launcher.refreshStatusTextForTesting)
+        XCTAssertEqual(launcher.refreshButtonForTesting.accessibilityLabel(), "Refresh launcher")
+    }
+
+    func testRefreshFailurePreservesRowsAndPublishesTruthfulWarning() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("launcher-refresh-failure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
+        let spy = DelegateSpy()
+        launcher.launcherDelegate = spy
+        launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
+        let sectionsBeforeRefresh = launcher.visibleSectionTitlesForTesting
+
+        launcher.requestRefreshForTesting()
+        launcher.completeRefresh(errorDescription: "permission denied")
+
+        XCTAssertEqual(launcher.visibleSectionTitlesForTesting, sectionsBeforeRefresh)
+        XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refresh failed. Showing last known sessions.")
+        XCTAssertEqual(launcher.refreshFailureDescriptionForTesting, "permission denied")
+        XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
     }
 }
