@@ -211,9 +211,9 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(coordinator.startCallCount, 2)
     }
 
-    func testCreateChannelAPIRejectsUnsupportedChannelType() async throws {
+    func testCreateChannelAPIRejectsInvalidArguments() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AppDelegateAPIUnsupportedTypeTests-")
+            .appendingPathComponent("AppDelegateAPIInvalidArgumentsTests-")
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDirectory) }
@@ -251,6 +251,22 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(malformedResponse.status, 400)
         XCTAssertEqual(malformedResponse.statusText, "Bad Request")
         XCTAssertEqual(manager.count, 0)
+
+        for field in ["dir", "label", "cmd"] {
+            let response = await apiServer.route(HTTPRequest(
+                method: "POST",
+                path: "/channels",
+                queryParams: [:],
+                body: try JSONSerialization.data(withJSONObject: [
+                    "type": "shell",
+                    field: 42,
+                ])
+            ))
+
+            XCTAssertEqual(response.status, 400, "Expected malformed \(field) to be rejected")
+            XCTAssertEqual(response.statusText, "Bad Request")
+            XCTAssertEqual(manager.count, 0)
+        }
     }
 
     func testTerminationDeadlineKeepsAPIServerStoppedUntilDetachAuthorityCompletes() throws {

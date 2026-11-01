@@ -93,9 +93,9 @@ final class HoloscapeClientTests: XCTestCase {
         }
     }
 
-    func testOpenChannelToolRejectsInvalidTypeBeforeRequest() async throws {
+    func testOpenChannelToolRejectsInvalidArgumentsBeforeRequest() async throws {
         HoloscapeClientURLProtocolStub.setHandler { _ in
-            XCTFail("Invalid channel type must be rejected before an HTTP request")
+            XCTFail("Invalid channel arguments must be rejected before an HTTP request")
             return Self.response(statusCode: 200, body: "{}")
         }
 
@@ -107,6 +107,17 @@ final class HoloscapeClientTests: XCTestCase {
         ] {
             let result = try await openChannelTool(args: args, client: client)
             XCTAssertEqual(result.isError, true)
+        }
+
+        for field in ["dir", "label", "cmd"] {
+            let result = try await openChannelTool(
+                args: [
+                    "type": .string("shell"),
+                    field: .int(1),
+                ],
+                client: client
+            )
+            XCTAssertEqual(result.isError, true, "Expected malformed \(field) to be rejected")
         }
     }
 

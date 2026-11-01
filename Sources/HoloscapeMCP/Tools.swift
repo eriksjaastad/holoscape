@@ -143,6 +143,17 @@ func openChannelTool(
         )
     }
 
+    for field in ["dir", "label", "cmd"] where args[field] != nil && args[field]?.stringValue == nil {
+        return CallTool.Result(
+            content: [.text(
+                text: "Invalid '\(field)' parameter: expected a string",
+                annotations: nil,
+                _meta: nil
+            )],
+            isError: true
+        )
+    }
+
     let dir = args["dir"]?.stringValue
     let label = args["label"]?.stringValue
     let cmd = args["cmd"]?.stringValue
