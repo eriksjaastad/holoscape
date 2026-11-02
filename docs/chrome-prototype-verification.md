@@ -14,10 +14,14 @@ Do this on the laptop against a bright, high-contrast desktop backdrop — a des
    swift build -c debug
    ```
 
-3. **Launch with the prototype flag.**
+3. **Build and launch the packaged app with the prototype flag.**
    ```bash
-   HOLOSCAPE_PNG_CHROME_PROTOTYPE=1 swift run Holoscape
+   make bundle
+   open -n --env HOLOSCAPE_PNG_CHROME_PROTOTYPE=1 build/Holoscape.app
    ```
+   Do not use `swift run Holoscape` or launch `.build/.../Holoscape` directly for
+   app-hosted checks. macOS services such as UserNotifications require the
+   bundle-backed process identity supplied by `Holoscape.app`.
    Expected startup log: `[chrome-prototype] installed ChromeHostView (1000×700) with known_good_alpha.png`
 
 4. **Screenshot: BEFORE.** Move the Holoscape window so it overlaps a known-bright region of the wallpaper. Screenshot the full screen (⌘⇧3). Save as `before-prototype.png` — this is the baseline without the prototype.

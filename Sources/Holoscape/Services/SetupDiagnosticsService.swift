@@ -85,7 +85,7 @@ enum BrokerHostLaunchDiagnostics {
     }
 }
 
-typealias NotificationAuthorizationStatusProvider = (@escaping @Sendable (UNAuthorizationStatus) -> Void) -> Void
+typealias NotificationAuthorizationStatusProvider = (@escaping @Sendable (UNAuthorizationStatus?) -> Void) -> Void
 
 @MainActor
 final class SetupDiagnosticsService {
@@ -100,7 +100,11 @@ final class SetupDiagnosticsService {
     init(
         configService: ConfigService,
         notificationSettingsProvider: @escaping NotificationAuthorizationStatusProvider = { completion in
-            UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard let notificationCenter = ApplicationNotificationCenter.makeClient() else {
+                completion(nil)
+                return
+            }
+            notificationCenter.getNotificationSettings { settings in
                 completion(settings.authorizationStatus)
             }
         },
@@ -134,7 +138,7 @@ final class SetupDiagnosticsService {
         }
     }
 
-    func makeSnapshot(notificationStatus: UNAuthorizationStatus) -> SetupDiagnosticsSnapshot {
+    func makeSnapshot(notificationStatus: UNAuthorizationStatus?) -> SetupDiagnosticsSnapshot {
         var items: [SetupDiagnosticItem] = []
         items.append(configDiagnosticItem())
         if let brokerFailure = brokerFailureProvider() {
@@ -180,7 +184,16 @@ final class SetupDiagnosticsService {
         )
     }
 
-    private func notificationDiagnosticItem(status: UNAuthorizationStatus) -> SetupDiagnosticItem {
+    private func notificationDiagnosticItem(status: UNAuthorizationStatus?) -> SetupDiagnosticItem {
+        guard let status else {
+            return SetupDiagnosticItem(
+                title: "Notifications",
+                severity: .warning,
+                detail: "Desktop notifications are unavailable because this process is not running from Holoscape.app.",
+                recovery: "Launch the packaged Holoscape.app for app-hosted checks and normal use.",
+                settingsURL: nil
+            )
+        }
         switch status {
         case .authorized, .provisional, .ephemeral:
             return SetupDiagnosticItem(

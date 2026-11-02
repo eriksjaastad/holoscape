@@ -22,6 +22,10 @@ final class NotificationServiceTests: XCTestCase {
         func add(_ request: UNNotificationRequest) {
             addRequests.append(request)
         }
+
+        func getNotificationSettings(
+            completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void
+        ) {}
     }
 
     private final class TestChannel: ChannelController {
@@ -59,6 +63,36 @@ final class NotificationServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(center.requestCount, 0, "First launch must not trigger a macOS notification permission prompt before the user sees app context")
+    }
+
+    func testMakeForApplicationSkipsSystemNotificationCenterOutsideAppBundle() {
+        var notificationCenterFactoryCallCount = 0
+
+        let center = ApplicationNotificationCenter.makeClient(
+            bundleURL: URL(fileURLWithPath: "/project/.build/arm64-apple-macosx/debug"),
+            notificationCenterFactory: {
+                notificationCenterFactoryCallCount += 1
+                return FakeNotificationCenter()
+            }
+        )
+
+        XCTAssertNil(center)
+        XCTAssertEqual(notificationCenterFactoryCallCount, 0)
+    }
+
+    func testMakeForApplicationCreatesNotificationServiceInsideAppBundle() {
+        var notificationCenterFactoryCallCount = 0
+
+        let center = ApplicationNotificationCenter.makeClient(
+            bundleURL: URL(fileURLWithPath: "/project/build/Holoscape.app"),
+            notificationCenterFactory: {
+                notificationCenterFactoryCallCount += 1
+                return FakeNotificationCenter()
+            }
+        )
+
+        XCTAssertNotNil(center)
+        XCTAssertEqual(notificationCenterFactoryCallCount, 1)
     }
 
     func testFirstEligibleBackgroundNotificationRequestsPermissionThenDelivers() {

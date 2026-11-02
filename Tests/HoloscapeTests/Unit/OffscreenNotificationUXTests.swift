@@ -1,8 +1,28 @@
+import UserNotifications
 import XCTest
 @testable import Holoscape
 
 @MainActor
 final class OffscreenNotificationUXTests: XCTestCase {
+    private final class FakeNotificationCenter: NotificationCenterClient {
+        var delegate: UNUserNotificationCenterDelegate?
+        var addRequests: [UNNotificationRequest] = []
+
+        func requestAuthorization(
+            options: UNAuthorizationOptions,
+            completionHandler: @escaping @Sendable (Bool, Error?) -> Void
+        ) {}
+
+        func add(_ request: UNNotificationRequest) {
+            addRequests.append(request)
+        }
+
+        func getNotificationSettings(
+            completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void
+        ) {}
+    }
+
+
     func testDockBadgeCountsOnlyUnmutedPendingNotificationChannels() {
         let first = UUID()
         let second = UUID()
@@ -58,5 +78,28 @@ final class OffscreenNotificationUXTests: XCTestCase {
 
     func testUnknownHookEventsDoNotRequestOffscreenAttention() {
         XCTAssertNil(HoloscapeAPIServer.offscreenAttentionKind(type: "token_delta", tool: "codex"))
+    }
+
+    func testDesktopNotificationDeliveryUsesInjectedOptionalCenter() {
+        let channelID = UUID()
+        let center = FakeNotificationCenter()
+
+        HoloscapeAPIServer.sendDesktopNotification(
+            type: "awaiting_approval",
+            tool: "codex",
+            channelID: channelID,
+            channelLabel: "Codex",
+            notificationCenter: nil
+        )
+        HoloscapeAPIServer.sendDesktopNotification(
+            type: "awaiting_approval",
+            tool: "codex",
+            channelID: channelID,
+            channelLabel: "Codex",
+            notificationCenter: center
+        )
+
+        XCTAssertEqual(center.addRequests.count, 1)
+        XCTAssertEqual(center.addRequests.first?.content.title, "Permission Needed")
     }
 }

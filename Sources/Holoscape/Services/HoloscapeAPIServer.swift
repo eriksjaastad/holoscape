@@ -77,6 +77,7 @@ class HoloscapeAPIServer {
     private(set) var mutedNotificationChannelIds: Set<UUID> = []
     private let agentStatusAdapter = AgentStatusAdapter()
     private let dockAttentionClient: DockAttentionClient
+    private let notificationCenter: NotificationCenterClient?
     private let receiveErrorReporter: @Sendable (NWError) -> Void
     private let responseSendErrorReporter: @Sendable (NWError) -> Void
 
@@ -85,6 +86,7 @@ class HoloscapeAPIServer {
         windowController: MainWindowController,
         port: UInt16 = 7865,
         dockAttentionClient: DockAttentionClient = SystemDockAttentionClient(),
+        notificationCenter: NotificationCenterClient? = ApplicationNotificationCenter.makeClient(),
         receiveErrorReporter: @escaping @Sendable (NWError) -> Void = { error in
             NSLog("HoloscapeAPI: Failed to receive request: \(error)")
         },
@@ -96,6 +98,7 @@ class HoloscapeAPIServer {
         self.windowController = windowController
         self.port = port
         self.dockAttentionClient = dockAttentionClient
+        self.notificationCenter = notificationCenter
         self.receiveErrorReporter = receiveErrorReporter
         self.responseSendErrorReporter = responseSendErrorReporter
     }
@@ -569,28 +572,41 @@ class HoloscapeAPIServer {
     private func requestOffscreenAttention(type: String, tool: String?, channel: any ChannelController) {
         updateDockBadge()
         dockAttentionClient.requestUserAttention()
-        sendDesktopNotification(type: type, tool: tool, channel: channel)
+        Self.sendDesktopNotification(
+            type: type,
+            tool: tool,
+            channelID: channel.channelId,
+            channelLabel: channel.displayLabel,
+            notificationCenter: notificationCenter
+        )
     }
 
-    private func sendDesktopNotification(type: String, tool: String?, channel: any ChannelController) {
+    static func sendDesktopNotification(
+        type: String,
+        tool: String?,
+        channelID: UUID,
+        channelLabel: String,
+        notificationCenter: NotificationCenterClient?
+    ) {
+        guard let notificationCenter else { return }
         let content = UNMutableNotificationContent()
         switch Self.offscreenAttentionKind(type: type, tool: tool) {
         case .needsApproval:
             content.title = "Permission Needed"
-            content.body = "\(channel.displayLabel) is waiting for approval"
+            content.body = "\(channelLabel) is waiting for approval"
         case .ready:
             content.title = "Task Complete"
-            content.body = "\(channel.displayLabel) is ready for input"
+            content.body = "\(channelLabel) is ready for input"
         case .running, .error, .stale, .disconnected, .none:
             content.title = "Holoscape"
-            content.body = "\(channel.displayLabel): \(type)"
+            content.body = "\(channelLabel): \(type)"
         }
         content.sound = .default
-        content.threadIdentifier = channel.channelId.uuidString
-        content.userInfo = ["channelId": channel.channelId.uuidString]
+        content.threadIdentifier = channelID.uuidString
+        content.userInfo = ["channelId": channelID.uuidString]
 
-        let request = UNNotificationRequest(identifier: channel.channelId.uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        let request = UNNotificationRequest(identifier: channelID.uuidString, content: content, trigger: nil)
+        notificationCenter.add(request)
     }
 
     /// Clear notification state when switching to a channel

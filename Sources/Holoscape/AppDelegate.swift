@@ -83,9 +83,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
             // Set up notifications without triggering a macOS TCC prompt on
             // first launch. Authorization is requested lazily when the first
             // eligible background notification would actually be delivered.
-            notificationService = NotificationService(configService: configService)
-            notificationService?.channelSwitchDelegate = windowController
-            windowController?.setNotificationService(notificationService!)
+            notificationService = NotificationService.makeForApplication(configService: configService)
+            if let notificationService {
+                notificationService.channelSwitchDelegate = windowController
+                windowController?.setNotificationService(notificationService)
+            }
         }
 
 
