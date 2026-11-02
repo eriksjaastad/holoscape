@@ -143,6 +143,89 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
     }
 
+    func testNeedsApprovalKeepsVisibleStatusAndContextAtCompactWidth() throws {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
+        let persistentState = PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        let context = ChannelNavigationContext(
+            typeLabel: "Agent",
+            identityLabel: "Codex",
+            locationPath: "/Users/test/projects/holoscape-agent"
+        )
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: persistentState,
+            isActive: true
+        )
+        entry.layoutSubtreeIfNeeded()
+
+        let textFields = entry.subviews.compactMap { $0 as? NSTextField }
+        let approval = try XCTUnwrap(textFields.first { $0.stringValue == "Approval" })
+        let metadata = try XCTUnwrap(textFields.first { $0.stringValue == "Agent • Codex • holoscape-agent" })
+        let label = try XCTUnwrap(textFields.first { $0.stringValue == "Codex · HoloScape · main" })
+
+        XCTAssertGreaterThanOrEqual(approval.frame.width, approval.intrinsicContentSize.width - 1)
+        XCTAssertLessThanOrEqual(approval.frame.maxX, entry.bounds.maxX - 5)
+        XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
+        XCTAssertGreaterThan(metadata.frame.width, 100, "Context should use the full second line instead of yielding to status text")
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main, approval needed")
+        XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+            isActive: false,
+            notificationType: "permission_prompt"
+        )
+        entry.layoutSubtreeIfNeeded()
+        XCTAssertEqual(approval.stringValue, "Approval", "Legacy permission prompts must remain explicit when runtime state is non-optional")
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main, approval needed")
+
+        let longReason = "broker transport failed while restoring the previous session"
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .error, source: .brokerRegistry, reason: longReason),
+            isActive: false,
+            notificationType: "permission_prompt"
+        )
+        entry.layoutSubtreeIfNeeded()
+        XCTAssertEqual(approval.stringValue, longReason)
+        XCTAssertGreaterThan(label.frame.width, 20, "Unbounded error reasons must not collapse the channel label")
+        XCTAssertLessThan(approval.frame.width, approval.intrinsicContentSize.width, "Unbounded status reasons must remain compressible")
+        XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "error: \(longReason)", "Persistent error truth must supersede permission accessibility state")
+        XCTAssertNil(entry.layer?.backgroundColor, "Superseded permission state must not leave a fallback approval fill")
+        assertCGColorComponents(
+            label.textColor?.cgColor,
+            NSColor.lightGray.cgColor,
+            reason: "Superseded permission state must not leave fallback approval text"
+        )
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .stale,
+            persistentState: PersistentChannelState(kind: .stale, source: .brokerRegistry, reason: "broker session unavailable"),
+            isActive: false
+        )
+        XCTAssertEqual(entry.accessibilityValue() as? String, "stale: broker session unavailable")
+    }
+
     // MARK: - Unread regression guard
 
     /// Unread state flows through a `channelUnread: { $gte: 1 }` state
@@ -313,18 +396,27 @@ final class SidebarViewSkinContextTests: XCTestCase {
             let label: String
             let hasUnread: Bool
             let notificationType: String?
+            let persistentState: PersistentChannelState?
             let expectedHex: String
         }
         let cases: [Case] = [
-            Case(label: "unread", hasUnread: true, notificationType: nil, expectedHex: "#203447"),
-            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", expectedHex: "#173a35"),
-            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", expectedHex: "#4a391f"),
+            Case(label: "unread", hasUnread: true, notificationType: nil, persistentState: nil, expectedHex: "#203447"),
+            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", persistentState: nil, expectedHex: "#173a35"),
+            Case(
+                label: "idle-running",
+                hasUnread: false,
+                notificationType: "idle_prompt",
+                persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+                expectedHex: "#173a35"
+            ),
+            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", persistentState: nil, expectedHex: "#4a391f"),
         ]
         for testCase in cases {
             let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 200, height: 36))
             entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
             entry.configure(label: testCase.label, hasUnread: testCase.hasUnread,
-                            state: .active, isActive: false,
+                            state: .active, persistentState: testCase.persistentState,
+                            isActive: false,
                             notificationType: testCase.notificationType)
             let expected = NSColor(hex: testCase.expectedHex)?.cgColor ?? .clear
             assertCGColorComponentsHex(entry.layer?.backgroundColor, expected,

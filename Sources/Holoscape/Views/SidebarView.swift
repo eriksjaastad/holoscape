@@ -411,11 +411,13 @@ class SidebarTabEntry: HoverTrackingButton {
         labelField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         labelField.textColor = NSColor.lightGray
         labelField.lineBreakMode = .byTruncatingTail
+        labelField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         labelField.translatesAutoresizingMaskIntoConstraints = false
 
         metadataField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
         metadataField.textColor = NSColor.secondaryLabelColor
         metadataField.lineBreakMode = .byTruncatingMiddle
+        metadataField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         metadataField.translatesAutoresizingMaskIntoConstraints = false
 
         unreadDot.wantsLayer = true
@@ -431,6 +433,8 @@ class SidebarTabEntry: HoverTrackingButton {
         statusTextField.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         statusTextField.textColor = NSColor.gray
         statusTextField.lineBreakMode = .byTruncatingTail
+        statusTextField.setContentHuggingPriority(.required, for: .horizontal)
+        statusTextField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusTextField.translatesAutoresizingMaskIntoConstraints = false
 
         // Subviews are decorative parts of a single accessible button — they must
@@ -459,14 +463,14 @@ class SidebarTabEntry: HoverTrackingButton {
 
             labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
             labelField.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            labelField.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            labelField.trailingAnchor.constraint(lessThanOrEqualTo: statusTextField.leadingAnchor, constant: -6),
 
             metadataField.leadingAnchor.constraint(equalTo: labelField.leadingAnchor),
             metadataField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
-            metadataField.trailingAnchor.constraint(lessThanOrEqualTo: statusTextField.leadingAnchor, constant: -6),
+            metadataField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
 
             statusTextField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            statusTextField.bottomAnchor.constraint(equalTo: metadataField.bottomAnchor),
+            statusTextField.firstBaselineAnchor.constraint(equalTo: labelField.firstBaselineAnchor),
         ])
     }
 
@@ -500,13 +504,30 @@ class SidebarTabEntry: HoverTrackingButton {
         //   channelConnectionState: 0 usable, 1 attention, 2 error/disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
+        let effectiveNotificationType: String? = {
+            guard let persistentState else { return notificationType }
+            switch persistentState.kind {
+            case .ready, .running:
+                return notificationType
+            case .needsApproval:
+                return "permission_prompt"
+            case .disconnected, .error, .stale:
+                return nil
+            }
+        }()
+        let needsApproval = effectiveNotificationType == "permission_prompt"
         let notificationKind: Int32
         let connectionState: Int32
-        if let persistentState {
-            notificationKind = persistentState.kind.reactiveNotificationKindOrdinal
+        if needsApproval {
+            notificationKind = PersistentChannelStateKind.needsApproval.reactiveNotificationKindOrdinal
+            connectionState = PersistentChannelStateKind.needsApproval.reactiveChannelConnectionOrdinal
+        } else if let persistentState {
+            notificationKind = effectiveNotificationType == "idle_prompt"
+                ? 1
+                : persistentState.kind.reactiveNotificationKindOrdinal
             connectionState = persistentState.kind.reactiveChannelConnectionOrdinal
         } else {
-            switch notificationType {
+            switch effectiveNotificationType {
             case "idle_prompt":       notificationKind = 1
             case "permission_prompt": notificationKind = 2
             default:                  notificationKind = 0
@@ -532,12 +553,14 @@ class SidebarTabEntry: HoverTrackingButton {
         // Status text is view-level content (not a color) — drive it here.
         // Normal ready/running tabs intentionally stay textless; the color dot
         // carries routine status without appending a noisy elapsed timer.
-        if let persistentState {
+        if needsApproval {
+            statusTextField.stringValue = "Approval"
+        } else if let persistentState {
             switch persistentState.kind {
             case .ready: statusTextField.stringValue = ""
             case .disconnected: statusTextField.stringValue = "disconnected"
             case .running: statusTextField.stringValue = ""
-            case .needsApproval: statusTextField.stringValue = "needs approval"
+            case .needsApproval: statusTextField.stringValue = "Approval"
             case .error: statusTextField.stringValue = persistentState.reason ?? "error"
             case .stale: statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? persistentState.reason ?? "stale"
             }
@@ -549,9 +572,7 @@ class SidebarTabEntry: HoverTrackingButton {
             case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
             }
         }
-        if persistentState == nil, notificationType == "permission_prompt" {
-            statusTextField.stringValue = "needs approval"
-        } else if persistentState == nil, notificationType == "idle_prompt" {
+        if persistentState == nil, notificationType == "idle_prompt" {
             statusTextField.stringValue = ""
         } else if recoveryAction == nil, notificationType == nil, hasStaleInteraction {
             statusTextField.stringValue = "stale"
@@ -567,9 +588,16 @@ class SidebarTabEntry: HoverTrackingButton {
             isActive: isActive,
             preservesSemanticState: preservesSemanticState
         )
-        layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
+        layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: effectiveNotificationType))
         layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
-        labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)
+        labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: effectiveNotificationType)
+        labelField.setContentCompressionResistancePriority(needsApproval ? .defaultLow : .defaultHigh, for: .horizontal)
+        statusTextField.setContentCompressionResistancePriority(needsApproval ? .required : .defaultLow, for: .horizontal)
+        if needsApproval {
+            statusTextField.textColor = nsRowText(for: .sidebarRowNormal) ?? Self.defaultPermissionText
+        } else {
+            statusTextField.textColor = NSColor.gray
+        }
 
         // Status indicator dot flows from `sidebarRowIndicator`'s
         // connection-state variants.
@@ -579,7 +607,13 @@ class SidebarTabEntry: HoverTrackingButton {
         // NSButton provides native accessibility — just set the metadata.
         // The title shows the dynamic display label (may change with directory).
         // The identifier uses the label for test discoverability.
-        setAccessibilityTitle(isPinned ? "\u{1F4CC} \(label)" : label)
+        let accessibleTitle = isPinned ? "\u{1F4CC} \(label)" : label
+        setAccessibilityTitle(accessibleTitle)
+        setAccessibilityLabel(
+            needsApproval
+                ? "\(accessibleTitle), approval needed"
+                : accessibleTitle
+        )
         setAccessibilityIdentifier("sidebar-\(label)")
 
         if let recoveryAction, state == .stale {
@@ -593,11 +627,28 @@ class SidebarTabEntry: HoverTrackingButton {
             setAccessibilityHelp(navigationContext?.accessibilityDescription)
         }
 
-        if recoveryAction == nil, let notificationType {
-            switch notificationType {
+        let persistentAccessibilityValue: String? = {
+            guard let persistentState else { return nil }
+            switch persistentState.kind {
+            case .needsApproval:
+                return "needs-approval"
+            case .disconnected:
+                return "disconnected"
+            case .error:
+                return persistentState.reason.map { "error: \($0)" } ?? "error"
+            case .stale:
+                return persistentState.reason.map { "stale: \($0)" } ?? "stale"
+            case .ready, .running:
+                return nil
+            }
+        }()
+        if recoveryAction == nil, let persistentAccessibilityValue {
+            setAccessibilityValue(persistentAccessibilityValue)
+        } else if recoveryAction == nil, let effectiveNotificationType {
+            switch effectiveNotificationType {
             case "idle_prompt": setAccessibilityValue("ready")
             case "permission_prompt": setAccessibilityValue("needs-approval")
-            default: setAccessibilityValue(notificationType)
+            default: setAccessibilityValue(effectiveNotificationType)
             }
         } else if recoveryAction == nil, hasStaleInteraction {
             setAccessibilityValue("stale-interaction")
