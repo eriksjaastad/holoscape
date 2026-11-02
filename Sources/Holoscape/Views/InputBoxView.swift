@@ -57,6 +57,9 @@ class InputBoxView: NSTextView {
 
     override var acceptsFirstResponder: Bool { true }
     var hasActiveMarkedText: Bool { hasMarkedText() }
+    var draftForChannelSwitch: String {
+        isNavigatingHistory ? (draftBeforeHistory ?? string) : string
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()

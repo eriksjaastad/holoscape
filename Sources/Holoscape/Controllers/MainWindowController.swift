@@ -2071,7 +2071,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         guard let channel = channelManager.channel(for: id) else { return }
         let previousLabel = activeChannelId.flatMap { channelManager.channel(for: $0)?.displayLabel }
         if let previousId = activeChannelId {
-            composerStates.updateDraft(inputBox.string, for: previousId)
+            composerStates.updateDraft(inputBox.draftForChannelSwitch, for: previousId)
             (channelManager.channel(for: previousId)?.contentView as? HoloscapeTerminalView)?.onAlternateScreenChanged = nil
         }
         activeChannelId = id
