@@ -197,6 +197,90 @@ class ChannelManager {
         return controller
     }
 
+    /// Duplicate a live channel from its typed launch identity rather than
+    /// resolving its presentation label back through the profile catalog.
+    func duplicateChannel(id: UUID) -> (any ChannelController)? {
+        guard let source = channels[id],
+              let role = channelLabels[id] else { return nil }
+
+        let duplicate: (any ChannelController)?
+        switch source {
+        case let shell as ShellChannelController:
+            let directory = shell.persistedWorkingDirectory.map(URL.init(fileURLWithPath:))
+            duplicate = createChannel(type: .shell, role: role, workingDirectory: directory) {
+                id, _, label, instanceNumber, workingDirectory in
+                ShellChannelController.brokerBacked(
+                    id: id,
+                    instanceNumber: instanceNumber,
+                    label: label,
+                    workingDirectory: workingDirectory?.path,
+                    coordinator: self.brokerBackedShellCoordinator
+                )
+            }
+        case let agent as AgentChannelController:
+            let directory = agent.persistedWorkingDirectory.map(URL.init(fileURLWithPath:))
+            let authType: AgentAuthType = source.channelType == .agentAPI ? .deferredAPIKey : .oauth
+            duplicate = createChannel(type: source.channelType, role: role, workingDirectory: directory) {
+                id, _, label, instanceNumber, workingDirectory in
+                AgentChannelController.brokerBacked(
+                    id: id,
+                    authType: authType,
+                    workingDirectory: workingDirectory,
+                    userLabel: label,
+                    instanceNumber: instanceNumber,
+                    useRawLabel: agent.persistedUseRawLabel,
+                    command: agent.persistedCommand,
+                    coordinator: self.brokerBackedShellCoordinator
+                )
+            }
+        case let ssh as SSHChannelController:
+            duplicate = createChannel(
+                type: .ssh,
+                role: role,
+                workingDirectory: DefaultWorkingDirectory.expandedURL(from: ssh.profile.directory)
+            ) { id, _, _, instanceNumber, _ in
+                SSHChannelController(
+                    id: id,
+                    profile: ssh.profile,
+                    instanceNumber: instanceNumber,
+                    brokerSessionCoordinator: self.brokerSessionCoordinator
+                )
+            }
+        case let mcp as MCPChannelController:
+            duplicate = createChannel(type: .mcp, role: role, workingDirectory: nil) {
+                id, _, label, instanceNumber, _ in
+                MCPChannelController(
+                    id: id,
+                    endpoint: mcp.endpoint,
+                    label: label,
+                    instanceNumber: instanceNumber
+                )
+            }
+        case let chat as GroupChatChannelController:
+            duplicate = createChannel(type: .groupChat, role: role, workingDirectory: nil) {
+                id, _, label, instanceNumber, _ in
+                GroupChatChannelController(
+                    id: id,
+                    apiURL: chat.apiURL,
+                    apiKey: chat.apiKey,
+                    label: label,
+                    instanceNumber: instanceNumber,
+                    apiKeyEnv: chat.apiKeyEnv
+                )
+            }
+        case is BridgeChannelController:
+            duplicate = createChannel(type: .bridge, role: role, workingDirectory: nil) {
+                id, _, _, instanceNumber, _ in
+                BridgeChannelController(id: id, channelManager: self, instanceNumber: instanceNumber)
+            }
+        default:
+            duplicate = nil
+        }
+
+        duplicate?.setCustomDisplayLabel(source.customDisplayLabel)
+        return duplicate
+    }
+
     /// Close a channel. Returns true if confirmation is needed (active process).
     func needsCloseConfirmation(id: UUID) -> Bool {
         guard let channel = channels[id] else { return false }

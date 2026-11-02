@@ -2008,6 +2008,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
+            Self.applyUserSuppliedDisplayLabel(label, to: channel)
             channel.delegate = self
             channel.activate()
             if let cmd = command {
@@ -2041,6 +2042,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
+            Self.applyUserSuppliedDisplayLabel(label, to: channel)
             channel.delegate = self
             channel.activate()
             switchToChannel(channel.channelId)
@@ -2050,6 +2052,16 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             NSLog("Holoscape openChannel: unknown type '\(type)'")
             return .unsupportedType(type)
         }
+    }
+
+    /// Treat an explicit user label as presentation, while leaving launch identity
+    /// and instance numbering available for persistence and process ownership.
+    static func applyUserSuppliedDisplayLabel(
+        _ label: String?,
+        to channel: any ChannelController
+    ) {
+        guard let normalized = ChannelCustomDisplayLabel.normalized(label) else { return }
+        channel.setCustomDisplayLabel(normalized)
     }
 
     // MARK: - Channel Operations
@@ -2692,28 +2704,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
         guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
-              let channel = channelManager.channel(for: id) else { return }
-
-        if let profileManager, let label = channelManager.labelForChannel(id: id) {
-            let profile = profileManager.resolve(label: label)
-            launchSession(from: profile)
-        } else {
-            // Fallback: duplicate by channel type without a profile
-            switch channel.channelType {
-            case .shell:
-                createShellChannel()
-            case .agentDirect:
-                createAgentChannel(authType: .oauth, prompt: defaultAgentChannelPrompt())
-            case .agentAPI:
-                createAgentAPIKeyChannel(prompt: defaultAgentChannelPrompt())
-            case .bridge:
-                createBridgeChannel()
-            case .groupChat:
-                createGroupChatChannel()
-            default:
-                createShellChannel()
-            }
-        }
+              let duplicate = channelManager.duplicateChannel(id: id) else { return }
+        duplicate.delegate = self
+        duplicate.activate()
+        switchToChannel(duplicate.channelId)
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {
