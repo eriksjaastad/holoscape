@@ -28,7 +28,8 @@ final class MainWindowComposerTests: XCTestCase {
         let fixture = try makeFixture()
         let first = fixture.makeChannel(type: .shell, label: "One")
         let second = fixture.makeChannel(type: .ssh, label: "Two")
-        first.commandHistory.add("previous command")
+        first.commandHistory.add("older command")
+        first.commandHistory.add("newest command")
 
         fixture.controller.switchToChannel(first.channelId)
         let input = fixture.controller.inputBoxForTesting
@@ -36,7 +37,7 @@ final class MainWindowComposerTests: XCTestCase {
         input.didChangeText()
         input.setSelectedRange(NSRange(location: 0, length: 0))
         input.keyDown(with: keyEvent(keyCode: 126, characters: ""))
-        XCTAssertEqual(input.string, "previous command")
+        XCTAssertEqual(input.string, "newest command")
 
         fixture.controller.switchToChannel(second.channelId)
         fixture.controller.switchToChannel(first.channelId)
@@ -46,6 +47,10 @@ final class MainWindowComposerTests: XCTestCase {
             fixture.controller.composerStateForTesting(channelId: first.channelId).draft,
             "unsent draft"
         )
+
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: keyEvent(keyCode: 126, characters: ""))
+        XCTAssertEqual(input.string, "newest command")
     }
 
     func testSplitPaneActivationSwitchesComposerDraftOwnership() throws {
