@@ -629,6 +629,70 @@ final class ChannelManagerTests: XCTestCase {
         XCTAssertNil(manager.channel(matchingLaunchLabel: "Build"))
     }
 
+    func testDuplicateShellPreservesTypedLaunchIdentityAndExactCustomLabel() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-shell", isDirectory: true)
+        let source = manager.createChannel(
+            type: .shell,
+            role: "Project Shell",
+            workingDirectory: directory
+        ) { id, _, label, instanceNumber, workingDirectory in
+            ShellChannelController(
+                id: id,
+                instanceNumber: instanceNumber,
+                label: label,
+                workingDirectory: workingDirectory?.path,
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+        XCTAssertTrue(manager.renameChannel(id: source.channelId, to: "  Workspace  "))
+
+        let duplicate = try XCTUnwrap(manager.duplicateChannel(id: source.channelId))
+        let duplicateShell = try XCTUnwrap(duplicate as? ShellChannelController)
+
+        XCTAssertEqual(duplicateShell.channelType, .shell)
+        XCTAssertEqual(duplicateShell.persistedWorkingDirectory, directory.path)
+        XCTAssertEqual(manager.labelForChannel(id: duplicateShell.channelId), "Project Shell")
+        XCTAssertEqual(duplicateShell.instanceNumber, 2)
+        XCTAssertEqual(duplicateShell.customDisplayLabel, "Workspace")
+        XCTAssertEqual(duplicateShell.displayLabel, "Workspace")
+    }
+
+    func testDuplicateAgentPreservesCommandIdentityAndExactCustomLabel() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duplicate-agent", isDirectory: true)
+        let source = manager.createChannel(
+            type: .agentDirect,
+            role: "Floor Manager",
+            workingDirectory: directory
+        ) { id, _, label, instanceNumber, workingDirectory in
+            AgentChannelController(
+                id: id,
+                authType: .oauth,
+                workingDirectory: workingDirectory,
+                userLabel: label,
+                instanceNumber: instanceNumber,
+                useRawLabel: true,
+                command: "codex",
+                terminal: StubTerminalProcess(brokerOwnedSessionID: nil)
+            )
+        }
+        XCTAssertTrue(manager.renameChannel(id: source.channelId, to: "  Operator  "))
+
+        let duplicate = try XCTUnwrap(manager.duplicateChannel(id: source.channelId))
+        let duplicateAgent = try XCTUnwrap(duplicate as? AgentChannelController)
+
+        XCTAssertEqual(duplicateAgent.channelType, .agentDirect)
+        XCTAssertEqual(duplicateAgent.persistedWorkingDirectory, directory.path)
+        XCTAssertEqual(duplicateAgent.persistedCommand, "codex")
+        XCTAssertEqual(duplicateAgent.persistedUseRawLabel, true)
+        XCTAssertEqual(duplicateAgent.tabIdentityIndicator, .codex)
+        XCTAssertEqual(manager.labelForChannel(id: duplicateAgent.channelId), "Floor Manager")
+        XCTAssertEqual(duplicateAgent.instanceNumber, 2)
+        XCTAssertEqual(duplicateAgent.customDisplayLabel, "Operator")
+        XCTAssertEqual(duplicateAgent.displayLabel, "Operator")
+    }
+
     func testCreateLocalShellProfileUsesProfileDirectory() throws {
         let profileDirectory = temporaryConfigDirectory
             .appendingPathComponent("profile-projects", isDirectory: true)

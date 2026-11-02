@@ -4,6 +4,48 @@ import XCTest
 
 @MainActor
 final class MainWindowComposerTests: XCTestCase {
+    private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
+        private var nextID = 0
+
+        func start(
+            _ request: BrokerSessionLaunchRequest,
+            channelType: ChannelType,
+            label: String?,
+            attachedChannelID: UUID?
+        ) throws -> BrokerSessionRecord {
+            nextID += 1
+            return BrokerSessionRecord(
+                id: BrokerSessionID(rawValue: "main-window-label-\(nextID)"),
+                channelType: channelType,
+                label: label,
+                command: request.command,
+                arguments: request.arguments,
+                workingDirectory: request.workingDirectory,
+                environmentProfile: request.environmentProfile,
+                lifecycle: .running,
+                exitCode: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 1),
+                lastAttachedChannelID: attachedChannelID
+            )
+        }
+
+        func detach(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func retireUntrackedSession(_ id: BrokerSessionID) throws {}
+        func reattach(_ id: BrokerSessionID, attachedChannelID: UUID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func reattachableSessions() throws -> [BrokerSessionRecord] { [] }
+        func exit(_ id: BrokerSessionID, exitCode: Int32) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func markErrored(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func updateWorkingDirectory(_ id: BrokerSessionID, to directory: String) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+        func sendInput(_ id: BrokerSessionID, bytes: [UInt8]) throws {}
+        func readAvailableOutput(_ id: BrokerSessionID) throws -> Data { Data() }
+        func readScrollbackTail(_ id: BrokerSessionID, maxBytes: Int) throws -> Data { Data() }
+        func resize(_ id: BrokerSessionID, size: TerminalGridSize) throws {}
+        func isRunning(_ id: BrokerSessionID) throws -> Bool { true }
+        func terminationStatus(_ id: BrokerSessionID) throws -> Int32? { nil }
+        func reconcileRuntimeStatus(_ id: BrokerSessionID) throws -> BrokerSessionRecord { throw XCTSkip("unused") }
+    }
+
     func testPTYChannelsDefaultToComposerAndKeepDraftsIsolated() throws {
         let fixture = try makeFixture()
         let first = fixture.makeChannel(type: .shell, label: "One")
@@ -189,6 +231,41 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertEqual(input.selectedRange(), NSRange(location: 2, length: 0))
         input.undoManager?.undo()
         XCTAssertEqual(input.string, "")
+    }
+
+    func testOpenChannelUsesExplicitShellAndAgentLabelsAsCustomPresentation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MainWindowOpenChannelLabels-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = ConfigService(configDir: directory)
+        let broker = RecordingBrokerSessionCoordinator()
+        let manager = ChannelManager(
+            configService: config,
+            brokerBackedShellCoordinator: broker
+        )
+        let controller = MainWindowController(channelManager: manager, configService: config)
+
+        let shellResult = controller.openChannel(
+            type: "shell",
+            directory: directory.path,
+            label: "  Workspace  "
+        )
+        let agentResult = controller.openChannel(
+            type: "agent",
+            directory: directory.path,
+            label: "  Operator  ",
+            command: "codex"
+        )
+
+        let channels = manager.allChannels()
+        XCTAssertEqual(shellResult, MainWindowController.ChannelOpenResult.created(channels[0].channelId))
+        XCTAssertEqual(agentResult, MainWindowController.ChannelOpenResult.created(channels[1].channelId))
+        XCTAssertEqual(channels.map { $0.channelType }, [ChannelType.shell, ChannelType.agentDirect])
+        XCTAssertEqual(channels.map { $0.customDisplayLabel }, ["Workspace", "Operator"])
+        XCTAssertEqual(channels.map { $0.displayLabel }, ["Workspace", "Operator"])
+        XCTAssertEqual((channels[1] as? AgentChannelController)?.persistedCommand, "codex")
+        XCTAssertEqual(channels[1].tabIdentityIndicator, ChannelTabIdentityIndicator.codex)
     }
 
     private func keyEvent(keyCode: UInt16, characters: String) -> NSEvent {

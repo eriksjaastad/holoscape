@@ -2704,37 +2704,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     @objc private func contextMenuDuplicate(_ sender: NSMenuItem) {
         guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
-              let channel = channelManager.channel(for: id) else { return }
-        let customDisplayLabel = channel.customDisplayLabel
-        let existingChannelIDs = Set(channelManager.allChannels().map(\.channelId))
-
-        if let profileManager, let label = channelManager.labelForChannel(id: id) {
-            let profile = profileManager.resolve(label: label)
-            launchSession(from: profile)
-        } else {
-            // Fallback: duplicate by channel type without a profile
-            switch channel.channelType {
-            case .shell:
-                createShellChannel()
-            case .agentDirect:
-                createAgentChannel(authType: .oauth, prompt: defaultAgentChannelPrompt())
-            case .agentAPI:
-                createAgentAPIKeyChannel(prompt: defaultAgentChannelPrompt())
-            case .bridge:
-                createBridgeChannel()
-            case .groupChat:
-                createGroupChatChannel()
-            default:
-                createShellChannel()
-            }
-        }
-
-        guard let duplicateID = channelManager.allChannels()
-                .map(\.channelId)
-                .first(where: { !existingChannelIDs.contains($0) }),
-              let duplicate = channelManager.channel(for: duplicateID) else { return }
-        Self.applyUserSuppliedDisplayLabel(customDisplayLabel, to: duplicate)
-        refreshAllTabs()
+              let duplicate = channelManager.duplicateChannel(id: id) else { return }
+        duplicate.delegate = self
+        duplicate.activate()
+        switchToChannel(duplicate.channelId)
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {
