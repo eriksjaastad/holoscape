@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
@@ -33,6 +34,27 @@ final class SkinLibraryServiceTests: XCTestCase {
         XCTAssertEqual(manifest.surfaces?[SurfaceKey.settingsPanel.rawValue]?.corner, .uniform(14))
         XCTAssertEqual(manifest.surfaces?[SurfaceKey.inputBoxField.rawValue]?.font?.family, "SF Pro")
         XCTAssertEqual(manifest.surfaces?[SurfaceKey.inputBoxField.rawValue]?.font?.size, 14)
+    }
+
+    func testStarterSkinResolvesSFProThroughProductionPipeline() throws {
+        _ = try library.create(name: "Aurora")
+        let loaded = try engine.loadComposite(named: "Aurora")
+        defer { engine.unregisterFonts(loaded.fonts) }
+        let context = SkinContext(
+            surfaces: try XCTUnwrap(loaded.surfaces),
+            reactive: ReactiveUniformSnapshot(),
+            fontRegistry: loaded.fonts.fonts
+        )
+
+        let regular = try XCTUnwrap(context.resolvedFont(for: .inputBoxField))
+        let medium = try XCTUnwrap(context.resolvedFont(for: .sessionLauncherRow))
+        let semibold = try XCTUnwrap(context.resolvedFont(for: .tabBarTabActive))
+        let manager = NSFontManager.shared
+
+        XCTAssertFalse(manager.traits(of: regular).contains(.fixedPitchFontMask))
+        XCTAssertEqual(regular.fontName, NSFont.systemFont(ofSize: 14, weight: .regular).fontName)
+        XCTAssertEqual(manager.weight(of: medium), manager.weight(of: NSFont.systemFont(ofSize: 13, weight: .medium)))
+        XCTAssertEqual(manager.weight(of: semibold), manager.weight(of: NSFont.systemFont(ofSize: 13, weight: .semibold)))
     }
 
     func testDuplicateCopiesAndRenamesManifest() throws {

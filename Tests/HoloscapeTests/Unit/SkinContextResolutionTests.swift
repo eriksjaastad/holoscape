@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
@@ -6,6 +7,28 @@ import XCTest
 /// evaluate in array order with last-match-wins semantics.
 @MainActor
 final class SkinContextResolutionTests: XCTestCase {
+
+    func testSystemFontFamilyAliasesPreserveProportionalAndMonospacedIntent() throws {
+        for family in ["system", "system-ui", "-apple-system", "SF Pro", "SF Pro Text", "SF Pro Display"] {
+            let surface = SkinContext.convert(
+                SurfaceDescriptor(font: FontDescriptor(family: family, size: 13, weight: "medium")),
+                for: .sidebarRowNormal
+            )
+            let font = try XCTUnwrap(surface.font)
+            XCTAssertFalse(NSFontManager.shared.traits(of: font).contains(.fixedPitchFontMask), family)
+            XCTAssertEqual(NSFontManager.shared.weight(of: font), 6, family)
+        }
+
+        for family in ["SF Mono", "SFMono"] {
+            let surface = SkinContext.convert(
+                SurfaceDescriptor(font: FontDescriptor(family: family, size: 13, weight: "medium")),
+                for: .inputBoxField
+            )
+            let font = try XCTUnwrap(surface.font)
+            XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.fixedPitchFontMask), family)
+            XCTAssertEqual(NSFontManager.shared.weight(of: font), 6, family)
+        }
+    }
 
     // MARK: - Default fallback
 

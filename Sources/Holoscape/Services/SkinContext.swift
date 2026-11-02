@@ -650,10 +650,32 @@ final class SkinContext {
 
     private static func convertFont(_ font: FontDescriptor) -> NSFont? {
         let size = CGFloat(font.size)
-        if font.family.lowercased() == "system" {
-            return NSFont.systemFont(ofSize: size)
+        let family = font.family.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let weight = systemFontWeight(named: font.weight)
+        switch family {
+        case "system", "system-ui", "-apple-system", ".applesystemuifont",
+             "sf pro", "sf pro text", "sf pro display":
+            return NSFont.systemFont(ofSize: size, weight: weight)
+        case "sf mono", "sfmono":
+            return NSFont.monospacedSystemFont(ofSize: size, weight: weight)
+        default:
+            return NSFont(name: font.family, size: size)
+                ?? NSFont.monospacedSystemFont(ofSize: size, weight: weight)
         }
-        return NSFont(name: font.family, size: size) ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    private static func systemFontWeight(named name: String?) -> NSFont.Weight {
+        switch name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ultralight", "ultra-light": return .ultraLight
+        case "thin": return .thin
+        case "light": return .light
+        case "medium": return .medium
+        case "semibold", "semi-bold", "demibold", "demi-bold": return .semibold
+        case "bold": return .bold
+        case "heavy": return .heavy
+        case "black": return .black
+        default: return .regular
+        }
     }
 
     // MARK: - Runtime font resolution (Amplify Task 13)
@@ -666,9 +688,8 @@ final class SkinContext {
     ///   1. `fontRegistry[family]` — skin-shipped font registered via
     ///      `CTFontManagerRegisterFontsForURL(_, .process, _)` at
     ///      skin-load time. Keyed by PostScript name.
-    ///   2. `NSFont(name: family, size:)` — system-installed font
-    ///      lookup. Handles built-in families like `"SF Mono"` or
-    ///      `"Menlo"` that authors reference by name.
+    ///   2. System aliases such as `"SF Pro"` / `"SF Mono"`, then
+    ///      `NSFont(name: family, size:)` for installed fonts.
     ///   3. `NSFont.monospacedSystemFont(ofSize:weight:)` — guaranteed
     ///      fallback; never returns nil. Chrome views that call this
     ///      method always get a renderable font.

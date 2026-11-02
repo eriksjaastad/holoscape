@@ -1974,7 +1974,10 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         // terminal/composer. Constraining the divider instead of adding a
         // required width constraint prevents AppKit from growing the window
         // off-screen to satisfy Auto Layout while the user drags.
-        return min(350, max(0, splitView.bounds.width - minimumMainContentWidth))
+        return min(
+            350,
+            max(0, splitView.bounds.width - splitView.dividerThickness - minimumMainContentWidth)
+        )
     }
 
     func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
