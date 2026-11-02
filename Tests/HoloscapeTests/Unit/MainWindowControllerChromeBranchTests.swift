@@ -118,6 +118,9 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
     func testChromeToDefaultTransitionPreservesStableHostConstraints() throws {
         let controller = try makeController(persistedSkin: "HoloscapeClassic-live")
         drainMainQueue()
+        controller.window.setContentSize(NSSize(width: 600, height: 400))
+        XCTAssertLessThan(controller.window.contentView?.bounds.width ?? .greatestFiniteMagnitude, 720)
+        XCTAssertLessThan(controller.window.contentView?.bounds.height ?? .greatestFiniteMagnitude, 500)
 
         controller.reloadSkin(named: "Default")
         drainMainQueue()
@@ -128,6 +131,8 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
                       "Exiting chrome must restore standard titled-window resize behavior")
         XCTAssertEqual(controller.window.contentMinSize, NSSize(width: 720, height: 500),
                        "Exiting chrome must restore the standard minimum window size")
+        XCTAssertGreaterThanOrEqual(controller.window.contentView?.bounds.width ?? 0, 720)
+        XCTAssertGreaterThanOrEqual(controller.window.contentView?.bounds.height ?? 0, 500)
         let root = try XCTUnwrap(controller.window.contentView)
         XCTAssertTrue(controller.appContentHost.superview === root)
         XCTAssertEqual(hostAttachmentConstraints(for: controller.appContentHost, in: root).count, 4,

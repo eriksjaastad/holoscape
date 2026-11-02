@@ -615,9 +615,14 @@ extension MainWindowController {
     func reconstructAsTitled(size: NSSize) -> NSWindow {
         let oldWindow = window
         let wasKey = oldWindow.isKeyWindow
+        let minimumSize = Self.minimumWindowContentSize
+        let contentSize = NSSize(
+            width: max(size.width, minimumSize.width),
+            height: max(size.height, minimumSize.height)
+        )
 
         let newWindow = NSWindow(
-            contentRect: NSRect(origin: oldWindow.frame.origin, size: size),
+            contentRect: NSRect(origin: oldWindow.frame.origin, size: contentSize),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -631,7 +636,7 @@ extension MainWindowController {
         newWindow.titlebarAppearsTransparent = true
         newWindow.collectionBehavior = oldWindow.collectionBehavior.union([.fullScreenPrimary])
 
-        let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: size))
+        let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: contentSize))
         freshContent.wantsLayer = true
         newWindow.contentView = freshContent
         animationEngine.hostView = freshContent
