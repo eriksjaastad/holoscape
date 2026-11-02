@@ -17,7 +17,7 @@ Do this on the laptop against a bright, high-contrast desktop backdrop — a des
 3. **Build and launch the packaged app with the prototype flag.**
    ```bash
    make bundle
-   open --env HOLOSCAPE_PNG_CHROME_PROTOTYPE=1 build/Holoscape.app
+   open -n --env HOLOSCAPE_PNG_CHROME_PROTOTYPE=1 build/Holoscape.app
    ```
    Do not use `swift run Holoscape` or launch `.build/.../Holoscape` directly for
    app-hosted checks. macOS services such as UserNotifications require the
