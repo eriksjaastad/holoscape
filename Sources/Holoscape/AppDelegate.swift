@@ -701,6 +701,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         return contextLines
     }
 
+    nonisolated static func scanCrashReports(
+        lastLaunch: Date?,
+        using scan: (Date) -> CrashReportScanResult
+    ) -> CrashReportScanResult? {
+        guard let lastLaunch else { return nil }
+        return scan(lastLaunch)
+    }
+
     nonisolated static func reportCrashScanFailures(
         _ failures: [CrashReportScanFailure],
         logger: (String) -> Void = { NSLog("%@", $0) }
@@ -714,8 +722,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     private func checkForCrashes(lastLaunch: Date?) {
-        let since = lastLaunch ?? Date.distantPast
-        let result = crashScanner.scanForCrashes(since: since)
+        guard let result = Self.scanCrashReports(lastLaunch: lastLaunch, using: { date in
+            crashScanner.scanForCrashes(since: date)
+        }) else { return }
         Self.reportCrashScanFailures(result.failures)
         guard let crash = result.logs.first else { return }
 
