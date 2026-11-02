@@ -411,7 +411,7 @@ class SidebarTabEntry: HoverTrackingButton {
         labelField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         labelField.textColor = NSColor.lightGray
         labelField.lineBreakMode = .byTruncatingTail
-        labelField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        labelField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         labelField.translatesAutoresizingMaskIntoConstraints = false
 
         metadataField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
@@ -434,7 +434,7 @@ class SidebarTabEntry: HoverTrackingButton {
         statusTextField.textColor = NSColor.gray
         statusTextField.lineBreakMode = .byTruncatingTail
         statusTextField.setContentHuggingPriority(.required, for: .horizontal)
-        statusTextField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        statusTextField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusTextField.translatesAutoresizingMaskIntoConstraints = false
 
         // Subviews are decorative parts of a single accessible button — they must
@@ -504,9 +504,17 @@ class SidebarTabEntry: HoverTrackingButton {
         //   channelConnectionState: 0 usable, 1 attention, 2 error/disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
+        let legacyPermissionApproval = notificationType == "permission_prompt" && {
+            guard let persistentState else { return true }
+            return persistentState.kind == .ready || persistentState.kind == .running
+        }()
+        let needsApproval = persistentState?.kind == .needsApproval || legacyPermissionApproval
         let notificationKind: Int32
         let connectionState: Int32
-        if let persistentState {
+        if legacyPermissionApproval {
+            notificationKind = PersistentChannelStateKind.needsApproval.reactiveNotificationKindOrdinal
+            connectionState = PersistentChannelStateKind.needsApproval.reactiveChannelConnectionOrdinal
+        } else if let persistentState {
             notificationKind = persistentState.kind.reactiveNotificationKindOrdinal
             connectionState = persistentState.kind.reactiveChannelConnectionOrdinal
         } else {
@@ -536,7 +544,9 @@ class SidebarTabEntry: HoverTrackingButton {
         // Status text is view-level content (not a color) — drive it here.
         // Normal ready/running tabs intentionally stay textless; the color dot
         // carries routine status without appending a noisy elapsed timer.
-        if let persistentState {
+        if needsApproval {
+            statusTextField.stringValue = "Approval"
+        } else if let persistentState {
             switch persistentState.kind {
             case .ready: statusTextField.stringValue = ""
             case .disconnected: statusTextField.stringValue = "disconnected"
@@ -553,9 +563,7 @@ class SidebarTabEntry: HoverTrackingButton {
             case .stale:        statusTextField.stringValue = recoveryAction?.surfaceStatusText ?? "stale"
             }
         }
-        if persistentState == nil, notificationType == "permission_prompt" {
-            statusTextField.stringValue = "Approval"
-        } else if persistentState == nil, notificationType == "idle_prompt" {
+        if persistentState == nil, notificationType == "idle_prompt" {
             statusTextField.stringValue = ""
         } else if recoveryAction == nil, notificationType == nil, hasStaleInteraction {
             statusTextField.stringValue = "stale"
@@ -574,7 +582,8 @@ class SidebarTabEntry: HoverTrackingButton {
         layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
         layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
         labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)
-        let needsApproval = persistentState?.kind == .needsApproval || notificationType == "permission_prompt"
+        labelField.setContentCompressionResistancePriority(needsApproval ? .defaultLow : .defaultHigh, for: .horizontal)
+        statusTextField.setContentCompressionResistancePriority(needsApproval ? .required : .defaultLow, for: .horizontal)
         if needsApproval {
             statusTextField.textColor = nsRowText(for: .sidebarRowNormal) ?? Self.defaultPermissionText
         } else {

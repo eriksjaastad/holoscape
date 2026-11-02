@@ -174,6 +174,38 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertGreaterThan(metadata.frame.width, 100, "Context should use the full second line instead of yielding to status text")
         XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main, approval needed")
         XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+            isActive: false,
+            notificationType: "permission_prompt"
+        )
+        entry.layoutSubtreeIfNeeded()
+        XCTAssertEqual(approval.stringValue, "Approval", "Legacy permission prompts must remain explicit when runtime state is non-optional")
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main, approval needed")
+
+        let longReason = "broker transport failed while restoring the previous session"
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .error, source: .brokerRegistry, reason: longReason),
+            isActive: false,
+            notificationType: "permission_prompt"
+        )
+        entry.layoutSubtreeIfNeeded()
+        XCTAssertEqual(approval.stringValue, longReason)
+        XCTAssertGreaterThan(label.frame.width, 20, "Unbounded error reasons must not collapse the channel label")
+        XCTAssertLessThan(approval.frame.width, approval.intrinsicContentSize.width, "Unbounded status reasons must remain compressible")
+        XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main")
     }
 
     // MARK: - Unread regression guard
