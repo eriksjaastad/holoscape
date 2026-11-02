@@ -515,19 +515,19 @@ class SidebarTabEntry: HoverTrackingButton {
                 return nil
             }
         }()
-        let legacyPermissionApproval = persistentState?.kind != .needsApproval
-            && effectiveNotificationType == "permission_prompt"
-        let needsApproval = persistentState?.kind == .needsApproval || legacyPermissionApproval
+        let needsApproval = effectiveNotificationType == "permission_prompt"
         let notificationKind: Int32
         let connectionState: Int32
-        if legacyPermissionApproval {
+        if needsApproval {
             notificationKind = PersistentChannelStateKind.needsApproval.reactiveNotificationKindOrdinal
             connectionState = PersistentChannelStateKind.needsApproval.reactiveChannelConnectionOrdinal
         } else if let persistentState {
-            notificationKind = persistentState.kind.reactiveNotificationKindOrdinal
+            notificationKind = effectiveNotificationType == "idle_prompt"
+                ? 1
+                : persistentState.kind.reactiveNotificationKindOrdinal
             connectionState = persistentState.kind.reactiveChannelConnectionOrdinal
         } else {
-            switch notificationType {
+            switch effectiveNotificationType {
             case "idle_prompt":       notificationKind = 1
             case "permission_prompt": notificationKind = 2
             default:                  notificationKind = 0
@@ -627,7 +627,24 @@ class SidebarTabEntry: HoverTrackingButton {
             setAccessibilityHelp(navigationContext?.accessibilityDescription)
         }
 
-        if recoveryAction == nil, let effectiveNotificationType {
+        let persistentAccessibilityValue: String? = {
+            guard let persistentState else { return nil }
+            switch persistentState.kind {
+            case .needsApproval:
+                return "needs-approval"
+            case .disconnected:
+                return "disconnected"
+            case .error:
+                return persistentState.reason.map { "error: \($0)" } ?? "error"
+            case .stale:
+                return persistentState.reason.map { "stale: \($0)" } ?? "stale"
+            case .ready, .running:
+                return nil
+            }
+        }()
+        if recoveryAction == nil, let persistentAccessibilityValue {
+            setAccessibilityValue(persistentAccessibilityValue)
+        } else if recoveryAction == nil, let effectiveNotificationType {
             switch effectiveNotificationType {
             case "idle_prompt": setAccessibilityValue("ready")
             case "permission_prompt": setAccessibilityValue("needs-approval")

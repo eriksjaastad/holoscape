@@ -206,13 +206,24 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertLessThan(approval.frame.width, approval.intrinsicContentSize.width, "Unbounded status reasons must remain compressible")
         XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
         XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main")
-        XCTAssertEqual(entry.accessibilityValue() as? String, "normal", "Superseded permission state must not leak through accessibility value")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "error: \(longReason)", "Persistent error truth must supersede permission accessibility state")
         XCTAssertNil(entry.layer?.backgroundColor, "Superseded permission state must not leave a fallback approval fill")
         assertCGColorComponents(
             label.textColor?.cgColor,
             NSColor.lightGray.cgColor,
             reason: "Superseded permission state must not leave fallback approval text"
         )
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .stale,
+            persistentState: PersistentChannelState(kind: .stale, source: .brokerRegistry, reason: "broker session unavailable"),
+            isActive: false
+        )
+        XCTAssertEqual(entry.accessibilityValue() as? String, "stale: broker session unavailable")
     }
 
     // MARK: - Unread regression guard
@@ -385,18 +396,27 @@ final class SidebarViewSkinContextTests: XCTestCase {
             let label: String
             let hasUnread: Bool
             let notificationType: String?
+            let persistentState: PersistentChannelState?
             let expectedHex: String
         }
         let cases: [Case] = [
-            Case(label: "unread", hasUnread: true, notificationType: nil, expectedHex: "#203447"),
-            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", expectedHex: "#173a35"),
-            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", expectedHex: "#4a391f"),
+            Case(label: "unread", hasUnread: true, notificationType: nil, persistentState: nil, expectedHex: "#203447"),
+            Case(label: "idle", hasUnread: false, notificationType: "idle_prompt", persistentState: nil, expectedHex: "#173a35"),
+            Case(
+                label: "idle-running",
+                hasUnread: false,
+                notificationType: "idle_prompt",
+                persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+                expectedHex: "#173a35"
+            ),
+            Case(label: "permission", hasUnread: false, notificationType: "permission_prompt", persistentState: nil, expectedHex: "#4a391f"),
         ]
         for testCase in cases {
             let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 200, height: 36))
             entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
             entry.configure(label: testCase.label, hasUnread: testCase.hasUnread,
-                            state: .active, isActive: false,
+                            state: .active, persistentState: testCase.persistentState,
+                            isActive: false,
                             notificationType: testCase.notificationType)
             let expected = NSColor(hex: testCase.expectedHex)?.cgColor ?? .clear
             assertCGColorComponentsHex(entry.layer?.backgroundColor, expected,
