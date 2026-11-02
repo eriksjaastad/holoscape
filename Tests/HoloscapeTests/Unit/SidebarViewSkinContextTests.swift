@@ -143,6 +143,39 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
     }
 
+    func testNeedsApprovalKeepsVisibleStatusAndContextAtCompactWidth() throws {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
+        let persistentState = PersistentChannelState(kind: .needsApproval, source: .agentAdapter)
+        let context = ChannelNavigationContext(
+            typeLabel: "Agent",
+            identityLabel: "Codex",
+            locationPath: "/Users/test/projects/holoscape-agent"
+        )
+
+        entry.configure(
+            label: "Codex · HoloScape · main",
+            channelType: .agentDirect,
+            navigationContext: context,
+            hasUnread: false,
+            state: .active,
+            persistentState: persistentState,
+            isActive: true
+        )
+        entry.layoutSubtreeIfNeeded()
+
+        let textFields = entry.subviews.compactMap { $0 as? NSTextField }
+        let approval = try XCTUnwrap(textFields.first { $0.stringValue == "Approval" })
+        let metadata = try XCTUnwrap(textFields.first { $0.stringValue == "Agent • Codex • holoscape-agent" })
+        let label = try XCTUnwrap(textFields.first { $0.stringValue == "Codex · HoloScape · main" })
+
+        XCTAssertGreaterThanOrEqual(approval.frame.width, approval.intrinsicContentSize.width - 1)
+        XCTAssertLessThanOrEqual(approval.frame.maxX, entry.bounds.maxX - 5)
+        XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
+        XCTAssertGreaterThan(metadata.frame.width, 100, "Context should use the full second line instead of yielding to status text")
+        XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main, approval needed")
+        XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
+    }
+
     // MARK: - Unread regression guard
 
     /// Unread state flows through a `channelUnread: { $gte: 1 }` state
