@@ -19,7 +19,7 @@ protocol NotificationCenterClient: AnyObject {
 final class SystemNotificationCenterClient: NotificationCenterClient {
     private let center: UNUserNotificationCenter
 
-    init(center: UNUserNotificationCenter = .current()) {
+    init(center: UNUserNotificationCenter) {
         self.center = center
     }
 
@@ -49,9 +49,28 @@ class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     private let appIsActive: () -> Bool
     weak var channelSwitchDelegate: NotificationChannelSwitchDelegate?
 
+    static func makeForApplication(
+        configService: ConfigService,
+        bundleURL: URL = Bundle.main.bundleURL,
+        notificationCenterFactory: () -> NotificationCenterClient = {
+            SystemNotificationCenterClient(center: .current())
+        },
+        appIsActive: @escaping () -> Bool = { NSApp.isActive }
+    ) -> NotificationService? {
+        guard bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+            NSLog("Desktop notifications disabled because Holoscape is not running from an app bundle")
+            return nil
+        }
+        return NotificationService(
+            configService: configService,
+            notificationCenter: notificationCenterFactory(),
+            appIsActive: appIsActive
+        )
+    }
+
     init(
         configService: ConfigService,
-        notificationCenter: NotificationCenterClient = SystemNotificationCenterClient(),
+        notificationCenter: NotificationCenterClient,
         appIsActive: @escaping () -> Bool = { NSApp.isActive }
     ) {
         self.configService = configService
