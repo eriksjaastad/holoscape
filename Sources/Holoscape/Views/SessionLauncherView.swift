@@ -112,16 +112,23 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
         guard let layer else { return }
         guard let ctx = skinContext else {
             layer.backgroundColor = Self.containerBg
+            applyLauncherFont(NSFont.systemFont(ofSize: 13))
             return
         }
         let resolved = ctx.currentState(for: .sessionLauncherContainer)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale)
-        if let font = ctx.resolvedFont(for: .sessionLauncherContainer) {
-            searchField.font = font
-        }
+        applyLauncherFont(
+            ctx.resolvedFont(for: .sessionLauncherRow)
+                ?? NSFont.systemFont(ofSize: 13)
+        )
         ctx.applyBorderAndCorner(to: layer, from: resolved)
         applyRefreshButtonFill()
+    }
+
+    private func applyLauncherFont(_ font: NSFont) {
+        searchField.font = font
+        resultButtons.forEach { $0.font = font }
     }
 
     private func applyRefreshButtonFill() {
@@ -478,7 +485,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
                 button.bezelStyle = .inline
                 button.isBordered = false
                 button.alignment = .left
-                button.font = skinContext?.resolvedFont(for: .sessionLauncherContainer)
+                button.font = skinContext?.resolvedFont(for: .sessionLauncherRow)
                     ?? NSFont.systemFont(ofSize: 13)
                 button.lineBreakMode = .byTruncatingTail
                 button.setAccessibilityLabel(item.label)

@@ -639,6 +639,10 @@ extension MainWindowController {
         let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: contentSize))
         freshContent.wantsLayer = true
         newWindow.contentView = freshContent
+        newWindow.setFrame(
+            newWindow.constrainFrameRect(newWindow.frame, to: oldWindow.screen),
+            display: false
+        )
         animationEngine.hostView = freshContent
 
         for child in oldWindow.childWindows ?? [] {
