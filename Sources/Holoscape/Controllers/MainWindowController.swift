@@ -250,7 +250,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
     private let minimumMainContentWidth: CGFloat = 480
-    private let minimumWindowContentSize = NSSize(width: 720, height: 500)
+    static let minimumWindowContentSize = NSSize(width: 720, height: 500)
 
     internal var activeSkinLayoutForTesting: SkinLayoutDescriptor? { activeSkinLayout }
     internal var channelVesselViewForTesting: ChannelVesselView { channelVesselView }
@@ -293,7 +293,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         // See ReaderModeController.swift and BugReportDialog.swift for
         // the same clear elsewhere in the codebase.
         self.window.isReleasedWhenClosed = false
-        self.window.contentMinSize = minimumWindowContentSize
+        self.window.contentMinSize = Self.minimumWindowContentSize
         // Swap in ShapedContentView as the content view from the start.
         // With a nil sampler, `hitTest` delegates to `super.hitTest` and
         // behaves identically to a plain NSView — no behavior change
@@ -1289,7 +1289,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 }
             } else {
                 // Restore a sane range for user-resizable titled windows.
-                window.contentMinSize = minimumWindowContentSize
+                window.contentMinSize = Self.minimumWindowContentSize
                 window.contentMaxSize = NSSize(
                     width: CGFloat.greatestFiniteMagnitude,
                     height: CGFloat.greatestFiniteMagnitude

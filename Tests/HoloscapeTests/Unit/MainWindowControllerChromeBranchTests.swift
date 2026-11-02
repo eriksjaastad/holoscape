@@ -126,6 +126,8 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertTrue(controller.window.styleMask.contains(.titled))
         XCTAssertTrue(controller.window.styleMask.contains(.resizable),
                       "Exiting chrome must restore standard titled-window resize behavior")
+        XCTAssertEqual(controller.window.contentMinSize, NSSize(width: 720, height: 500),
+                       "Exiting chrome must restore the standard minimum window size")
         let root = try XCTUnwrap(controller.window.contentView)
         XCTAssertTrue(controller.appContentHost.superview === root)
         XCTAssertEqual(hostAttachmentConstraints(for: controller.appContentHost, in: root).count, 4,

@@ -623,6 +623,7 @@ extension MainWindowController {
             defer: false
         )
         newWindow.isReleasedWhenClosed = false
+        newWindow.contentMinSize = Self.minimumWindowContentSize
         newWindow.isOpaque = true
         newWindow.backgroundColor = .windowBackgroundColor
         newWindow.title = oldWindow.title
