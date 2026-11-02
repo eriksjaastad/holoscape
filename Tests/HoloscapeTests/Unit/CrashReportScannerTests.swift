@@ -67,6 +67,18 @@ final class CrashReportScannerTests: XCTestCase {
         XCTAssertTrue(result.failures.isEmpty)
     }
 
+    func testFirstLaunchSkipsCrashScanningWithoutPriorSessionBoundary() {
+        var scanCount = 0
+
+        let result = AppDelegate.scanCrashReports(lastLaunch: nil) { _ in
+            scanCount += 1
+            return CrashReportScanResult(logs: [], failures: [])
+        }
+
+        XCTAssertNil(result)
+        XCTAssertEqual(scanCount, 0)
+    }
+
     func testAppDelegateReportsEveryCrashScanFailure() {
         let failures = [
             CrashReportScanFailure(
