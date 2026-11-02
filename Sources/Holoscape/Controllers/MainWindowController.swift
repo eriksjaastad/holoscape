@@ -236,8 +236,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private var inputHeightConstraint: NSLayoutConstraint?
     private var inputResizeHandleHeightConstraint: NSLayoutConstraint?
     private var userInputPanelHeight: CGFloat?
-    private let inputMinHeight: CGFloat = 40
-    private let inputMaxHeight: CGFloat = 180
+    private let inputMinHeight: CGFloat = 56
+    private let inputMaxHeight: CGFloat = 220
     private let inputResizeHandleHeight: CGFloat = 10
 
     /// Coalesces multiple refreshAllTabs() calls into a single
@@ -249,6 +249,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
+    private let minimumMainContentWidth: CGFloat = 480
+    static let minimumWindowContentSize = NSSize(width: 720, height: 500)
 
     internal var activeSkinLayoutForTesting: SkinLayoutDescriptor? { activeSkinLayout }
     internal var channelVesselViewForTesting: ChannelVesselView { channelVesselView }
@@ -269,6 +271,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
     internal var chromeDragOverlaysForTesting: [WindowDragOverlay] { chromeDragOverlays }
     internal var splitPaneManagerForTesting: SplitPaneManager { splitPaneManager }
+    internal var splitViewForTesting: NSSplitView { splitView }
 
     init(channelManager: ChannelManager, configService: ConfigService) {
         self.channelManager = channelManager
@@ -290,6 +293,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         // See ReaderModeController.swift and BugReportDialog.swift for
         // the same clear elsewhere in the codebase.
         self.window.isReleasedWhenClosed = false
+        self.window.contentMinSize = Self.minimumWindowContentSize
         // Swap in ShapedContentView as the content view from the start.
         // With a nil sampler, `hitTest` delegates to `super.hitTest` and
         // behaves identically to a plain NSView — no behavior change
@@ -594,7 +598,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             composerModeControl.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor, constant: 12),
             composerModeControl.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor, constant: -12),
             composerModeControl.bottomAnchor.constraint(equalTo: rightPaneContentHost.bottomAnchor, constant: -8),
-            composerModeControl.heightAnchor.constraint(equalToConstant: 28),
+            composerModeControl.heightAnchor.constraint(equalToConstant: 30),
         ])
 
         // Input box auto-grow: start at min height, grow up to max
@@ -1285,7 +1289,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 }
             } else {
                 // Restore a sane range for user-resizable titled windows.
-                window.contentMinSize = NSSize(width: 400, height: 300)
+                window.contentMinSize = Self.minimumWindowContentSize
                 window.contentMaxSize = NSSize(
                     width: CGFloat.greatestFiniteMagnitude,
                     height: CGFloat.greatestFiniteMagnitude
@@ -1966,7 +1970,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        return 350  // maximum sidebar width
+        // Keep the existing sidebar cap without allowing it to consume the
+        // terminal/composer. Constraining the divider instead of adding a
+        // required width constraint prevents AppKit from growing the window
+        // off-screen to satisfy Auto Layout while the user drags.
+        return min(
+            350,
+            max(0, splitView.bounds.width - splitView.dividerThickness - minimumMainContentWidth)
+        )
     }
 
     func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
@@ -2966,7 +2977,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
               let textContainer = inputBox.textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
         let usedHeight = layoutManager.usedRect(for: textContainer).height
-        let padding: CGFloat = 12  // top + bottom inset
+        let padding = inputBox.textContainerInset.height * 2
         let minimum = userInputPanelHeight ?? inputMinHeight
         let newHeight = min(max(usedHeight + padding, minimum), inputMaxHeight)
         inputHeightConstraint?.constant = newHeight

@@ -615,14 +615,20 @@ extension MainWindowController {
     func reconstructAsTitled(size: NSSize) -> NSWindow {
         let oldWindow = window
         let wasKey = oldWindow.isKeyWindow
+        let minimumSize = Self.minimumWindowContentSize
+        let contentSize = NSSize(
+            width: max(size.width, minimumSize.width),
+            height: max(size.height, minimumSize.height)
+        )
 
         let newWindow = NSWindow(
-            contentRect: NSRect(origin: oldWindow.frame.origin, size: size),
+            contentRect: NSRect(origin: oldWindow.frame.origin, size: contentSize),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         newWindow.isReleasedWhenClosed = false
+        newWindow.contentMinSize = Self.minimumWindowContentSize
         newWindow.isOpaque = true
         newWindow.backgroundColor = .windowBackgroundColor
         newWindow.title = oldWindow.title
@@ -630,9 +636,13 @@ extension MainWindowController {
         newWindow.titlebarAppearsTransparent = true
         newWindow.collectionBehavior = oldWindow.collectionBehavior.union([.fullScreenPrimary])
 
-        let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: size))
+        let freshContent = ShapedContentView(frame: NSRect(origin: .zero, size: contentSize))
         freshContent.wantsLayer = true
         newWindow.contentView = freshContent
+        newWindow.setFrame(
+            newWindow.constrainFrameRect(newWindow.frame, to: oldWindow.screen),
+            display: false
+        )
         animationEngine.hostView = freshContent
 
         for child in oldWindow.childWindows ?? [] {

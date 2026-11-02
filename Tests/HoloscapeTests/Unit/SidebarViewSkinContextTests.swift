@@ -143,6 +143,20 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityHelp(), "Agent, Codex, /Users/test/projects/holoscape-agent")
     }
 
+    func testDefaultSidebarTypographyIsProportionalAndReadable() throws {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 54))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+        entry.configure(label: "Workspace", hasUnread: false, state: .active, isActive: true)
+
+        let fields = entry.subviews.compactMap { $0 as? NSTextField }
+        let label = try XCTUnwrap(fields.first { $0.stringValue == "Workspace" })
+        let metadata = try XCTUnwrap(fields.first { $0.stringValue == "Shell" })
+
+        XCTAssertFalse(try XCTUnwrap(label.font).fontDescriptor.symbolicTraits.contains(.monoSpace))
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(label.font).pointSize, 13)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(metadata.font).pointSize, 11)
+    }
+
     func testNeedsApprovalKeepsVisibleStatusAndContextAtCompactWidth() throws {
         let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
         let persistentState = PersistentChannelState(kind: .needsApproval, source: .agentAdapter)

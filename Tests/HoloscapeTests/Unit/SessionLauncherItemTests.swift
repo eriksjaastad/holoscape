@@ -149,26 +149,43 @@ final class SessionLauncherItemTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let expected = try XCTUnwrap(NSFont(name: "Menlo", size: 17))
-        let surface = SkinContext.ResolvedSurface(
-            fill: .color(.black),
-            border: nil,
-            corner: .uniform(0),
-            padding: NSEdgeInsets(),
-            shadow: nil,
-            font: expected,
-            text: SkinContext.ResolvedText(color: .white, shadow: nil),
-            animation: nil,
-            states: []
-        )
+        let surface = fontSurface(expected)
         let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
         launcher.skinContext = SkinContext(
-            surfaces: [.sessionLauncherContainer: surface],
+            surfaces: [.sessionLauncherRow: surface],
             reactive: ReactiveUniformSnapshot()
         )
         launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
 
+        XCTAssertEqual(launcher.comboBoxForTesting.font?.fontDescriptor.postscriptName, expected.fontDescriptor.postscriptName)
+        XCTAssertEqual(launcher.comboBoxForTesting.font?.pointSize, 17)
         XCTAssertEqual(launcher.firstResultFontForTesting?.fontDescriptor.postscriptName, expected.fontDescriptor.postscriptName)
         XCTAssertEqual(launcher.firstResultFontForTesting?.pointSize, 17)
+    }
+
+    func testLauncherFontsResetWhenReturningToDefault() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("launcher-font-reset-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let customFont = try XCTUnwrap(NSFont(name: "Menlo", size: 17))
+        let customSurface = fontSurface(customFont)
+        let launcher = SessionLauncherView(frame: NSRect(x: 0, y: 0, width: 500, height: 36))
+        launcher.skinContext = SkinContext(
+            surfaces: [
+                .sessionLauncherContainer: customSurface,
+                .sessionLauncherRow: customSurface,
+            ],
+            reactive: ReactiveUniformSnapshot()
+        )
+        launcher.updateItems(configured: [], builtIn: SessionProfileManager.builtInProfiles, discovered: [], recent: [], root: root)
+
+        launcher.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let defaultFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+        XCTAssertEqual(launcher.comboBoxForTesting.font?.fontName, defaultFont.fontName)
+        XCTAssertEqual(launcher.comboBoxForTesting.font?.pointSize, defaultFont.pointSize)
+        XCTAssertEqual(launcher.firstResultFontForTesting?.fontName, defaultFont.fontName)
+        XCTAssertEqual(launcher.firstResultFontForTesting?.pointSize, defaultFont.pointSize)
     }
 
     func testRefreshPublishesProgressAndCoalescesRepeatedRequests() throws {
@@ -237,5 +254,19 @@ final class SessionLauncherItemTests: XCTestCase {
         XCTAssertEqual(launcher.refreshOutcomeForTesting, .unavailable("Session profiles are unavailable."))
         XCTAssertEqual(launcher.refreshStatusTextForTesting, "Refresh unavailable. Showing current sessions.")
         XCTAssertTrue(launcher.refreshButtonForTesting.isEnabled)
+    }
+
+    private func fontSurface(_ font: NSFont) -> SkinContext.ResolvedSurface {
+        SkinContext.ResolvedSurface(
+            fill: .color(.black),
+            border: nil,
+            corner: .uniform(0),
+            padding: NSEdgeInsets(),
+            shadow: nil,
+            font: font,
+            text: SkinContext.ResolvedText(color: .white, shadow: nil),
+            animation: nil,
+            states: []
+        )
     }
 }
