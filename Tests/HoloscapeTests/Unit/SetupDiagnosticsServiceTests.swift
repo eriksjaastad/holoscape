@@ -166,6 +166,22 @@ final class SetupDiagnosticsServiceTests: XCTestCase {
         })
     }
 
+    func testSnapshotReportsNotificationsUnavailableOutsideAppBundle() throws {
+        let service = SetupDiagnosticsService(
+            configService: ConfigService(configDir: temporaryConfigDir()),
+            accessibilityTrustProvider: { true },
+            diagnosticsDirectoryReadableProvider: { true },
+            brokerFailureProvider: { nil }
+        )
+
+        let snapshot = service.makeSnapshot(notificationStatus: nil)
+        let item = try XCTUnwrap(snapshot.items.first { $0.title == "Notifications" })
+
+        XCTAssertEqual(item.severity, .warning)
+        XCTAssertTrue(item.detail.contains("not running from Holoscape.app"))
+        XCTAssertNil(item.settingsURL)
+    }
+
     func testSnapshotSurfacesProjectTrackerPluginConfigurationFailureWithoutBlockingCore() {
         let configService = ConfigService(configDir: temporaryConfigDir())
         let failure = PluginFailureState(

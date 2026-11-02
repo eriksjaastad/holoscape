@@ -22,6 +22,10 @@ final class NotificationServiceTests: XCTestCase {
         func add(_ request: UNNotificationRequest) {
             addRequests.append(request)
         }
+
+        func getNotificationSettings(
+            completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void
+        ) {}
     }
 
     private final class TestChannel: ChannelController {
@@ -64,34 +68,30 @@ final class NotificationServiceTests: XCTestCase {
     func testMakeForApplicationSkipsSystemNotificationCenterOutsideAppBundle() {
         var notificationCenterFactoryCallCount = 0
 
-        let service = NotificationService.makeForApplication(
-            configService: ConfigService(configDir: temporaryConfigDir()),
+        let center = ApplicationNotificationCenter.makeClient(
             bundleURL: URL(fileURLWithPath: "/project/.build/arm64-apple-macosx/debug"),
             notificationCenterFactory: {
                 notificationCenterFactoryCallCount += 1
                 return FakeNotificationCenter()
-            },
-            appIsActive: { false }
+            }
         )
 
-        XCTAssertNil(service)
+        XCTAssertNil(center)
         XCTAssertEqual(notificationCenterFactoryCallCount, 0)
     }
 
     func testMakeForApplicationCreatesNotificationServiceInsideAppBundle() {
         var notificationCenterFactoryCallCount = 0
 
-        let service = NotificationService.makeForApplication(
-            configService: ConfigService(configDir: temporaryConfigDir()),
+        let center = ApplicationNotificationCenter.makeClient(
             bundleURL: URL(fileURLWithPath: "/project/build/Holoscape.app"),
             notificationCenterFactory: {
                 notificationCenterFactoryCallCount += 1
                 return FakeNotificationCenter()
-            },
-            appIsActive: { false }
+            }
         )
 
-        XCTAssertNotNil(service)
+        XCTAssertNotNil(center)
         XCTAssertEqual(notificationCenterFactoryCallCount, 1)
     }
 

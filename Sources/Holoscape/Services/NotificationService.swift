@@ -14,6 +14,9 @@ protocol NotificationCenterClient: AnyObject {
         completionHandler: @escaping @Sendable (Bool, Error?) -> Void
     )
     func add(_ request: UNNotificationRequest)
+    func getNotificationSettings(
+        completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void
+    )
 }
 
 final class SystemNotificationCenterClient: NotificationCenterClient {
@@ -38,6 +41,28 @@ final class SystemNotificationCenterClient: NotificationCenterClient {
     func add(_ request: UNNotificationRequest) {
         center.add(request)
     }
+
+    func getNotificationSettings(
+        completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void
+    ) {
+        center.getNotificationSettings(completionHandler: completionHandler)
+    }
+}
+
+@MainActor
+enum ApplicationNotificationCenter {
+    static func makeClient(
+        bundleURL: URL = Bundle.main.bundleURL,
+        notificationCenterFactory: () -> NotificationCenterClient = {
+            SystemNotificationCenterClient(center: .current())
+        }
+    ) -> NotificationCenterClient? {
+        guard bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+            NSLog("Desktop notifications disabled because Holoscape is not running from an app bundle")
+            return nil
+        }
+        return notificationCenterFactory()
+    }
 }
 
 @MainActor
@@ -51,19 +76,13 @@ class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     static func makeForApplication(
         configService: ConfigService,
-        bundleURL: URL = Bundle.main.bundleURL,
-        notificationCenterFactory: () -> NotificationCenterClient = {
-            SystemNotificationCenterClient(center: .current())
-        },
+        notificationCenter: NotificationCenterClient? = ApplicationNotificationCenter.makeClient(),
         appIsActive: @escaping () -> Bool = { NSApp.isActive }
     ) -> NotificationService? {
-        guard bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
-            NSLog("Desktop notifications disabled because Holoscape is not running from an app bundle")
-            return nil
-        }
+        guard let notificationCenter else { return nil }
         return NotificationService(
             configService: configService,
-            notificationCenter: notificationCenterFactory(),
+            notificationCenter: notificationCenter,
             appIsActive: appIsActive
         )
     }
