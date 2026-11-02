@@ -32,6 +32,15 @@ class InputBoxView: NSTextView {
     // because `SkinContext.builtInDefaults` seeds the same values.
     private static let fieldBg = NSColor(hex: "#182331")!
     private static let fieldText = NSColor.white
+    private static let defaultFont = NSFont.systemFont(ofSize: 14, weight: .regular)
+    private static let defaultInset = NSSize(width: 12, height: 10)
+
+    private static var composerParagraphStyle: NSParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = 20
+        paragraph.lineSpacing = 2
+        return paragraph
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -67,7 +76,10 @@ class InputBoxView: NSTextView {
     }
 
     private func setup() {
-        font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        font = Self.defaultFont
+        textContainerInset = Self.defaultInset
+        defaultParagraphStyle = Self.composerParagraphStyle
+        typingAttributes[.paragraphStyle] = Self.composerParagraphStyle
         backgroundColor = Self.fieldBg
         textColor = Self.fieldText
         insertionPointColor = Self.fieldText
@@ -106,6 +118,7 @@ class InputBoxView: NSTextView {
             backgroundColor = Self.fieldBg
             textColor = Self.fieldText
             insertionPointColor = Self.fieldText
+            font = Self.defaultFont
             return
         }
 
@@ -125,6 +138,8 @@ class InputBoxView: NSTextView {
         if let font = ctx.resolvedFont(for: .inputBoxField) {
             self.font = font
         }
+        typingAttributes[.font] = font ?? Self.defaultFont
+        typingAttributes[.paragraphStyle] = defaultParagraphStyle ?? Self.composerParagraphStyle
         // Amplify Task 15 — border/corner/shadow on the input field's
         // backing layer. NSTextView's layer exists when wantsLayer is
         // set by the scroll-view host; guarded for safety.

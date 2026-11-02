@@ -186,7 +186,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
 
         searchField.onActivate = { [weak self] in self?.showPopover() }
         searchField.delegate = self
-        searchField.font = NSFont.systemFont(ofSize: 12)
+        searchField.font = NSFont.systemFont(ofSize: 13)
         searchField.placeholderString = "New channel, directory, or ssh host"
         searchField.toolTip = "Search channel actions, child directories, saved sessions, or type a command such as ssh host."
         searchField.setAccessibilityLabel("New channel launcher")
@@ -256,7 +256,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
 
         resultsStack.orientation = .vertical
         resultsStack.alignment = .leading
-        resultsStack.spacing = 4
+        resultsStack.spacing = 6
         resultsStack.translatesAutoresizingMaskIntoConstraints = false
 
         let documentView = LauncherResultsDocumentView()
@@ -479,7 +479,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
                 button.isBordered = false
                 button.alignment = .left
                 button.font = skinContext?.resolvedFont(for: .sessionLauncherContainer)
-                    ?? NSFont.systemFont(ofSize: 12)
+                    ?? NSFont.systemFont(ofSize: 13)
                 button.lineBreakMode = .byTruncatingTail
                 button.setAccessibilityLabel(item.label)
                 button.setAccessibilityHelp(item.detail)
@@ -488,7 +488,7 @@ class SessionLauncherView: NSView, NSSearchFieldDelegate {
                 resultsStack.addArrangedSubview(button)
                 resultButtons.append(button)
                 button.widthAnchor.constraint(equalTo: resultsStack.widthAnchor).isActive = true
-                button.heightAnchor.constraint(greaterThanOrEqualToConstant: item.detail == nil ? 26 : 38).isActive = true
+                button.heightAnchor.constraint(greaterThanOrEqualToConstant: item.detail == nil ? 30 : 42).isActive = true
             }
         }
         if !visibleItems.isEmpty {

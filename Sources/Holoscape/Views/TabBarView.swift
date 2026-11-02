@@ -362,7 +362,7 @@ class TabBarView: NSView {
         // wants per-state fonts in the future, that's a forward-compat
         // extension (ResolvedSurface.font varies by surface, which is
         // already the model). When the manifest omits font, `resolvedFont`
-        // returns nil and we preserve the pre-Amplify monospaced font
+        // returns nil and we preserve the native proportional font
         // set in `makeTabButton`.
         if let font = skinContext?.resolvedFont(for: .tabBarTabActive) {
             button.font = font
@@ -393,7 +393,7 @@ class TabBarView: NSView {
         button.channelId = channel.channelId
         button.bezelStyle = .recessed
         button.isBordered = false
-        button.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         button.wantsLayer = true
         button.layer?.cornerRadius = 4
 

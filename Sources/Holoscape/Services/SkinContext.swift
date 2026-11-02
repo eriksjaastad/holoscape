@@ -839,7 +839,7 @@ final class SkinContext {
     private static func defaultText(for key: SurfaceKey) -> ResolvedText {
         switch key {
         case .sidebarRowNormal, .sidebarRowHover:
-            return ResolvedText(color: NSColor(hex: "#9db0c3")!, shadow: nil)
+            return ResolvedText(color: NSColor(hex: "#c5d4df")!, shadow: nil)
         default:
             return ResolvedText(color: NSColor(hex: "#e7f2f8")!, shadow: nil)
         }
@@ -897,7 +897,7 @@ final class SkinContext {
     private static func defaultFont(for key: SurfaceKey) -> NSFont? {
         switch key {
         case .inputBoxField, .inputBoxPlaceholder:
-            return NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+            return NSFont.systemFont(ofSize: 14, weight: .regular)
         case .tabBarTabActive, .tabBarTabIdle, .tabBarTabPermission,
              .tabBarTabNormal, .sidebarRowNormal, .sidebarRowSelected,
              .sidebarRowHover, .sidebarSectionHeader, .sessionLauncherRow,

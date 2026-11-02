@@ -5,6 +5,23 @@ import AppKit
 @MainActor
 final class MainWindowControllerVesselLayoutTests: XCTestCase {
 
+    func testDefaultWindowPreservesAUsableMainContentWidth() throws {
+        let controller = try makeController(persistedSkin: "Default")
+        drainMainQueue()
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(controller.window.contentMinSize.width, 720)
+        XCTAssertEqual(controller.window.contentMinSize.height, 500)
+
+        let splitView = controller.splitViewForTesting
+        let proposed = controller.splitView(
+            splitView,
+            constrainMaxCoordinate: splitView.bounds.width,
+            ofSubviewAt: 0
+        )
+        XCTAssertEqual(proposed, min(350, splitView.bounds.width - 480), accuracy: 0.5)
+    }
+
     func testMercuryDeckWrapsSidebarAndScreenContentInVessels() throws {
         let controller = try makeController(persistedSkin: "MercuryDeck")
         drainMainQueue()

@@ -29,7 +29,7 @@ class SidebarView: NSView {
     private var tabEntries: [UUID: SidebarTabEntry] = [:]
     private var activeChannelId: UUID?
 
-    private let entryHeight: CGFloat = 48
+    private let entryHeight: CGFloat = 54
     private let sidebarWidth: CGFloat = 220
 
     override init(frame: NSRect) {
@@ -327,8 +327,8 @@ class SidebarTabEntry: HoverTrackingButton {
     }
 
     /// Amplify Task 13 — apply skin-defined font to the row's labels.
-    /// Nil context or nil resolved font = preserve the init-time
-    /// monospaced defaults so non-skin paths look unchanged.
+    /// Nil context or nil resolved font preserves the native proportional
+    /// defaults used by standalone fixtures and the built-in appearance.
     private func applySkinFonts() {
         guard let ctx = skinContext else { return }
         if let font = ctx.resolvedFont(for: .sidebarRowNormal) {
@@ -408,14 +408,14 @@ class SidebarTabEntry: HoverTrackingButton {
         wantsLayer = true
         layer?.cornerRadius = 4
 
-        labelField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-        labelField.textColor = NSColor.lightGray
+        labelField.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        labelField.textColor = NSColor.labelColor
         labelField.lineBreakMode = .byTruncatingTail
         labelField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         labelField.translatesAutoresizingMaskIntoConstraints = false
 
-        metadataField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        metadataField.textColor = NSColor.secondaryLabelColor
+        metadataField.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        metadataField.textColor = NSColor(hex: "#aebfcd")!
         metadataField.lineBreakMode = .byTruncatingMiddle
         metadataField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         metadataField.translatesAutoresizingMaskIntoConstraints = false
@@ -430,8 +430,8 @@ class SidebarTabEntry: HoverTrackingButton {
         statusIndicator.layer?.cornerRadius = 3
         statusIndicator.translatesAutoresizingMaskIntoConstraints = false
 
-        statusTextField.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        statusTextField.textColor = NSColor.gray
+        statusTextField.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        statusTextField.textColor = NSColor(hex: "#9db0c3")!
         statusTextField.lineBreakMode = .byTruncatingTail
         statusTextField.setContentHuggingPriority(.required, for: .horizontal)
         statusTextField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -462,11 +462,11 @@ class SidebarTabEntry: HoverTrackingButton {
             statusIndicator.heightAnchor.constraint(equalToConstant: 6),
 
             labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
-            labelField.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            labelField.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             labelField.trailingAnchor.constraint(lessThanOrEqualTo: statusTextField.leadingAnchor, constant: -6),
 
             metadataField.leadingAnchor.constraint(equalTo: labelField.leadingAnchor),
-            metadataField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            metadataField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
             metadataField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
 
             statusTextField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
@@ -596,7 +596,7 @@ class SidebarTabEntry: HoverTrackingButton {
         if needsApproval {
             statusTextField.textColor = nsRowText(for: .sidebarRowNormal) ?? Self.defaultPermissionText
         } else {
-            statusTextField.textColor = NSColor.gray
+            statusTextField.textColor = NSColor(hex: "#9db0c3")!
         }
 
         // Status indicator dot flows from `sidebarRowIndicator`'s

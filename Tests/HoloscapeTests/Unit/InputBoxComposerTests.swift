@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class InputBoxComposerTests: XCTestCase {
+    func testDefaultComposerUsesReadableNativeTypographyAndInsets() throws {
+        let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))
+        let font = try XCTUnwrap(view.font)
+
+        XCTAssertFalse(font.fontDescriptor.symbolicTraits.contains(.monoSpace))
+        XCTAssertEqual(font.pointSize, 14)
+        XCTAssertGreaterThanOrEqual(view.textContainerInset.width, 12)
+        XCTAssertGreaterThanOrEqual(view.textContainerInset.height, 10)
+        XCTAssertGreaterThanOrEqual(view.defaultParagraphStyle?.minimumLineHeight ?? 0, 20)
+    }
+
     func testEnterSubmitsExactTextAndClearsDraft() {
         let spy = InputBoxDelegateSpy()
         let view = InputBoxView(frame: NSRect(x: 0, y: 0, width: 400, height: 80))

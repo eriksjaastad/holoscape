@@ -198,7 +198,7 @@ final class SkinLibraryService {
                 "sidebar.row.normal": SurfaceDescriptor(font: .init(family: "SF Pro", size: 13, weight: "regular"), text: .init(color: "#c5d4df", shadow: nil)),
                 "sidebar.row.selected": SurfaceDescriptor(fill: .color("#24485b"), corner: .uniform(8), font: .init(family: "SF Pro", size: 13, weight: "semibold"), text: .init(color: "#ffffff", shadow: nil)),
                 "inputBox.container": SurfaceDescriptor(fill: .color("#0c1118"), border: .init(color: "#2b3d4e", width: 1), corner: .uniform(12), padding: .init(top: 10, right: 12, bottom: 10, left: 12)),
-                "inputBox.field": SurfaceDescriptor(fill: .color("#101923"), corner: .uniform(9), font: .init(family: "SF Mono", size: 13, weight: "regular"), text: .init(color: "#e7f2f8", shadow: nil)),
+                "inputBox.field": SurfaceDescriptor(fill: .color("#101923"), corner: .uniform(9), font: .init(family: "SF Pro", size: 14, weight: "regular"), text: .init(color: "#e7f2f8", shadow: nil)),
                 "sessionLauncher.container": SurfaceDescriptor(fill: .color("#111b26"), border: .init(color: "#33495d", width: 1), corner: .uniform(14)),
                 "sessionLauncher.row": SurfaceDescriptor(corner: .uniform(8), font: .init(family: "SF Pro", size: 13, weight: "medium"), text: .init(color: "#e7f2f8", shadow: nil)),
                 "settings.panel": SurfaceDescriptor(fill: .color("#121b27"), border: .init(color: "#2b3d4e", width: 1), corner: .uniform(14))

@@ -31,7 +31,8 @@ final class SkinLibraryServiceTests: XCTestCase {
         XCTAssertTrue(library.isUserManaged(name: "Aurora"))
         let manifest = try XCTUnwrap(engine.loadSkin(named: "Aurora"))
         XCTAssertEqual(manifest.surfaces?[SurfaceKey.settingsPanel.rawValue]?.corner, .uniform(14))
-        XCTAssertEqual(manifest.surfaces?[SurfaceKey.inputBoxField.rawValue]?.font?.family, "SF Mono")
+        XCTAssertEqual(manifest.surfaces?[SurfaceKey.inputBoxField.rawValue]?.font?.family, "SF Pro")
+        XCTAssertEqual(manifest.surfaces?[SurfaceKey.inputBoxField.rawValue]?.font?.size, 14)
     }
 
     func testDuplicateCopiesAndRenamesManifest() throws {
