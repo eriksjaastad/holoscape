@@ -2008,6 +2008,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
+            Self.applyUserSuppliedDisplayLabel(label, to: channel)
             channel.delegate = self
             channel.activate()
             if let cmd = command {
@@ -2041,6 +2042,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                     coordinator: self.channelManager.brokerBackedTerminalCoordinator
                 )
             }
+            Self.applyUserSuppliedDisplayLabel(label, to: channel)
             channel.delegate = self
             channel.activate()
             switchToChannel(channel.channelId)
@@ -2050,6 +2052,16 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             NSLog("Holoscape openChannel: unknown type '\(type)'")
             return .unsupportedType(type)
         }
+    }
+
+    /// Treat an explicit user label as presentation, while leaving launch identity
+    /// and instance numbering available for persistence and process ownership.
+    static func applyUserSuppliedDisplayLabel(
+        _ label: String?,
+        to channel: any ChannelController
+    ) {
+        guard let normalized = ChannelCustomDisplayLabel.normalized(label) else { return }
+        channel.setCustomDisplayLabel(normalized)
     }
 
     // MARK: - Channel Operations
@@ -2693,6 +2705,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         guard channelMutationEnabled else { return }
         guard let id = sender.representedObject as? UUID,
               let channel = channelManager.channel(for: id) else { return }
+        let customDisplayLabel = channel.customDisplayLabel
+        let existingChannelIDs = Set(channelManager.allChannels().map(\.channelId))
 
         if let profileManager, let label = channelManager.labelForChannel(id: id) {
             let profile = profileManager.resolve(label: label)
@@ -2714,6 +2728,13 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 createShellChannel()
             }
         }
+
+        guard let duplicateID = channelManager.allChannels()
+                .map(\.channelId)
+                .first(where: { !existingChannelIDs.contains($0) }),
+              let duplicate = channelManager.channel(for: duplicateID) else { return }
+        Self.applyUserSuppliedDisplayLabel(customDisplayLabel, to: duplicate)
+        refreshAllTabs()
     }
 
     @objc private func contextMenuReconnect(_ sender: NSMenuItem) {

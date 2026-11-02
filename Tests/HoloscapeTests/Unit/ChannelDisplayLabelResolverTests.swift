@@ -48,6 +48,30 @@ final class ChannelDisplayLabelResolverTests: XCTestCase {
         XCTAssertEqual(labels[firstUnrenamed.channelId], "Build")
         XCTAssertEqual(labels[secondUnrenamed.channelId], "Build 2")
     }
+
+    func testUserSuppliedLabelsBecomeExactPresentationValuesForShellAndAgentChannels() {
+        let shell = MockChannel(baseLabel: "Workspace · main 2")
+        let agent = MockChannel(baseLabel: "Workspace · main 3")
+
+        MainWindowController.applyUserSuppliedDisplayLabel("  Workspace  ", to: shell)
+        MainWindowController.applyUserSuppliedDisplayLabel("  Operator  ", to: agent)
+
+        XCTAssertEqual(shell.customDisplayLabel, "Workspace")
+        XCTAssertEqual(agent.customDisplayLabel, "Operator")
+        XCTAssertEqual(ChannelDisplayLabelResolver.labels(for: [shell])[shell.channelId], "Workspace")
+        XCTAssertEqual(ChannelDisplayLabelResolver.labels(for: [agent])[agent.channelId], "Operator")
+    }
+
+    func testCopyingCustomLabelToNumberedDuplicatePreservesExactPresentation() {
+        let source = MockChannel(baseLabel: "Workspace · main")
+        source.setCustomDisplayLabel("Workspace")
+        let duplicate = MockChannel(baseLabel: "Workspace · main 2")
+
+        MainWindowController.applyUserSuppliedDisplayLabel(source.customDisplayLabel, to: duplicate)
+
+        XCTAssertEqual(duplicate.customDisplayLabel, "Workspace")
+        XCTAssertEqual(ChannelDisplayLabelResolver.labels(for: [source, duplicate])[duplicate.channelId], "Workspace")
+    }
 }
 
 @MainActor
