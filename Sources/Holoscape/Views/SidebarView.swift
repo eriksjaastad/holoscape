@@ -504,10 +504,19 @@ class SidebarTabEntry: HoverTrackingButton {
         //   channelConnectionState: 0 usable, 1 attention, 2 error/disconnected, 3 stale
         //   channelUnread: 0/1
         //   channelIsActive: 0/1 (the currently-focused tab)
-        let legacyPermissionApproval = notificationType == "permission_prompt" && {
-            guard let persistentState else { return true }
-            return persistentState.kind == .ready || persistentState.kind == .running
+        let effectiveNotificationType: String? = {
+            guard let persistentState else { return notificationType }
+            switch persistentState.kind {
+            case .ready, .running:
+                return notificationType
+            case .needsApproval:
+                return "permission_prompt"
+            case .disconnected, .error, .stale:
+                return nil
+            }
         }()
+        let legacyPermissionApproval = persistentState?.kind != .needsApproval
+            && effectiveNotificationType == "permission_prompt"
         let needsApproval = persistentState?.kind == .needsApproval || legacyPermissionApproval
         let notificationKind: Int32
         let connectionState: Int32
@@ -579,9 +588,9 @@ class SidebarTabEntry: HoverTrackingButton {
             isActive: isActive,
             preservesSemanticState: preservesSemanticState
         )
-        layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: notificationType))
+        layer?.backgroundColor = cgRowFill(for: rowKey) ?? (isActive ? Self.defaultActiveBg : fallbackNormalBg(hasUnread: hasUnread, notificationType: effectiveNotificationType))
         layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
-        labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: notificationType)
+        labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: effectiveNotificationType)
         labelField.setContentCompressionResistancePriority(needsApproval ? .defaultLow : .defaultHigh, for: .horizontal)
         statusTextField.setContentCompressionResistancePriority(needsApproval ? .required : .defaultLow, for: .horizontal)
         if needsApproval {
@@ -618,11 +627,11 @@ class SidebarTabEntry: HoverTrackingButton {
             setAccessibilityHelp(navigationContext?.accessibilityDescription)
         }
 
-        if recoveryAction == nil, let notificationType {
-            switch notificationType {
+        if recoveryAction == nil, let effectiveNotificationType {
+            switch effectiveNotificationType {
             case "idle_prompt": setAccessibilityValue("ready")
             case "permission_prompt": setAccessibilityValue("needs-approval")
-            default: setAccessibilityValue(notificationType)
+            default: setAccessibilityValue(effectiveNotificationType)
             }
         } else if recoveryAction == nil, hasStaleInteraction {
             setAccessibilityValue("stale-interaction")

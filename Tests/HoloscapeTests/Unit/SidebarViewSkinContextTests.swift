@@ -206,6 +206,13 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertLessThan(approval.frame.width, approval.intrinsicContentSize.width, "Unbounded status reasons must remain compressible")
         XCTAssertLessThanOrEqual(label.frame.maxX, approval.frame.minX)
         XCTAssertEqual(entry.accessibilityLabel(), "Codex · HoloScape · main")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "normal", "Superseded permission state must not leak through accessibility value")
+        XCTAssertNil(entry.layer?.backgroundColor, "Superseded permission state must not leave a fallback approval fill")
+        assertCGColorComponents(
+            label.textColor?.cgColor,
+            NSColor.lightGray.cgColor,
+            reason: "Superseded permission state must not leave fallback approval text"
+        )
     }
 
     // MARK: - Unread regression guard
