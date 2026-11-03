@@ -5,6 +5,7 @@ import XCTest
 @MainActor
 class HoloscapeUITestCase: XCTestCase {
     var app: XCUIApplication!
+    private var isolatedConfigDirectory: URL?
 
     /// Per-test random port eliminates the API timing race between test runs.
     /// Each test gets its own port so there's no contention with a dying app.
@@ -17,6 +18,7 @@ class HoloscapeUITestCase: XCTestCase {
         Self.currentAPIBase = "http://127.0.0.1:\(apiPort)"
         app = XCUIApplication()
         configureAppForLaunch(app)
+        try isolateAppForUITesting(app)
         app.launchArguments.append("--ui-testing")
         app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launch()
@@ -29,11 +31,40 @@ class HoloscapeUITestCase: XCTestCase {
 
     override func tearDownWithError() throws {
         app.terminate()
+        if let isolatedConfigDirectory {
+            try FileManager.default.removeItem(at: isolatedConfigDirectory)
+        }
+        isolatedConfigDirectory = nil
     }
 
     /// Subclasses can inject launch environment/arguments before the shared
     /// UI-test flags are appended and the app is launched.
     func configureAppForLaunch(_ app: XCUIApplication) {
+    }
+
+    /// Every UI-test process gets a private config namespace so broker sessions,
+    /// scrollback, sockets, and app state never touch the user's real files.
+    func isolateAppForUITesting(_ application: XCUIApplication) throws {
+        if application.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] != nil { return }
+        if isolatedConfigDirectory == nil {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HoloscapeUITests", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            isolatedConfigDirectory = directory
+        }
+        application.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] = isolatedConfigDirectory?.path
+    }
+
+    func replaceApplicationPreservingLaunchConfiguration() {
+        let replacement = XCUIApplication()
+        replacement.launchArguments = app.launchArguments
+        replacement.launchEnvironment = app.launchEnvironment
+        app = replacement
+    }
+
+    func copyLaunchEnvironment(to replacement: XCUIApplication) {
+        replacement.launchEnvironment = app.launchEnvironment
     }
 
     // MARK: - Channel Helpers

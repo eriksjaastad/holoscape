@@ -89,8 +89,7 @@ final class TransparencyColorWellUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
-        app = XCUIApplication()
-        app.launchArguments.append("--ui-testing")
+        replaceApplicationPreservingLaunchConfiguration()
         app.launch()
 
         // Re-query settings window and slider after relaunch

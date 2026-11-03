@@ -1644,8 +1644,7 @@ struct BrokerSessionCoordinator: BrokerSessionCoordinating {
     }
 
     private func record(for id: BrokerSessionID) throws -> BrokerSessionRecord {
-        let records = try registry.load()
-        guard let existing = records.first(where: { $0.id == id }) else {
+        guard let existing = try registry.record(for: id) else {
             throw CoordinatorError.missingSession(id)
         }
         return existing

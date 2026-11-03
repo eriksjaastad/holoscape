@@ -3,6 +3,17 @@ import XCTest
 @testable import Holoscape
 
 final class BrokerSessionRegistryTests: XCTestCase {
+    private final class ReadCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = 0
+
+        var value: Int { lock.withLock { storage } }
+
+        func increment() {
+            lock.withLock { storage += 1 }
+        }
+    }
+
     private final class ErrorRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [Error] = []
@@ -98,6 +109,117 @@ final class BrokerSessionRegistryTests: XCTestCase {
 
         let reloaded = BrokerSessionRegistry(fileURL: registryURL)
         XCTAssertEqual(try reloaded.load(), [record])
+    }
+
+    func testRecordLookupDoesNotRepeatedlyDecodeLargeRegistry() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let records = (0..<256).map { index in
+            makeRecord(
+                id: String(format: "session-%03d", index),
+                lifecycle: .running,
+                updatedAt: TimeInterval(index + 1)
+            )
+        }
+        try BrokerSessionRegistry(fileURL: registryURL).save(records)
+        let reads = ReadCounter()
+        let live = BrokerSessionRegistry.Persistence.live
+        let registry = BrokerSessionRegistry(
+            fileURL: registryURL,
+            persistence: .init(
+                writeAndSynchronizeTemporaryFile: live.writeAndSynchronizeTemporaryFile,
+                replaceFile: live.replaceFile,
+                synchronizeDirectory: live.synchronizeDirectory,
+                removeTemporaryFile: live.removeTemporaryFile,
+                readOpenedFile: { descriptor in
+                    reads.increment()
+                    return try live.readOpenedFile(descriptor)
+                }
+            )
+        )
+
+        for _ in 0..<100 {
+            XCTAssertEqual(try registry.record(for: records[173].id), records[173])
+        }
+
+        XCTAssertEqual(reads.value, 1, "Stable record lookup must decode the registry once, not once per poll")
+    }
+
+    func testRecordLookupPreservesLoadBehaviorForDuplicateIDs() throws {
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let first = makeRecord(id: "duplicate", lifecycle: .running, updatedAt: 1)
+        let second = makeRecord(id: "duplicate", lifecycle: .detached, updatedAt: 2)
+        try BrokerSessionRegistry(fileURL: registryURL).save([first, second])
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+
+        XCTAssertEqual(try registry.record(for: first.id), try registry.load().first)
+    }
+
+    func testRecordLookupInvalidatesAfterSpawnedProcessMutation() throws {
+        if let registryPath = ProcessInfo.processInfo.environment["HOLOSCAPE_REGISTRY_LOOKUP_CHILD_PATH"] {
+            let registry = BrokerSessionRegistry(fileURL: URL(fileURLWithPath: registryPath))
+            _ = try registry.update(BrokerSessionID(rawValue: "session-173")) { record in
+                BrokerSessionRecord(
+                    id: record.id,
+                    channelType: record.channelType,
+                    label: record.label,
+                    command: record.command,
+                    arguments: record.arguments,
+                    workingDirectory: record.workingDirectory,
+                    environmentProfile: record.environmentProfile,
+                    requestedAgentStatusOwnerToken: record.requestedAgentStatusOwnerToken,
+                    agentStatusOwnerToken: record.agentStatusOwnerToken,
+                    lifecycle: .detached,
+                    exitCode: nil,
+                    createdAt: record.createdAt,
+                    updatedAt: Date(timeIntervalSince1970: 999),
+                    lastAttachedChannelID: record.lastAttachedChannelID
+                )
+            }
+            return
+        }
+
+        let registryURL = tempDirectory.appendingPathComponent("sessions.json")
+        let records = (0..<256).map { index in
+            makeRecord(
+                id: String(format: "session-%03d", index),
+                lifecycle: .running,
+                updatedAt: TimeInterval(index + 1)
+            )
+        }
+        let registry = BrokerSessionRegistry(fileURL: registryURL)
+        try registry.save(records)
+        let targetID = BrokerSessionID(rawValue: "session-173")
+        XCTAssertEqual(try registry.record(for: targetID)?.lifecycle, .running)
+
+        let child = Process()
+        let output = Pipe()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = [
+            "-XCTest",
+            "HoloscapeTests.BrokerSessionRegistryTests/testRecordLookupInvalidatesAfterSpawnedProcessMutation",
+            Bundle(for: Self.self).bundleURL.path,
+        ]
+        child.environment = ProcessInfo.processInfo.environment.merging([
+            "HOLOSCAPE_REGISTRY_LOOKUP_CHILD_PATH": registryURL.path,
+        ]) { _, childValue in childValue }
+        child.standardOutput = output
+        child.standardError = output
+        let childExited = DispatchSemaphore(value: 0)
+        child.terminationHandler = { _ in childExited.signal() }
+        try child.run()
+        let waitResult = childExited.wait(timeout: .now() + 10)
+        if waitResult == .timedOut {
+            child.terminate()
+            child.waitUntilExit()
+            XCTFail("Registry mutation child did not exit within 10 seconds")
+        }
+        let diagnostic = String(
+            data: output.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(child.terminationStatus, 0, diagnostic)
+
+        XCTAssertEqual(try registry.record(for: targetID)?.lifecycle, .detached)
     }
 
     func testLoadRejectsSymbolicLinkRegistryLeaf() throws {

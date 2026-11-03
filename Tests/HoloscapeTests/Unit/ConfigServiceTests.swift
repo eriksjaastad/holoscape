@@ -2,6 +2,74 @@ import XCTest
 @testable import Holoscape
 
 final class ConfigServiceTests: XCTestCase {
+    func testUITestLaunchRequiresExplicitIsolatedConfigDirectory() throws {
+        let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--ui-testing"],
+                environment: [:],
+                homeDirectory: home
+            )
+        ) { error in
+            XCTAssertEqual(error as? ConfigService.AutomatedLaunchIsolationError, .missingConfigDirectory)
+        }
+    }
+
+    func testAppHostedVerificationRequiresExplicitIsolatedConfigDirectory() throws {
+        XCTAssertThrowsError(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--app-hosted-verification"],
+                environment: [:],
+                homeDirectory: temporaryConfigDir()
+            )
+        ) { error in
+            XCTAssertEqual(error as? ConfigService.AutomatedLaunchIsolationError, .missingConfigDirectory)
+        }
+    }
+
+    func testUITestLaunchRejectsProductionConfigDirectory() throws {
+        let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
+        let production = ConfigService.defaultConfigDirectory(environment: [:], homeDirectory: home)
+
+        XCTAssertThrowsError(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--ui-testing"],
+                environment: ["HOLOSCAPE_CONFIG_DIR": production.path],
+                homeDirectory: home
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ConfigService.AutomatedLaunchIsolationError,
+                .productionConfigDirectory(production.path)
+            )
+        }
+    }
+
+    func testUITestLaunchAcceptsDisposableConfigDirectory() throws {
+        let root = temporaryConfigDir()
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let isolated = root.appendingPathComponent("ui-test", isDirectory: true)
+
+        XCTAssertNoThrow(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--ui-testing"],
+                environment: ["HOLOSCAPE_CONFIG_DIR": isolated.path],
+                homeDirectory: home
+            )
+        )
+    }
+
+    func testOrdinaryLaunchDoesNotRequireConfigOverride() throws {
+        XCTAssertNoThrow(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape"],
+                environment: [:],
+                homeDirectory: temporaryConfigDir()
+            )
+        )
+    }
+
     func testConfigSerializationRoundTrip() throws {
         let config = HoloscapeConfig(
             appearance: AppearanceConfig(

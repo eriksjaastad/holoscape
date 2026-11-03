@@ -12,6 +12,20 @@ struct ConfigServiceDiagnostic: Equatable, Sendable {
 }
 
 class ConfigService {
+    enum AutomatedLaunchIsolationError: Error, Equatable, CustomStringConvertible {
+        case missingConfigDirectory
+        case productionConfigDirectory(String)
+
+        var description: String {
+            switch self {
+            case .missingConfigDirectory:
+                return "automated app launch requires an isolated HOLOSCAPE_CONFIG_DIR"
+            case .productionConfigDirectory(let path):
+                return "automated app launch refuses the production config directory: \(path)"
+            }
+        }
+    }
+
     private let configDir: URL
     private let configURL: URL
     private let persistence: DurableAtomicFileCommitter.Persistence
@@ -48,6 +62,27 @@ class ConfigService {
             return nil
         }
         return canonicalDirectoryURL(URL(fileURLWithPath: override))
+    }
+
+    /// Prevent automated app-hosted tests from creating broker sessions in the
+    /// user's real namespace. Ordinary launches are intentionally unaffected.
+    static func validateAutomatedLaunchIsolation(
+        arguments: [String] = CommandLine.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws {
+        let isolationFlags = ["--ui-testing", "--app-hosted-verification"]
+        guard arguments.contains(where: isolationFlags.contains) else { return }
+        guard let isolatedDirectory = explicitConfigDirectory(environment: environment) else {
+            throw AutomatedLaunchIsolationError.missingConfigDirectory
+        }
+        let productionDirectory = defaultConfigDirectory(
+            environment: [:],
+            homeDirectory: homeDirectory
+        )
+        guard isolatedDirectory != productionDirectory else {
+            throw AutomatedLaunchIsolationError.productionConfigDirectory(productionDirectory.path)
+        }
     }
 
     /// Resolves the deepest existing ancestor before restoring missing path

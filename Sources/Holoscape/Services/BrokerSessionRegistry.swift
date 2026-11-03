@@ -9,6 +9,55 @@ import Foundation
 /// silently treated as an empty registry, because process-survival state must
 /// fail loudly when it cannot be trusted.
 struct BrokerSessionRegistry {
+    private struct FileSignature: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int64
+        let modifiedNanoseconds: Int64
+
+        init(_ metadata: stat) {
+            device = UInt64(metadata.st_dev)
+            inode = UInt64(metadata.st_ino)
+            size = Int64(metadata.st_size)
+            modifiedSeconds = Int64(metadata.st_mtimespec.tv_sec)
+            modifiedNanoseconds = Int64(metadata.st_mtimespec.tv_nsec)
+        }
+    }
+
+    private final class ReadCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var signature: FileSignature?
+        private var recordsByID: [BrokerSessionID: BrokerSessionRecord] = [:]
+
+        func lookup(
+            _ id: BrokerSessionID,
+            matching candidate: FileSignature
+        ) -> (matched: Bool, record: BrokerSessionRecord?) {
+            lock.withLock {
+                guard signature == candidate else { return (false, nil) }
+                return (true, recordsByID[id])
+            }
+        }
+
+        func replace(with records: [BrokerSessionRecord], signature: FileSignature) {
+            lock.withLock {
+                self.signature = signature
+                recordsByID.removeAll(keepingCapacity: true)
+                for record in records where recordsByID[record.id] == nil {
+                    recordsByID[record.id] = record
+                }
+            }
+        }
+
+        func invalidate() {
+            lock.withLock {
+                signature = nil
+                recordsByID.removeAll(keepingCapacity: true)
+            }
+        }
+    }
+
     enum RegistryError: Error, Equatable {
         case invalidRecord(BrokerSessionID, BrokerSessionRecord.ValidationError)
         case unsafeRegistryFile(String)
@@ -72,6 +121,7 @@ struct BrokerSessionRegistry {
     /// this persistent advisory authority protects whole transactions.
     private let operationLocks = PersistentFileOperationLocks.shared
     private let persistence: Persistence
+    private let readCache: ReadCache
 
     init(
         fileURL: URL = BrokerSessionRegistry.defaultFileURL(),
@@ -79,10 +129,33 @@ struct BrokerSessionRegistry {
     ) {
         self.fileURL = fileURL
         self.persistence = persistence
+        self.readCache = ReadCache()
     }
 
     func load() throws -> [BrokerSessionRecord] {
         try withOperationLock { try loadUnlocked() }
+    }
+
+    /// Returns one record without re-reading and decoding the complete registry
+    /// while its atomic file identity remains unchanged. A replacement from the
+    /// broker or GUI process changes the signature and forces one fresh decode.
+    func record(for id: BrokerSessionID) throws -> BrokerSessionRecord? {
+        guard let opened = try openRegularFile() else {
+            readCache.invalidate()
+            return nil
+        }
+        let signature = FileSignature(opened.metadata)
+        let cached = readCache.lookup(id, matching: signature)
+        if cached.matched {
+            try closeOpenedFile(opened.descriptor, operationResult: .success(()))
+            return cached.record
+        }
+
+        let readResult = Result { try persistence.readOpenedFile(opened.descriptor) }
+        let data = try closeOpenedFile(opened.descriptor, operationResult: readResult)
+        let records = try decodeAndValidate(data)
+        readCache.replace(with: records, signature: signature)
+        return records.first(where: { $0.id == id })
     }
 
     func save(_ records: [BrokerSessionRecord]) throws {
@@ -170,6 +243,10 @@ struct BrokerSessionRegistry {
 
     private func loadUnlocked() throws -> [BrokerSessionRecord] {
         guard let data = try readRegularFile() else { return [] }
+        return try decodeAndValidate(data)
+    }
+
+    private func decodeAndValidate(_ data: Data) throws -> [BrokerSessionRecord] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let records = try decoder.decode([BrokerSessionRecord].self, from: data)
@@ -178,37 +255,42 @@ struct BrokerSessionRegistry {
     }
 
     private func readRegularFile() throws -> Data? {
-        let descriptor = Darwin.open(
-            fileURL.path,
-            O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
-        )
+        guard let opened = try openRegularFile() else { return nil }
+        let result = Result { try persistence.readOpenedFile(opened.descriptor) }
+        return try closeOpenedFile(opened.descriptor, operationResult: result)
+    }
+
+    private func openRegularFile() throws -> (descriptor: Int32, metadata: stat)? {
+        let descriptor = Darwin.open(fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             let code = errno
             if code == ENOENT { return nil }
-            if code == ELOOP {
-                throw RegistryError.unsafeRegistryFile(fileURL.path)
-            }
+            if code == ELOOP { throw RegistryError.unsafeRegistryFile(fileURL.path) }
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
-
-        let result: Result<Data, Error>
         var metadata = stat()
         if Darwin.fstat(descriptor, &metadata) != 0 {
-            result = .failure(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
-        } else if metadata.st_mode & S_IFMT != S_IFREG {
-            result = .failure(RegistryError.unsafeRegistryFile(fileURL.path))
-        } else {
-            do {
-                result = .success(try persistence.readOpenedFile(descriptor))
-            } catch {
-                result = .failure(error)
-            }
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            let result: Result<(descriptor: Int32, metadata: stat)?, Error> = .failure(error)
+            return try closeOpenedFile(descriptor, operationResult: result)
         }
+        guard metadata.st_mode & S_IFMT == S_IFREG else {
+            let result: Result<(descriptor: Int32, metadata: stat)?, Error> = .failure(
+                RegistryError.unsafeRegistryFile(fileURL.path)
+            )
+            return try closeOpenedFile(descriptor, operationResult: result)
+        }
+        return (descriptor, metadata)
+    }
 
+    private func closeOpenedFile<T>(
+        _ descriptor: Int32,
+        operationResult: Result<T, Error>
+    ) throws -> T {
         if persistence.closeOpenedFile(descriptor) != 0 {
             let closeCode = errno
             let closeFailure = String(cString: strerror(closeCode))
-            switch result {
+            switch operationResult {
             case .success:
                 throw POSIXError(POSIXErrorCode(rawValue: closeCode) ?? .EIO)
             case .failure(let operationFailure):
@@ -218,7 +300,7 @@ struct BrokerSessionRegistry {
                 )
             }
         }
-        return try result.get()
+        return try operationResult.get()
     }
 
     private static func readOpenedFile(_ descriptor: Int32) throws -> Data {
@@ -303,6 +385,7 @@ struct BrokerSessionRegistry {
             try persistence.writeAndSynchronizeTemporaryFile(data, temporaryURL)
             try persistence.replaceFile(temporaryURL, fileURL)
             replacementCommitted = true
+            readCache.invalidate()
             try persistence.synchronizeDirectory(directoryURL)
         } catch {
             let operationError = error

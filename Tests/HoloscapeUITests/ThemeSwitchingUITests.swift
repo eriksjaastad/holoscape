@@ -78,7 +78,7 @@ final class ThemeSwitchingUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
-        app = XCUIApplication()
+        replaceApplicationPreservingLaunchConfiguration()
         app.launch()
 
         // Verify Monokai persisted

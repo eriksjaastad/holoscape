@@ -96,6 +96,10 @@ bundle-release:
 run: bundle
 	open build/Holoscape.app
 
+# Launch a packaged app-hosted verification without touching user config/session state.
+run-isolated: bundle
+	./scripts/launch-isolated-app.sh
+
 # Set up Claude Code integration (MCP server, hooks, notifications)
 setup:
 	bash scripts/setup.sh
