@@ -147,6 +147,16 @@ enum ChromeManifestValidator {
             )
         }
 
+        let interiorWidth = CGFloat(chrome.interiorRect.width)
+        if !WorkspaceResizeContract.supportsWorkspace(width: interiorWidth) {
+            return ChromeValidationResult(
+                valid: false,
+                warningReason: "chrome.interiorRect width \(chrome.interiorRect.width) is below workspace minimum \(WorkspaceResizeContract.minimumSplitWidth)",
+                disabledAnimationIDs: [],
+                polygonAlphaDeltaPixels: 0
+            )
+        }
+
         // --- NON-FATAL warnings ---
 
         // Req 12.9 — small-chrome sanity warning.

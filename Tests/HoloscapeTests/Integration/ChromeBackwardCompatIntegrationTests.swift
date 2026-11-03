@@ -48,9 +48,9 @@ final class ChromeBackwardCompatIntegrationTests: XCTestCase {
           "name": "bc-composed-noanim",
           "chrome": {
             "mode": "composed",
-            "width": 400,
-            "height": 300,
-            "interiorRect": { "x": 0, "y": 0, "width": 400, "height": 300 }
+            "width": 720,
+            "height": 500,
+            "interiorRect": { "x": 0, "y": 0, "width": 720, "height": 500 }
           },
           "surfaces": {
             "window.background": { "fill": { "kind": "color", "value": "#123456" } }
@@ -81,7 +81,7 @@ final class ChromeBackwardCompatIntegrationTests: XCTestCase {
         // Stage a chrome@2x.png at the required dimensions.
         try writeRGBAPng(
             to: skinDir.appendingPathComponent("chrome@2x.png"),
-            pixelWidth: 800, pixelHeight: 600
+            pixelWidth: 1440, pixelHeight: 1000
         )
 
         let skinJSON = """
@@ -91,9 +91,9 @@ final class ChromeBackwardCompatIntegrationTests: XCTestCase {
           "chrome": {
             "mode": "baked",
             "image": "chrome@2x.png",
-            "width": 400,
-            "height": 300,
-            "interiorRect": { "x": 0, "y": 0, "width": 400, "height": 300 }
+            "width": 720,
+            "height": 500,
+            "interiorRect": { "x": 0, "y": 0, "width": 720, "height": 500 }
           }
         }
         """

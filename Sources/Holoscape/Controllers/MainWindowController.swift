@@ -1,5 +1,17 @@
 import AppKit
 
+enum WorkspaceResizeContract {
+    static let minimumSidebarWidth: CGFloat = 220
+    static let minimumMainContentWidth: CGFloat = 480
+    static let standardDividerWidth: CGFloat = 1
+    static let minimumSplitWidth = minimumSidebarWidth + standardDividerWidth + minimumMainContentWidth
+    static let minimumWindowContentSize = NSSize(width: max(720, minimumSplitWidth), height: 500)
+
+    static func supportsWorkspace(width: CGFloat) -> Bool {
+        width >= minimumSplitWidth
+    }
+}
+
 @MainActor
 class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
@@ -249,12 +261,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
-    static let minimumSidebarContentWidth: CGFloat = 220
-    static let minimumMainContentWidth: CGFloat = 480
-    static let minimumWindowContentSize = NSSize(
-        width: max(720, minimumSidebarContentWidth + 1 + minimumMainContentWidth),
-        height: 500
-    )
+    static let minimumSidebarContentWidth = WorkspaceResizeContract.minimumSidebarWidth
+    static let minimumMainContentWidth = WorkspaceResizeContract.minimumMainContentWidth
+    static let minimumWindowContentSize = WorkspaceResizeContract.minimumWindowContentSize
 
     internal var activeSkinLayoutForTesting: SkinLayoutDescriptor? { activeSkinLayout }
     internal var channelVesselViewForTesting: ChannelVesselView { channelVesselView }

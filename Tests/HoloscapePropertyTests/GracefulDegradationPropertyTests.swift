@@ -203,6 +203,32 @@ final class GracefulDegradationPropertyTests: XCTestCase {
                         "Unrelated surfaces must still apply when the shape is rejected")
     }
 
+    func testCompactPolygonShapeIsRejectedBeforeItCanCollapseWorkspacePanes() throws {
+        setenv("HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS", "1", 1)
+        defer { unsetenv("HOLOSCAPE_AMPLIFY_SHAPED_WINDOWS") }
+
+        try writeManifest("""
+        {
+          "version": "3.0",
+          "name": "Broken",
+          "windowShape": {
+            "kind": "polygons",
+            "polygons": [
+              { "points": [
+                {"x":0,"y":0}, {"x":700,"y":0},
+                {"x":700,"y":500}, {"x":0,"y":500}
+              ] }
+            ]
+          }
+        }
+        """)
+
+        let loaded = try SkinEngine().loadComposite(named: "Broken")
+
+        XCTAssertNil(loaded.windowShape)
+        XCTAssertTrue(loaded.validationBannerReason?.contains("workspace minimum") ?? false)
+    }
+
     // MARK: - Class F — unknown SurfaceKey (Req 13 spirit)
 
     /// Future-compat: a manifest with a surface key the current build
