@@ -15,6 +15,7 @@ class ConfigService {
     enum AutomatedLaunchIsolationError: Error, Equatable, CustomStringConvertible {
         case missingConfigDirectory
         case productionConfigDirectory(String)
+        case ephemeralBrokerRequiresAutomatedLaunch
 
         var description: String {
             switch self {
@@ -22,6 +23,8 @@ class ConfigService {
                 return "automated app launch requires an isolated HOLOSCAPE_CONFIG_DIR"
             case .productionConfigDirectory(let path):
                 return "automated app launch refuses the production config directory: \(path)"
+            case .ephemeralBrokerRequiresAutomatedLaunch:
+                return "ephemeral broker lifecycle is restricted to automated app launches"
             }
         }
     }
@@ -72,7 +75,11 @@ class ConfigService {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) throws {
         let isolationFlags = ["--ui-testing", "--app-hosted-verification"]
-        guard arguments.contains(where: isolationFlags.contains) else { return }
+        let isAutomatedLaunch = arguments.contains(where: isolationFlags.contains)
+        if arguments.contains("--ephemeral-broker"), !isAutomatedLaunch {
+            throw AutomatedLaunchIsolationError.ephemeralBrokerRequiresAutomatedLaunch
+        }
+        guard isAutomatedLaunch else { return }
         guard let isolatedDirectory = explicitConfigDirectory(environment: environment) else {
             throw AutomatedLaunchIsolationError.missingConfigDirectory
         }

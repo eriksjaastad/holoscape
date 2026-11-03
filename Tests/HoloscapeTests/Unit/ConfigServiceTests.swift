@@ -2,6 +2,24 @@ import XCTest
 @testable import Holoscape
 
 final class ConfigServiceTests: XCTestCase {
+    func testEphemeralBrokerLifecycleRequiresAutomatedLaunchMode() throws {
+        let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
+        let isolated = temporaryConfigDir().appendingPathComponent("isolated", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--ephemeral-broker"],
+                environment: ["HOLOSCAPE_CONFIG_DIR": isolated.path],
+                homeDirectory: home
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ConfigService.AutomatedLaunchIsolationError,
+                .ephemeralBrokerRequiresAutomatedLaunch
+            )
+        }
+    }
+
     func testUITestLaunchRequiresExplicitIsolatedConfigDirectory() throws {
         let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
 

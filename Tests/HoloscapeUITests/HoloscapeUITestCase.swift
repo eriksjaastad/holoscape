@@ -20,6 +20,7 @@ class HoloscapeUITestCase: XCTestCase {
         configureAppForLaunch(app)
         try isolateAppForUITesting(app)
         app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--ephemeral-broker")
         app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launch()
 

@@ -23,6 +23,7 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
         app = XCUIApplication()
         app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--ephemeral-broker")
         app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launchArguments.append("--restore-channels")
         app.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] = dir

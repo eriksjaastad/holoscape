@@ -28,6 +28,7 @@ enum BrokerSessionHostProtocolError: Error, Equatable {
 /// messages carry a `BrokerEnvironmentProfile` instead of raw environment
 /// key/value pairs to keep secrets out of durable IPC logs and crash artifacts.
 enum BrokerSessionHostRequest: Codable, Equatable, Sendable {
+    case shutDownHost
     case listSessions
     case create(id: BrokerSessionID, request: BrokerSessionLaunchRequest)
     case detach(id: BrokerSessionID)

@@ -55,6 +55,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         CommandLine.arguments.contains("--ui-testing")
     }
 
+    private var usesEphemeralBrokerLifecycle: Bool {
+        CommandLine.arguments.contains("--ephemeral-broker")
+    }
+
+    private var ephemeralBrokerShutdownInProgress = false
+    private var ephemeralBrokerShutdownComplete = false
+    private var ephemeralBrokerShutdownCompletions: [(@MainActor (Bool) -> Void)] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure app activates as a foreground GUI application
         NSApp.setActivationPolicy(.regular)
@@ -196,6 +204,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         launchRecovery.abandonIfIncomplete()
         apiServer?.stop()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
+            || usesEphemeralBrokerLifecycle
         if shouldSave && launchRecovery.state.isCompleted {
             if !terminationCoordinator.hasStarted {
                 _ = terminationCoordinator.finalizeAtApplicationWillTerminate()
@@ -213,17 +222,89 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         launchRecovery.abandonIfIncomplete()
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
-        guard shouldSave, launchRecovery.state.isCompleted,
-              windowController?.channelManager != nil || channelManagerRef != nil else {
+        let shouldCoordinateTermination = shouldSave || usesEphemeralBrokerLifecycle
+        let hasChannelManager = windowController?.channelManager != nil || channelManagerRef != nil
+        let canCoordinateTermination = launchRecovery.state.isCompleted || usesEphemeralBrokerLifecycle
+        guard shouldCoordinateTermination, canCoordinateTermination, hasChannelManager else {
+            if usesEphemeralBrokerLifecycle {
+                beginEphemeralBrokerShutdown { [weak sender] shouldTerminate in
+                    sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+                }
+                return .terminateLater
+            }
             return .terminateNow
         }
         if terminationCoordinator.isComplete {
+            if usesEphemeralBrokerLifecycle, !ephemeralBrokerShutdownComplete {
+                beginEphemeralBrokerShutdown { [weak sender] shouldTerminate in
+                    sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+                }
+                return .terminateLater
+            }
             return .terminateNow
         }
-        beginTerminationTeardown { [weak sender] shouldTerminate in
-            sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+        beginTerminationTeardown { [weak self, weak sender] shouldTerminate in
+            guard shouldTerminate else {
+                sender?.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            guard self?.usesEphemeralBrokerLifecycle == true else {
+                sender?.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            self?.beginEphemeralBrokerShutdown { shouldTerminate in
+                sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+            }
         }
         return .terminateLater
+    }
+
+    private func beginEphemeralBrokerShutdown(
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        if ephemeralBrokerShutdownComplete {
+            completion(true)
+            return
+        }
+        ephemeralBrokerShutdownCompletions.append(completion)
+        guard !ephemeralBrokerShutdownInProgress else { return }
+        ephemeralBrokerShutdownInProgress = true
+        apiServer?.stop()
+
+        let environment = ProcessInfo.processInfo.environment
+        let socketPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
+            environment: environment
+        )
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let failure: Error?
+            do {
+                try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(
+                    socketPath: socketPath
+                )
+                failure = nil
+            } catch {
+                failure = error
+            }
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion(false)
+                    return
+                }
+                self.ephemeralBrokerShutdownInProgress = false
+                let completions = self.ephemeralBrokerShutdownCompletions
+                self.ephemeralBrokerShutdownCompletions.removeAll()
+                if let failure {
+                    NSLog(
+                        "Isolated broker shutdown failed; keeping Holoscape open: %@",
+                        failure.localizedDescription
+                    )
+                    completions.forEach { $0(false) }
+                    return
+                }
+                self.ephemeralBrokerShutdownComplete = true
+                completions.forEach { $0(true) }
+            }
+        }
     }
 
     /// Compatibility seam for AppDelegate integration tests. Transaction state

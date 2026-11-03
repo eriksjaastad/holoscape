@@ -32,7 +32,8 @@ struct BrokerSessionHost {
 
     func handle(
         _ frame: Data,
-        executionIsAllowed: () -> Bool = { true }
+        executionIsAllowed: () -> Bool = { true },
+        didHandle: (BrokerSessionHostRequest) -> Void = { _ in }
     ) throws -> Data {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
@@ -79,6 +80,7 @@ struct BrokerSessionHost {
                     return try dispatch(request)
                 }
             }
+            didHandle(request)
         } catch {
             response = .failure(failure(for: error))
         }
@@ -87,6 +89,8 @@ struct BrokerSessionHost {
 
     private func dispatch(_ request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
         switch request {
+        case .shutDownHost:
+            return .ok
         case .listSessions:
             return .sessionIDs(try runtime.listSessions())
         case let .create(id, launchRequest):
@@ -339,7 +343,7 @@ private extension BrokerSessionHostRequest {
 
     var sessionOrderingID: BrokerSessionID? {
         switch self {
-        case .listSessions:
+        case .shutDownHost, .listSessions:
             return nil
         case let .create(id, _),
              let .detach(id),

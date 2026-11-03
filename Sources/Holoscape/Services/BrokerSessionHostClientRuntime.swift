@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// App-side runtime adapter for the broker host JSON-lines protocol.
@@ -21,6 +22,13 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
         case transportFailed(String)
         case outputTransportFailed(String)
+    }
+
+    enum HostShutdownError: Error, Equatable {
+        case brokerStateIndeterminate(String)
+        case brokerRejectedShutdown(BrokerSessionHostResponse)
+        case brokerDidNotExit(String)
+        case namespaceCleanupFailed(String)
     }
 
     typealias Transport = (Data) throws -> Data
@@ -105,6 +113,62 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             return executableURL
         }
         return URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+    }
+
+    /// Stops an already-running socket host without ever launching one. This is
+    /// reserved for isolated automated namespaces; production app termination
+    /// deliberately leaves the broker and its PTYs alive for reattachment.
+    static func shutDownSocketHostIfPresent(
+        socketPath: String,
+        timeoutMilliseconds: Int = 10_000
+    ) throws {
+        switch BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath) {
+        case .unreachable:
+            guard !BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) else {
+                throw HostShutdownError.brokerStateIndeterminate(socketPath)
+            }
+            try removeInactiveSocketNamespace(socketPath)
+            return
+        case .indeterminate:
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        case .reachable:
+            break
+        }
+
+        let codec = BrokerSessionHostCodec()
+        let response = try codec.decodeResponse(
+            BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: timeoutMilliseconds
+            ).sendFrame(try codec.encodeRequest(.shutDownHost))
+        )
+        guard response == .ok else {
+            throw HostShutdownError.brokerRejectedShutdown(response)
+        }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(max(1, timeoutMilliseconds)) * 1_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            let socketExists = FileManager.default.fileExists(atPath: socketPath)
+            let lockIsActive = BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath)
+            if !socketExists && !lockIsActive {
+                try removeInactiveSocketNamespace(socketPath)
+                return
+            }
+            usleep(10_000)
+        }
+        throw HostShutdownError.brokerDidNotExit(socketPath)
+    }
+
+    private static func removeInactiveSocketNamespace(_ socketPath: String) throws {
+        let fileManager = FileManager.default
+        for path in [socketPath, socketPath + ".lock"] where fileManager.fileExists(atPath: path) {
+            do {
+                try fileManager.removeItem(atPath: path)
+            } catch {
+                throw HostShutdownError.namespaceCleanupFailed("\(path): \(error.localizedDescription)")
+            }
+        }
     }
 
     func listSessions() throws -> [BrokerSessionID] {
