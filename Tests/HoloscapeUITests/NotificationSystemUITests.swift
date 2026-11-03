@@ -141,6 +141,7 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         waitForExpectations(timeout: 5)
 
         let freshApp = XCUIApplication()
+        app = freshApp
         copyLaunchEnvironment(to: freshApp)
         let port = UInt16.random(in: 49152...60999)
         Self.currentAPIBase = "http://127.0.0.1:\(port)"

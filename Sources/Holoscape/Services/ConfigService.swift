@@ -87,8 +87,17 @@ class ConfigService {
             environment: [:],
             homeDirectory: homeDirectory
         )
-        guard isolatedDirectory != productionDirectory else {
+        let productionBrokerDirectory = canonicalDirectoryURL(
+            homeDirectory.appendingPathComponent(
+                "Library/Application Support/Holoscape",
+                isDirectory: true
+            )
+        )
+        if isolatedDirectory == productionDirectory {
             throw AutomatedLaunchIsolationError.productionConfigDirectory(productionDirectory.path)
+        }
+        if isolatedDirectory == productionBrokerDirectory {
+            throw AutomatedLaunchIsolationError.productionConfigDirectory(productionBrokerDirectory.path)
         }
     }
 

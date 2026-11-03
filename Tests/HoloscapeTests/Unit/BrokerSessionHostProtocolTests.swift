@@ -954,6 +954,24 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(client.supportsOutputAvailabilityMonitoring)
     }
 
+    func testProductionSocketRuntimeDoesNotInheritEphemeralBrokerAuthority() {
+        let inherited = [BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey: "1"]
+
+        XCTAssertNil(
+            BrokerSessionHostClientRuntime.brokerEnvironment(
+                inherited,
+                arguments: ["Holoscape"]
+            )[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey]
+        )
+        XCTAssertEqual(
+            BrokerSessionHostClientRuntime.brokerEnvironment(
+                inherited,
+                arguments: ["Holoscape", "--ephemeral-broker"]
+            )[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey],
+            "1"
+        )
+    }
+
     func testClientRuntimeFailsLoudlyWhenHostReturnsUnexpectedResponseShape() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime { _ in

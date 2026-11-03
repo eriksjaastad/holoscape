@@ -64,6 +64,29 @@ final class ConfigServiceTests: XCTestCase {
         }
     }
 
+    func testUITestLaunchRejectsProductionBrokerRegistryDirectory() throws {
+        let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
+        let productionBrokerDirectory = ConfigService.canonicalDirectoryURL(
+            home.appendingPathComponent(
+                "Library/Application Support/Holoscape",
+                isDirectory: true
+            )
+        )
+
+        XCTAssertThrowsError(
+            try ConfigService.validateAutomatedLaunchIsolation(
+                arguments: ["Holoscape", "--ui-testing"],
+                environment: ["HOLOSCAPE_CONFIG_DIR": productionBrokerDirectory.path],
+                homeDirectory: home
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ConfigService.AutomatedLaunchIsolationError,
+                .productionConfigDirectory(productionBrokerDirectory.path)
+            )
+        }
+    }
+
     func testUITestLaunchAcceptsDisposableConfigDirectory() throws {
         let root = temporaryConfigDir()
         let home = root.appendingPathComponent("home", isDirectory: true)

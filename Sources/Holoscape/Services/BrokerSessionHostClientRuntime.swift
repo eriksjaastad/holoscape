@@ -80,13 +80,11 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     static func currentExecutableSocketHostRuntime(
         socketPath: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        arguments: [String] = CommandLine.arguments,
         requestTimeoutMilliseconds: Int = 10_000,
         outputSnapshotTimeoutMilliseconds: Int = 500
     ) -> BrokerSessionHostClientRuntime {
-        var brokerEnvironment = environment
-        if CommandLine.arguments.contains("--ephemeral-broker") {
-            brokerEnvironment[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey] = "1"
-        }
+        let brokerEnvironment = brokerEnvironment(environment, arguments: arguments)
         let resolvedSocketPath = socketPath
             ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment)
         let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
@@ -110,6 +108,18 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             transport: { frame in try lazyTransport.sendFrame(frame) },
             outputTransport: { frame in try outputTransport.sendFrame(frame) }
         )
+    }
+
+    static func brokerEnvironment(
+        _ environment: [String: String],
+        arguments: [String]
+    ) -> [String: String] {
+        var resolved = environment
+        resolved.removeValue(forKey: BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey)
+        if arguments.contains("--ephemeral-broker") {
+            resolved[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey] = "1"
+        }
+        return resolved
     }
 
     private static func currentExecutableURL() -> URL {
