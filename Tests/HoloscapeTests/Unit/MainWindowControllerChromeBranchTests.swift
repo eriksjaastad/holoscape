@@ -128,6 +128,10 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         controller.updateChromeZoomButtonLabel(isFullScreen: true)
         XCTAssertEqual(zoom.accessibilityLabel(), "Exit full screen")
         XCTAssertEqual(zoom.toolTip, "Exit full screen (Option-click to zoom window)")
+        XCTAssertTrue(controller.chromeZoomGlyphIsFullScreenForTesting)
+
+        controller.updateChromeZoomButtonLabel(isFullScreen: false)
+        XCTAssertFalse(controller.chromeZoomGlyphIsFullScreenForTesting)
     }
 
     func testChromeToDefaultTransitionPreservesStableHostConstraints() throws {

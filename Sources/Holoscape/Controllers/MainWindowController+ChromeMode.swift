@@ -203,6 +203,7 @@ extension MainWindowController {
         let label = isFullScreen ? "Exit full screen" : "Enter full screen"
         button.setAccessibilityLabel(label)
         button.toolTip = "\(label) (Option-click to zoom window)"
+        chromeWindowControlHoverGroup?.setZoomFullScreen(isFullScreen)
     }
 
     private func chromeControlLeadingX(
@@ -841,6 +842,20 @@ final class ChromeWindowControlHoverGroup: NSObject {
         overlays.forEach { $0.isHidden = !hovered }
     }
 
+    func setZoomFullScreen(_ isFullScreen: Bool) {
+        overlays
+            .compactMap { $0 as? ChromeWindowControlGlyphView }
+            .first { $0.buttonType == .zoomButton }?
+            .isFullScreen = isFullScreen
+    }
+
+    var zoomGlyphIsFullScreen: Bool {
+        overlays
+            .compactMap { $0 as? ChromeWindowControlGlyphView }
+            .first { $0.buttonType == .zoomButton }?
+            .isFullScreen ?? false
+    }
+
     @objc private func applicationDidBecomeActive(_ notification: Notification) {
         reconcileHoverStateFromPointer()
     }
@@ -864,7 +879,12 @@ final class ChromeWindowControlHoverGroup: NSObject {
 
 @MainActor
 private final class ChromeWindowControlGlyphView: NSView {
-    private let buttonType: NSWindow.ButtonType
+    let buttonType: NSWindow.ButtonType
+    var isFullScreen = false {
+        didSet {
+            if oldValue != isFullScreen { needsDisplay = true }
+        }
+    }
 
     init(buttonType: NSWindow.ButtonType, frame: CGRect) {
         self.buttonType = buttonType
@@ -897,12 +917,21 @@ private final class ChromeWindowControlGlyphView: NSView {
             path.move(to: NSPoint(x: 4, y: 7))
             path.line(to: NSPoint(x: 10, y: 7))
         case .zoomButton:
-            path.move(to: NSPoint(x: 4.5, y: 8.5))
-            path.line(to: NSPoint(x: 4.5, y: 5.5))
-            path.line(to: NSPoint(x: 7.5, y: 5.5))
-            path.move(to: NSPoint(x: 9.5, y: 5.5))
-            path.line(to: NSPoint(x: 9.5, y: 8.5))
-            path.line(to: NSPoint(x: 6.5, y: 8.5))
+            if isFullScreen {
+                path.move(to: NSPoint(x: 4.5, y: 5.5))
+                path.line(to: NSPoint(x: 7.5, y: 5.5))
+                path.line(to: NSPoint(x: 7.5, y: 8.5))
+                path.move(to: NSPoint(x: 9.5, y: 8.5))
+                path.line(to: NSPoint(x: 6.5, y: 8.5))
+                path.line(to: NSPoint(x: 6.5, y: 5.5))
+            } else {
+                path.move(to: NSPoint(x: 4.5, y: 8.5))
+                path.line(to: NSPoint(x: 4.5, y: 5.5))
+                path.line(to: NSPoint(x: 7.5, y: 5.5))
+                path.move(to: NSPoint(x: 9.5, y: 5.5))
+                path.line(to: NSPoint(x: 9.5, y: 8.5))
+                path.line(to: NSPoint(x: 6.5, y: 8.5))
+            }
         default:
             return
         }

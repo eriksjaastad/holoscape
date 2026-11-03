@@ -56,6 +56,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     func setChannelMutationEnabled(_ enabled: Bool) {
         channelMutationEnabled = enabled
+        inputRecoveryButton.isEnabled = enabled
     }
 
     private let splitView = NSSplitView()
@@ -288,6 +289,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     internal var inputRecoveryButtonForTesting: NSButton { inputRecoveryButton }
     internal var chromeWindowControlHoverOverlaysForTesting: [NSView] {
         chromeWindowControlHoverGroup?.overlays ?? []
+    }
+    internal var chromeZoomGlyphIsFullScreenForTesting: Bool {
+        chromeWindowControlHoverGroup?.zoomGlyphIsFullScreen ?? false
     }
     internal func setComposerDraftForTesting(_ draft: String, channelId: UUID) {
         composerStates.updateDraft(draft, for: channelId)
@@ -2211,7 +2215,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
     }
 
-    private func applyComposerPresentation(for channel: ChannelController) {
+    private func applyComposerPresentation(for channel: ChannelController, focusInput: Bool = true) {
         let supportsRaw = ptyChannelTypes.contains(channel.channelType)
         let inputAvailable = !supportsRaw || channel.state == .active
         let mode = supportsRaw ? composerStates.state(for: channel.channelId).effectiveMode : .composer
@@ -2242,12 +2246,12 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         inputResizeHandle.isHidden = isRaw || !inputAvailable
         inputResizeHandleHeightConstraint?.constant = isRaw || !inputAvailable ? 0 : inputResizeHandleHeight
         inputHeightConstraint?.constant = isRaw ? 0 : (userInputPanelHeight ?? inputMinHeight)
-        if isRaw {
+        if isRaw && focusInput {
             window.makeFirstResponder(channel.contentView)
-        } else if inputAvailable {
+        } else if inputAvailable && focusInput {
             window.makeFirstResponder(inputBox)
             resizeInputBox()
-        } else {
+        } else if !inputAvailable {
             window.makeFirstResponder(channel.contentView)
         }
     }
@@ -2267,6 +2271,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             inputRecoveryButton.toolTip = recoveryAction.operatorGuidance
             inputRecoveryButton.setAccessibilityLabel(recoveryAction.menuTitle)
             inputRecoveryButton.setAccessibilityHelp(recoveryAction.operatorGuidance)
+            inputRecoveryButton.isEnabled = channelMutationEnabled
             inputRecoveryButton.isHidden = false
         } else {
             inputRecoveryButton.title = ""
@@ -3151,7 +3156,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
         if channel.channelId == activeChannelId {
             publishActiveChannelStateToReactiveSnapshot(channel)
-            applyComposerPresentation(for: channel)
+            applyComposerPresentation(for: channel, focusInput: false)
             applyInputPanelChrome()
             tabBar.skinContext = skinContext
             splitPaneManager.skinContext = skinContext

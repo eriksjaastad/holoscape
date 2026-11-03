@@ -209,6 +209,13 @@ final class MainWindowComposerTests: XCTestCase {
             ChannelRecoveryAction.recreateBrokerSession.operatorGuidance
         )
 
+        fixture.controller.setChannelMutationEnabled(false)
+        XCTAssertFalse(fixture.controller.inputRecoveryButtonForTesting.isEnabled)
+        fixture.controller.inputRecoveryButtonForTesting.performClick(nil)
+        XCTAssertEqual(channel.state, .stale)
+
+        fixture.controller.setChannelMutationEnabled(true)
+        XCTAssertTrue(fixture.controller.inputRecoveryButtonForTesting.isEnabled)
         fixture.controller.inputRecoveryButtonForTesting.performClick(nil)
 
         XCTAssertEqual(channel.state, .active)
@@ -217,6 +224,20 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertTrue(fixture.controller.inputUnavailableViewForTesting.isHidden)
         XCTAssertTrue(fixture.controller.composerModeControlForTesting.isEnabled(forSegment: 1))
         XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "pwd")
+    }
+
+    func testActiveStateRefreshPreservesUnrelatedFirstResponder() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .agentDirect, label: "Agent")
+        fixture.controller.switchToChannel(channel.channelId)
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let firstResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        channel.delegate?.channelStateDidChange(channel, to: .active)
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstResponder)
     }
 
     func testFailedAcknowledgedSubmissionPreservesDraft() throws {
