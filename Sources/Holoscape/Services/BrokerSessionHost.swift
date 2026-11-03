@@ -10,20 +10,24 @@ import Foundation
 struct BrokerSessionHost {
     private enum RequestError: Error {
         case expiredBeforeDispatch
+        case hostShutdownNotAllowed
     }
 
     private let runtime: any BrokerSessionRuntime
     private let codec: BrokerSessionHostCodec
     private let scheduler: BrokerSessionOperationScheduler
+    private let allowsHostShutdown: Bool
 
     init(
         runtime: any BrokerSessionRuntime,
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
-        scheduler: BrokerSessionOperationScheduler = BrokerSessionOperationScheduler()
+        scheduler: BrokerSessionOperationScheduler = BrokerSessionOperationScheduler(),
+        allowsHostShutdown: Bool = false
     ) {
         self.runtime = runtime
         self.codec = codec
         self.scheduler = scheduler
+        self.allowsHostShutdown = allowsHostShutdown
     }
 
     func shutDownRuntimeBeforeExit() {
@@ -90,6 +94,9 @@ struct BrokerSessionHost {
     private func dispatch(_ request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
         switch request {
         case .shutDownHost:
+            guard allowsHostShutdown else {
+                throw RequestError.hostShutdownNotAllowed
+            }
             return .ok
         case .listSessions:
             return .sessionIDs(try runtime.listSessions())

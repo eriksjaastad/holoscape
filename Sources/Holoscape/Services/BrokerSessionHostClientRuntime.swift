@@ -83,12 +83,16 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         requestTimeoutMilliseconds: Int = 10_000,
         outputSnapshotTimeoutMilliseconds: Int = 500
     ) -> BrokerSessionHostClientRuntime {
+        var brokerEnvironment = environment
+        if CommandLine.arguments.contains("--ephemeral-broker") {
+            brokerEnvironment[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey] = "1"
+        }
         let resolvedSocketPath = socketPath
             ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment)
         let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
             socketPath: resolvedSocketPath,
-            environment: environment,
+            environment: brokerEnvironment,
             requestTimeoutMilliseconds: requestTimeoutMilliseconds
         )
         // Snapshot polling must not hold teardown behind the lifecycle request
@@ -96,7 +100,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         let outputTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
             socketPath: resolvedSocketPath,
-            environment: environment,
+            environment: brokerEnvironment,
             requestTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds,
             launchesBrokerOnConnectionFailure: false
         )
@@ -120,14 +124,12 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     /// deliberately leaves the broker and its PTYs alive for reattachment.
     static func shutDownSocketHostIfPresent(
         socketPath: String,
-        timeoutMilliseconds: Int = 10_000
+        timeoutMilliseconds: Int = 10_000,
+        brokerProcessExists: (pid_t) -> Bool = processExists
     ) throws {
         switch BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath) {
         case .unreachable:
-            guard !BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath) else {
-                throw HostShutdownError.brokerStateIndeterminate(socketPath)
-            }
-            try removeInactiveSocketNamespace(socketPath)
+            try removeInactiveSocketNamespace(socketPath, expectedBrokerPID: nil)
             return
         case .indeterminate:
             throw HostShutdownError.brokerStateIndeterminate(socketPath)
@@ -135,6 +137,12 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
             break
         }
 
+        let brokerPID: pid_t
+        do {
+            brokerPID = try BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath)
+        } catch {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
         let codec = BrokerSessionHostCodec()
         let response = try codec.decodeResponse(
             BrokerSessionHostUnixSocketTransport(
@@ -149,10 +157,11 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         let deadline = DispatchTime.now().uptimeNanoseconds
             + UInt64(max(1, timeoutMilliseconds)) * 1_000_000
         while DispatchTime.now().uptimeNanoseconds < deadline {
-            let socketExists = FileManager.default.fileExists(atPath: socketPath)
-            let lockIsActive = BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath)
-            if !socketExists && !lockIsActive {
-                try removeInactiveSocketNamespace(socketPath)
+            if !brokerProcessExists(brokerPID) {
+                try removeInactiveSocketNamespace(
+                    socketPath,
+                    expectedBrokerPID: brokerPID
+                )
                 return
             }
             usleep(10_000)
@@ -160,9 +169,38 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         throw HostShutdownError.brokerDidNotExit(socketPath)
     }
 
-    private static func removeInactiveSocketNamespace(_ socketPath: String) throws {
+    private static func processExists(_ pid: pid_t) -> Bool {
+        if Darwin.kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    private static func removeInactiveSocketNamespace(
+        _ socketPath: String,
+        expectedBrokerPID: pid_t?
+    ) throws {
+        let lockPath = socketPath + ".lock"
+        let lockFD = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard lockFD >= 0 else {
+            throw HostShutdownError.namespaceCleanupFailed(
+                "\(lockPath): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { Darwin.close(lockFD) }
+        guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
+        defer { flock(lockFD, LOCK_UN) }
+        guard BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath) == .unreachable else {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
+        if let expectedBrokerPID {
+            guard (try? BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath)) == expectedBrokerPID else {
+                throw HostShutdownError.brokerStateIndeterminate(socketPath)
+            }
+        }
+
         let fileManager = FileManager.default
-        for path in [socketPath, socketPath + ".lock"] where fileManager.fileExists(atPath: path) {
+        for path in [socketPath, lockPath] where fileManager.fileExists(atPath: path) {
             do {
                 try fileManager.removeItem(atPath: path)
             } catch {

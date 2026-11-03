@@ -314,7 +314,10 @@ final class LazyBrokerSessionHostUnixSocketTransport: @unchecked Sendable {
         environment: [String: String]?
     ) throws -> LaunchedChild {
         let executablePath = executableURL.path
-        let arguments = [executablePath, BrokerSessionHostCommand.socketModeFlag, socketPath]
+        var arguments = [executablePath, BrokerSessionHostCommand.socketModeFlag, socketPath]
+        if environment?[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey] == "1" {
+            arguments.append(BrokerSessionHostCommand.ephemeralSocketModeFlag)
+        }
         let argumentPointers = try cStringPointers(arguments)
         defer { argumentPointers.forEach { free($0) } }
         var argv: [UnsafeMutablePointer<CChar>?] = argumentPointers.map { Optional($0) }

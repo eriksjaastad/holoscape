@@ -210,8 +210,20 @@ final class BrokerSessionRegistryTests: XCTestCase {
         let waitResult = childExited.wait(timeout: .now() + 10)
         if waitResult == .timedOut {
             child.terminate()
-            child.waitUntilExit()
+            if childExited.wait(timeout: .now() + 1) == .timedOut {
+                errno = 0
+                let killResult = Darwin.kill(child.processIdentifier, SIGKILL)
+                let killCode = errno
+                XCTAssertTrue(
+                    killResult == 0 || killCode == ESRCH,
+                    "Failed to kill registry mutation child: \(String(cString: strerror(killCode)))"
+                )
+                let finalWait = childExited.wait(timeout: .now() + 1)
+                XCTAssertEqual(finalWait, .success, "Registry mutation child did not exit after SIGKILL")
+                guard finalWait == .success else { return }
+            }
             XCTFail("Registry mutation child did not exit within 10 seconds")
+            return
         }
         let diagnostic = String(
             data: output.fileHandleForReading.readDataToEndOfFile(),

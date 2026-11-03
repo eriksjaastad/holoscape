@@ -55,8 +55,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         CommandLine.arguments.contains("--ui-testing")
     }
 
+    var ephemeralBrokerLifecycleOverride: Bool?
+    var ephemeralBrokerShutdownOperation: @Sendable (String) throws -> Void = { socketPath in
+        try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(socketPath: socketPath)
+    }
+
     private var usesEphemeralBrokerLifecycle: Bool {
-        CommandLine.arguments.contains("--ephemeral-broker")
+        ephemeralBrokerLifecycleOverride
+            ?? CommandLine.arguments.contains("--ephemeral-broker")
     }
 
     private var ephemeralBrokerShutdownInProgress = false
@@ -220,7 +226,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let launchRecoveryCompleted = launchRecovery.state.isCompleted
         launchRecovery.abandonIfIncomplete()
+        if usesEphemeralBrokerLifecycle, !launchRecoveryCompleted {
+            beginEphemeralBrokerShutdown { [weak sender] shouldTerminate in
+                sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+            }
+            return .terminateLater
+        }
         let shouldSave = !isUITesting || CommandLine.arguments.contains("--restore-channels")
         let shouldCoordinateTermination = shouldSave || usesEphemeralBrokerLifecycle
         let hasChannelManager = windowController?.channelManager != nil || channelManagerRef != nil
@@ -275,12 +288,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, AppearanceSettingsDelegate {
         let socketPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
             environment: environment
         )
+        let shutdownOperation = ephemeralBrokerShutdownOperation
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let failure: Error?
             do {
-                try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(
-                    socketPath: socketPath
-                )
+                try shutdownOperation(socketPath)
                 failure = nil
             } catch {
                 failure = error

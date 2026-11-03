@@ -32,7 +32,16 @@ class HoloscapeUITestCase: XCTestCase {
 
     override func tearDownWithError() throws {
         app.terminate()
-        if let isolatedConfigDirectory {
+        let terminationDeadline = Date().addingTimeInterval(10)
+        while app.state != .notRunning, Date() < terminationDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(
+            app.state,
+            .notRunning,
+            "UI-test app must finish ephemeral broker shutdown before its isolated config is deleted"
+        )
+        if app.state == .notRunning, let isolatedConfigDirectory {
             try FileManager.default.removeItem(at: isolatedConfigDirectory)
         }
         isolatedConfigDirectory = nil

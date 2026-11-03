@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="${1:-$ROOT/build/Holoscape.app}"
 CONFIG_ROOT="${HOLOSCAPE_VERIFICATION_CONFIG_DIR:-}"
 OWNS_CONFIG_ROOT=0
+LAUNCH_COMPLETED=0
 
 if [[ ! -d "$APP_PATH" ]]; then
     echo "Packaged app not found: $APP_PATH" >&2
@@ -20,8 +21,10 @@ else
 fi
 
 cleanup() {
-    if [[ "$OWNS_CONFIG_ROOT" -eq 1 ]]; then
+    if [[ "$OWNS_CONFIG_ROOT" -eq 1 && "$LAUNCH_COMPLETED" -eq 1 ]]; then
         rm -rf "$CONFIG_ROOT"
+    elif [[ "$OWNS_CONFIG_ROOT" -eq 1 ]]; then
+        echo "Preserving isolated config after interrupted or failed launch: $CONFIG_ROOT" >&2
     fi
 }
 trap cleanup EXIT
@@ -29,3 +32,4 @@ trap cleanup EXIT
 echo "Launching isolated HoloScape verification with config: $CONFIG_ROOT"
 open -W -n --env HOLOSCAPE_CONFIG_DIR="$CONFIG_ROOT" "$APP_PATH" \
     --args --app-hosted-verification --ephemeral-broker
+LAUNCH_COMPLETED=1

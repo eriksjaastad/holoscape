@@ -75,6 +75,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         var serverFD: Int32?
         var handlerGroup: DispatchGroup?
         let socketHadBrokerLockMarker = FileManager.default.fileExists(atPath: socketPath + ".lock")
+        var shouldRemoveNewLockMarker = !socketHadBrokerLockMarker
         defer {
             handlerGroup?.wait()
             // Keep the listening socket and exclusive broker lock authoritative
@@ -84,7 +85,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                 Darwin.close(serverFD)
                 unlink(socketPath)
             }
-            if brokerLockFD != nil {
+            if brokerLockFD != nil, shouldRemoveNewLockMarker {
                 unlink(socketPath + ".lock")
             }
             if let brokerLockFD {
@@ -96,6 +97,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
             socketHadBrokerLockMarker: socketHadBrokerLockMarker
         )
         serverFD = createdServerFD
+        shouldRemoveNewLockMarker = false
         let group = DispatchGroup()
         handlerGroup = group
         let errorBox = BrokerSocketServerErrorBox()

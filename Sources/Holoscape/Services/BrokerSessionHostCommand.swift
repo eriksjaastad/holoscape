@@ -15,6 +15,8 @@ struct BrokerSessionHostCommand {
 
     static let modeFlag = "--broker-host"
     static let socketModeFlag = "--broker-host-socket"
+    static let ephemeralSocketModeFlag = "--ephemeral-broker-host"
+    static let ephemeralBrokerEnvironmentKey = "HOLOSCAPE_EPHEMERAL_BROKER_HOST"
 
     static func makeDefaultRuntime(
         scrollbackDirectory: URL = ScrollbackPersistencePolicy.defaultDiskDirectory
@@ -68,8 +70,10 @@ struct BrokerSessionHostCommand {
         guard let flagIndex = trailingArguments.firstIndex(of: Self.socketModeFlag) else {
             return false
         }
+        let allowsHostShutdown = trailingArguments.contains(Self.ephemeralSocketModeFlag)
         let unexpectedArguments: [String] = trailingArguments.enumerated().compactMap { index, argument in
             if index == flagIndex || index == flagIndex + 1 { return nil as String? }
+            if argument == Self.ephemeralSocketModeFlag { return nil as String? }
             return argument
         }
         guard unexpectedArguments.isEmpty else {
@@ -86,7 +90,10 @@ struct BrokerSessionHostCommand {
 
         let server = BrokerSessionHostUnixSocketServer(
             socketPath: socketPath,
-            host: BrokerSessionHost(runtime: runtimeFactory()),
+            host: BrokerSessionHost(
+                runtime: runtimeFactory(),
+                allowsHostShutdown: allowsHostShutdown
+            ),
         )
         try server.run(maxConnections: socketMaxConnections)
         return true
