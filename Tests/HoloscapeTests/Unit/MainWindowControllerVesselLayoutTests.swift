@@ -5,7 +5,7 @@ import AppKit
 @MainActor
 final class MainWindowControllerVesselLayoutTests: XCTestCase {
 
-    func testDefaultWindowPreservesAUsableMainContentWidth() throws {
+    func testDefaultWindowPreservesUsableSidebarAndMainContentWidths() throws {
         let controller = try makeController(persistedSkin: "Default")
         drainMainQueue()
         controller.window.setContentSize(NSSize(width: 720, height: 500))
@@ -15,16 +15,42 @@ final class MainWindowControllerVesselLayoutTests: XCTestCase {
         XCTAssertEqual(controller.window.contentMinSize.height, 500)
 
         let splitView = controller.splitViewForTesting
-        let proposed = controller.splitView(
+        XCTAssertGreaterThanOrEqual(controller.sidebarContainerForTesting.frame.width, 220)
+        XCTAssertGreaterThanOrEqual(controller.rightPaneForTesting.frame.width, 480)
+        XCTAssertFalse(controller.splitView(splitView, canCollapseSubview: controller.sidebarContainerForTesting))
+        XCTAssertFalse(
+            controller.splitView(
+                splitView,
+                shouldCollapseSubview: controller.sidebarContainerForTesting,
+                forDoubleClickOnDividerAt: 0
+            )
+        )
+        let minimumSidebarPosition = controller.splitView(
+            splitView,
+            constrainMinCoordinate: 0,
+            ofSubviewAt: 0
+        )
+        splitView.setPosition(minimumSidebarPosition, ofDividerAt: 0)
+        splitView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(minimumSidebarPosition, 220, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(controller.sidebarContainerForTesting.frame.width, 220)
+        XCTAssertGreaterThanOrEqual(controller.rightPaneForTesting.frame.width, 480)
+        XCTAssertGreaterThanOrEqual(
+            controller.window.contentMinSize.width,
+            minimumSidebarPosition + splitView.dividerThickness + 480
+        )
+
+        let maximumSidebarPosition = controller.splitView(
             splitView,
             constrainMaxCoordinate: splitView.bounds.width,
             ofSubviewAt: 0
         )
-        splitView.setPosition(proposed, ofDividerAt: 0)
+        splitView.setPosition(maximumSidebarPosition, ofDividerAt: 0)
         splitView.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(
-            proposed,
+            maximumSidebarPosition,
             min(350, splitView.bounds.width - splitView.dividerThickness - 480),
             accuracy: 0.5
         )
@@ -103,6 +129,12 @@ final class MainWindowControllerVesselLayoutTests: XCTestCase {
         XCTAssertTrue(controller.rightPaneContentHostForTesting.superview === controller.rightPaneForTesting)
         XCTAssertNil(controller.channelVesselViewForTesting.superview)
         XCTAssertFalse(controller.rightPaneForTesting.subviews.contains { $0.subviews.contains(controller.screenVesselViewForTesting) })
+
+        let splitView = controller.splitViewForTesting
+        let minimum = controller.splitView(splitView, constrainMinCoordinate: 0, ofSubviewAt: 0)
+        let maximum = controller.splitView(splitView, constrainMaxCoordinate: splitView.bounds.width, ofSubviewAt: 0)
+        XCTAssertEqual(minimum, 220, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(maximum, splitView.bounds.width - splitView.dividerThickness - 480)
     }
 
     func testSidebarCollapseStillControlsTopTabBarWithVessels() throws {

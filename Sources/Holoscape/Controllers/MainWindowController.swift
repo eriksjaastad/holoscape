@@ -1,5 +1,17 @@
 import AppKit
 
+enum WorkspaceResizeContract {
+    static let minimumSidebarWidth: CGFloat = 220
+    static let minimumMainContentWidth: CGFloat = 480
+    static let standardDividerWidth: CGFloat = 1
+    static let minimumSplitWidth = minimumSidebarWidth + standardDividerWidth + minimumMainContentWidth
+    static let minimumWindowContentSize = NSSize(width: max(720, minimumSplitWidth), height: 500)
+
+    static func supportsWorkspace(width: CGFloat) -> Bool {
+        width >= minimumSplitWidth
+    }
+}
+
 @MainActor
 class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitViewDelegate,
     TabBarViewDelegate, SidebarViewDelegate, SessionLauncherDelegate,
@@ -249,8 +261,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     private let sidebarWidth: CGFloat = 220
     private let launcherHeight: CGFloat = 36
-    private let minimumMainContentWidth: CGFloat = 480
-    static let minimumWindowContentSize = NSSize(width: 720, height: 500)
+    static let minimumSidebarContentWidth = WorkspaceResizeContract.minimumSidebarWidth
+    static let minimumMainContentWidth = WorkspaceResizeContract.minimumMainContentWidth
+    static let minimumWindowContentSize = WorkspaceResizeContract.minimumWindowContentSize
 
     internal var activeSkinLayoutForTesting: SkinLayoutDescriptor? { activeSkinLayout }
     internal var channelVesselViewForTesting: ChannelVesselView { channelVesselView }
@@ -617,7 +630,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             self?.composerStates.removeState(for: channel.channelId)
         }
 
-        // Add panes to split view
+        // Add panes to split view.
         splitView.addArrangedSubview(sidebarContainer)
         splitView.addArrangedSubview(rightPane)
         applyAppContentLayout(nil)
@@ -1584,7 +1597,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     }
 
     private var currentSidebarWidth: CGFloat {
-        activeSkinLayout?.channelVessel?.size ?? sidebarWidth
+        max(activeSkinLayout?.channelVessel?.size ?? sidebarWidth, Self.minimumSidebarContentWidth)
     }
 
     private func applyAppContentLayout(_ proposedLayout: SkinLayoutDescriptor?) {
@@ -1961,12 +1974,17 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - NSSplitViewDelegate
 
     func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
-        // Allow the sidebar (first subview at index 0) to collapse
-        return splitView.subviews.first === subview
+        // The explicit sidebar toggle owns collapse. Divider dragging must
+        // preserve readable channel rows instead of snapping the pane to zero.
+        return false
     }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        return 0  // allow full collapse; canCollapseSubview handles the rest
+        guard sidebarExpanded else { return 0 }
+        return min(
+            Self.minimumSidebarContentWidth,
+            max(0, splitView.bounds.width - splitView.dividerThickness - Self.minimumMainContentWidth)
+        )
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
@@ -1976,12 +1994,32 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         // off-screen to satisfy Auto Layout while the user drags.
         return min(
             350,
-            max(0, splitView.bounds.width - splitView.dividerThickness - minimumMainContentWidth)
+            max(0, splitView.bounds.width - splitView.dividerThickness - Self.minimumMainContentWidth)
         )
     }
 
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard sidebarExpanded,
+              splitView.subviews.count == 2 else { return }
+
+        let currentPosition = splitView.subviews[0].frame.width
+        let minimumPosition = self.splitView(
+            splitView,
+            constrainMinCoordinate: currentPosition,
+            ofSubviewAt: 0
+        )
+        let maximumPosition = self.splitView(
+            splitView,
+            constrainMaxCoordinate: currentPosition,
+            ofSubviewAt: 0
+        )
+        let clampedPosition = min(max(currentPosition, minimumPosition), maximumPosition)
+        guard abs(clampedPosition - currentPosition) > 0.5 else { return }
+        splitView.setPosition(clampedPosition, ofDividerAt: 0)
+    }
+
     func splitView(_ splitView: NSSplitView, shouldCollapseSubview subview: NSView, forDoubleClickOnDividerAt dividerIndex: Int) -> Bool {
-        return splitView.subviews.first === subview
+        return false
     }
 
     // MARK: - URL Scheme

@@ -1178,6 +1178,13 @@ class SkinEngine {
 
         let nominalBounds = CGRect(x: 0, y: 0, width: 1000, height: 700)
         if let resolved = ShapedWindowController.validate(shapeDescriptor, against: nominalBounds) {
+            guard WorkspaceResizeContract.supportsWorkspace(width: resolved.nominalSize.width) else {
+                return (
+                    nil,
+                    "Skin \(skinName): window shape width \(resolved.nominalSize.width) "
+                        + "is below workspace minimum \(WorkspaceResizeContract.minimumSplitWidth), using rectangle"
+                )
+            }
             return (resolved, nil)
         } else {
             return (nil, "Skin \(skinName): invalid window shape, using rectangle")

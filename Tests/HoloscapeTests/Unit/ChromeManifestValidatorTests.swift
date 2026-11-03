@@ -150,23 +150,23 @@ final class ChromeManifestValidatorTests: XCTestCase {
         XCTAssertFalse(result.valid)
     }
 
-    // MARK: - Warning: sub-minimum size
+    // MARK: - Workspace minimum and cosmetic size warnings
 
-    func testSubMinimumWidthEmitsWarning() {
+    func testChromeInteriorBelowWorkspaceMinimumIsFatal() {
         let chrome = ChromeDescriptor(
             mode: .baked,
             image: "chrome.png",
-            width: 100, height: 700,
-            interiorRect: SkinRect(x: 0, y: 0, width: 100, height: 700)
+            width: 700, height: 700,
+            interiorRect: SkinRect(x: 0, y: 0, width: 700, height: 700)
         )
-        let image = makeOpaqueImage(widthPx: 200, heightPx: 1400)
+        let image = makeOpaqueImage(widthPx: 1400, heightPx: 1400)
         let result = ChromeManifestValidator.validate(
             manifest: manifestWith(chrome: chrome),
             baseImage: image,
             windowShape: nil
         )
-        XCTAssertTrue(result.valid, "Sub-minimum is a warning, not a rejection (Req 12.9)")
-        XCTAssertTrue(result.warningReason?.contains("below minimum") ?? false)
+        XCTAssertFalse(result.valid, "Fixed chrome must fit both workspace panes and their divider")
+        XCTAssertTrue(result.warningReason?.contains("workspace minimum") ?? false)
     }
 
     func testSubMinimumHeightEmitsWarning() {
@@ -174,10 +174,10 @@ final class ChromeManifestValidatorTests: XCTestCase {
         let chrome = ChromeDescriptor(
             mode: .baked,
             image: "chrome.png",
-            width: 500, height: 50,
-            interiorRect: SkinRect(x: 0, y: 0, width: 500, height: 50)
+            width: 720, height: 50,
+            interiorRect: SkinRect(x: 0, y: 0, width: 720, height: 50)
         )
-        let image = makeOpaqueImage(widthPx: 1000, heightPx: 100)
+        let image = makeOpaqueImage(widthPx: 1440, heightPx: 100)
         let result = ChromeManifestValidator.validate(
             manifest: manifestWith(chrome: chrome),
             baseImage: image,
