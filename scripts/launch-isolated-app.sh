@@ -19,6 +19,7 @@ if [[ -z "$CONFIG_ROOT" ]]; then
 else
     mkdir -p "$CONFIG_ROOT"
 fi
+CONFIG_ROOT="$(cd "$CONFIG_ROOT" && pwd -P)"
 
 cleanup() {
     if [[ "$OWNS_CONFIG_ROOT" -eq 1 && "$LAUNCH_COMPLETED" -eq 1 ]]; then
@@ -38,10 +39,46 @@ PID_RECORD="$CONFIG_ROOT/.broker-owned-pids"
 collect_descendants() {
     local parent="$1"
     local child
-    for child in $(pgrep -P "$parent" 2>/dev/null || true); do
+    local children
+    local status
+    if children="$(pgrep -P "$parent" 2>"$CONFIG_ROOT/.pgrep-error")"; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 1 && ! -s "$CONFIG_ROOT/.pgrep-error" ]]; then
+            rm -f "$CONFIG_ROOT/.pgrep-error"
+            return
+        fi
+        echo "Could not inspect broker-owned processes for PID $parent" >&2
+        cat "$CONFIG_ROOT/.pgrep-error" >&2
+        rm -f "$CONFIG_ROOT/.pgrep-error"
+        return "$status"
+    fi
+    rm -f "$CONFIG_ROOT/.pgrep-error"
+    for child in $children; do
         printf '%s\n' "$child" >> "$PID_RECORD"
         collect_descendants "$child"
     done
+}
+
+process_is_live() {
+    local pid="$1"
+    local output
+    local status
+    if output="$(ps -p "$pid" -o pid= 2>"$CONFIG_ROOT/.ps-error")"; then
+        rm -f "$CONFIG_ROOT/.ps-error"
+        [[ -n "$output" ]]
+        return
+    fi
+    status=$?
+    if [[ "$status" -eq 1 && ! -s "$CONFIG_ROOT/.ps-error" ]]; then
+        rm -f "$CONFIG_ROOT/.ps-error"
+        return 1
+    fi
+    echo "Could not inspect broker-owned PID $pid" >&2
+    cat "$CONFIG_ROOT/.ps-error" >&2
+    rm -f "$CONFIG_ROOT/.ps-error"
+    return 2
 }
 
 open -W -n --env HOLOSCAPE_CONFIG_DIR="$CONFIG_ROOT" "$APP_PATH" \
@@ -66,9 +103,15 @@ if [[ -e "$SOCKET_PATH" || -e "$SOCKET_PATH.lock" ]]; then
 fi
 if [[ -f "$PID_RECORD" ]]; then
     while IFS= read -r PID; do
-        if kill -0 "$PID" 2>/dev/null; then
+        if process_is_live "$PID"; then
             echo "Preserving isolated config because broker-owned PID remains: $PID" >&2
             exit 1
+        else
+            STATUS=$?
+            if [[ "$STATUS" -ne 1 ]]; then
+                echo "Preserving isolated config because broker-owned PID state is unknown: $PID" >&2
+                exit 1
+            fi
         fi
     done < "$PID_RECORD"
 fi

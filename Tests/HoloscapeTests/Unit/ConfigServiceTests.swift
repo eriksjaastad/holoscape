@@ -87,6 +87,40 @@ final class ConfigServiceTests: XCTestCase {
         }
     }
 
+    func testUITestLaunchRejectsCaseAliasesOfProductionRoots() throws {
+        let home = temporaryConfigDir().appendingPathComponent("home", isDirectory: true)
+        let productionConfig = ConfigService.defaultConfigDirectory(environment: [:], homeDirectory: home)
+        let productionBroker = home.appendingPathComponent(
+            "Library/Application Support/Holoscape",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: productionConfig, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: productionBroker, withIntermediateDirectories: true)
+
+        let aliases = [
+            productionConfig.deletingLastPathComponent().appendingPathComponent(".HOLOSCAPE"),
+            productionBroker.deletingLastPathComponent().appendingPathComponent("holoscape"),
+        ]
+        guard aliases.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+            throw XCTSkip("Case-alias regression requires a case-insensitive filesystem")
+        }
+
+        for alias in aliases {
+            XCTAssertThrowsError(
+                try ConfigService.validateAutomatedLaunchIsolation(
+                    arguments: ["Holoscape", "--ui-testing"],
+                    environment: ["HOLOSCAPE_CONFIG_DIR": alias.path],
+                    homeDirectory: home
+                )
+            ) { error in
+                guard let isolationError = error as? ConfigService.AutomatedLaunchIsolationError,
+                      case .productionConfigDirectory = isolationError else {
+                    return XCTFail("Expected productionConfigDirectory, got \(error)")
+                }
+            }
+        }
+    }
+
     func testUITestLaunchAcceptsDisposableConfigDirectory() throws {
         let root = temporaryConfigDir()
         let home = root.appendingPathComponent("home", isDirectory: true)

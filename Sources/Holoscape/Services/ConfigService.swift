@@ -93,12 +93,25 @@ class ConfigService {
                 isDirectory: true
             )
         )
-        if isolatedDirectory == productionDirectory {
+        if directoriesReferToSameLocation(isolatedDirectory, productionDirectory) {
             throw AutomatedLaunchIsolationError.productionConfigDirectory(productionDirectory.path)
         }
-        if isolatedDirectory == productionBrokerDirectory {
+        if directoriesReferToSameLocation(isolatedDirectory, productionBrokerDirectory) {
             throw AutomatedLaunchIsolationError.productionConfigDirectory(productionBrokerDirectory.path)
         }
+    }
+
+    private static func directoriesReferToSameLocation(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs == rhs { return true }
+        guard let lhsAttributes = try? FileManager.default.attributesOfItem(atPath: lhs.path),
+              let rhsAttributes = try? FileManager.default.attributesOfItem(atPath: rhs.path),
+              let lhsDevice = lhsAttributes[.systemNumber] as? NSNumber,
+              let rhsDevice = rhsAttributes[.systemNumber] as? NSNumber,
+              let lhsInode = lhsAttributes[.systemFileNumber] as? NSNumber,
+              let rhsInode = rhsAttributes[.systemFileNumber] as? NSNumber else {
+            return false
+        }
+        return lhsDevice == rhsDevice && lhsInode == rhsInode
     }
 
     /// Resolves the deepest existing ancestor before restoring missing path
