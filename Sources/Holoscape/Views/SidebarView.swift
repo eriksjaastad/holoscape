@@ -560,6 +560,12 @@ class SidebarTabEntry: HoverTrackingButton {
             snapshot.setAgentState(persistentState.kind.reactiveAgentStateOrdinal)
         }
 
+        let showsRoutineStaleInteraction = hasStaleInteraction
+            && !hasUnread
+            && effectiveNotificationType == nil
+            && recoveryAction == nil
+            && (persistentState == nil || persistentState?.kind == .ready || persistentState?.kind == .running)
+
         // Status text is view-level content (not a color) — drive it here.
         // Persistent state text remains explicit at compact widths. The marker
         // is the non-color signal; the text is the readable semantic label.
@@ -584,7 +590,7 @@ class SidebarTabEntry: HoverTrackingButton {
         }
         if persistentState == nil, notificationType == "idle_prompt" {
             statusTextField.stringValue = ""
-        } else if recoveryAction == nil, notificationType == nil, hasStaleInteraction {
+        } else if showsRoutineStaleInteraction {
             statusTextField.stringValue = "stale"
         }
 
@@ -605,11 +611,6 @@ class SidebarTabEntry: HoverTrackingButton {
         } else {
             layer?.borderWidth = 0
         }
-        let showsRoutineStaleInteraction = hasStaleInteraction
-            && !hasUnread
-            && effectiveNotificationType == nil
-            && recoveryAction == nil
-            && (persistentState == nil || persistentState?.kind == .ready || persistentState?.kind == .running)
         layer?.opacity = showsRoutineStaleInteraction ? 0.72 : 1.0
         labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: effectiveNotificationType)
         labelField.setContentCompressionResistancePriority(needsApproval ? .defaultLow : .defaultHigh, for: .horizontal)

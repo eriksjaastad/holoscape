@@ -309,7 +309,7 @@ class TabBarView: NSView {
         }
         if channel.hasUnread {
             title = "\u{25CF} " + title
-        } else if staleInteractionIds.contains(channel.channelId) {
+        } else if showsRoutineStaleInteraction(for: channel) {
             title = "\u{25CC} " + title
         }
         if includingSkinMarker,
@@ -392,6 +392,12 @@ class TabBarView: NSView {
         }
     }
 
+    private func showsRoutineStaleInteraction(for channel: any ChannelController) -> Bool {
+        staleInteractionIds.contains(channel.channelId)
+            && [.ready, .running].contains(channel.persistentState.kind)
+            && effectiveNotificationType(for: channel) == nil
+    }
+
     private func tabSurfaceKey(channelId: UUID) -> SurfaceKey {
         let notificationType = tabNotificationTypes[channelId]
         if notificationType == "permission_prompt" { return .tabBarTabPermission }
@@ -431,7 +437,7 @@ class TabBarView: NSView {
         } else if notificationType == "idle_prompt" {
             applyFill(surfaceKey, to: buttonLayer,
                       fallback: Self.idleBg, spriteState: spriteState, snapshot: snapshot)
-        } else if staleInteractionIds.contains(channelId) {
+        } else if let channel = tabChannels[channelId], showsRoutineStaleInteraction(for: channel) {
             applyTransparentFill(surfaceKey, to: buttonLayer, spriteState: spriteState, snapshot: snapshot)
             buttonLayer.opacity = 0.70
         } else {

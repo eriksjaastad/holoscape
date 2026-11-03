@@ -212,6 +212,32 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(tabButton.accessibilityValue() as? String, "stale: session missing")
     }
 
+    func testDurableErrorAndStaleOutrankRoutineStaleInteractionPresentation() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+        let channel = MockChannelController(type: .agentDirect, label: "Failed", state: .active)
+
+        let states: [(PersistentChannelState, String, String)] = [
+            (.init(kind: .error, source: .agentAdapter, reason: "command failed"), "× Failed", "error: command failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), "◌ Failed", "stale: session missing"),
+        ]
+        for (persistentState, title, accessibilityValue) in states {
+            channel.persistentStateOverride = persistentState
+            view.updateTabs(
+                channels: [channel],
+                activeId: nil,
+                now: Date(),
+                staleThreshold: -1
+            )
+
+            let tabButton = try button(for: channel.channelId, in: view)
+            XCTAssertEqual(tabButton.title, title)
+            XCTAssertEqual(tabButton.accessibilityTitle(), "Failed")
+            XCTAssertEqual(tabButton.accessibilityValue() as? String, accessibilityValue)
+            XCTAssertEqual(tabButton.layer?.opacity, 1)
+        }
+    }
+
     func testSkinMarkerIsVisibleButExcludedFromAccessibilityTitle() throws {
         let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
         let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)

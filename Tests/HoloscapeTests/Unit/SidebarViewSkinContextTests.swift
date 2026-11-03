@@ -259,6 +259,30 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.layer?.opacity, 1)
     }
 
+    func testDurableErrorAndStaleOutrankRoutineStaleInteractionPresentation() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let states: [(PersistentChannelState, ChannelState, String, String)] = [
+            (.init(kind: .error, source: .brokerRegistry, reason: "command failed"), .active, "command failed", "error: command failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), .stale, "session missing", "stale: session missing"),
+        ]
+        for (persistentState, runtimeState, status, accessibilityValue) in states {
+            entry.configure(
+                label: "Codex",
+                hasUnread: false,
+                state: runtimeState,
+                persistentState: persistentState,
+                isActive: false,
+                hasStaleInteraction: true
+            )
+
+            XCTAssertEqual(entry.statusTextForTesting, status)
+            XCTAssertEqual(entry.accessibilityValue() as? String, accessibilityValue)
+            XCTAssertEqual(entry.layer?.opacity, 1)
+        }
+    }
+
     func testAcceptedThreeCharacterStateMarkerFitsSidebarIndicator() throws {
         let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
         let snapshot = ReactiveUniformSnapshot()
