@@ -178,6 +178,22 @@ final class SkinLibraryServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Owned").path))
     }
 
+    func testManagementRefusesUserSkinRootSymlinkEvenWhenItStaysInsideLibrary() throws {
+        let target = try library.create(name: "Target")
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+
+        XCTAssertFalse(library.isUserManaged(name: "Alias"))
+        XCTAssertThrowsError(try library.revealURL(for: "Alias")) { error in
+            XCTAssertEqual(error as? SkinLibraryError, .unsafePath("Alias"))
+        }
+        XCTAssertThrowsError(try library.delete(name: "Alias", activeSkinName: nil)) { error in
+            XCTAssertEqual(error as? SkinLibraryError, .unsafePath("Alias"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("skin.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: alias.path))
+    }
+
     func testRevealReturnsResolvedDirectory() throws {
         let created = try library.create(name: "Revealable")
         XCTAssertEqual(try library.revealURL(for: "Revealable"), created)
