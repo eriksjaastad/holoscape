@@ -1999,14 +1999,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     // MARK: - NSWindowDelegate
 
     func windowDidBecomeKey(_ notification: Notification) {
-        if let id = activeChannelId,
-           let channel = channelManager.channel(for: id),
-           ptyChannelTypes.contains(channel.channelType),
-           composerStates.state(for: id).effectiveMode == .rawTerminal {
-            window.makeFirstResponder(channel.contentView)
-        } else {
-            window.makeFirstResponder(inputBox)
-        }
+        guard let id = activeChannelId,
+              let channel = channelManager.channel(for: id) else { return }
+        focusInput(for: channel)
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -2246,13 +2241,27 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         inputResizeHandle.isHidden = isRaw || !inputAvailable
         inputResizeHandleHeightConstraint?.constant = isRaw || !inputAvailable ? 0 : inputResizeHandleHeight
         inputHeightConstraint?.constant = isRaw ? 0 : (userInputPanelHeight ?? inputMinHeight)
-        if isRaw && focusInput {
+        if focusInput {
+            self.focusInput(for: channel)
+        }
+    }
+
+    private func focusInput(for channel: any ChannelController) {
+        let supportsRaw = ptyChannelTypes.contains(channel.channelType)
+        let inputAvailable = !supportsRaw || channel.state == .active
+        if !inputAvailable {
+            if !inputRecoveryButton.isHidden && inputRecoveryButton.isEnabled {
+                window.makeFirstResponder(inputRecoveryButton)
+            } else {
+                window.makeFirstResponder(channel.contentView)
+            }
+            return
+        }
+        if supportsRaw && composerStates.state(for: channel.channelId).effectiveMode == .rawTerminal {
             window.makeFirstResponder(channel.contentView)
-        } else if inputAvailable && focusInput {
+        } else {
             window.makeFirstResponder(inputBox)
             resizeInputBox()
-        } else if !inputAvailable {
-            window.makeFirstResponder(channel.contentView)
         }
     }
 

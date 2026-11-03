@@ -240,6 +240,32 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertTrue(fixture.controller.window.firstResponder === firstResponder)
     }
 
+    func testStoppedStateRefreshPreservesUnrelatedFirstResponder() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.switchToChannel(channel.channelId)
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let firstResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        channel.delegate?.channelStateDidChange(channel, to: .stale)
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstResponder)
+    }
+
+    func testStoppedSessionReceivesKeyboardFocusOnWindowActivation() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.switchToChannel(channel.channelId)
+
+        fixture.controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === fixture.controller.inputRecoveryButtonForTesting)
+    }
+
     func testFailedAcknowledgedSubmissionPreservesDraft() throws {
         let fixture = try makeFixture()
         let channel = fixture.makeChannel(type: .shell, label: "Active")
