@@ -16,6 +16,22 @@ import os
 /// provides sub-microsecond acquire/release for uncontended cases — fine
 /// for state that changes on event transitions, not per frame.
 final class ReactiveUniformSnapshot: @unchecked Sendable {
+    /// JSON match keys accepted by the state-variant evaluator and loader.
+    /// Keep the manifest contract here beside the lookup implementation so
+    /// validation cannot drift from the fields the runtime can actually read.
+    static let supportedMatchKeys: Set<String> = [
+        "agentState", "previousAgentState",
+        "commandState", "previousCommandState", "lastCommandExitCode",
+        "channelId", "channelIsActive", "channelUnread", "channelConnectionState",
+        "notificationKind", "outputEventCount", "spriteState",
+    ]
+
+    /// Timestamp uniform names accepted inside a `timeSince` expression.
+    static let supportedTimestampNames: Set<String> = [
+        "iTimeAgentStateChange", "iTimeLastOutput", "iTimeLastNotification",
+        "iTimeCommandStart", "iTimeCommandEnd",
+    ]
+
     // MARK: - Agent state
     var agentState: Int32 { lock.withLock { _agentState } }
     var previousAgentState: Int32 { lock.withLock { _previousAgentState } }

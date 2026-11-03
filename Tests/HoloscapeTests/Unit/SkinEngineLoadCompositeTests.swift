@@ -146,7 +146,16 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
           "name": "ForwardCompat",
           "surfaces": {
             "window.background":        { "fill": { "kind": "color", "value": "#123456" } },
-            "future.surface.from.v99":  { "fill": { "kind": "color", "value": "#abcdef" } }
+            "future.surface.from.v99":  {
+              "fill": { "kind": "color", "value": "#abcdef" },
+              "states": [
+                {
+                  "name": "future-state",
+                  "match": { "futureReactiveUniform": 42 },
+                  "marker": { "symbol": "?" }
+                }
+              ]
+            }
           }
         }
         """
@@ -192,6 +201,89 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
                 return XCTFail("Expected fail-closed parseFailure, got \(error)")
             }
             XCTAssertTrue(reason.contains("state"), reason)
+        }
+    }
+
+    func testAllReactiveSnapshotMatchKeysAndTimestampsAreAccepted() throws {
+        let skinDir = skinsDir.appendingPathComponent("CompleteMatchContract")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "CompleteMatchContract",
+          "surfaces": {
+            "tabBar.tab.normal": {
+              "states": [
+                {
+                  "name": "all-supported-fields",
+                  "match": {
+                    "agentState": 0,
+                    "previousAgentState": 0,
+                    "commandState": 0,
+                    "previousCommandState": 0,
+                    "lastCommandExitCode": 0,
+                    "channelId": 0,
+                    "channelIsActive": 0,
+                    "channelUnread": 0,
+                    "channelConnectionState": 0,
+                    "notificationKind": 0,
+                    "outputEventCount": 0,
+                    "spriteState": 0,
+                    "timeSince": {
+                      "iTimeAgentStateChange": { "$gte": 0 },
+                      "iTimeLastOutput": { "$gte": 0 },
+                      "iTimeLastNotification": { "$gte": 0 },
+                      "iTimeCommandStart": { "$gte": 0 },
+                      "iTimeCommandEnd": { "$gte": 0 }
+                    }
+                  },
+                  "marker": { "symbol": "A" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertNoThrow(try SkinEngine().loadComposite(named: "CompleteMatchContract"))
+    }
+
+    func testMissingOrCorruptStateImageFailsClosed() throws {
+        for (skinName, assetData) in [
+            ("MissingStateImage", nil),
+            ("CorruptStateImage", Data("not a png".utf8)),
+        ] {
+            let skinDir = skinsDir.appendingPathComponent(skinName)
+            try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+            let json = """
+            {
+              "version": "4.0",
+              "name": "\(skinName)",
+              "surfaces": {
+                "tabBar.tab.normal": {
+                  "states": [
+                    {
+                      "name": "running",
+                      "match": { "channelConnectionState": 1 },
+                      "fill": { "kind": "image", "path": "state.png", "tile": "stretch" }
+                    }
+                  ]
+                }
+              }
+            }
+            """
+            try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+            if let assetData {
+                try assetData.write(to: skinDir.appendingPathComponent("state.png"))
+            }
+
+            XCTAssertThrowsError(try SkinEngine().loadComposite(named: skinName), skinName) { error in
+                guard case SkinLoadError.parseFailure(let reason) = error else {
+                    return XCTFail("Expected fail-closed parseFailure, got \(error)")
+                }
+                XCTAssertTrue(reason.contains("state fill"), reason)
+            }
         }
     }
 

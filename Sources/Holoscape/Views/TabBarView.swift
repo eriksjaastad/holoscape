@@ -276,7 +276,10 @@ class TabBarView: NSView {
         resolvedDisplayLabels[channel.channelId] ?? channel.displayLabel
     }
 
-    private func buildTabTitle(for channel: any ChannelController) -> String {
+    private func buildTabTitle(
+        for channel: any ChannelController,
+        includingSkinMarker: Bool = true
+    ) -> String {
         var title = displayLabel(for: channel)
         if let indicator = channel.tabIdentityIndicator {
             title = indicator.tabPrefix + title
@@ -291,7 +294,8 @@ class TabBarView: NSView {
         } else if staleInteractionIds.contains(channel.channelId) {
             title = "\u{25CC} " + title
         }
-        if let marker = resolvedTabSurface(channelId: channel.channelId)?.marker?.symbol {
+        if includingSkinMarker,
+           let marker = resolvedTabSurface(channelId: channel.channelId)?.marker?.symbol {
             title = marker + " " + title
         }
         return title
@@ -305,7 +309,7 @@ class TabBarView: NSView {
 
         applyTabStyle(button, channelId: channel.channelId)
 
-        button.setAccessibilityTitle(title)
+        button.setAccessibilityTitle(buildTabTitle(for: channel, includingSkinMarker: false))
         button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
         let staleRecoveryAction = channel.state == .stale ? channel.recoveryAction : nil
         if let staleRecoveryAction {
@@ -358,10 +362,16 @@ class TabBarView: NSView {
         for channel: any ChannelController,
         explicitNotifications: [UUID: String]
     ) -> String? {
-        if channel.persistentState.kind == .needsApproval {
+        switch channel.persistentState.kind {
+        case .needsApproval:
             return "permission_prompt"
+        case .error, .stale:
+            // Durable lifecycle truth outranks a notification that may linger
+            // after the approval prompt has already resolved or failed.
+            return nil
+        default:
+            return explicitNotifications[channel.channelId]
         }
-        return explicitNotifications[channel.channelId]
     }
 
     private func tabSurfaceKey(channelId: UUID) -> SurfaceKey {
@@ -451,7 +461,7 @@ class TabBarView: NSView {
         // Expose to accessibility / XCUITest
         button.setAccessibilityElement(true)
         button.setAccessibilityRole(.button)
-        button.setAccessibilityTitle(title)
+        button.setAccessibilityTitle(buildTabTitle(for: channel, includingSkinMarker: false))
         button.setAccessibilityIdentifier("tab-\(displayLabel(for: channel))")
         updateTabButton(button, for: channel)
         return button

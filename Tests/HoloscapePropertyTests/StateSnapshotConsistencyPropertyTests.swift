@@ -23,20 +23,10 @@ import SwiftCheck
 @MainActor
 final class StateSnapshotConsistencyPropertyTests: XCTestCase {
 
-    // All match keys the SkinContext evaluator reads, pulled verbatim from
-    // `ReactiveUniformSnapshot.intValue(forMatchKey:)`.
-    private static let knownMatchKeys: [String] = [
-        "agentState", "previousAgentState",
-        "commandState", "previousCommandState", "lastCommandExitCode",
-        "channelId", "channelIsActive", "channelUnread", "channelConnectionState",
-        "notificationKind", "outputEventCount",
-    ]
-
-    // All timestamp uniform names the `timeSince` operator reads.
-    private static let knownTimestamps: [String] = [
-        "iTimeAgentStateChange", "iTimeLastOutput", "iTimeLastNotification",
-        "iTimeCommandStart", "iTimeCommandEnd",
-    ]
+    // Match keys and timestamps come from the production contract so this
+    // property suite expands automatically when the runtime adds a field.
+    private static let knownMatchKeys = ReactiveUniformSnapshot.supportedMatchKeys.sorted()
+    private static let knownTimestamps = ReactiveUniformSnapshot.supportedTimestampNames.sorted()
 
     // MARK: - Match key coverage
 
@@ -156,6 +146,8 @@ final class StateSnapshotConsistencyPropertyTests: XCTestCase {
             // property test the value-after-write invariant still holds
             // because the writer runs once; we just ignore `value`.
             snap.recordOutputEvent()
+        case "spriteState":
+            snap.setSpriteState(value)
         case "previousAgentState":
             // setAgentState copies the current agentState into
             // previousAgentState before updating. Seed the "previous"

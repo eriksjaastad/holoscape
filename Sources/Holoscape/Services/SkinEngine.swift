@@ -1058,6 +1058,7 @@ class SkinEngine {
         } catch {
             throw SkinLoadError.parseFailure("image load failed for '\(name)': \(error)")
         }
+        try validateStateImageAssets(in: manifest, images: images, skinName: name)
 
         // For each loaded image, attempt to load its `.ninepatch.json`
         // sidecar. A missing sidecar is not an error — the image just
@@ -1211,6 +1212,10 @@ class SkinEngine {
         guard let surfaces = manifest.surfaces else { return }
 
         for (surfaceKey, descriptor) in surfaces {
+            // Unknown surfaces belong to a future manifest contract. They are
+            // dropped during conversion, so validating their state fields with
+            // this build's vocabulary would break forward compatibility.
+            guard SurfaceKey(rawValue: surfaceKey) != nil else { continue }
             if let marker = descriptor.marker {
                 try validate(marker: marker, location: "\(surfaceKey).marker", skinName: skinName)
             }
@@ -1264,18 +1269,10 @@ class SkinEngine {
     }
 
     private func validate(match: MatchExpression, location: String, skinName: String) throws {
-        let scalarKeys: Set<String> = [
-            "agentState", "commandState", "channelConnectionState",
-            "notificationKind", "channelUnread", "channelIsActive",
-        ]
-        let timeKeys: Set<String> = [
-            "iTimeAgentStateChange", "iTimeCommandStart", "iTimeCommandEnd",
-            "iTimeNotification", "iTimeChannelUnread",
-        ]
         let operators: Set<String> = ["$eq", "$ne", "$gt", "$gte", "$lt", "$lte"]
 
         for (key, value) in match.conditions {
-            if scalarKeys.contains(key) {
+            if ReactiveUniformSnapshot.supportedMatchKeys.contains(key) {
                 guard validate(matchValue: value, allowedOperators: operators) else {
                     throw SkinLoadError.parseFailure("invalid state match in '\(skinName)' at \(location).match.\(key)")
                 }
@@ -1283,10 +1280,35 @@ class SkinEngine {
             }
             if key == "timeSince", case .timeSince(let nested) = value,
                !nested.isEmpty,
-               nested.allSatisfy({ timeKeys.contains($0.key) && validate(matchValue: $0.value, allowedOperators: operators) }) {
+               nested.allSatisfy({
+                   ReactiveUniformSnapshot.supportedTimestampNames.contains($0.key)
+                       && validate(matchValue: $0.value, allowedOperators: operators)
+               }) {
                 continue
             }
             throw SkinLoadError.parseFailure("invalid state match key in '\(skinName)' at \(location).match.\(key)")
+        }
+    }
+
+    /// A state override is atomic presentation data. If its image is missing
+    /// or corrupt, reject the skin instead of silently retaining the base fill
+    /// while applying the rest of the state override.
+    private func validateStateImageAssets(
+        in manifest: SkinDefinition,
+        images: [String: NSImage],
+        skinName: String
+    ) throws {
+        guard let surfaces = manifest.surfaces else { return }
+        for (surfaceKey, descriptor) in surfaces {
+            guard SurfaceKey(rawValue: surfaceKey) != nil else { continue }
+            for (index, state) in (descriptor.states ?? []).enumerated() {
+                guard let fill = state.fill, case .image(let path, _, _) = fill else { continue }
+                guard images[path] != nil else {
+                    throw SkinLoadError.parseFailure(
+                        "invalid state fill in '\(skinName)' at \(surfaceKey).states[\(index)].fill: image '\(path)' is missing or corrupt"
+                    )
+                }
+            }
         }
     }
 
