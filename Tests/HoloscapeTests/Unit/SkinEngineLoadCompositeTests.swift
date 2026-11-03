@@ -287,6 +287,44 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         }
     }
 
+    func testMalformedNestedStatePresentationFailsClosed() throws {
+        let invalidStates = [
+            "\"text\": { \"color\": \"#ffffff\", \"shadow\": { \"color\": \"not-a-color\", \"opacity\": 1, \"blur\": 2, \"offsetX\": 0, \"offsetY\": 0 } }",
+            "\"animation\": { \"fill\": { \"duration\": 0.2, \"curve\": \"futureCurve\" } }",
+        ]
+
+        for (index, invalidState) in invalidStates.enumerated() {
+            let skinName = "InvalidNestedState\(index)"
+            let skinDir = skinsDir.appendingPathComponent(skinName)
+            try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+            let json = """
+            {
+              "version": "4.0",
+              "name": "\(skinName)",
+              "surfaces": {
+                "tabBar.tab.active": {
+                  "states": [
+                    {
+                      "name": "running",
+                      "match": { "channelConnectionState": 0 },
+                      \(invalidState)
+                    }
+                  ]
+                }
+              }
+            }
+            """
+            try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+            XCTAssertThrowsError(try SkinEngine().loadComposite(named: skinName), skinName) { error in
+                guard case SkinLoadError.parseFailure(let reason) = error else {
+                    return XCTFail("Expected fail-closed parseFailure, got \(error)")
+                }
+                XCTAssertTrue(reason.contains("state presentation"), reason)
+            }
+        }
+    }
+
     // MARK: - v1-only manifest (no surfaces block)
 
     func testV1OnlyManifestReturnsNilSurfaces() throws {

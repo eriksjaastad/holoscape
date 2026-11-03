@@ -40,6 +40,7 @@ class TabBarView: NSView {
     private var resolvedDisplayLabels: [UUID: String] = [:]
     private var tabChannels: [UUID: any ChannelController] = [:]
     private var tabSnapshots: [UUID: ReactiveUniformSnapshot] = [:]
+    private var tabOrder: [UUID] = []
 
     // MARK: - Amplify Task 11.3 sprite state tracking
     //
@@ -128,6 +129,7 @@ class TabBarView: NSView {
                 applyTabStyle(button, channelId: id)
             }
         }
+        layoutTabButtons()
     }
 
     override func layout() {
@@ -209,6 +211,7 @@ class TabBarView: NSView {
         staleThreshold: TimeInterval = 45 * 60
     ) {
         activeChannelId = activeId
+        tabOrder = channels.map(\.channelId)
         resolvedDisplayLabels = ChannelDisplayLabelResolver.labels(for: channels)
         tabChannels = Dictionary(uniqueKeysWithValues: channels.map { ($0.channelId, $0) })
         self.notifications = notifications
@@ -251,8 +254,6 @@ class TabBarView: NSView {
             tabChannels.removeValue(forKey: id)
         }
 
-        var xOffset: CGFloat = tabSpacing
-
         for channel in channels {
             let button: NSButton
             if let existing = tabButtons[channel.channelId] {
@@ -265,11 +266,28 @@ class TabBarView: NSView {
                 contentView.addSubview(button)
                 tabButtons[channel.channelId] = button
             }
-            button.frame = NSRect(x: xOffset, y: 2, width: button.fittingSize.width + tabPadding * 2, height: tabHeight - 4)
+        }
+        layoutTabButtons()
+    }
+
+    private func layoutTabButtons() {
+        var xOffset = tabSpacing
+        for id in tabOrder {
+            guard let button = tabButtons[id] else { continue }
+            button.frame = NSRect(
+                x: xOffset,
+                y: 2,
+                width: button.fittingSize.width + tabPadding * 2,
+                height: tabHeight - 4
+            )
             xOffset += button.frame.width + tabSpacing
         }
-
-        contentView.frame = NSRect(x: 0, y: 0, width: max(xOffset, scrollView.contentView.bounds.width), height: tabHeight)
+        contentView.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: max(xOffset, scrollView.contentView.bounds.width),
+            height: tabHeight
+        )
     }
 
     private func displayLabel(for channel: any ChannelController) -> String {

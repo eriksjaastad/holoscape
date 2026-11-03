@@ -226,6 +226,24 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(button.accessibilityValue() as? String, "running")
     }
 
+    func testLiveSkinMarkerChangeRelayoutsExistingTabs() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)
+        channel.persistentStateOverride = PersistentChannelState(kind: .running, source: .processLifecycle)
+        view.skinContext = contextWithActiveMarker("I")
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let initialButton = try button(for: channel.channelId, in: view)
+        let initialWidth = initialButton.frame.width
+
+        view.skinContext = contextWithActiveMarker("WWW")
+
+        let updatedButton = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(updatedButton.title, "WWW Workspace")
+        XCTAssertGreaterThan(updatedButton.frame.width, initialWidth,
+                             "A live marker change must resize the existing tab to fit its new title")
+    }
+
     func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
         let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
         let channel = MockChannelController(type: .agentDirect, label: "Claude", state: .active)
@@ -357,6 +375,14 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .flatMap { $0.subviews }
             .compactMap { $0 as? NSButton }
         return try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
+    }
+
+    private func contextWithActiveMarker(_ symbol: String) -> SkinContext {
+        let snapshot = ReactiveUniformSnapshot()
+        var surfaces = SkinContext.builtInDefaults(reactive: snapshot).allResolvedSurfacesForTesting
+        surfaces[.tabBarTabActive]?.marker = StateMarkerDescriptor(symbol: symbol)
+        surfaces[.tabBarTabActive]?.states = []
+        return SkinContext(surfaces: surfaces, reactive: snapshot)
     }
 }
 

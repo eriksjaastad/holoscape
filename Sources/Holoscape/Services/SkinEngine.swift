@@ -1236,11 +1236,48 @@ class SkinEngine {
                         throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).border")
                     }
                 }
-                if let text = state.text, NSColor(hex: text.color) == nil {
+                if let corner = state.corner, !isValid(corner: corner) {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).corner")
+                }
+                if let text = state.text, !isValid(text: text) {
                     throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).text")
+                }
+                if let animation = state.animation, !isValid(animation: animation) {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).animation")
                 }
             }
         }
+    }
+
+    private func isValid(corner: CornerDescriptor) -> Bool {
+        switch corner {
+        case .uniform(let radius):
+            return radius.isFinite && radius >= 0
+        case .asymmetric(let topLeft, let topRight, let bottomRight, let bottomLeft):
+            return [topLeft, topRight, bottomRight, bottomLeft].allSatisfy { $0.isFinite && $0 >= 0 }
+        }
+    }
+
+    private func isValid(text: TextDescriptor) -> Bool {
+        NSColor(hex: text.color) != nil && text.shadow.map(isValid(shadow:)) != false
+    }
+
+    private func isValid(shadow: ShadowDescriptor) -> Bool {
+        NSColor(hex: shadow.color) != nil
+            && shadow.opacity.isFinite && (0...1).contains(shadow.opacity)
+            && shadow.blur.isFinite && shadow.blur >= 0
+            && shadow.offsetX.isFinite && shadow.offsetY.isFinite
+    }
+
+    private func isValid(animation: AnimationDescriptor) -> Bool {
+        [animation.default, animation.fill, animation.corner]
+            .compactMap { $0 }
+            .allSatisfy(isValid(curve:))
+    }
+
+    private func isValid(curve: CurveDescriptor) -> Bool {
+        let supportedCurves: Set<String> = ["linear", "easeIn", "easeOut", "easeInEaseOut", "easeInOut", "spring"]
+        return curve.duration.isFinite && curve.duration >= 0 && supportedCurves.contains(curve.curve)
     }
 
     private func validate(marker: StateMarkerDescriptor, location: String, skinName: String) throws {
@@ -1302,10 +1339,10 @@ class SkinEngine {
         for (surfaceKey, descriptor) in surfaces {
             guard SurfaceKey(rawValue: surfaceKey) != nil else { continue }
             for (index, state) in (descriptor.states ?? []).enumerated() {
-                guard let fill = state.fill, case .image(let path, _, _) = fill else { continue }
-                guard images[path] != nil else {
+                guard let fill = state.fill, case .image(let path, _, let sprite) = fill else { continue }
+                guard let image = images[path], sprite.map({ $0.isValid(imageSize: image.size) }) != false else {
                     throw SkinLoadError.parseFailure(
-                        "invalid state fill in '\(skinName)' at \(surfaceKey).states[\(index)].fill: image '\(path)' is missing or corrupt"
+                        "invalid state fill in '\(skinName)' at \(surfaceKey).states[\(index)].fill: image '\(path)' or its sprite descriptor is invalid"
                     )
                 }
             }
