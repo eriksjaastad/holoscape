@@ -89,15 +89,20 @@ class MockChannelController: NSObject, ChannelController {
     }
 
     func activate() {
-        activateCallCount += 1
-        state = .active
-        delegate?.channelStateDidChange(self, to: .active)
+        transition(to: .active)
     }
 
     func deactivate() {
         deactivateCallCount += 1
-        state = .disconnected
-        delegate?.channelStateDidChange(self, to: .disconnected)
+        transition(to: .disconnected)
+    }
+
+    func transition(to newState: ChannelState) {
+        if newState == .active {
+            activateCallCount += 1
+        }
+        state = newState
+        delegate?.channelStateDidChange(self, to: newState)
     }
 
     func deactivate(completion: @escaping @MainActor (TerminalCleanupOutcome) -> Void) {

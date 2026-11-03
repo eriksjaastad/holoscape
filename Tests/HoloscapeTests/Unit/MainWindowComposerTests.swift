@@ -4,6 +4,10 @@ import XCTest
 
 @MainActor
 final class MainWindowComposerTests: XCTestCase {
+    private final class FocusableView: NSView {
+        override var acceptsFirstResponder: Bool { true }
+    }
+
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
         private var nextID = 0
 
@@ -174,14 +178,135 @@ final class MainWindowComposerTests: XCTestCase {
         let channel = fixture.makeChannel(type: .shell, label: "Connecting", state: .connecting)
         fixture.controller.switchToChannel(channel.channelId)
         let input = fixture.controller.inputBoxForTesting
-        input.string = "wait for prompt"
-        input.didChangeText()
+        fixture.controller.setComposerDraftForTesting("wait for prompt", channelId: channel.channelId)
 
         input.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
 
         XCTAssertTrue(channel.sentInputs.isEmpty)
         XCTAssertEqual(input.string, "wait for prompt")
         XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: channel.channelId).draft, "wait for prompt")
+        XCTAssertTrue(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertFalse(input.isEditable)
+        XCTAssertFalse(fixture.controller.composerModeControlForTesting.isEnabled(forSegment: 1))
+        XCTAssertFalse(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputUnavailableLabelForTesting.stringValue, "Session is connecting")
+        XCTAssertTrue(fixture.controller.inputRecoveryButtonForTesting.isHidden)
+    }
+
+    func testStalePTYChannelShowsActionableRecreateStateAndReenablesInputAfterRecovery() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.setComposerDraftForTesting("pwd", channelId: channel.channelId)
+
+        fixture.controller.switchToChannel(channel.channelId)
+
+        XCTAssertTrue(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertFalse(fixture.controller.inputBoxForTesting.isEditable)
+        XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "pwd")
+        XCTAssertFalse(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputUnavailableLabelForTesting.stringValue, "Session stopped")
+        XCTAssertFalse(fixture.controller.inputRecoveryButtonForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputRecoveryButtonForTesting.title, "Recreate Session")
+        XCTAssertEqual(
+            fixture.controller.inputRecoveryButtonForTesting.toolTip,
+            ChannelRecoveryAction.recreateBrokerSession.operatorGuidance
+        )
+
+        fixture.controller.setChannelMutationEnabled(false)
+        XCTAssertFalse(fixture.controller.inputRecoveryButtonForTesting.isEnabled)
+        fixture.controller.inputRecoveryButtonForTesting.performClick(nil)
+        XCTAssertEqual(channel.state, .stale)
+
+        fixture.controller.setChannelMutationEnabled(true)
+        XCTAssertTrue(fixture.controller.inputRecoveryButtonForTesting.isEnabled)
+        fixture.controller.inputRecoveryButtonForTesting.performClick(nil)
+
+        XCTAssertEqual(channel.state, .active)
+        XCTAssertFalse(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertTrue(fixture.controller.inputBoxForTesting.isEditable)
+        XCTAssertTrue(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertTrue(fixture.controller.composerModeControlForTesting.isEnabled(forSegment: 1))
+        XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "pwd")
+    }
+
+    func testActiveStateRefreshPreservesUnrelatedFirstResponder() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .agentDirect, label: "Agent")
+        fixture.controller.switchToChannel(channel.channelId)
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let firstResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        channel.delegate?.channelStateDidChange(channel, to: .active)
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstResponder)
+    }
+
+    func testStoppedStateRefreshPreservesUnrelatedFirstResponder() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.switchToChannel(channel.channelId)
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let firstResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        channel.delegate?.channelStateDidChange(channel, to: .stale)
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstResponder)
+    }
+
+    func testStoppedSessionReceivesKeyboardFocusOnWindowActivation() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.switchToChannel(channel.channelId)
+
+        fixture.controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+
+        XCTAssertTrue(fixture.controller.window.firstResponder === fixture.controller.inputRecoveryButtonForTesting)
+    }
+
+    func testConnectingThenActiveStateRepairsOnlyRedirectedActiveChannelFocus() throws {
+        let fixture = try makeFixture()
+        let firstContent = FocusableView()
+        let first = fixture.makeChannel(type: .shell, label: "First", contentView: firstContent)
+        let second = fixture.makeChannel(type: .shell, label: "Second")
+        first.delegate = fixture.controller
+        second.delegate = fixture.controller
+        fixture.controller.switchToChannel(first.channelId)
+        XCTAssertNotNil(firstContent.window)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(firstContent))
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(fixture.controller.inputBoxForTesting))
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+
+        first.transition(to: .connecting)
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstContent)
+
+        first.transition(to: .active)
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+
+        first.transition(to: .connecting)
+        fixture.controller.switchToChannel(second.channelId)
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+        let secondResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        first.transition(to: .active)
+        XCTAssertTrue(fixture.controller.window.firstResponder === secondResponder)
+
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        fixture.controller.switchToChannel(first.channelId)
+        first.transition(to: .connecting)
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstContent)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let unrelatedResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        first.transition(to: .active)
+        XCTAssertTrue(fixture.controller.window.firstResponder === unrelatedResponder)
     }
 
     func testFailedAcknowledgedSubmissionPreservesDraft() throws {
@@ -281,6 +406,25 @@ final class MainWindowComposerTests: XCTestCase {
             isARepeat: false,
             keyCode: keyCode
         )!
+    }
+
+    private func assertFirstResponder(
+        in window: NSWindow,
+        belongsTo view: NSView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let responder = window.firstResponder else {
+            XCTFail("Expected a first responder", file: file, line: line)
+            return
+        }
+        if responder === view { return }
+        if let responderView = responder as? NSView, responderView.isDescendant(of: view) { return }
+        if let fieldEditor = responder as? NSTextView,
+           fieldEditor.delegate as AnyObject? === view {
+            return
+        }
+        XCTFail("Expected first responder to belong to the requested input view", file: file, line: line)
     }
 
     private func makeFixture() throws -> ComposerFixture {

@@ -107,12 +107,31 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertEqual(close.toolTip, "Close window")
         XCTAssertEqual(minimize.accessibilityLabel(), "Minimize window")
         XCTAssertEqual(minimize.toolTip, "Minimize window")
+        XCTAssertEqual(close.frame.size, NSSize(width: 14, height: 14))
+        XCTAssertEqual(minimize.frame.size, NSSize(width: 14, height: 14))
+        XCTAssertEqual(zoom.frame.size, NSSize(width: 14, height: 14))
         XCTAssertEqual(zoom.accessibilityLabel(), "Enter full screen")
         XCTAssertEqual(zoom.toolTip, "Enter full screen (Option-click to zoom window)")
+
+        let hoverGroup = try XCTUnwrap(controller.chromeWindowControlHoverGroup)
+        XCTAssertTrue(hoverGroup.responds(to: NSSelectorFromString("mouseEntered:")))
+        XCTAssertTrue(hoverGroup.responds(to: NSSelectorFromString("mouseExited:")))
+        XCTAssertEqual(controller.chromeWindowControlHoverOverlaysForTesting.count, 3)
+        XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
+        hoverGroup.reconcileHoverState(pointerInside: true, applicationIsActive: true)
+        XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy { !$0.isHidden })
+        hoverGroup.reconcileHoverState(pointerInside: true, applicationIsActive: false)
+        XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
+        hoverGroup.reconcileHoverState(pointerInside: false, applicationIsActive: true)
+        XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
 
         controller.updateChromeZoomButtonLabel(isFullScreen: true)
         XCTAssertEqual(zoom.accessibilityLabel(), "Exit full screen")
         XCTAssertEqual(zoom.toolTip, "Exit full screen (Option-click to zoom window)")
+        XCTAssertTrue(controller.chromeZoomGlyphIsFullScreenForTesting)
+
+        controller.updateChromeZoomButtonLabel(isFullScreen: false)
+        XCTAssertFalse(controller.chromeZoomGlyphIsFullScreenForTesting)
     }
 
     func testChromeToDefaultTransitionPreservesStableHostConstraints() throws {
