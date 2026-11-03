@@ -128,18 +128,22 @@ final class SkinEngineDensityGateTests: XCTestCase {
                      "Nil densityModeManager leaves the SkinEngine gate default-open")
     }
 
-    func testAppearanceSettingsKeepsStorageButtonInsideContentBounds() throws {
+    func testAppearanceSettingsKeepsStorageButtonReachableByScrolling() throws {
         let service = ConfigService()
         let controller = AppearanceSettingsWindowController(
             config: service.load().appearance,
             configService: service
         )
         let contentView = try XCTUnwrap(controller.window?.contentView)
+        let scrollView = controller._settingsScrollViewForTesting
         contentView.layoutSubtreeIfNeeded()
         let storageButton = controller._storageButtonForTesting
-        let frame = storageButton.convert(storageButton.bounds, to: contentView)
+        XCTAssertTrue(scrollView.hasVerticalScroller)
+        XCTAssertTrue(storageButton.isDescendant(of: try XCTUnwrap(scrollView.documentView)))
 
-        XCTAssertGreaterThanOrEqual(frame.minY, contentView.bounds.minY)
-        XCTAssertLessThanOrEqual(frame.maxY, contentView.bounds.maxY)
+        storageButton.scrollToVisible(storageButton.bounds)
+        contentView.layoutSubtreeIfNeeded()
+        let frame = storageButton.convert(storageButton.bounds, to: scrollView.contentView)
+        XCTAssertTrue(scrollView.contentView.bounds.intersects(frame))
     }
 }

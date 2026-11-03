@@ -49,19 +49,24 @@ final class SkinEngineUITests: HoloscapeUITestCase {
 
         let settingsWindow = app.windows["Appearance Settings"]
 
+        let library = settingsWindow.tables["skin-library"]
+        XCTAssertTrue(library.waitForExistence(timeout: 2), "Appearance should expose a browseable skin library")
+        XCTAssertTrue(settingsWindow.staticTexts["Test Skin"].waitForExistence(timeout: 2),
+                      "The library should present the manifest's human-readable skin name")
+
         let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
         // Search within the popup's own menu items first — the global
         // app.menuItems can miss popup items on some macOS versions.
-        let testSkinItem = skinPopup.menuItems["test-skin"]
+        let testSkinItem = skinPopup.menuItems["Test Skin"]
         if !testSkinItem.waitForExistence(timeout: 2) {
             let identifiedItem = app.menuItems.matching(NSPredicate(format: "identifier == %@", "skin-test-skin")).firstMatch
             if identifiedItem.waitForExistence(timeout: 2) {
                 app.typeKey(.escape, modifierFlags: [])
                 return
             }
-            let globalItem = app.menuItems["test-skin"]
+            let globalItem = app.menuItems["Test Skin"]
             XCTAssertTrue(globalItem.waitForExistence(timeout: 2), "Test skin should appear in skin picker")
         }
 
@@ -92,7 +97,7 @@ final class SkinEngineUITests: HoloscapeUITestCase {
         let skinPopup = settingsWindow.popUpButtons["skin-popup"]
         skinPopup.click()
 
-        let testSkinItem = app.menuItems["test-skin"]
+        let testSkinItem = app.menuItems["Test Skin"]
         if testSkinItem.waitForExistence(timeout: 2) {
             testSkinItem.click()
         }

@@ -3,6 +3,43 @@ import AppKit
 import CoreText
 import CoreServices
 
+enum SkinCatalogSource: String, Equatable, Sendable {
+    case builtIn
+    case bundled
+    case user
+
+    var displayName: String {
+        switch self {
+        case .builtIn: "Built in"
+        case .bundled: "Included"
+        case .user: "My Library"
+        }
+    }
+}
+
+struct SkinCatalogEntry: Equatable, Sendable {
+    let identifier: String
+    let displayName: String
+    let author: String?
+    let description: String?
+    let source: SkinCatalogSource
+
+    static let `default` = SkinCatalogEntry(
+        identifier: "Default",
+        displayName: "Default",
+        author: "Holoscape",
+        description: "Modern, clear, and built for daily work.",
+        source: .builtIn
+    )
+
+    var detailText: String {
+        [author, description].compactMap { value in
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+    }
+}
+
 /// Result of registering a skin's fonts.
 ///
 /// `fonts` maps PostScript names to the decoded `CGFont` instances so
@@ -296,6 +333,41 @@ class SkinEngine {
             skins.append(name)
         }
         return skins
+    }
+
+    /// Browseable metadata for the Appearance skin library. The stable
+    /// identifier remains the on-disk name used by loading and persistence;
+    /// manifest names are presentation only and may collide.
+    func availableSkinCatalog() -> [SkinCatalogEntry] {
+        [.default] + availableSkins().dropFirst().compactMap { identifier in
+            guard let definition = loadSkin(named: identifier) else { return nil }
+            return SkinCatalogEntry(
+                identifier: identifier,
+                displayName: nonEmpty(definition.name) ?? identifier,
+                author: nonEmpty(definition.author),
+                description: nonEmpty(definition.description),
+                source: userSkinExists(named: identifier) ? .user : .bundled
+            )
+        }
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func userSkinExists(named name: String) -> Bool {
+        let directoryManifest = skinsDirectory
+            .appendingPathComponent(name)
+            .appendingPathComponent("skin.json")
+        if FileManager.default.fileExists(atPath: directoryManifest.path) {
+            return true
+        }
+        var isDirectory: ObjCBool = false
+        let bundle = skinsDirectory.appendingPathComponent(name + ".wamp")
+        return FileManager.default.fileExists(atPath: bundle.path, isDirectory: &isDirectory) && !isDirectory.boolValue
     }
 
     /// Enumerate skin names under the user's `~/.holoscape/skins/`
