@@ -63,7 +63,7 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
                 .write(to: skin.appendingPathComponent("skin.json"))
         }
         var config = configService.load().appearance
-        config.skinName = "Second"
+        config.skinName = "First"
         let controller = TestAppearanceController(
             config: config,
             configService: configService,
@@ -74,7 +74,10 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
 
         controller.menuNeedsUpdate(try XCTUnwrap(popup.menu))
 
-        XCTAssertEqual(popup.selectedItem?.representedObject as? String, "Second")
+        let representedIdentifiers = popup.itemArray.compactMap { $0.representedObject as? String }
+        XCTAssertTrue(representedIdentifiers.contains("First"))
+        XCTAssertTrue(representedIdentifiers.contains("Second"))
+        XCTAssertEqual(popup.selectedItem?.representedObject as? String, "First")
     }
 
     func testCreateRefreshesSelectsAndUsesDelegateApplyPath() throws {

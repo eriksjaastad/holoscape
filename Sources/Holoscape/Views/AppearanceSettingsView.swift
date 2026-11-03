@@ -575,10 +575,10 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
         defer { isRefreshingSkinControls = false }
         skinPopup.removeAllItems()
         for entry in skinCatalog {
-            skinPopup.addItem(withTitle: entry.displayName)
-            guard let item = skinPopup.lastItem else { continue }
+            let item = NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")
             item.representedObject = entry.identifier
             item.identifier = NSUserInterfaceItemIdentifier("skin-\(entry.identifier)")
+            skinPopup.menu?.addItem(item)
         }
         if let popupIndex = skinPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selectedIdentifier }) {
             skinPopup.selectItem(at: popupIndex)
