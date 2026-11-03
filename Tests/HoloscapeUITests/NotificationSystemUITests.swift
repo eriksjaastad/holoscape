@@ -13,7 +13,9 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        try isolateAppForUITesting(app)
         app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--ephemeral-broker")
         app.launchArguments.append("--disable-notification-suppression")
         let port = UInt16.random(in: 49152...60999)
         Self.currentAPIBase = "http://127.0.0.1:\(port)"
@@ -139,9 +141,12 @@ final class NotificationSystemUITests: HoloscapeUITestCase {
         waitForExpectations(timeout: 5)
 
         let freshApp = XCUIApplication()
+        copyLaunchEnvironment(to: freshApp)
+        app = freshApp
         let port = UInt16.random(in: 49152...60999)
         Self.currentAPIBase = "http://127.0.0.1:\(port)"
         freshApp.launchArguments.append("--ui-testing")
+        freshApp.launchArguments.append("--ephemeral-broker")
         freshApp.launchArguments += ["--api-port", "\(port)"]
         // No --disable-notification-suppression argument
         freshApp.launch()

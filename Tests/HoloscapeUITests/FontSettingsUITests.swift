@@ -117,7 +117,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
-        app = XCUIApplication()
+        replaceApplicationPreservingLaunchConfiguration()
         app.launch()
 
         openSettings()
@@ -136,7 +136,7 @@ final class FontSettingsUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
-        app = XCUIApplication()
+        replaceApplicationPreservingLaunchConfiguration()
         app.launch()
 
         openSettings()

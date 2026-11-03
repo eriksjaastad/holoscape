@@ -954,6 +954,24 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(client.supportsOutputAvailabilityMonitoring)
     }
 
+    func testProductionSocketRuntimeDoesNotInheritEphemeralBrokerAuthority() {
+        let inherited = [BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey: "1"]
+
+        XCTAssertNil(
+            BrokerSessionHostClientRuntime.brokerEnvironment(
+                inherited,
+                arguments: ["Holoscape"]
+            )[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey]
+        )
+        XCTAssertEqual(
+            BrokerSessionHostClientRuntime.brokerEnvironment(
+                inherited,
+                arguments: ["Holoscape", "--ephemeral-broker"]
+            )[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey],
+            "1"
+        )
+    }
+
     func testClientRuntimeFailsLoudlyWhenHostReturnsUnexpectedResponseShape() throws {
         let codec = BrokerSessionHostCodec()
         let client = BrokerSessionHostClientRuntime { _ in
@@ -1744,6 +1762,26 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         }
     }
 
+    func testBrokerHostCommandAcceptsEphemeralShutdownAuthorityOnlyForSocketMode() throws {
+        let socketPath = "/tmp/hs-ephemeral-command-\(UUID().uuidString).sock"
+        defer {
+            unlink(socketPath)
+            unlink(socketPath + ".lock")
+        }
+        let command = BrokerSessionHostCommand(
+            arguments: [
+                "Holoscape",
+                BrokerSessionHostCommand.socketModeFlag,
+                socketPath,
+                BrokerSessionHostCommand.ephemeralSocketModeFlag,
+            ],
+            runtimeFactory: { RecordingBrokerSessionRuntime() },
+            socketMaxConnections: 0
+        )
+
+        XCTAssertTrue(try command.runIfRequested())
+    }
+
     func testBrokerHostCommandRejectsMissingSocketPath() throws {
         let command = BrokerSessionHostCommand(arguments: ["Holoscape", "--broker-host-socket"])
 
@@ -1878,6 +1916,136 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+    }
+
+    func testProductionBrokerRejectsHostShutdownRequest() throws {
+        let codec = BrokerSessionHostCodec()
+        let host = BrokerSessionHost(runtime: ShutdownRecordingBrokerSessionRuntime())
+
+        let response = try codec.decodeResponse(
+            host.handle(try codec.encodeRequest(.shutDownHost))
+        )
+
+        guard case .failure = response else {
+            return XCTFail("Production broker must reject host shutdown")
+        }
+    }
+
+    func testShutdownWithoutRunningBrokerRemovesInactiveSocketNamespaceWithoutLaunchingHost() throws {
+        let socketPath = "/tmp/hs-inactive-shutdown-\(UUID().uuidString).sock"
+        let lockPath = socketPath + ".lock"
+        _ = FileManager.default.createFile(atPath: socketPath, contents: Data())
+        _ = FileManager.default.createFile(atPath: lockPath, contents: Data())
+
+        try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(
+            socketPath: socketPath,
+            timeoutMilliseconds: 250
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
+    }
+
+    func testShutdownRequestStopsSocketServerAndShutsDownRuntimeBeforeReleasingNamespace() throws {
+        let socketPath = "/tmp/hs-request-shutdown-\(UUID().uuidString).sock"
+        let runtime = ShutdownRecordingBrokerSessionRuntime()
+        let server = BrokerSessionHostUnixSocketServer(
+            socketPath: socketPath,
+            host: BrokerSessionHost(runtime: runtime, allowsHostShutdown: true)
+        )
+        let serverFinished = expectation(description: "socket broker stopped by protocol request")
+        let serverError = LockedErrorBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try server.run()
+            } catch {
+                serverError.set(error)
+            }
+            serverFinished.fulfill()
+        }
+        try waitForSocket(at: socketPath)
+
+        try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(
+            socketPath: socketPath,
+            timeoutMilliseconds: 2_000,
+            brokerProcessExists: { _ in
+                BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath)
+            }
+        )
+
+        wait(for: [serverFinished], timeout: 2)
+        XCTAssertNil(serverError.value.map(String.init(describing:)))
+        XCTAssertTrue(runtime.shutdownCompleted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+        XCTAssertFalse(BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath))
+    }
+
+    func testRepeatedShutdownRequestsLeaveNoShellOrSocketNamespaceGrowth() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrokerHostRepeatedShutdown-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var shellPIDs: [pid_t] = []
+        for cycle in 0..<3 {
+            let cycleRoot = root.appendingPathComponent("cycle-\(cycle)", isDirectory: true)
+            let scrollback = cycleRoot.appendingPathComponent("Scrollback", isDirectory: true)
+            let pidURL = cycleRoot.appendingPathComponent("shell.pid")
+            try FileManager.default.createDirectory(at: cycleRoot, withIntermediateDirectories: true)
+            let socketPath = "/tmp/hs-repeat-shutdown-\(UUID().uuidString).sock"
+            let runtime = NativePTYBrokerSessionRuntime(scrollbackDirectory: scrollback)
+            let server = BrokerSessionHostUnixSocketServer(
+                socketPath: socketPath,
+                host: BrokerSessionHost(runtime: runtime, allowsHostShutdown: true)
+            )
+            let serverFinished = expectation(description: "cycle \(cycle) broker stopped")
+            let serverError = LockedErrorBox()
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try server.run()
+                } catch {
+                    serverError.set(error)
+                }
+                serverFinished.fulfill()
+            }
+            try waitForSocket(at: socketPath)
+
+            let client = BrokerSessionHostClientRuntime.currentExecutableSocketHostRuntime(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: 2_000
+            )
+            let sessionID = BrokerSessionID(rawValue: "repeated-shutdown-\(cycle)")
+            try client.createSession(
+                id: sessionID,
+                request: BrokerSessionLaunchRequest(
+                    command: "/bin/sh",
+                    arguments: ["-c", "echo $$ > '\(pidURL.path)'; sleep 30"],
+                    workingDirectory: cycleRoot.path,
+                    environmentProfile: .shell,
+                    initialSize: TerminalGridSize(columns: 80, rows: 24)
+                )
+            )
+            let shellPID = try helperPID(at: pidURL)
+            shellPIDs.append(shellPID)
+            XCTAssertEqual(Darwin.kill(shellPID, 0), 0)
+
+            try BrokerSessionHostClientRuntime.shutDownSocketHostIfPresent(
+                socketPath: socketPath,
+                timeoutMilliseconds: 3_000,
+                brokerProcessExists: { _ in
+                    BrokerSessionHostUnixSocketServer.socketPathHasActiveBrokerLock(socketPath)
+                }
+            )
+            wait(for: [serverFinished], timeout: 3)
+
+            XCTAssertNil(serverError.value.map(String.init(describing:)))
+            XCTAssertTrue(waitForProcessToExit(shellPID), "Cycle \(cycle) left shell PID \(shellPID) alive")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath + ".lock"))
+        }
+
+        XCTAssertTrue(shellPIDs.allSatisfy { waitForProcessToExit($0) })
     }
 
     func testUnixSocketServerCanBeStoppedWhileWaitingForConnections() throws {
@@ -2367,8 +2535,12 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             .appendingPathComponent("LazyUnixSocketEnvironmentTests-\(UUID().uuidString)")
         let helperURL = temporaryDirectory.appendingPathComponent("environment-broker")
         let environmentMarkerURL = temporaryDirectory.appendingPathComponent("config-directory")
+        let argumentMarkerURL = temporaryDirectory.appendingPathComponent("broker-arguments")
         let configDirectory = temporaryDirectory.appendingPathComponent("profile").path
-        let environment = ["HOLOSCAPE_CONFIG_DIR": configDirectory]
+        let environment = [
+            "HOLOSCAPE_CONFIG_DIR": configDirectory,
+            BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey: "1",
+        ]
         let socketPath = LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(
             environment: environment
         )
@@ -2382,6 +2554,7 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
         #!/bin/sh
         trap '' TERM
         printf '%s' "$HOLOSCAPE_CONFIG_DIR" > "\(environmentMarkerURL.path)"
+        printf '%s' "$3" > "\(argumentMarkerURL.path)"
         while :; do :; done
         """.write(to: helperURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
@@ -2405,6 +2578,10 @@ final class BrokerSessionHostProtocolTests: XCTestCase {
             XCTAssertEqual(actualPath, socketPath)
         }
         XCTAssertEqual(try String(contentsOf: environmentMarkerURL, encoding: .utf8), configDirectory)
+        XCTAssertEqual(
+            try String(contentsOf: argumentMarkerURL, encoding: .utf8),
+            BrokerSessionHostCommand.ephemeralSocketModeFlag
+        )
     }
 
     func testLazyUnixSocketTransportRetiresLosingLaunchWithoutKillingReachableBroker() throws {

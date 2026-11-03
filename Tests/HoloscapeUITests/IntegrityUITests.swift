@@ -9,7 +9,9 @@ final class IntegrityUITests: HoloscapeUITestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
+        try isolateAppForUITesting(app)
         app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--ephemeral-broker")
         app.launchArguments.append("--disable-notification-suppression")
         // Use the parent's random port allocation
         let port = UInt16.random(in: 49152...60999)

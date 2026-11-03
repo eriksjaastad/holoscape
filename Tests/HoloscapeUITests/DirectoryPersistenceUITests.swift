@@ -23,6 +23,7 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
         app = XCUIApplication()
         app.launchArguments.append("--ui-testing")
+        app.launchArguments.append("--ephemeral-broker")
         app.launchArguments += ["--api-port", "\(apiPort)"]
         app.launchArguments.append("--restore-channels")
         app.launchEnvironment["HOLOSCAPE_CONFIG_DIR"] = dir
@@ -35,8 +36,13 @@ final class DirectoryPersistenceUITests: HoloscapeUITestCase {
 
     override func tearDownWithError() throws {
         app.terminate()
-        if let dir = testConfigDir {
-            try? FileManager.default.removeItem(atPath: dir)
+        let terminationDeadline = Date().addingTimeInterval(10)
+        while app.state != .notRunning, Date() < terminationDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(app.state, .notRunning)
+        if app.state == .notRunning, let dir = testConfigDir {
+            try FileManager.default.removeItem(atPath: dir)
         }
     }
 

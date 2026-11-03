@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// App-side runtime adapter for the broker host JSON-lines protocol.
@@ -21,6 +22,13 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         case unexpectedResponse(expected: String, actual: BrokerSessionHostResponse)
         case transportFailed(String)
         case outputTransportFailed(String)
+    }
+
+    enum HostShutdownError: Error, Equatable {
+        case brokerStateIndeterminate(String)
+        case brokerRejectedShutdown(BrokerSessionHostResponse)
+        case brokerDidNotExit(String)
+        case namespaceCleanupFailed(String)
     }
 
     typealias Transport = (Data) throws -> Data
@@ -72,15 +80,17 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
     static func currentExecutableSocketHostRuntime(
         socketPath: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        arguments: [String] = CommandLine.arguments,
         requestTimeoutMilliseconds: Int = 10_000,
         outputSnapshotTimeoutMilliseconds: Int = 500
     ) -> BrokerSessionHostClientRuntime {
+        let brokerEnvironment = brokerEnvironment(environment, arguments: arguments)
         let resolvedSocketPath = socketPath
             ?? LazyBrokerSessionHostUnixSocketTransport.defaultSocketPath(environment: environment)
         let lazyTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
             socketPath: resolvedSocketPath,
-            environment: environment,
+            environment: brokerEnvironment,
             requestTimeoutMilliseconds: requestTimeoutMilliseconds
         )
         // Snapshot polling must not hold teardown behind the lifecycle request
@@ -88,7 +98,7 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         let outputTransport = LazyBrokerSessionHostUnixSocketTransport(
             executableURL: currentExecutableURL(),
             socketPath: resolvedSocketPath,
-            environment: environment,
+            environment: brokerEnvironment,
             requestTimeoutMilliseconds: outputSnapshotTimeoutMilliseconds,
             launchesBrokerOnConnectionFailure: false
         )
@@ -100,11 +110,113 @@ final class BrokerSessionHostClientRuntime: BrokerSessionRuntime, BrokerSessionA
         )
     }
 
+    static func brokerEnvironment(
+        _ environment: [String: String],
+        arguments: [String]
+    ) -> [String: String] {
+        var resolved = environment
+        resolved.removeValue(forKey: BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey)
+        if arguments.contains("--ephemeral-broker") {
+            resolved[BrokerSessionHostCommand.ephemeralBrokerEnvironmentKey] = "1"
+        }
+        return resolved
+    }
+
     private static func currentExecutableURL() -> URL {
         if let executableURL = Bundle.main.executableURL {
             return executableURL
         }
         return URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+    }
+
+    /// Stops an already-running socket host without ever launching one. This is
+    /// reserved for isolated automated namespaces; production app termination
+    /// deliberately leaves the broker and its PTYs alive for reattachment.
+    static func shutDownSocketHostIfPresent(
+        socketPath: String,
+        timeoutMilliseconds: Int = 10_000,
+        brokerProcessExists: (pid_t) -> Bool = processExists
+    ) throws {
+        switch BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath) {
+        case .unreachable:
+            try removeInactiveSocketNamespace(socketPath, expectedBrokerPID: nil)
+            return
+        case .indeterminate:
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        case .reachable:
+            break
+        }
+
+        let brokerPID: pid_t
+        do {
+            brokerPID = try BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath)
+        } catch {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
+        let codec = BrokerSessionHostCodec()
+        let response = try codec.decodeResponse(
+            BrokerSessionHostUnixSocketTransport(
+                socketPath: socketPath,
+                requestTimeoutMilliseconds: timeoutMilliseconds
+            ).sendFrame(try codec.encodeRequest(.shutDownHost))
+        )
+        guard response == .ok else {
+            throw HostShutdownError.brokerRejectedShutdown(response)
+        }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(max(1, timeoutMilliseconds)) * 1_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if !brokerProcessExists(brokerPID) {
+                try removeInactiveSocketNamespace(
+                    socketPath,
+                    expectedBrokerPID: brokerPID
+                )
+                return
+            }
+            usleep(10_000)
+        }
+        throw HostShutdownError.brokerDidNotExit(socketPath)
+    }
+
+    private static func processExists(_ pid: pid_t) -> Bool {
+        if Darwin.kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    private static func removeInactiveSocketNamespace(
+        _ socketPath: String,
+        expectedBrokerPID: pid_t?
+    ) throws {
+        let lockPath = socketPath + ".lock"
+        let lockFD = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard lockFD >= 0 else {
+            throw HostShutdownError.namespaceCleanupFailed(
+                "\(lockPath): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { Darwin.close(lockFD) }
+        guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
+        defer { flock(lockFD, LOCK_UN) }
+        guard BrokerSessionHostUnixSocketServer.socketPathBrokerReachability(socketPath) == .unreachable else {
+            throw HostShutdownError.brokerStateIndeterminate(socketPath)
+        }
+        if let expectedBrokerPID {
+            guard (try? BrokerSessionHostUnixSocketServer.activeBrokerProcessID(socketPath)) == expectedBrokerPID else {
+                throw HostShutdownError.brokerStateIndeterminate(socketPath)
+            }
+        }
+
+        let fileManager = FileManager.default
+        for path in [socketPath, lockPath] where fileManager.fileExists(atPath: path) {
+            do {
+                try fileManager.removeItem(atPath: path)
+            } catch {
+                throw HostShutdownError.namespaceCleanupFailed("\(path): \(error.localizedDescription)")
+            }
+        }
     }
 
     func listSessions() throws -> [BrokerSessionID] {

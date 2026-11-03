@@ -590,6 +590,23 @@ final class AppDelegateRestoredShellTests: XCTestCase {
         XCTAssertEqual(configService.load().channels.map(\.role), ["Saved"])
     }
 
+    func testEphemeralQuitDuringLaunchRecoverySkipsPersistenceAndShutsDownBroker() {
+        let appDelegate = AppDelegate()
+        appDelegate.ephemeralBrokerLifecycleOverride = true
+        let shutdown = expectation(description: "ephemeral broker shutdown")
+        appDelegate.ephemeralBrokerShutdownOperation = { _ in shutdown.fulfill() }
+        let recovery = LaunchRecoveryCoordinator(
+            state: LaunchRecoveryState(phase: .awaitingInventory),
+            host: appDelegate
+        )
+        appDelegate.launchRecovery = recovery
+
+        XCTAssertEqual(appDelegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        wait(for: [shutdown], timeout: 1)
+        XCTAssertEqual(recovery.state.phase, .abandoned)
+        XCTAssertFalse(appDelegate.terminationCoordinator.hasStarted)
+    }
+
     func testLaunchRecoveryDisablesMutatingMenusButKeepsQuitAvailable() {
         let mainMenu = NSMenu(title: "Main")
         let appItem = NSMenuItem(title: "Holoscape", action: nil, keyEquivalent: "")

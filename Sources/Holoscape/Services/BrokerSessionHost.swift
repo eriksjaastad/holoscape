@@ -10,20 +10,24 @@ import Foundation
 struct BrokerSessionHost {
     private enum RequestError: Error {
         case expiredBeforeDispatch
+        case hostShutdownNotAllowed
     }
 
     private let runtime: any BrokerSessionRuntime
     private let codec: BrokerSessionHostCodec
     private let scheduler: BrokerSessionOperationScheduler
+    private let allowsHostShutdown: Bool
 
     init(
         runtime: any BrokerSessionRuntime,
         codec: BrokerSessionHostCodec = BrokerSessionHostCodec(),
-        scheduler: BrokerSessionOperationScheduler = BrokerSessionOperationScheduler()
+        scheduler: BrokerSessionOperationScheduler = BrokerSessionOperationScheduler(),
+        allowsHostShutdown: Bool = false
     ) {
         self.runtime = runtime
         self.codec = codec
         self.scheduler = scheduler
+        self.allowsHostShutdown = allowsHostShutdown
     }
 
     func shutDownRuntimeBeforeExit() {
@@ -32,7 +36,8 @@ struct BrokerSessionHost {
 
     func handle(
         _ frame: Data,
-        executionIsAllowed: () -> Bool = { true }
+        executionIsAllowed: () -> Bool = { true },
+        didHandle: (BrokerSessionHostRequest) -> Void = { _ in }
     ) throws -> Data {
         let request = try codec.decodeRequest(frame)
         let response: BrokerSessionHostResponse
@@ -79,6 +84,7 @@ struct BrokerSessionHost {
                     return try dispatch(request)
                 }
             }
+            didHandle(request)
         } catch {
             response = .failure(failure(for: error))
         }
@@ -87,6 +93,11 @@ struct BrokerSessionHost {
 
     private func dispatch(_ request: BrokerSessionHostRequest) throws -> BrokerSessionHostResponse {
         switch request {
+        case .shutDownHost:
+            guard allowsHostShutdown else {
+                throw RequestError.hostShutdownNotAllowed
+            }
+            return .ok
         case .listSessions:
             return .sessionIDs(try runtime.listSessions())
         case let .create(id, launchRequest):
@@ -339,7 +350,7 @@ private extension BrokerSessionHostRequest {
 
     var sessionOrderingID: BrokerSessionID? {
         switch self {
-        case .listSessions:
+        case .shutDownHost, .listSessions:
             return nil
         case let .create(id, _),
              let .detach(id),

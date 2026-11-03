@@ -70,6 +70,7 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     }
 
     func run(maxConnections: Int? = nil, stopSignal: StopSignal? = nil) throws {
+        let effectiveStopSignal = stopSignal ?? StopSignal()
         var brokerLockFD: Int32?
         var serverFD: Int32?
         var handlerGroup: DispatchGroup?
@@ -104,16 +105,14 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
 
         var handledConnections = 0
         while maxConnections.map({ handledConnections < $0 }) ?? true {
-            if let stopSignal {
-                if stopSignal.isStopRequested { break }
-                var readiness = pollfd(fd: createdServerFD, events: Int16(POLLIN), revents: 0)
-                let pollResult = poll(&readiness, 1, 50)
-                if pollResult == -1 {
-                    if errno == EINTR { continue }
-                    throw ServerError.acceptFailed(String(cString: strerror(errno)))
-                }
-                guard pollResult > 0 else { continue }
+            if effectiveStopSignal.isStopRequested { break }
+            var readiness = pollfd(fd: createdServerFD, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&readiness, 1, 50)
+            if pollResult == -1 {
+                if errno == EINTR { continue }
+                throw ServerError.acceptFailed(String(cString: strerror(errno)))
             }
+            guard pollResult > 0 else { continue }
             let clientFD = accept(createdServerFD, nil, nil)
             if clientFD < 0 {
                 if errno == EINTR { continue }
@@ -140,7 +139,11 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
                     group.leave()
                 }
                 do {
-                    try handleConnection(clientFD, deadline: deadline)
+                    try handleConnection(
+                        clientFD,
+                        deadline: deadline,
+                        stopSignal: effectiveStopSignal
+                    )
                 } catch {
                     errorBox.setIfEmpty(error)
                 }
@@ -227,8 +230,12 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
     }
 
     static func socketPathHasActiveBrokerLock(_ socketPath: String) -> Bool {
-        let fd = open(socketPath + ".lock", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard fd >= 0 else { return true }
+        let lockPath = socketPath + ".lock"
+        guard FileManager.default.fileExists(atPath: lockPath) else { return false }
+        let fd = open(lockPath, O_RDWR)
+        if fd < 0 {
+            return errno != ENOENT
+        }
         defer { Darwin.close(fd) }
         if flock(fd, LOCK_EX | LOCK_NB) == 0 {
             flock(fd, LOCK_UN)
@@ -360,7 +367,11 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
     }
 
-    private func handleConnection(_ clientFD: Int32, deadline acceptanceDeadline: UInt64) throws {
+    private func handleConnection(
+        _ clientFD: Int32,
+        deadline acceptanceDeadline: UInt64,
+        stopSignal: StopSignal
+    ) throws {
         defer { Darwin.close(clientFD) }
         let requestFrame: Data
         do {
@@ -382,9 +393,17 @@ struct BrokerSessionHostUnixSocketServer: @unchecked Sendable {
         }
         let responseFrame: Data
         do {
-            responseFrame = try host.handle(requestFrame) {
-                DispatchTime.now().uptimeNanoseconds < deadline
-            }
+            responseFrame = try host.handle(
+                requestFrame,
+                executionIsAllowed: {
+                    DispatchTime.now().uptimeNanoseconds < deadline
+                },
+                didHandle: { request in
+                    if request == .shutDownHost {
+                        stopSignal.requestStop()
+                    }
+                }
+            )
         } catch {
             let failure = BrokerSessionHostResponse.failure(
                 BrokerSessionHostFailure(code: "protocol-error", message: String(describing: error))

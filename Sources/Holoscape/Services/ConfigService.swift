@@ -12,6 +12,23 @@ struct ConfigServiceDiagnostic: Equatable, Sendable {
 }
 
 class ConfigService {
+    enum AutomatedLaunchIsolationError: Error, Equatable, CustomStringConvertible {
+        case missingConfigDirectory
+        case productionConfigDirectory(String)
+        case ephemeralBrokerRequiresAutomatedLaunch
+
+        var description: String {
+            switch self {
+            case .missingConfigDirectory:
+                return "automated app launch requires an isolated HOLOSCAPE_CONFIG_DIR"
+            case .productionConfigDirectory(let path):
+                return "automated app launch refuses the production config directory: \(path)"
+            case .ephemeralBrokerRequiresAutomatedLaunch:
+                return "ephemeral broker lifecycle is restricted to automated app launches"
+            }
+        }
+    }
+
     private let configDir: URL
     private let configURL: URL
     private let persistence: DurableAtomicFileCommitter.Persistence
@@ -48,6 +65,53 @@ class ConfigService {
             return nil
         }
         return canonicalDirectoryURL(URL(fileURLWithPath: override))
+    }
+
+    /// Prevent automated app-hosted tests from creating broker sessions in the
+    /// user's real namespace. Ordinary launches are intentionally unaffected.
+    static func validateAutomatedLaunchIsolation(
+        arguments: [String] = CommandLine.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws {
+        let isolationFlags = ["--ui-testing", "--app-hosted-verification"]
+        let isAutomatedLaunch = arguments.contains(where: isolationFlags.contains)
+        if arguments.contains("--ephemeral-broker"), !isAutomatedLaunch {
+            throw AutomatedLaunchIsolationError.ephemeralBrokerRequiresAutomatedLaunch
+        }
+        guard isAutomatedLaunch else { return }
+        guard let isolatedDirectory = explicitConfigDirectory(environment: environment) else {
+            throw AutomatedLaunchIsolationError.missingConfigDirectory
+        }
+        let productionDirectory = defaultConfigDirectory(
+            environment: [:],
+            homeDirectory: homeDirectory
+        )
+        let productionBrokerDirectory = canonicalDirectoryURL(
+            homeDirectory.appendingPathComponent(
+                "Library/Application Support/Holoscape",
+                isDirectory: true
+            )
+        )
+        if directoriesReferToSameLocation(isolatedDirectory, productionDirectory) {
+            throw AutomatedLaunchIsolationError.productionConfigDirectory(productionDirectory.path)
+        }
+        if directoriesReferToSameLocation(isolatedDirectory, productionBrokerDirectory) {
+            throw AutomatedLaunchIsolationError.productionConfigDirectory(productionBrokerDirectory.path)
+        }
+    }
+
+    private static func directoriesReferToSameLocation(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs == rhs { return true }
+        guard let lhsAttributes = try? FileManager.default.attributesOfItem(atPath: lhs.path),
+              let rhsAttributes = try? FileManager.default.attributesOfItem(atPath: rhs.path),
+              let lhsDevice = lhsAttributes[.systemNumber] as? NSNumber,
+              let rhsDevice = rhsAttributes[.systemNumber] as? NSNumber,
+              let lhsInode = lhsAttributes[.systemFileNumber] as? NSNumber,
+              let rhsInode = rhsAttributes[.systemFileNumber] as? NSNumber else {
+            return false
+        }
+        return lhsDevice == rhsDevice && lhsInode == rhsInode
     }
 
     /// Resolves the deepest existing ancestor before restoring missing path

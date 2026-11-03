@@ -26,7 +26,7 @@ final class ConfigPersistenceUITests: HoloscapeUITestCase {
 
         // Quit and relaunch
         app.terminate()
-        app = XCUIApplication()
+        replaceApplicationPreservingLaunchConfiguration()
         app.launch()
 
         // Re-query settings window after relaunch (old references are stale)
