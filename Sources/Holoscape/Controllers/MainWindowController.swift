@@ -93,6 +93,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     weak var currentChromeHostView: ChromeHostView?
     weak var currentChromeInteriorView: InteriorView?
     var chromeWindowControlButtons: [NSWindow.ButtonType: NSButton] = [:]
+    var chromeWindowControlHoverGroup: ChromeWindowControlHoverGroup?
     var chromeDragOverlays: [WindowDragOverlay] = []
     private let splitPaneManager = SplitPaneManager(frame: .zero)
 
@@ -136,6 +137,9 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private let inputBox: InputBoxView
     private let inputContainer: NSScrollView
     private let composerModeControl: NSSegmentedControl
+    private let inputUnavailableView = NSView()
+    private let inputUnavailableLabel = NSTextField(labelWithString: "")
+    private let inputRecoveryButton = NSButton(title: "", target: nil, action: nil)
     private let inputResizeHandle = InputResizeHandleView(frame: .zero)
     private let composerStates = ComposerChannelStateStore()
 
@@ -279,6 +283,21 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     internal var inputBoxForTesting: InputBoxView { inputBox }
     internal var inputContainerForTesting: NSScrollView { inputContainer }
     internal var composerModeControlForTesting: NSSegmentedControl { composerModeControl }
+    internal var inputUnavailableViewForTesting: NSView { inputUnavailableView }
+    internal var inputUnavailableLabelForTesting: NSTextField { inputUnavailableLabel }
+    internal var inputRecoveryButtonForTesting: NSButton { inputRecoveryButton }
+    internal var chromeWindowControlHoverOverlaysForTesting: [NSView] {
+        chromeWindowControlHoverGroup?.overlays ?? []
+    }
+    internal func setChromeWindowControlsHoveredForTesting(_ hovered: Bool) {
+        chromeWindowControlHoverGroup?.setHovered(hovered)
+    }
+    internal func setComposerDraftForTesting(_ draft: String, channelId: UUID) {
+        composerStates.updateDraft(draft, for: channelId)
+        if activeChannelId == channelId {
+            inputBox.replaceComposerText(draft)
+        }
+    }
     internal func composerStateForTesting(channelId: UUID) -> ComposerChannelState {
         composerStates.state(for: channelId)
     }
@@ -335,6 +354,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         composerModeControl.setAccessibilityHelp("Composer: Enter sends · Shift-Enter adds a line. Raw Terminal: keystrokes go directly to the terminal.")
         composerModeControl.setAccessibilityValue("Composer")
         composerModeControl.toolTip = "Composer: Enter sends · Shift-Enter adds a line"
+        inputUnavailableView.isHidden = true
+        inputUnavailableView.setAccessibilityElement(true)
+        inputUnavailableView.setAccessibilityRole(.group)
+        inputUnavailableView.setAccessibilityIdentifier("input-unavailable-state")
+        inputUnavailableLabel.alignment = .center
+        inputUnavailableLabel.lineBreakMode = .byWordWrapping
+        inputUnavailableLabel.maximumNumberOfLines = 2
+        inputRecoveryButton.setAccessibilityIdentifier("input-recovery-button")
         inputBox.textContainer?.widthTracksTextView = true
 
         // Load config and restore the internal sidebar's expanded/collapsed
@@ -373,6 +400,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
         composerModeControl.target = self
         composerModeControl.action = #selector(composerModeControlChanged(_:))
+        inputRecoveryButton.target = self
+        inputRecoveryButton.action = #selector(recoverActiveChannelInput(_:))
         inputResizeHandle.resizeDelegate = self
 
         // Card #6027 — close the reverse wire (engine → manager).
@@ -572,6 +601,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         inputResizeHandle.translatesAutoresizingMaskIntoConstraints = false
         inputContainer.translatesAutoresizingMaskIntoConstraints = false
         composerModeControl.translatesAutoresizingMaskIntoConstraints = false
+        inputUnavailableView.translatesAutoresizingMaskIntoConstraints = false
 
         // Tab bar lives in the title-bar strip (Warp-style). It sits directly
         // on contentView, spanning from just past the traffic-light buttons
@@ -580,7 +610,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         rightPaneContentHost.addSubview(splitPaneManager)
         rightPaneContentHost.addSubview(inputResizeHandle)
         rightPaneContentHost.addSubview(inputContainer)
+        rightPaneContentHost.addSubview(inputUnavailableView)
         rightPaneContentHost.addSubview(composerModeControl)
+        let inputUnavailableStack = NSStackView(views: [inputUnavailableLabel, inputRecoveryButton])
+        inputUnavailableStack.orientation = .horizontal
+        inputUnavailableStack.alignment = .centerY
+        inputUnavailableStack.spacing = 12
+        inputUnavailableStack.translatesAutoresizingMaskIntoConstraints = false
+        inputUnavailableView.addSubview(inputUnavailableStack)
 
         let tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
         self.tabBarHeightConstraint = tabBarHeight
@@ -608,6 +645,14 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
             inputContainer.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor),
             inputContainer.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor),
             inputContainer.bottomAnchor.constraint(equalTo: composerModeControl.topAnchor),
+            inputUnavailableView.leadingAnchor.constraint(equalTo: inputContainer.leadingAnchor),
+            inputUnavailableView.trailingAnchor.constraint(equalTo: inputContainer.trailingAnchor),
+            inputUnavailableView.bottomAnchor.constraint(equalTo: inputContainer.bottomAnchor),
+            inputUnavailableView.heightAnchor.constraint(equalTo: inputContainer.heightAnchor),
+            inputUnavailableStack.centerXAnchor.constraint(equalTo: inputUnavailableView.centerXAnchor),
+            inputUnavailableStack.centerYAnchor.constraint(equalTo: inputUnavailableView.centerYAnchor),
+            inputUnavailableStack.leadingAnchor.constraint(greaterThanOrEqualTo: inputUnavailableView.leadingAnchor, constant: 16),
+            inputUnavailableStack.trailingAnchor.constraint(lessThanOrEqualTo: inputUnavailableView.trailingAnchor, constant: -16),
             composerModeControl.leadingAnchor.constraint(equalTo: rightPaneContentHost.leadingAnchor, constant: 12),
             composerModeControl.trailingAnchor.constraint(equalTo: rightPaneContentHost.trailingAnchor, constant: -12),
             composerModeControl.bottomAnchor.constraint(equalTo: rightPaneContentHost.bottomAnchor, constant: -8),
@@ -2171,27 +2216,77 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
 
     private func applyComposerPresentation(for channel: ChannelController) {
         let supportsRaw = ptyChannelTypes.contains(channel.channelType)
+        let inputAvailable = !supportsRaw || channel.state == .active
         let mode = supportsRaw ? composerStates.state(for: channel.channelId).effectiveMode : .composer
 
         composerModeControl.isHidden = false
-        composerModeControl.setEnabled(supportsRaw, forSegment: 1)
-        composerModeControl.selectedSegment = mode == .rawTerminal ? 1 : 0
-        composerModeControl.setAccessibilityValue(mode == .rawTerminal ? "Raw Terminal" : "Composer")
-        composerModeControl.toolTip = mode == .rawTerminal
+        composerModeControl.setEnabled(inputAvailable, forSegment: 0)
+        composerModeControl.setEnabled(inputAvailable && supportsRaw, forSegment: 1)
+        composerModeControl.selectedSegment = inputAvailable && mode == .rawTerminal ? 1 : 0
+        composerModeControl.setAccessibilityValue(inputAvailable && mode == .rawTerminal ? "Raw Terminal" : "Composer")
+        composerModeControl.toolTip = !inputAvailable
+            ? "Input is unavailable until this session is restored"
+            : mode == .rawTerminal
             ? "Raw Terminal: keystrokes go directly to the terminal"
             : "Composer: Enter sends · Shift-Enter adds a line"
 
-        let isRaw = supportsRaw && mode == .rawTerminal
-        inputContainer.isHidden = isRaw
-        inputResizeHandle.isHidden = isRaw
-        inputResizeHandleHeightConstraint?.constant = isRaw ? 0 : inputResizeHandleHeight
+        inputBox.isEditable = inputAvailable
+        inputBox.isSelectable = true
+        inputUnavailableView.isHidden = inputAvailable
+        if inputAvailable {
+            inputUnavailableLabel.stringValue = ""
+            inputRecoveryButton.isHidden = true
+        } else {
+            configureUnavailableInputState(for: channel)
+        }
+
+        let isRaw = inputAvailable && supportsRaw && mode == .rawTerminal
+        inputContainer.isHidden = isRaw || !inputAvailable
+        inputResizeHandle.isHidden = isRaw || !inputAvailable
+        inputResizeHandleHeightConstraint?.constant = isRaw || !inputAvailable ? 0 : inputResizeHandleHeight
         inputHeightConstraint?.constant = isRaw ? 0 : (userInputPanelHeight ?? inputMinHeight)
         if isRaw {
             window.makeFirstResponder(channel.contentView)
-        } else {
+        } else if inputAvailable {
             window.makeFirstResponder(inputBox)
             resizeInputBox()
+        } else {
+            window.makeFirstResponder(channel.contentView)
         }
+    }
+
+    private func configureUnavailableInputState(for channel: any ChannelController) {
+        switch channel.state {
+        case .connecting:
+            inputUnavailableLabel.stringValue = "Session is connecting"
+        case .stale, .disconnected:
+            inputUnavailableLabel.stringValue = "Session stopped"
+        case .active:
+            inputUnavailableLabel.stringValue = ""
+        }
+
+        if let recoveryAction = channel.recoveryAction {
+            inputRecoveryButton.title = recoveryAction.menuTitle
+            inputRecoveryButton.toolTip = recoveryAction.operatorGuidance
+            inputRecoveryButton.setAccessibilityLabel(recoveryAction.menuTitle)
+            inputRecoveryButton.setAccessibilityHelp(recoveryAction.operatorGuidance)
+            inputRecoveryButton.isHidden = false
+        } else {
+            inputRecoveryButton.title = ""
+            inputRecoveryButton.toolTip = nil
+            inputRecoveryButton.setAccessibilityLabel(nil)
+            inputRecoveryButton.setAccessibilityHelp(nil)
+            inputRecoveryButton.isHidden = true
+        }
+    }
+
+    @objc private func recoverActiveChannelInput(_ sender: NSButton) {
+        guard channelMutationEnabled,
+              let id = activeChannelId,
+              channelManager.recoverChannel(id: id) != nil,
+              let channel = channelManager.channel(for: id) else { return }
+        applyComposerPresentation(for: channel)
+        refreshAllTabs()
     }
 
     /// Schedule a tab refresh for the end of the current run loop cycle.
@@ -2944,7 +3039,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     @objc private func composerModeControlChanged(_ control: NSSegmentedControl) {
         guard let id = activeChannelId,
               let channel = channelManager.channel(for: id),
-              ptyChannelTypes.contains(channel.channelType) else {
+              ptyChannelTypes.contains(channel.channelType),
+              channel.state == .active else {
             control.selectedSegment = 0
             return
         }
@@ -3058,6 +3154,7 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         }
         if channel.channelId == activeChannelId {
             publishActiveChannelStateToReactiveSnapshot(channel)
+            applyComposerPresentation(for: channel)
             applyInputPanelChrome()
             tabBar.skinContext = skinContext
             splitPaneManager.skinContext = skinContext

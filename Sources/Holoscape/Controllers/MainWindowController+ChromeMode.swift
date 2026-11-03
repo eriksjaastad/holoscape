@@ -118,11 +118,10 @@ extension MainWindowController {
         // buttons do not depend on titlebar-specific responder-chain
         // wiring that only exists for AppKit-managed title bars.
         //
-        // Hover-coordination (hovering one button highlights all
-        // three) is intentionally absent — that behaviour requires
-        // AppKit's private titlebar machinery and is not available
-        // for detached buttons. Close / miniaturize / fullscreen
-        // operations are fully functional.
+        // AppKit does not provide titlebar-group hover coordination for
+        // detached controls, so install a lightweight overlay that restores the
+        // familiar close/minimize/zoom glyphs while retaining system-drawn
+        // button colors and press states.
         installWindowControlButtons(
             in: shapedContent,
             chrome: chrome,
@@ -161,9 +160,11 @@ extension MainWindowController {
         chrome: ChromeDescriptor,
         layout: SkinLayoutDescriptor?
     ) {
+        chromeWindowControlHoverGroup?.invalidate()
+        chromeWindowControlHoverGroup = nil
         chromeWindowControlButtons.removeAll()
 
-        let buttonSize = CGSize(width: 12, height: 12)
+        let buttonSize = CGSize(width: 14, height: 14)
         let yFromTop = chromeControlTopY(layout: layout)
         let buttonY = CGFloat(chrome.height) - yFromTop - buttonSize.height
         let leadingX = chromeControlLeadingX(chrome: chrome, layout: layout)
@@ -190,6 +191,10 @@ extension MainWindowController {
             contentView.addSubview(btn)
             chromeWindowControlButtons[buttonType] = btn
         }
+        chromeWindowControlHoverGroup = ChromeWindowControlHoverGroup(
+            contentView: contentView,
+            buttons: chromeWindowControlButtons
+        )
         updateChromeZoomButtonLabel(isFullScreen: window.styleMask.contains(.fullScreen))
     }
 
@@ -217,7 +222,7 @@ extension MainWindowController {
             // Coordinate space is chrome-image top-left; frame x is
             // unchanged by AppKit's bottom-left y conversion.
             let mainBodyX = CGFloat(chrome.interiorRect.x) + channel.size + seam.thickness
-            let standardGroupWidth: CGFloat = 52
+            let standardGroupWidth: CGFloat = 54
             if layout.screenVessel?.variant == .mercuryScreenBody {
                 let mercuryDock = CGRect(x: 296, y: 16, width: 98, height: 30)
                 return mercuryDock.midX - standardGroupWidth / 2
@@ -244,7 +249,7 @@ extension MainWindowController {
     private func chromeControlTopY(layout: SkinLayoutDescriptor?) -> CGFloat {
         if layout?.screenVessel?.variant == .mercuryScreenBody {
             let mercuryDock = CGRect(x: 296, y: 16, width: 98, height: 30)
-            let buttonSize: CGFloat = 12
+            let buttonSize: CGFloat = 14
             return mercuryDock.midY - buttonSize / 2
         }
         return 6
@@ -383,7 +388,7 @@ extension MainWindowController {
 
     @objc private func handleChromeCloseButton(_ sender: Any?) {
         guard window.styleMask.contains(.closable) else { return }
-        window.close()
+        window.performClose(sender)
     }
 
     @objc private func handleChromeMinimizeButton(_ sender: Any?) {
@@ -394,7 +399,7 @@ extension MainWindowController {
     @objc private func handleChromeZoomButton(_ sender: Any?) {
         let optionPressed = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
         if optionPressed {
-            window.zoom(sender)
+            window.performZoom(sender)
             return
         }
         window.toggleFullScreen(sender)
@@ -582,6 +587,8 @@ extension MainWindowController {
         guard window is ShapedBorderlessWindow else { return }
 
         let previousResponder = window.firstResponder
+        chromeWindowControlHoverGroup?.invalidate()
+        chromeWindowControlHoverGroup = nil
         chromeWindowControlButtons.removeAll()
         tearDownChromeDragHandles()
         currentChromeHostView?.setDensityMode(.off)
@@ -755,5 +762,120 @@ extension MainWindowController {
         } else {
             currentChromeHostView?.resumeFromReduceMotion()
         }
+    }
+}
+
+@MainActor
+final class ChromeWindowControlHoverGroup: NSObject {
+    private weak var contentView: NSView?
+    private var trackingArea: NSTrackingArea?
+    let overlays: [NSView]
+
+    init(contentView: NSView, buttons: [NSWindow.ButtonType: NSButton]) {
+        self.contentView = contentView
+        self.overlays = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { type in
+            guard let button = buttons[type] else { return nil }
+            let overlay = ChromeWindowControlGlyphView(buttonType: type, frame: button.frame)
+            contentView.addSubview(overlay, positioned: .above, relativeTo: button)
+            return overlay
+        }
+        super.init()
+
+        let groupRect = buttons.values
+            .map(\.frame)
+            .reduce(CGRect.null) { $0.union($1) }
+            .insetBy(dx: -5, dy: -5)
+        if !groupRect.isNull {
+            let area = NSTrackingArea(
+                rect: groupRect,
+                options: [.mouseEnteredAndExited, .activeAlways],
+                owner: self,
+                userInfo: nil
+            )
+            contentView.addTrackingArea(area)
+            trackingArea = area
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidResignActive(_:)),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func invalidate() {
+        if let trackingArea {
+            contentView?.removeTrackingArea(trackingArea)
+            self.trackingArea = nil
+        }
+        overlays.forEach { $0.removeFromSuperview() }
+    }
+
+    @objc func mouseEntered(with event: NSEvent) {
+        setHovered(NSApp.isActive)
+    }
+
+    @objc func mouseExited(with event: NSEvent) {
+        setHovered(false)
+    }
+
+    func setHovered(_ hovered: Bool) {
+        overlays.forEach { $0.isHidden = !hovered }
+    }
+
+    @objc private func applicationDidResignActive(_ notification: Notification) {
+        setHovered(false)
+    }
+}
+
+@MainActor
+private final class ChromeWindowControlGlyphView: NSView {
+    private let buttonType: NSWindow.ButtonType
+
+    init(buttonType: NSWindow.ButtonType, frame: CGRect) {
+        self.buttonType = buttonType
+        super.init(frame: frame)
+        isHidden = true
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let path = NSBezierPath()
+        path.lineWidth = 1.15
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        NSColor(calibratedWhite: 0.12, alpha: 0.72).setStroke()
+
+        switch buttonType {
+        case .closeButton:
+            path.move(to: NSPoint(x: 4.5, y: 4.5))
+            path.line(to: NSPoint(x: 9.5, y: 9.5))
+            path.move(to: NSPoint(x: 9.5, y: 4.5))
+            path.line(to: NSPoint(x: 4.5, y: 9.5))
+        case .miniaturizeButton:
+            path.move(to: NSPoint(x: 4, y: 7))
+            path.line(to: NSPoint(x: 10, y: 7))
+        case .zoomButton:
+            path.move(to: NSPoint(x: 4.5, y: 8.5))
+            path.line(to: NSPoint(x: 4.5, y: 5.5))
+            path.line(to: NSPoint(x: 7.5, y: 5.5))
+            path.move(to: NSPoint(x: 9.5, y: 5.5))
+            path.line(to: NSPoint(x: 9.5, y: 8.5))
+            path.line(to: NSPoint(x: 6.5, y: 8.5))
+        default:
+            return
+        }
+        path.stroke()
     }
 }

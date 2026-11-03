@@ -174,14 +174,49 @@ final class MainWindowComposerTests: XCTestCase {
         let channel = fixture.makeChannel(type: .shell, label: "Connecting", state: .connecting)
         fixture.controller.switchToChannel(channel.channelId)
         let input = fixture.controller.inputBoxForTesting
-        input.string = "wait for prompt"
-        input.didChangeText()
+        fixture.controller.setComposerDraftForTesting("wait for prompt", channelId: channel.channelId)
 
         input.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
 
         XCTAssertTrue(channel.sentInputs.isEmpty)
         XCTAssertEqual(input.string, "wait for prompt")
         XCTAssertEqual(fixture.controller.composerStateForTesting(channelId: channel.channelId).draft, "wait for prompt")
+        XCTAssertTrue(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertFalse(input.isEditable)
+        XCTAssertFalse(fixture.controller.composerModeControlForTesting.isEnabled(forSegment: 1))
+        XCTAssertFalse(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputUnavailableLabelForTesting.stringValue, "Session is connecting")
+        XCTAssertTrue(fixture.controller.inputRecoveryButtonForTesting.isHidden)
+    }
+
+    func testStalePTYChannelShowsActionableRecreateStateAndReenablesInputAfterRecovery() throws {
+        let fixture = try makeFixture()
+        let channel = fixture.makeChannel(type: .shell, label: "Stopped", state: .stale)
+        channel.recoveryActionOverride = .recreateBrokerSession
+        fixture.controller.setComposerDraftForTesting("pwd", channelId: channel.channelId)
+
+        fixture.controller.switchToChannel(channel.channelId)
+
+        XCTAssertTrue(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertFalse(fixture.controller.inputBoxForTesting.isEditable)
+        XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "pwd")
+        XCTAssertFalse(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputUnavailableLabelForTesting.stringValue, "Session stopped")
+        XCTAssertFalse(fixture.controller.inputRecoveryButtonForTesting.isHidden)
+        XCTAssertEqual(fixture.controller.inputRecoveryButtonForTesting.title, "Recreate Session")
+        XCTAssertEqual(
+            fixture.controller.inputRecoveryButtonForTesting.toolTip,
+            ChannelRecoveryAction.recreateBrokerSession.operatorGuidance
+        )
+
+        fixture.controller.inputRecoveryButtonForTesting.performClick(nil)
+
+        XCTAssertEqual(channel.state, .active)
+        XCTAssertFalse(fixture.controller.inputContainerForTesting.isHidden)
+        XCTAssertTrue(fixture.controller.inputBoxForTesting.isEditable)
+        XCTAssertTrue(fixture.controller.inputUnavailableViewForTesting.isHidden)
+        XCTAssertTrue(fixture.controller.composerModeControlForTesting.isEnabled(forSegment: 1))
+        XCTAssertEqual(fixture.controller.inputBoxForTesting.string, "pwd")
     }
 
     func testFailedAcknowledgedSubmissionPreservesDraft() throws {

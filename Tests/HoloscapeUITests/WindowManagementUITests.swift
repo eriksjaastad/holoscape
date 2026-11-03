@@ -175,6 +175,24 @@ final class WindowManagementUITests: HoloscapeUITestCase {
         assertActiveChannelResponsive(timeout: 6, message: "Window should remain responsive after leaving fullscreen")
     }
 
+    func testAppearanceSettingsAccessibilityCloseButtonActuallyClosesWindow() throws {
+        openSettings()
+        let settingsWindow = app.windows["Appearance Settings"]
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 3))
+
+        let closeButton = settingsWindow.buttons[XCUIIdentifierCloseWindow]
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 2))
+        closeButton.click()
+
+        let closed = NSPredicate(format: "exists == false")
+        expectation(for: closed, evaluatedWith: settingsWindow, handler: nil)
+        waitForExpectations(timeout: 3)
+
+        openSettings()
+        XCTAssertTrue(app.windows["Appearance Settings"].waitForExistence(timeout: 3),
+                      "Appearance Settings should reopen cleanly after an accessibility close")
+    }
+
     func testChromeModeDetachedCloseButtonClosesWindow() throws {
         let configDir = try relaunchWithPersistedSkin("HoloscapeClassic-live")
         defer { try? FileManager.default.removeItem(at: configDir) }

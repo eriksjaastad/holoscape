@@ -128,6 +128,20 @@ final class SkinEngineDensityGateTests: XCTestCase {
                      "Nil densityModeManager leaves the SkinEngine gate default-open")
     }
 
+    func testAppearanceSettingsCloseButtonUsesExplicitNonRecursiveControllerAction() throws {
+        let service = ConfigService()
+        let controller = AppearanceSettingsWindowController(
+            config: service.load().appearance,
+            configService: service
+        )
+
+        let closeButton = try XCTUnwrap(controller.window?.standardWindowButton(.closeButton))
+        XCTAssertTrue(closeButton.target === controller)
+        XCTAssertEqual(closeButton.action, NSSelectorFromString("closeAppearanceSettings:"))
+        closeButton.performClick(nil)
+        XCTAssertFalse(try XCTUnwrap(controller.window).isVisible)
+    }
+
     func testAppearanceSettingsKeepsStorageButtonReachableByScrolling() throws {
         let service = ConfigService()
         let controller = AppearanceSettingsWindowController(

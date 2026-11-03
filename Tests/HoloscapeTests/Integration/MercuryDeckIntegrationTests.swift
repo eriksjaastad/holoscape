@@ -110,8 +110,8 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         drainMainQueue()
 
         let close = try XCTUnwrap(controller.chromeWindowControlButton(.closeButton))
-        let expectedX: CGFloat = 319
-        let expectedY: CGFloat = 663
+        let expectedX: CGFloat = 318
+        let expectedY: CGFloat = 662
 
         XCTAssertEqual(close.frame.minX, expectedX, accuracy: 0.5,
                        "Mercury Deck traffic lights should be centered in the generated main-body landing dock")

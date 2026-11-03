@@ -91,6 +91,10 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
         window.minSize = NSSize(width: 520, height: 520)
 
         super.init(window: window)
+        if let closeButton = window.standardWindowButton(.closeButton) {
+            closeButton.target = self
+            closeButton.action = #selector(closeAppearanceSettings(_:))
+        }
         // Wire the density gate on our SkinEngine so a user with mode=.off
         // sees skin.apply() return config unchanged rather than paint colors.
         self.skinEngine.densityModeManager = densityModeManager
@@ -100,6 +104,10 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) not implemented")
+    }
+
+    @objc private func closeAppearanceSettings(_ sender: Any?) {
+        window?.close()
     }
 
     private func setupUI() {
