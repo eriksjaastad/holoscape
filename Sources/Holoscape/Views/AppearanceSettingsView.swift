@@ -24,13 +24,17 @@ protocol AppearanceSettingsDelegate: AnyObject {
 }
 
 @MainActor
-class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
+class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NSTableViewDataSource, NSTableViewDelegate {
     weak var settingsDelegate: AppearanceSettingsDelegate?
     private var config: AppearanceConfig
     private let configService: ConfigService
 
     private let themePopup = NSPopUpButton()
     private let skinPopup = NSPopUpButton()
+    private let skinLibrary = NSTableView()
+    private let settingsScrollView = NSScrollView()
+    private var skinCatalog: [SkinCatalogEntry] = []
+    private var isRefreshingSkinControls = false
     private let createSkinButton = NSButton(title: "Create…", target: nil, action: nil)
     private let duplicateSkinButton = NSButton(title: "Duplicate…", target: nil, action: nil)
     private let revealSkinButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
@@ -49,6 +53,9 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     /// Internal read-only accessor for deterministic layout verification.
     var _storageButtonForTesting: NSButton { storageButton }
     var _skinPopupForTesting: NSPopUpButton { skinPopup }
+    var _skinLibraryForTesting: NSTableView { skinLibrary }
+    var _skinCatalogForTesting: [SkinCatalogEntry] { skinCatalog }
+    var _settingsScrollViewForTesting: NSScrollView { settingsScrollView }
     var _createSkinButtonForTesting: NSButton { createSkinButton }
     var _duplicateSkinButtonForTesting: NSButton { duplicateSkinButton }
     var _revealSkinButtonForTesting: NSButton { revealSkinButton }
@@ -75,12 +82,13 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         self.skinLibraryService = skinLibraryService ?? SkinLibraryService(engine: resolvedEngine)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 200, y: 200, width: 560, height: 480),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 200, y: 200, width: 600, height: 680),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Appearance Settings"
+        window.minSize = NSSize(width: 520, height: 520)
 
         super.init(window: window)
         // Wire the density gate on our SkinEngine so a user with mode=.off
@@ -97,18 +105,37 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
 
+        settingsScrollView.translatesAutoresizingMaskIntoConstraints = false
+        settingsScrollView.hasVerticalScroller = true
+        settingsScrollView.drawsBackground = false
+        settingsScrollView.setAccessibilityIdentifier("appearance-settings-scroll-view")
+        contentView.addSubview(settingsScrollView)
+
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        contentView.addSubview(stack)
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        settingsScrollView.documentView = documentView
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            settingsScrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            settingsScrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            settingsScrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            settingsScrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            documentView.leadingAnchor.constraint(equalTo: settingsScrollView.contentView.leadingAnchor),
+            documentView.trailingAnchor.constraint(equalTo: settingsScrollView.contentView.trailingAnchor),
+            documentView.topAnchor.constraint(equalTo: settingsScrollView.contentView.topAnchor),
+            documentView.widthAnchor.constraint(equalTo: settingsScrollView.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
         ])
 
         // Theme
@@ -128,9 +155,32 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         skinPopup.menu?.delegate = self
         stack.addArrangedSubview(skinRow)
 
-        let skinActionSpacer = NSView()
-        skinActionSpacer.widthAnchor.constraint(equalToConstant: 148).isActive = true
-        let skinActions = NSStackView(views: [skinActionSpacer, createSkinButton, duplicateSkinButton, revealSkinButton, deleteSkinButton])
+        let libraryHeader = NSTextField(labelWithString: "Skin Library")
+        libraryHeader.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        stack.addArrangedSubview(libraryHeader)
+
+        let libraryScrollView = NSScrollView()
+        libraryScrollView.hasVerticalScroller = true
+        libraryScrollView.borderType = .bezelBorder
+        libraryScrollView.translatesAutoresizingMaskIntoConstraints = false
+        libraryScrollView.heightAnchor.constraint(equalToConstant: 190).isActive = true
+        stack.addArrangedSubview(libraryScrollView)
+        libraryScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        skinLibrary.headerView = nil
+        skinLibrary.rowHeight = 54
+        skinLibrary.intercellSpacing = NSSize(width: 0, height: 1)
+        skinLibrary.selectionHighlightStyle = .regular
+        skinLibrary.allowsEmptySelection = false
+        skinLibrary.dataSource = self
+        skinLibrary.delegate = self
+        skinLibrary.setAccessibilityIdentifier("skin-library")
+        skinLibrary.setAccessibilityLabel("Skin Library")
+        let skinColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("skin-library-column"))
+        skinColumn.resizingMask = .autoresizingMask
+        skinLibrary.addTableColumn(skinColumn)
+        libraryScrollView.documentView = skinLibrary
+
+        let skinActions = NSStackView(views: [createSkinButton, duplicateSkinButton, revealSkinButton, deleteSkinButton])
         skinActions.orientation = .horizontal
         skinActions.spacing = 8
         skinActions.setAccessibilityIdentifier("skin-actions")
@@ -223,13 +273,6 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         storageButton.setAccessibilityIdentifier("storage-button")
         stack.addArrangedSubview(storageButton)
 
-        // Keep the non-resizable settings window large enough for every
-        // arranged control. Without this, controls appended below the original
-        // 480-point content height are clipped with no way to reach them.
-        let requiredHeight = ceil(stack.fittingSize.height)
-        if requiredHeight > contentView.bounds.height {
-            window?.setContentSize(NSSize(width: contentView.bounds.width, height: requiredHeight))
-        }
     }
 
     private func makeRow(label: String, control: NSView) -> NSStackView {
@@ -254,7 +297,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     ]
 
     private func loadCurrentValues() {
-        refreshSkinPopupItems(selectedTitle: config.skinName ?? skinPopup.titleOfSelectedItem)
+        refreshSkinPopupItems(selectedIdentifier: config.skinName ?? selectedSkinIdentifier())
 
         // Shader
         let selectedShader = Self.shaderPathMap.first { $0.value == config.customShaderPath }?.key ?? "None"
@@ -262,8 +305,6 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
 
         let themeName = config.themeName ?? "Dark"
         themePopup.selectItem(withTitle: themeName)
-        let skinName = config.skinName ?? "Default"
-        skinPopup.selectItem(withTitle: skinName)
         if let color = NSColor(hexString: config.backgroundColor) {
             colorWell.color = color
         }
@@ -293,7 +334,8 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     }
 
     @objc private func skinChanged(_ sender: NSPopUpButton) {
-        applySelectedSkin(named: sender.titleOfSelectedItem ?? "Default")
+        guard !isRefreshingSkinControls else { return }
+        applySelectedSkin(named: selectedSkinIdentifier() ?? "Default")
     }
 
     private func applySelectedSkin(named skinName: String) {
@@ -319,7 +361,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     }
 
     private func updateSkinActionStates() {
-        let selected = skinPopup.titleOfSelectedItem ?? "Default"
+        let selected = selectedSkinIdentifier() ?? "Default"
         let isDefault = selected == "Default"
         revealSkinButton.isEnabled = !isDefault
         duplicateSkinButton.isEnabled = !isDefault
@@ -330,7 +372,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
         guard let name = promptForSkinName(title: "Create Skin", message: "Enter a name for the new skin:") else { return }
         do {
             _ = try skinLibraryService.create(name: name)
-            refreshSkinPopupItems(selectedTitle: name)
+            refreshSkinPopupItems(selectedIdentifier: name)
             applySelectedSkin(named: name)
         } catch {
             showSkinError(error)
@@ -338,11 +380,11 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     }
 
     @objc private func duplicateSkin(_ sender: NSButton) {
-        let source = skinPopup.titleOfSelectedItem ?? "Default"
+        let source = selectedSkinIdentifier() ?? "Default"
         guard source != "Default", let name = promptForSkinName(title: "Duplicate Skin", message: "Enter a name for the copy of \"\(source)\":") else { return }
         do {
             _ = try skinLibraryService.create(name: name, from: .existing(source))
-            refreshSkinPopupItems(selectedTitle: name)
+            refreshSkinPopupItems(selectedIdentifier: name)
             applySelectedSkin(named: name)
         } catch {
             showSkinError(error)
@@ -351,7 +393,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
 
     @objc private func revealSkin(_ sender: NSButton) {
         do {
-            let url = try skinLibraryService.revealURL(for: skinPopup.titleOfSelectedItem ?? "Default")
+            let url = try skinLibraryService.revealURL(for: selectedSkinIdentifier() ?? "Default")
             revealSkinURL(url)
         } catch {
             showSkinError(error)
@@ -365,7 +407,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
               confirmSkinDeletion(name: name) else { return }
         do {
             try skinLibraryService.delete(name: name, activeSkinName: config.skinName)
-            refreshSkinPopupItems(selectedTitle: config.skinName ?? "Default")
+            refreshSkinPopupItems(selectedIdentifier: config.skinName ?? "Default")
         } catch {
             showSkinError(error)
         }
@@ -376,6 +418,13 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
     internal func _performRevealForTesting() { revealSkin(revealSkinButton) }
     internal func _performDeleteForTesting() { deleteSkin(deleteSkinButton) }
     internal func _applySelectedSkinForTesting(named name: String) { applySelectedSkin(named: name) }
+    internal func _selectSkinLibraryItemForTesting(identifier: String) {
+        guard let row = skinCatalog.firstIndex(where: { $0.identifier == identifier }) else { return }
+        isRefreshingSkinControls = true
+        skinLibrary.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        isRefreshingSkinControls = false
+        applySelectedSkin(named: identifier)
+    }
 
     private func deletableSkinNames() -> [String] {
         let active = config.skinName ?? "Default"
@@ -514,22 +563,91 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu == skinPopup.menu else { return }
-        refreshSkinPopupItems(selectedTitle: skinPopup.titleOfSelectedItem)
+        refreshSkinPopupItems(selectedIdentifier: selectedSkinIdentifier())
     }
 
-    private func refreshSkinPopupItems(selectedTitle: String? = nil) {
-        let skins = skinEngine.availableSkins()
+    private func refreshSkinPopupItems(selectedIdentifier: String? = nil) {
+        skinCatalog = skinEngine.availableSkinCatalog()
+        let selectedIdentifier = selectedIdentifier.flatMap { identifier in
+            skinCatalog.contains(where: { $0.identifier == identifier }) ? identifier : nil
+        } ?? "Default"
+        isRefreshingSkinControls = true
+        defer { isRefreshingSkinControls = false }
         skinPopup.removeAllItems()
-        skinPopup.addItems(withTitles: skins)
-        for item in skinPopup.itemArray {
-            item.identifier = NSUserInterfaceItemIdentifier("skin-\(item.title)")
+        for entry in skinCatalog {
+            let item = NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")
+            item.representedObject = entry.identifier
+            item.identifier = NSUserInterfaceItemIdentifier("skin-\(entry.identifier)")
+            skinPopup.menu?.addItem(item)
         }
-        if let selectedTitle, skins.contains(selectedTitle) {
-            skinPopup.selectItem(withTitle: selectedTitle)
-        } else {
-            skinPopup.selectItem(withTitle: "Default")
+        if let popupIndex = skinPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selectedIdentifier }) {
+            skinPopup.selectItem(at: popupIndex)
+        }
+        skinLibrary.reloadData()
+        if let row = skinCatalog.firstIndex(where: { $0.identifier == selectedIdentifier }) {
+            skinLibrary.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            skinLibrary.scrollRowToVisible(row)
         }
         updateSkinActionStates()
+    }
+
+    private func selectedSkinIdentifier() -> String? {
+        skinPopup.selectedItem?.representedObject as? String
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        skinCatalog.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard skinCatalog.indices.contains(row) else { return nil }
+        let entry = skinCatalog[row]
+        let identifier = NSUserInterfaceItemIdentifier("skin-library-cell")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+        cell.identifier = identifier
+        cell.subviews.forEach { $0.removeFromSuperview() }
+
+        let title = NSTextField(labelWithString: entry.displayName)
+        title.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        let source = NSTextField(labelWithString: entry.source.displayName.uppercased())
+        source.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        source.textColor = .secondaryLabelColor
+        let detail = NSTextField(labelWithString: entry.detailText)
+        detail.font = NSFont.systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
+        let heading = NSStackView(views: [title, source])
+        heading.orientation = .horizontal
+        heading.spacing = 8
+        let content = NSStackView(views: [heading, detail])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 2
+        content.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -10),
+            content.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            heading.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor),
+            detail.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor),
+        ])
+        cell.setAccessibilityIdentifier("skin-library-\(entry.identifier)")
+        cell.setAccessibilityLabel("\(entry.displayName), \(entry.source.displayName), \(entry.detailText)")
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isRefreshingSkinControls,
+              skinCatalog.indices.contains(skinLibrary.selectedRow) else { return }
+        let selected = skinCatalog[skinLibrary.selectedRow]
+        if let popupIndex = skinPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected.identifier }) {
+            isRefreshingSkinControls = true
+            skinPopup.selectItem(at: popupIndex)
+            isRefreshingSkinControls = false
+        }
+        applySelectedSkin(named: selected.identifier)
     }
 }
 

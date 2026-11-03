@@ -31,6 +31,53 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         XCTAssertFalse(controller._duplicateSkinButtonForTesting.isEnabled)
         XCTAssertFalse(controller._revealSkinButtonForTesting.isEnabled)
         XCTAssertFalse(controller._deleteSkinButtonForTesting.isEnabled)
+        XCTAssertEqual(controller._skinLibraryForTesting.accessibilityIdentifier(), "skin-library")
+        XCTAssertEqual(controller._skinCatalogForTesting, [.default])
+    }
+
+    func testLibraryShowsManifestMetadataAndSelectionUsesStableIdentifier() throws {
+        let bundled = root.appendingPathComponent("bundle/MercuryDeck")
+        try FileManager.default.createDirectory(at: bundled, withIntermediateDirectories: true)
+        try Data(#"{"version":"2.0","name":"Mercury Deck","author":"Holoscape","description":"A tactile control deck."}"#.utf8)
+            .write(to: bundled.appendingPathComponent("skin.json"))
+        let controller = TestAppearanceController(config: configService.load().appearance, configService: configService, skinEngine: engine, skinLibraryService: library)
+        let delegate = AppearanceDelegateSpy()
+        controller.settingsDelegate = delegate
+
+        let mercury = try XCTUnwrap(controller._skinCatalogForTesting.first(where: { $0.identifier == "MercuryDeck" }))
+        XCTAssertEqual(mercury.displayName, "Mercury Deck")
+        XCTAssertEqual(mercury.detailText, "Holoscape · A tactile control deck.")
+
+        controller._selectSkinLibraryItemForTesting(identifier: "MercuryDeck")
+
+        XCTAssertEqual(delegate.selectedNames, ["MercuryDeck"])
+        XCTAssertEqual(delegate.changedConfigs.last?.skinName, "MercuryDeck")
+        XCTAssertEqual(controller._skinPopupForTesting.titleOfSelectedItem, "Mercury Deck")
+    }
+
+    func testRefreshingPopupPreservesIdentifierWhenDisplayNamesCollide() throws {
+        for identifier in ["First", "Second"] {
+            let skin = root.appendingPathComponent("bundle/\(identifier)")
+            try FileManager.default.createDirectory(at: skin, withIntermediateDirectories: true)
+            try Data(#"{"version":"2.0","name":"Shared Display Name"}"#.utf8)
+                .write(to: skin.appendingPathComponent("skin.json"))
+        }
+        var config = configService.load().appearance
+        config.skinName = "First"
+        let controller = TestAppearanceController(
+            config: config,
+            configService: configService,
+            skinEngine: engine,
+            skinLibraryService: library
+        )
+        let popup = controller._skinPopupForTesting
+
+        controller.menuNeedsUpdate(try XCTUnwrap(popup.menu))
+
+        let representedIdentifiers = popup.itemArray.compactMap { $0.representedObject as? String }
+        XCTAssertTrue(representedIdentifiers.contains("First"))
+        XCTAssertTrue(representedIdentifiers.contains("Second"))
+        XCTAssertEqual(popup.selectedItem?.representedObject as? String, "First")
     }
 
     func testCreateRefreshesSelectsAndUsesDelegateApplyPath() throws {

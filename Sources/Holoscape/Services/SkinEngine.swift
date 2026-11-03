@@ -3,6 +3,43 @@ import AppKit
 import CoreText
 import CoreServices
 
+enum SkinCatalogSource: String, Equatable, Sendable {
+    case builtIn
+    case bundled
+    case user
+
+    var displayName: String {
+        switch self {
+        case .builtIn: "Built in"
+        case .bundled: "Included"
+        case .user: "My Library"
+        }
+    }
+}
+
+struct SkinCatalogEntry: Equatable, Sendable {
+    let identifier: String
+    let displayName: String
+    let author: String?
+    let description: String?
+    let source: SkinCatalogSource
+
+    static let `default` = SkinCatalogEntry(
+        identifier: "Default",
+        displayName: "Default",
+        author: "Holoscape",
+        description: "Modern, clear, and built for daily work.",
+        source: .builtIn
+    )
+
+    var detailText: String {
+        [author, description].compactMap { value in
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+    }
+}
+
 /// Result of registering a skin's fonts.
 ///
 /// `fonts` maps PostScript names to the decoded `CGFont` instances so
@@ -298,6 +335,41 @@ class SkinEngine {
         return skins
     }
 
+    /// Browseable metadata for the Appearance skin library. The stable
+    /// identifier remains the on-disk name used by loading and persistence;
+    /// manifest names are presentation only and may collide.
+    func availableSkinCatalog() -> [SkinCatalogEntry] {
+        [.default] + availableSkins().dropFirst().compactMap { identifier in
+            guard let resolved = resolveCatalogEntry(named: identifier) else { return nil }
+            return SkinCatalogEntry(
+                identifier: identifier,
+                displayName: nonEmpty(resolved.definition.name) ?? identifier,
+                author: nonEmpty(resolved.definition.author),
+                description: nonEmpty(resolved.definition.description),
+                source: resolved.source
+            )
+        }
+    }
+
+    private func resolveCatalogEntry(named name: String) -> (definition: SkinDefinition, source: SkinCatalogSource)? {
+        do {
+            guard let resolved = try resolveSkinLocationReportingBundleFailure(named: name),
+                  let definition = loadSkin(named: name, from: resolved.url) else { return nil }
+            return (definition, resolved.source)
+        } catch {
+            NSLog("SkinEngine: could not resolve catalog entry '\(name)': \(error)")
+        }
+        return nil
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+
     /// Enumerate skin names under the user's `~/.holoscape/skins/`
     /// (or the `HOLOSCAPE_CONFIG_DIR` test override). Both directory-
     /// layout and `.wamp` bundle skins are included; `.wamp` extensions
@@ -403,6 +475,12 @@ class SkinEngine {
     }
 
     private func resolveSkinDirReportingBundleFailure(named name: String) throws -> URL? {
+        try resolveSkinLocationReportingBundleFailure(named: name)?.url
+    }
+
+    private func resolveSkinLocationReportingBundleFailure(
+        named name: String
+    ) throws -> (url: URL, source: SkinCatalogSource)? {
         guard name != "Default" else { return nil }
 
         // User directory: try dir-layout first, then `.wamp`.
@@ -410,7 +488,7 @@ class SkinEngine {
             named: name,
             under: skinsDirectory
         ) {
-            return url
+            return (url, .user)
         }
 
         // Bundle directory: same order. A malformed user bundle must not
@@ -420,7 +498,7 @@ class SkinEngine {
                named: name,
                under: bundleRoot
            ) {
-            return url
+            return (url, .bundled)
         }
 
         return nil

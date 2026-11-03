@@ -61,6 +61,43 @@ final class BundledSkinTests: XCTestCase {
         XCTAssertEqual(occurrences, 1, "User + bundled with same name must appear exactly once in the picker")
     }
 
+    func testAvailableSkinCatalogUsesManifestMetadataAndResolvedSource() throws {
+        try writeSkin(
+            at: bundledSkins.appendingPathComponent("MercuryDeck"),
+            windowColor: "#112233",
+            displayName: "Mercury Deck",
+            author: "Holoscape",
+            description: "A tactile control deck."
+        )
+        try writeSkin(
+            at: bundledSkins.appendingPathComponent("SharedName"),
+            windowColor: "#aaaaaa",
+            displayName: "Bundled Shared"
+        )
+        try writeSkin(
+            at: userSkins.appendingPathComponent("SharedName"),
+            windowColor: "#bbbbbb",
+            displayName: "My Shared"
+        )
+
+        let catalog = SkinEngine().availableSkinCatalog()
+
+        XCTAssertEqual(catalog.first, .default)
+        XCTAssertEqual(
+            catalog.first(where: { $0.identifier == "MercuryDeck" }),
+            SkinCatalogEntry(
+                identifier: "MercuryDeck",
+                displayName: "Mercury Deck",
+                author: "Holoscape",
+                description: "A tactile control deck.",
+                source: .bundled
+            )
+        )
+        XCTAssertEqual(catalog.first(where: { $0.identifier == "SharedName" })?.displayName, "My Shared")
+        XCTAssertEqual(catalog.first(where: { $0.identifier == "SharedName" })?.source, .user)
+        XCTAssertEqual(catalog.filter { $0.identifier == "SharedName" }.count, 1)
+    }
+
     // MARK: - Resolution
 
     func testLoadCompositeResolvesBundledSkin() throws {
@@ -170,12 +207,23 @@ final class BundledSkinTests: XCTestCase {
 
     // MARK: - Helpers
 
-    nonisolated private func writeSkin(at dir: URL, windowColor: String) throws {
+    nonisolated private func writeSkin(
+        at dir: URL,
+        windowColor: String,
+        displayName: String? = nil,
+        author: String? = nil,
+        description: String? = nil
+    ) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let metadata = [
+            displayName.map { "  \"name\": \"\($0)\"," },
+            author.map { "  \"author\": \"\($0)\"," },
+            description.map { "  \"description\": \"\($0)\"," },
+        ].compactMap { $0 }.joined(separator: "\n")
         let json = """
         {
           "version": "2.0",
-          "name": "\(dir.lastPathComponent)",
+        \(metadata.isEmpty ? "  \"name\": \"\(dir.lastPathComponent)\"," : metadata)
           "surfaces": {
             "window.background": { "fill": { "kind": "color", "value": "\(windowColor)" } }
           }
