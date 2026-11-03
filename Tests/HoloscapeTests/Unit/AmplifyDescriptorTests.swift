@@ -7,6 +7,18 @@ import XCTest
 /// can focus on manifest-level invariants.
 final class AmplifyDescriptorTests: XCTestCase {
 
+    func testSpriteValidationRejectsOverflowingGridDimensions() {
+        let sprite = SpriteDescriptor(
+            cellWidth: .max,
+            cellHeight: 1,
+            rows: 1,
+            cols: 2,
+            stateMap: [:]
+        )
+
+        XCTAssertFalse(sprite.isValid(imageSize: CGSize(width: 1, height: 1)))
+    }
+
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.outputFormatting = [.sortedKeys]

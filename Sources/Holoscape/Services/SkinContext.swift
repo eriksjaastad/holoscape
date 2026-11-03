@@ -91,6 +91,7 @@ final class SkinContext {
     let reactive: ReactiveUniformSnapshot
     let fontRegistry: [String: CGFont]
     let imageCache: [String: NSImage]
+    let ninepatches: [String: NinepatchSidecar]
 
     // MARK: - Construction
 
@@ -98,12 +99,14 @@ final class SkinContext {
         surfaces: [SurfaceKey: ResolvedSurface],
         reactive: ReactiveUniformSnapshot,
         fontRegistry: [String: CGFont] = [:],
-        imageCache: [String: NSImage] = [:]
+        imageCache: [String: NSImage] = [:],
+        ninepatches: [String: NinepatchSidecar] = [:]
     ) {
         self.surfaces = surfaces
         self.reactive = reactive
         self.fontRegistry = fontRegistry
         self.imageCache = imageCache
+        self.ninepatches = ninepatches
     }
 
     /// Build a SkinContext whose surfaces all use the built-in Default visual baseline.
@@ -436,16 +439,11 @@ final class SkinContext {
 
     private func applyVariant(_ variant: StateVariant, to resolved: inout ResolvedSurface) {
         if let fill = variant.fill {
-            // Ninepatch limitation: state-variant image fills with tile mode
-            // `ninepatch` get a nil sidecar here because SkinContext doesn't
-            // currently store the ninepatches map alongside imageCache. No
-            // shipped skin uses a state-variant image fill yet; if one does,
-            // add a `ninepatches: [String: NinepatchSidecar]` property on
-            // SkinContext alongside `imageCache` and thread it through at
-            // both the init-time wiring (SkinEngine.loadComposite) and this
-            // call site. Until then, the tile mode falls back to stretch
-            // for state-variant image fills.
-            if let converted = Self.convertFill(fill, imageCache: imageCache) {
+            if let converted = Self.convertFill(
+                fill,
+                imageCache: imageCache,
+                ninepatches: ninepatches
+            ) {
                 resolved.fill = converted
             }
         }

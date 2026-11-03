@@ -438,9 +438,9 @@ class TabBarView: NSView {
             applyTransparentFill(surfaceKey, to: buttonLayer, spriteState: spriteState, snapshot: snapshot)
         }
 
-        if let font = skinContext?.resolvedFont(for: surfaceKey) {
-            button.font = font
-        }
+        button.font = skinContext?.resolvedFont(for: surfaceKey)
+            ?? SkinContext.defaultSurface(for: surfaceKey).font
+            ?? NSFont.systemFont(ofSize: 13, weight: .medium)
         if let context = skinContext {
             let resolved = snapshot.map { context.currentState(for: surfaceKey, with: $0) }
                 ?? context.currentState(for: surfaceKey)

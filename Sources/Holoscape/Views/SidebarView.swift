@@ -468,7 +468,7 @@ class SidebarTabEntry: HoverTrackingButton {
 
             statusIndicator.leadingAnchor.constraint(equalTo: unreadDot.trailingAnchor, constant: 6),
             statusIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusIndicator.widthAnchor.constraint(equalToConstant: 14),
+            statusIndicator.widthAnchor.constraint(greaterThanOrEqualToConstant: 14),
             statusIndicator.heightAnchor.constraint(equalToConstant: 14),
 
             labelField.leadingAnchor.constraint(equalTo: statusIndicator.trailingAnchor, constant: 6),
@@ -605,7 +605,12 @@ class SidebarTabEntry: HoverTrackingButton {
         } else {
             layer?.borderWidth = 0
         }
-        layer?.opacity = hasStaleInteraction && !hasUnread && notificationType == nil && recoveryAction == nil ? 0.72 : 1.0
+        let showsRoutineStaleInteraction = hasStaleInteraction
+            && !hasUnread
+            && effectiveNotificationType == nil
+            && recoveryAction == nil
+            && (persistentState == nil || persistentState?.kind == .ready || persistentState?.kind == .running)
+        layer?.opacity = showsRoutineStaleInteraction ? 0.72 : 1.0
         labelField.textColor = nsRowText(for: rowKey) ?? fallbackText(isActive: isActive, hasUnread: hasUnread, notificationType: effectiveNotificationType)
         labelField.setContentCompressionResistancePriority(needsApproval ? .defaultLow : .defaultHigh, for: .horizontal)
         statusTextField.setContentCompressionResistancePriority(needsApproval ? .required : .defaultLow, for: .horizontal)
@@ -667,10 +672,9 @@ class SidebarTabEntry: HoverTrackingButton {
             }
         }()
         if recoveryAction == nil,
-           hasStaleInteraction,
-           persistentState == nil || persistentState?.kind == .ready || persistentState?.kind == .running {
-            setAccessibilityValue("stale-interaction")
-        } else if recoveryAction == nil, let persistentAccessibilityValue {
+           let persistentAccessibilityValue,
+           persistentState?.kind != .ready,
+           persistentState?.kind != .running {
             setAccessibilityValue(persistentAccessibilityValue)
         } else if recoveryAction == nil, let effectiveNotificationType {
             switch effectiveNotificationType {
@@ -678,6 +682,10 @@ class SidebarTabEntry: HoverTrackingButton {
             case "permission_prompt": setAccessibilityValue("needs-approval")
             default: setAccessibilityValue(effectiveNotificationType)
             }
+        } else if recoveryAction == nil, showsRoutineStaleInteraction {
+            setAccessibilityValue("stale-interaction")
+        } else if recoveryAction == nil, let persistentAccessibilityValue {
+            setAccessibilityValue(persistentAccessibilityValue)
         } else if recoveryAction == nil, state == .disconnected {
             setAccessibilityValue("disconnected")
         } else if recoveryAction == nil {

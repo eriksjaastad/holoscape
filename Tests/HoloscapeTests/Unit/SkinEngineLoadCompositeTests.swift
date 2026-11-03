@@ -287,6 +287,48 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         }
     }
 
+    func testValidStateImageIsAvailableToLiveSkinContext() throws {
+        let skinDir = skinsDir.appendingPathComponent("StateImage")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "StateImage",
+          "surfaces": {
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "channelConnectionState": 0 },
+                  "fill": { "kind": "image", "path": "state.png", "tile": "ninepatch" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+        try writePNG(to: skinDir.appendingPathComponent("state.png"))
+        try Data(#"{"stretchX":[0,1],"stretchY":[0,1]}"#.utf8)
+            .write(to: skinDir.appendingPathComponent("state.ninepatch.json"))
+
+        let loaded = try SkinEngine().loadComposite(named: "StateImage")
+        let snapshot = ReactiveUniformSnapshot()
+        snapshot.setChannelConnectionState(0)
+        let context = MainWindowController.buildSkinContext(
+            overriding: loaded.surfaces,
+            reactive: snapshot,
+            images: loaded.images,
+            ninepatches: loaded.ninepatches
+        )
+
+        guard case .image(_, let tile, let ninepatch, _) = context.currentState(for: .tabBarTabActive).fill else {
+            return XCTFail("A validated state image must remain available after the live context is built")
+        }
+        XCTAssertEqual(tile, .ninepatch)
+        XCTAssertEqual(ninepatch, NinepatchSidecar(stretchX: [0, 1], stretchY: [0, 1]))
+    }
+
     func testMalformedNestedStatePresentationFailsClosed() throws {
         let invalidStates = [
             "\"text\": { \"color\": \"#ffffff\", \"shadow\": { \"color\": \"not-a-color\", \"opacity\": 1, \"blur\": 2, \"offsetX\": 0, \"offsetY\": 0 } }",
@@ -393,5 +435,19 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         XCTAssertEqual(loaded.layout?.screenVessel?.variant, .mercuryScreenBody)
         XCTAssertEqual(loaded.layout?.seam?.thickness, 20)
         XCTAssertEqual(loaded.layout?.seam?.style, .mechanical)
+    }
+
+    private func writePNG(to url: URL) throws {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "SkinEngineLoadCompositeTests", code: 1)
+        }
+        try png.write(to: url)
     }
 }

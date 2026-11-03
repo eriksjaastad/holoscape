@@ -107,8 +107,9 @@ struct SpriteDescriptor: Codable, Equatable, Sendable {
     /// never needs out-of-bounds checks (Requirement 5.4).
     func isValid(imageSize: CGSize) -> Bool {
         guard cellWidth > 0, cellHeight > 0, rows > 0, cols > 0 else { return false }
-        let maxPixelWidth = cellWidth * cols
-        let maxPixelHeight = cellHeight * rows
+        let (maxPixelWidth, widthOverflow) = cellWidth.multipliedReportingOverflow(by: cols)
+        let (maxPixelHeight, heightOverflow) = cellHeight.multipliedReportingOverflow(by: rows)
+        guard !widthOverflow, !heightOverflow else { return false }
         guard Double(maxPixelWidth) <= imageSize.width,
               Double(maxPixelHeight) <= imageSize.height else { return false }
         // Every cell in the stateMap must fit within the declared grid.

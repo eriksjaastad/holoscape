@@ -244,6 +244,24 @@ final class TabBarViewSkinContextTests: XCTestCase {
                              "A live marker change must resize the existing tab to fit its new title")
     }
 
+    func testChangingToSurfaceAbsentFromPartialSkinRestoresDefaultFont() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)
+        let snapshot = ReactiveUniformSnapshot()
+        var active = SkinContext.defaultSurface(for: .tabBarTabActive)
+        active.font = NSFont.systemFont(ofSize: 24, weight: .black)
+        view.skinContext = SkinContext(surfaces: [.tabBarTabActive: active], reactive: snapshot)
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+        let button = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(button.font?.pointSize, 24)
+
+        view.updateTabs(channels: [channel], activeId: nil)
+
+        XCTAssertEqual(button.font?.pointSize, SkinContext.defaultSurface(for: .tabBarTabNormal).font?.pointSize)
+        XCTAssertNotEqual(button.font?.pointSize, 24)
+    }
+
     func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
         let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
         let channel = MockChannelController(type: .agentDirect, label: "Claude", state: .active)

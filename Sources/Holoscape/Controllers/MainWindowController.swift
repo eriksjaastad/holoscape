@@ -1078,10 +1078,17 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     func applySkin(
         surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
         layout: SkinLayoutDescriptor? = nil,
+        images: [String: NSImage] = [:],
+        ninepatches: [String: NinepatchSidecar] = [:],
         windowShape: ResolvedWindowShape?,
         dragRegions: [ResolvedDragRegion]
     ) {
-        skinContext = Self.buildSkinContext(overriding: surfaces, reactive: reactiveSnapshot)
+        skinContext = Self.buildSkinContext(
+            overriding: surfaces,
+            reactive: reactiveSnapshot,
+            images: images,
+            ninepatches: ninepatches
+        )
         tabBar.skinContext = skinContext
         sidebarView.skinContext = skinContext
         inputBox.skinContext = skinContext
@@ -1486,6 +1493,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 applySkin(
                     surfaces: loaded.surfaces,
                     layout: loaded.layout,
+                    images: loaded.images,
+                    ninepatches: loaded.ninepatches,
                     windowShape: nil,
                     dragRegions: []
                 )
@@ -1500,6 +1509,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
                 applySkin(
                     surfaces: loaded.surfaces,
                     layout: loaded.layout,
+                    images: loaded.images,
+                    ninepatches: loaded.ninepatches,
                     windowShape: loaded.windowShape,
                     dragRegions: loaded.dragRegions
                 )
@@ -1556,10 +1567,19 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     /// given an optional surfaces map. Extracted as a static seam so
     /// unit tests can verify the build-and-reset semantics without
     /// constructing a real controller.
-    static func buildSkinContext(overriding surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
-                                 reactive: ReactiveUniformSnapshot) -> SkinContext {
+    static func buildSkinContext(
+        overriding surfaces: [SurfaceKey: SkinContext.ResolvedSurface]?,
+        reactive: ReactiveUniformSnapshot,
+        images: [String: NSImage] = [:],
+        ninepatches: [String: NinepatchSidecar] = [:]
+    ) -> SkinContext {
         if let surfaces {
-            return SkinContext(surfaces: surfaces, reactive: reactive)
+            return SkinContext(
+                surfaces: surfaces,
+                reactive: reactive,
+                imageCache: images,
+                ninepatches: ninepatches
+            )
         }
         return SkinContext.builtInDefaults(reactive: reactive)
     }

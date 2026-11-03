@@ -117,6 +117,9 @@ struct LoadedSkin {
     let fonts: SkinFontBundle
     /// Decoded images keyed by their manifest path. Empty for `.defaults`.
     let images: [String: NSImage]
+    /// Valid ninepatch sidecars keyed by manifest image path. State variants
+    /// need the same metadata as base fills so their rendering is complete.
+    let ninepatches: [String: NinepatchSidecar]
     /// Absolute URL of the skin's directory. Nil for `.defaults`. Used
     /// by Task 11 to scope its FSEventStream watcher.
     let skinDir: URL?
@@ -180,6 +183,7 @@ struct LoadedSkin {
         surfaces: nil,
         fonts: SkinFontBundle(fonts: [:], registeredURLs: []),
         images: [:],
+        ninepatches: [:],
         skinDir: nil,
         windowShape: nil,
         validationBannerReason: nil,
@@ -1193,6 +1197,7 @@ class SkinEngine {
             surfaces: effectiveSurfaces,
             fonts: fonts,
             images: images,
+            ninepatches: ninepatches,
             skinDir: skinDir,
             windowShape: validatedShape,
             validationBannerReason: effectiveBannerReason,

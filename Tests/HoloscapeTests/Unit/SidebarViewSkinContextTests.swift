@@ -240,6 +240,46 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityValue() as? String, "stale: broker session unavailable")
     }
 
+    func testApprovalOutranksStaleInteractionAccessibility() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        entry.configure(
+            label: "Codex",
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+            isActive: false,
+            notificationType: "permission_prompt",
+            hasStaleInteraction: true
+        )
+
+        XCTAssertEqual(entry.statusTextForTesting, "Approval")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "needs-approval")
+        XCTAssertEqual(entry.layer?.opacity, 1)
+    }
+
+    func testAcceptedThreeCharacterStateMarkerFitsSidebarIndicator() throws {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
+        let snapshot = ReactiveUniformSnapshot()
+        var surfaces = SkinContext.builtInDefaults(reactive: snapshot).allResolvedSurfacesForTesting
+        surfaces[.sidebarRowIndicator]?.marker = StateMarkerDescriptor(symbol: "WWW")
+        surfaces[.sidebarRowIndicator]?.states = []
+        entry.skinContext = SkinContext(surfaces: surfaces, reactive: snapshot)
+
+        entry.configure(
+            label: "Workspace",
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+            isActive: false
+        )
+        entry.layoutSubtreeIfNeeded()
+
+        let marker = try XCTUnwrap(entry.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == "WWW" })
+        XCTAssertGreaterThanOrEqual(marker.frame.width, marker.intrinsicContentSize.width - 1)
+    }
+
     func testRequiredPersistentStatesUpdateMarkerStatusAndAccessibilityLive() {
         let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
         entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
