@@ -4,6 +4,10 @@ import XCTest
 
 @MainActor
 final class MainWindowComposerTests: XCTestCase {
+    private final class FocusableView: NSView {
+        override var acceptsFirstResponder: Bool { true }
+    }
+
     private final class RecordingBrokerSessionCoordinator: BrokerSessionCoordinating {
         private var nextID = 0
 
@@ -266,6 +270,45 @@ final class MainWindowComposerTests: XCTestCase {
         XCTAssertTrue(fixture.controller.window.firstResponder === fixture.controller.inputRecoveryButtonForTesting)
     }
 
+    func testConnectingThenActiveStateRepairsOnlyRedirectedActiveChannelFocus() throws {
+        let fixture = try makeFixture()
+        let firstContent = FocusableView()
+        let first = fixture.makeChannel(type: .shell, label: "First", contentView: firstContent)
+        let second = fixture.makeChannel(type: .shell, label: "Second")
+        first.delegate = fixture.controller
+        second.delegate = fixture.controller
+        fixture.controller.switchToChannel(first.channelId)
+        XCTAssertNotNil(firstContent.window)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(firstContent))
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(fixture.controller.inputBoxForTesting))
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+
+        first.transition(to: .connecting)
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstContent)
+
+        first.transition(to: .active)
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+
+        first.transition(to: .connecting)
+        fixture.controller.switchToChannel(second.channelId)
+        assertFirstResponder(in: fixture.controller.window, belongsTo: fixture.controller.inputBoxForTesting)
+        let secondResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        first.transition(to: .active)
+        XCTAssertTrue(fixture.controller.window.firstResponder === secondResponder)
+
+        let selectionOwner = NSTextField(string: "selected output")
+        fixture.controller.window.contentView?.addSubview(selectionOwner)
+        fixture.controller.switchToChannel(first.channelId)
+        first.transition(to: .connecting)
+        XCTAssertTrue(fixture.controller.window.firstResponder === firstContent)
+        XCTAssertTrue(fixture.controller.window.makeFirstResponder(selectionOwner))
+        let unrelatedResponder = try XCTUnwrap(fixture.controller.window.firstResponder)
+
+        first.transition(to: .active)
+        XCTAssertTrue(fixture.controller.window.firstResponder === unrelatedResponder)
+    }
+
     func testFailedAcknowledgedSubmissionPreservesDraft() throws {
         let fixture = try makeFixture()
         let channel = fixture.makeChannel(type: .shell, label: "Active")
@@ -363,6 +406,25 @@ final class MainWindowComposerTests: XCTestCase {
             isARepeat: false,
             keyCode: keyCode
         )!
+    }
+
+    private func assertFirstResponder(
+        in window: NSWindow,
+        belongsTo view: NSView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let responder = window.firstResponder else {
+            XCTFail("Expected a first responder", file: file, line: line)
+            return
+        }
+        if responder === view { return }
+        if let responderView = responder as? NSView, responderView.isDescendant(of: view) { return }
+        if let fieldEditor = responder as? NSTextView,
+           fieldEditor.delegate as AnyObject? === view {
+            return
+        }
+        XCTFail("Expected first responder to belong to the requested input view", file: file, line: line)
     }
 
     private func makeFixture() throws -> ComposerFixture {

@@ -53,6 +53,8 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         alert.beginSheetModal(for: window)
     }
     private(set) var channelMutationEnabled = true
+    private var unavailableInputFocusChannelID: UUID?
+    private weak var unavailableInputFocusResponder: NSResponder?
 
     func setChannelMutationEnabled(_ enabled: Bool) {
         channelMutationEnabled = enabled
@@ -2213,6 +2215,11 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     private func applyComposerPresentation(for channel: ChannelController, focusInput: Bool = true) {
         let supportsRaw = ptyChannelTypes.contains(channel.channelType)
         let inputAvailable = !supportsRaw || channel.state == .active
+        let unavailableInputOwnedFocus = !inputAvailable && (
+            firstResponderBelongs(to: inputBox)
+                || firstResponderBelongs(to: inputRecoveryButton)
+                || firstResponderBelongs(to: channel.contentView)
+        )
         let mode = supportsRaw ? composerStates.state(for: channel.channelId).effectiveMode : .composer
 
         composerModeControl.isHidden = false
@@ -2243,6 +2250,32 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         inputHeightConstraint?.constant = isRaw ? 0 : (userInputPanelHeight ?? inputMinHeight)
         if focusInput {
             self.focusInput(for: channel)
+        } else {
+            repairFocusAfterPresentationChange(
+                for: channel,
+                inputAvailable: inputAvailable,
+                unavailableInputOwnedFocus: unavailableInputOwnedFocus
+            )
+        }
+    }
+
+    private func repairFocusAfterPresentationChange(
+        for channel: any ChannelController,
+        inputAvailable: Bool,
+        unavailableInputOwnedFocus: Bool
+    ) {
+        if inputAvailable {
+            guard unavailableInputFocusChannelID == channel.channelId else { return }
+            defer { clearUnavailableInputFocusRedirect() }
+            guard window.firstResponder === unavailableInputFocusResponder else { return }
+            focusInput(for: channel)
+            return
+        }
+
+        if unavailableInputOwnedFocus {
+            focusInput(for: channel)
+        } else {
+            clearUnavailableInputFocusRedirect()
         }
     }
 
@@ -2250,19 +2283,43 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
         let supportsRaw = ptyChannelTypes.contains(channel.channelType)
         let inputAvailable = !supportsRaw || channel.state == .active
         if !inputAvailable {
-            if !inputRecoveryButton.isHidden && inputRecoveryButton.isEnabled {
-                window.makeFirstResponder(inputRecoveryButton)
+            let target = !inputRecoveryButton.isHidden && inputRecoveryButton.isEnabled
+                ? inputRecoveryButton
+                : channel.contentView
+            if window.makeFirstResponder(target) {
+                unavailableInputFocusChannelID = channel.channelId
+                unavailableInputFocusResponder = window.firstResponder
             } else {
-                window.makeFirstResponder(channel.contentView)
+                clearUnavailableInputFocusRedirect()
             }
             return
         }
+        clearUnavailableInputFocusRedirect()
         if supportsRaw && composerStates.state(for: channel.channelId).effectiveMode == .rawTerminal {
             window.makeFirstResponder(channel.contentView)
         } else {
             window.makeFirstResponder(inputBox)
             resizeInputBox()
         }
+    }
+
+    private func firstResponderBelongs(to view: NSView) -> Bool {
+        guard let responder = window.firstResponder else { return false }
+        if responder === view { return true }
+        if let responderView = responder as? NSView,
+           responderView.isDescendant(of: view) {
+            return true
+        }
+        if let fieldEditor = responder as? NSTextView,
+           fieldEditor.delegate as AnyObject? === view {
+            return true
+        }
+        return false
+    }
+
+    private func clearUnavailableInputFocusRedirect() {
+        unavailableInputFocusChannelID = nil
+        unavailableInputFocusResponder = nil
     }
 
     private func configureUnavailableInputState(for channel: any ChannelController) {
