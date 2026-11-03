@@ -157,7 +157,22 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertFalse(button.title.contains("recreate session"), button.title)
         XCTAssertNil(button.toolTip)
         XCTAssertNil(button.accessibilityHelp(), "Recovered tab must not keep stale recovery instructions: \(button.accessibilityHelp() ?? "nil")")
-        XCTAssertEqual(button.accessibilityValue() as? String, "active")
+        XCTAssertEqual(button.accessibilityValue() as? String, "running")
+    }
+
+    func testStaleInteractionOutranksRoutineRunningAccessibility() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Long running", state: .active)
+
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            now: Date(),
+            staleThreshold: -1
+        )
+
+        let button = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(button.accessibilityValue() as? String, "stale-interaction")
     }
 
     func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
@@ -179,6 +194,47 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .first)
         XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
         XCTAssertEqual(button.layer?.backgroundColor, NSColor(hex: "#4a391f")!.cgColor)
+    }
+
+    func testPerTabPersistentStatesRemainDistinctAcrossLiveSkinSwitch() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 700, height: 32))
+        let states: [(PersistentChannelStateKind, String, String)] = [
+            (.running, "▶", "running"),
+            (.needsApproval, "!", "needs-approval"),
+            (.error, "×", "error: failed"),
+            (.stale, "◌", "stale: missing"),
+        ]
+        let channels = states.enumerated().map { index, item -> MockChannelController in
+            let channel = MockChannelController(type: .agentDirect, label: "Agent \(index + 1)", state: item.0 == .stale ? .stale : .active)
+            channel.persistentStateOverride = PersistentChannelState(
+                kind: item.0,
+                source: .agentAdapter,
+                reason: item.0 == .error ? "failed" : item.0 == .stale ? "missing" : nil
+            )
+            return channel
+        }
+
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+        view.updateTabs(channels: channels, activeId: channels[0].channelId)
+
+        for (channel, expected) in zip(channels, states) {
+            let button = try button(for: channel.channelId, in: view)
+            XCTAssertTrue(button.title.hasPrefix(expected.1 + " "), button.title)
+            XCTAssertEqual(button.accessibilityValue() as? String, expected.2)
+        }
+
+        let mercury = try SkinEngine().loadComposite(named: "MercuryDeck")
+        view.skinContext = MainWindowController.buildSkinContext(
+            overriding: mercury.surfaces,
+            reactive: ReactiveUniformSnapshot()
+        )
+
+        let mercuryMarkers = ["▷", "!", "×", "◌"]
+        for ((channel, expected), marker) in zip(zip(channels, states), mercuryMarkers) {
+            let button = try button(for: channel.channelId, in: view)
+            XCTAssertTrue(button.title.hasPrefix(marker + " "), button.title)
+            XCTAssertEqual(button.accessibilityValue() as? String, expected.2)
+        }
     }
 
     func testTabTitleIncludesAgentIdentityIndicatorPrefix() throws {
@@ -241,6 +297,15 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .compactMap { $0 as? NSButton }
         let button = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
         return button.title
+    }
+
+    private func button(for channelId: UUID, in view: TabBarView) throws -> NSButton {
+        let buttons = view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+        return try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
     }
 }
 

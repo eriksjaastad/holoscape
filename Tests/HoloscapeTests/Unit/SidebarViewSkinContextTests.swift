@@ -240,6 +240,34 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityValue() as? String, "stale: broker session unavailable")
     }
 
+    func testRequiredPersistentStatesUpdateMarkerStatusAndAccessibilityLive() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let states: [(PersistentChannelState, String, String, String)] = [
+            (.init(kind: .running, source: .processLifecycle), "▶", "Running", "running"),
+            (.init(kind: .needsApproval, source: .agentAdapter), "!", "Approval", "needs-approval"),
+            (.init(kind: .error, source: .brokerRegistry, reason: "host failed"), "×", "host failed", "error: host failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), "◌", "session missing", "stale: session missing"),
+        ]
+
+        for (state, marker, status, accessibilityValue) in states {
+            entry.configure(
+                label: "Workspace",
+                hasUnread: false,
+                state: state.kind == .stale ? .stale : .active,
+                persistentState: state,
+                isActive: true
+            )
+            entry.layoutSubtreeIfNeeded()
+
+            XCTAssertEqual(entry.stateMarkerForTesting, marker, state.kind.rawValue)
+            XCTAssertEqual(entry.statusTextForTesting, status, state.kind.rawValue)
+            XCTAssertEqual(entry.accessibilityValue() as? String, accessibilityValue, state.kind.rawValue)
+            XCTAssertLessThanOrEqual(entry.stateMarkerFrameForTesting.maxX, entry.bounds.maxX)
+        }
+    }
+
     // MARK: - Unread regression guard
 
     /// Unread state flows through a `channelUnread: { $gte: 1 }` state
@@ -319,7 +347,7 @@ final class SidebarViewSkinContextTests: XCTestCase {
             entry.accessibilityHelp()?.contains("Broker host is unavailable") == true,
             "Recovered row must clear stale recovery instructions: \(entry.accessibilityHelp() ?? "nil")"
         )
-        XCTAssertEqual(entry.accessibilityValue() as? String, "active")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "running")
     }
 
     // MARK: - Helpers

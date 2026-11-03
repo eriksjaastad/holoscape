@@ -38,6 +38,8 @@ class TabBarView: NSView {
     private var tabNotificationTypes: [UUID: String] = [:]
     private var staleInteractionIds: Set<UUID> = []
     private var resolvedDisplayLabels: [UUID: String] = [:]
+    private var tabChannels: [UUID: any ChannelController] = [:]
+    private var tabSnapshots: [UUID: ReactiveUniformSnapshot] = [:]
 
     // MARK: - Amplify Task 11.3 sprite state tracking
     //
@@ -120,7 +122,11 @@ class TabBarView: NSView {
             applyFill(.tabBarContainer, to: layer, fallback: Self.barBg)
         }
         for (id, button) in tabButtons {
-            applyTabStyle(button, channelId: id)
+            if let channel = tabChannels[id] {
+                updateTabButton(button, for: channel)
+            } else {
+                applyTabStyle(button, channelId: id)
+            }
         }
     }
 
@@ -146,13 +152,15 @@ class TabBarView: NSView {
         _ key: SurfaceKey,
         to layer: CALayer,
         fallback: CGColor,
-        spriteState: SpriteState = .normal
+        spriteState: SpriteState = .normal,
+        snapshot: ReactiveUniformSnapshot? = nil
     ) {
         guard let ctx = skinContext else {
             layer.backgroundColor = fallback
             return
         }
-        let resolved = ctx.currentState(for: key)
+        let resolved = snapshot.map { ctx.currentState(for: key, with: $0) }
+            ?? ctx.currentState(for: key)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale, spriteState: spriteState)
     }
@@ -163,13 +171,15 @@ class TabBarView: NSView {
     private func applyTransparentFill(
         _ key: SurfaceKey,
         to layer: CALayer,
-        spriteState: SpriteState = .normal
+        spriteState: SpriteState = .normal,
+        snapshot: ReactiveUniformSnapshot? = nil
     ) {
         guard let ctx = skinContext else {
             layer.backgroundColor = nil
             return
         }
-        let resolved = ctx.currentState(for: key)
+        let resolved = snapshot.map { ctx.currentState(for: key, with: $0) }
+            ?? ctx.currentState(for: key)
         let backingScale = window?.backingScaleFactor ?? 2.0
         ctx.applyFill(to: layer, from: resolved, backingScale: backingScale, spriteState: spriteState)
     }
@@ -200,6 +210,7 @@ class TabBarView: NSView {
     ) {
         activeChannelId = activeId
         resolvedDisplayLabels = ChannelDisplayLabelResolver.labels(for: channels)
+        tabChannels = Dictionary(uniqueKeysWithValues: channels.map { ($0.channelId, $0) })
         self.notifications = notifications
         self.tabNotificationTypes = Dictionary(
             uniqueKeysWithValues: channels.compactMap { channel in
@@ -213,12 +224,31 @@ class TabBarView: NSView {
                 .map(\.channelId)
         )
 
+        for channel in channels {
+            let snapshot = tabSnapshots[channel.channelId] ?? ReactiveUniformSnapshot()
+            snapshot.applyPersistentChannelState(channel.persistentState)
+            let notificationType = effectiveNotificationType(for: channel, explicitNotifications: notifications)
+            if notificationType == "permission_prompt" {
+                snapshot.applyPersistentChannelState(.init(kind: .needsApproval, source: .terminalOutput))
+            } else if notificationType == "idle_prompt" {
+                snapshot.setNotificationKind(1)
+            }
+            snapshot.setChannelState(
+                channelId: Int32(truncatingIfNeeded: channel.channelId.hashValue),
+                isActive: channel.channelId == activeId ? 1 : 0,
+                unread: channel.hasUnread ? 1 : 0
+            )
+            tabSnapshots[channel.channelId] = snapshot
+        }
+
         let currentIds = Set(channels.map { $0.channelId })
 
         // Remove buttons for channels that no longer exist
         for (id, button) in tabButtons where !currentIds.contains(id) {
             button.removeFromSuperview()
             tabButtons.removeValue(forKey: id)
+            tabSnapshots.removeValue(forKey: id)
+            tabChannels.removeValue(forKey: id)
         }
 
         var xOffset: CGFloat = tabSpacing
@@ -261,6 +291,9 @@ class TabBarView: NSView {
         } else if staleInteractionIds.contains(channel.channelId) {
             title = "\u{25CC} " + title
         }
+        if let marker = resolvedTabSurface(channelId: channel.channelId)?.marker?.symbol {
+            title = marker + " " + title
+        }
         return title
     }
 
@@ -298,8 +331,19 @@ class TabBarView: NSView {
                 default:
                     button.setAccessibilityValue(effectiveNotificationType)
                 }
-            } else if staleInteractionIds.contains(channel.channelId) {
+            } else if staleInteractionIds.contains(channel.channelId),
+                      [.ready, .running].contains(channel.persistentState.kind) {
                 button.setAccessibilityValue("stale-interaction")
+            } else if channel.persistentState.kind == .error {
+                button.setAccessibilityValue(channel.persistentState.reason.map { "error: \($0)" } ?? "error")
+            } else if channel.persistentState.kind == .stale {
+                button.setAccessibilityValue(channel.persistentState.reason.map { "stale: \($0)" } ?? "stale")
+            } else if channel.persistentState.kind == .running {
+                button.setAccessibilityValue("running")
+            } else if channel.persistentState.kind == .ready {
+                button.setAccessibilityValue("ready")
+            } else if channel.persistentState.kind == .disconnected {
+                button.setAccessibilityValue("disconnected")
             } else {
                 button.setAccessibilityValue(channel.channelId == activeChannelId ? "active" : "normal")
             }
@@ -320,6 +364,23 @@ class TabBarView: NSView {
         return explicitNotifications[channel.channelId]
     }
 
+    private func tabSurfaceKey(channelId: UUID) -> SurfaceKey {
+        let notificationType = tabNotificationTypes[channelId]
+        if notificationType == "permission_prompt" { return .tabBarTabPermission }
+        if channelId == activeChannelId { return .tabBarTabActive }
+        if notificationType == "idle_prompt" { return .tabBarTabIdle }
+        return .tabBarTabNormal
+    }
+
+    private func resolvedTabSurface(channelId: UUID) -> SkinContext.ResolvedSurface? {
+        guard let context = skinContext else { return nil }
+        let key = tabSurfaceKey(channelId: channelId)
+        if let snapshot = tabSnapshots[channelId] {
+            return context.currentState(for: key, with: snapshot)
+        }
+        return context.currentState(for: key)
+    }
+
     /// Apply the correct background fill and text tint for a tab based
     /// on its current state (active / permission / idle / normal). Each
     /// branch routes through `applyFill` so gradient/image fills land;
@@ -327,58 +388,45 @@ class TabBarView: NSView {
     /// normal tab has no hardcoded fallback (transparent is correct).
     private func applyTabStyle(_ button: NSButton, channelId: UUID) {
         guard let buttonLayer = button.layer else { return }
-        // Amplify Task 11.3 — resolve per-tab sprite state once and
-        // pass it through every applyFill call below. Surfaces with
-        // sprite descriptors pick the correct cell; surfaces without
-        // render as before (spriteState parameter is ignored).
-        let state = spriteState(forTab: channelId)
+        let spriteState = spriteState(forTab: channelId)
         let notificationType = tabNotificationTypes[channelId]
+        let snapshot = tabSnapshots[channelId]
+        let surfaceKey = tabSurfaceKey(channelId: channelId)
+
         buttonLayer.opacity = 1.0
         if notificationType == "permission_prompt" {
-            button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabPermission, to: buttonLayer,
-                      fallback: Self.permissionBg, spriteState: state)
+            applyFill(surfaceKey, to: buttonLayer,
+                      fallback: Self.permissionBg, spriteState: spriteState, snapshot: snapshot)
         } else if channelId == activeChannelId {
-            button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabActive, to: buttonLayer,
-                      fallback: Self.activeTabBg, spriteState: state)
+            applyFill(surfaceKey, to: buttonLayer,
+                      fallback: Self.activeTabBg, spriteState: spriteState, snapshot: snapshot)
         } else if notificationType == "idle_prompt" {
-            button.contentTintColor = NSColor.white
-            applyFill(.tabBarTabIdle, to: buttonLayer,
-                      fallback: Self.idleBg, spriteState: state)
+            applyFill(surfaceKey, to: buttonLayer,
+                      fallback: Self.idleBg, spriteState: spriteState, snapshot: snapshot)
         } else if staleInteractionIds.contains(channelId) {
-            button.contentTintColor = NSColor.systemGray
-            applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
+            applyTransparentFill(surfaceKey, to: buttonLayer, spriteState: spriteState, snapshot: snapshot)
             buttonLayer.opacity = 0.70
         } else {
-            button.contentTintColor = NSColor.lightGray
-            buttonLayer.opacity = 1.0
-            // `.tabBarTabNormal` default is transparent — nil
-            // backgroundColor, no visible fill unless the skin overrides.
-            applyTransparentFill(.tabBarTabNormal, to: buttonLayer, spriteState: state)
+            applyTransparentFill(surfaceKey, to: buttonLayer, spriteState: spriteState, snapshot: snapshot)
         }
-        // Amplify Task 13 — apply skin-defined font. Sourced from
-        // `.tabBarTabActive` as the canonical tab surface; if a skin
-        // wants per-state fonts in the future, that's a forward-compat
-        // extension (ResolvedSurface.font varies by surface, which is
-        // already the model). When the manifest omits font, `resolvedFont`
-        // returns nil and we preserve the native proportional font
-        // set in `makeTabButton`.
-        if let font = skinContext?.resolvedFont(for: .tabBarTabActive) {
+
+        if let font = skinContext?.resolvedFont(for: surfaceKey) {
             button.font = font
         }
-        // Amplify Task 15 — border/corner/shadow from the skin.
-        // Pill-shape clamp (Req 7.5): cornerRadius capped at
-        // buttonHeight / 2 so a skin declaring corner: 9999
-        // produces a pill, not a collapsed circle. `buttonLayer`
-        // may be nil on very early layout passes — guard.
-        if let ctx = skinContext {
-            let resolved = ctx.currentState(for: .tabBarTabActive)
-            ctx.applyBorderAndCorner(
+        if let context = skinContext {
+            let resolved = snapshot.map { context.currentState(for: surfaceKey, with: $0) }
+                ?? context.currentState(for: surfaceKey)
+            button.contentTintColor = resolved.text.color
+            context.applyBorderAndCorner(
                 to: buttonLayer,
                 from: resolved,
                 clampCornerToHalfHeight: button.bounds.height
             )
+        } else {
+            button.contentTintColor = notificationType == nil && channelId != activeChannelId
+                ? NSColor.lightGray
+                : NSColor.white
+            buttonLayer.borderWidth = 0
         }
     }
 

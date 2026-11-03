@@ -164,6 +164,37 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
                        "Unknown surface keys are logged and skipped; only the known key resolves")
     }
 
+    func testInvalidStatePresentationFailsClosedBeforeAnySurfaceIsReturned() throws {
+        let skinDir = skinsDir.appendingPathComponent("InvalidState")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "InvalidState",
+          "surfaces": {
+            "window.background": { "fill": { "kind": "color", "value": "#123456" } },
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "notAReactiveState": 1 },
+                  "marker": { "symbol": "TOO-LONG" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidState")) { error in
+            guard case SkinLoadError.parseFailure(let reason) = error else {
+                return XCTFail("Expected fail-closed parseFailure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("state"), reason)
+        }
+    }
+
     // MARK: - v1-only manifest (no surfaces block)
 
     func testV1OnlyManifestReturnsNilSurfaces() throws {

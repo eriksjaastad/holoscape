@@ -73,7 +73,7 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         let loaded = try engine.loadComposite(named: "MercuryDeck")
 
         let indicatorStates = try XCTUnwrap(loaded.surfaces?[.sidebarRowIndicator]?.states)
-        XCTAssertEqual(indicatorStates.map(\.name), ["needs-approval", "disconnected", "stale"])
+        XCTAssertEqual(indicatorStates.map(\.name), ["running", "needs-approval", "error", "stale"])
 
         let snap = ReactiveUniformSnapshot()
         let context = MainWindowController.buildSkinContext(overriding: loaded.surfaces, reactive: snap)
@@ -89,6 +89,27 @@ final class MercuryDeckIntegrationTests: XCTestCase {
         snap.applyPersistentChannelState(.init(kind: .stale, source: .brokerRegistry))
         assertColor(context.currentState(for: .sidebarRowIndicator), red: 0.663, green: 0.478, blue: 0.902)
         assertColor(context.currentState(for: .tabBarTabActive), red: 0.663, green: 0.478, blue: 0.902)
+    }
+
+    func testMercuryDeckDeclaresNonColorPresentationForRequiredStates() throws {
+        let loaded = try SkinEngine().loadComposite(named: "MercuryDeck")
+        let snapshot = ReactiveUniformSnapshot()
+        let context = MainWindowController.buildSkinContext(overriding: loaded.surfaces, reactive: snapshot)
+        let expected: [(PersistentChannelStateKind, String)] = [
+            (.running, "▷"),
+            (.needsApproval, "!"),
+            (.error, "×"),
+            (.stale, "◌"),
+        ]
+
+        for (kind, symbol) in expected {
+            snapshot.applyPersistentChannelState(.init(kind: kind, source: .agentAdapter))
+            let tab = context.currentState(for: .tabBarTabActive)
+            let indicator = context.currentState(for: .sidebarRowIndicator)
+            XCTAssertEqual(tab.marker?.symbol, symbol, kind.rawValue)
+            XCTAssertEqual(indicator.marker?.symbol, symbol, kind.rawValue)
+            XCTAssertGreaterThan(tab.border?.width ?? 0, 0, kind.rawValue)
+        }
     }
 
     func testPersistedMercuryDeckLaunchBuildsFullControllerHierarchy() throws {

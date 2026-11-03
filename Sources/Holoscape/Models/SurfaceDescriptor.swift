@@ -15,6 +15,7 @@ struct SurfaceDescriptor: Codable, Equatable, Sendable {
     var font: FontDescriptor?
     var text: TextDescriptor?
     var animation: AnimationDescriptor?
+    var marker: StateMarkerDescriptor?
     var states: [StateVariant]?
 }
 
@@ -171,6 +172,12 @@ struct TextDescriptor: Codable, Equatable, Sendable {
     var shadow: ShadowDescriptor?
 }
 
+/// Short non-color state mark rendered beside channel labels. Accessibility
+/// state remains owned by `PersistentChannelState`, never by skin text.
+struct StateMarkerDescriptor: Codable, Equatable, Sendable {
+    var symbol: String
+}
+
 // MARK: - Animation
 
 struct AnimationDescriptor: Codable, Equatable, Sendable {
@@ -199,6 +206,7 @@ struct StateVariant: Codable, Equatable, Sendable {
     var corner: CornerDescriptor?
     var animation: AnimationDescriptor?
     var text: TextDescriptor?
+    var marker: StateMarkerDescriptor?
 }
 
 /// Maps JSON match keys (e.g., "agentState") to operator-or-scalar values.

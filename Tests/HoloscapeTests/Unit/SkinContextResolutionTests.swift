@@ -187,6 +187,30 @@ final class SkinContextResolutionTests: XCTestCase {
         XCTAssertNotEqual(disconnected, stale)
     }
 
+    func testBuiltInStatePresentationDistinguishesRequiredStatesWithoutColor() throws {
+        let snapshot = ReactiveUniformSnapshot()
+        let context = SkinContext.builtInDefaults(reactive: snapshot)
+
+        let expected: [(PersistentChannelStateKind, String)] = [
+            (.running, "▶"),
+            (.needsApproval, "!"),
+            (.error, "×"),
+            (.stale, "◌"),
+        ]
+
+        for (kind, symbol) in expected {
+            snapshot.applyPersistentChannelState(.init(kind: kind, source: .agentAdapter))
+            let indicator = context.currentState(for: .sidebarRowIndicator)
+            let activeTab = context.currentState(for: .tabBarTabActive)
+
+            XCTAssertEqual(indicator.marker?.symbol, symbol, kind.rawValue)
+            XCTAssertEqual(activeTab.marker?.symbol, symbol, kind.rawValue)
+            XCTAssertGreaterThan(indicator.border?.width ?? 0, 0, kind.rawValue)
+        }
+
+        XCTAssertEqual(Set(expected.map(\.1)).count, expected.count)
+    }
+
     // MARK: - Operator evaluation
 
     func testEqualityOperator() {

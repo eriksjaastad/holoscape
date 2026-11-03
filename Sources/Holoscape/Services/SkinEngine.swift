@@ -1048,6 +1048,8 @@ class SkinEngine {
             throw SkinLoadError.notFound(name)
         }
 
+        try validateStatePresentations(in: manifest, skinName: name)
+
         // Images may throw SkinAssetError.invalidPath — surface as parseFailure
         // so callers have one error type to handle.
         let images: [String: NSImage]
@@ -1200,6 +1202,103 @@ class SkinEngine {
             chromeValidation: loadedChromeValidation,
             layout: manifest.layout
         )
+    }
+
+    /// State presentation is applied live to already-visible chrome. Reject a
+    /// malformed state block before loading assets or registering fonts so a
+    /// hot reload cannot install only the valid subset of a broken skin.
+    private func validateStatePresentations(in manifest: SkinDefinition, skinName: String) throws {
+        guard let surfaces = manifest.surfaces else { return }
+
+        for (surfaceKey, descriptor) in surfaces {
+            if let marker = descriptor.marker {
+                try validate(marker: marker, location: "\(surfaceKey).marker", skinName: skinName)
+            }
+            for (index, state) in (descriptor.states ?? []).enumerated() {
+                let location = "\(surfaceKey).states[\(index)]"
+                guard !state.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location): empty name")
+                }
+                try validate(match: state.match, location: location, skinName: skinName)
+                if let marker = state.marker {
+                    try validate(marker: marker, location: "\(location).marker", skinName: skinName)
+                }
+                if let fill = state.fill {
+                    try validate(fill: fill, location: "\(location).fill", skinName: skinName)
+                }
+                if let border = state.border {
+                    guard border.width.isFinite, border.width >= 0, NSColor(hex: border.color) != nil else {
+                        throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).border")
+                    }
+                }
+                if let text = state.text, NSColor(hex: text.color) == nil {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).text")
+                }
+            }
+        }
+    }
+
+    private func validate(marker: StateMarkerDescriptor, location: String, skinName: String) throws {
+        let trimmed = marker.symbol.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == marker.symbol,
+              (1...3).contains(marker.symbol.count),
+              marker.symbol.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            throw SkinLoadError.parseFailure("invalid state marker in '\(skinName)' at \(location)")
+        }
+    }
+
+    private func validate(fill: FillDescriptor, location: String, skinName: String) throws {
+        switch fill {
+        case .color(let color):
+            guard NSColor(hex: color) != nil else {
+                throw SkinLoadError.parseFailure("invalid state fill in '\(skinName)' at \(location)")
+            }
+        case .gradient(_, let stops):
+            guard stops.count >= 2,
+                  stops.allSatisfy({ $0.offset.isFinite && (0...1).contains($0.offset) && NSColor(hex: $0.color) != nil }) else {
+                throw SkinLoadError.parseFailure("invalid state gradient in '\(skinName)' at \(location)")
+            }
+        case .image:
+            break // Asset sandboxing and decode validation run in loadImages.
+        }
+    }
+
+    private func validate(match: MatchExpression, location: String, skinName: String) throws {
+        let scalarKeys: Set<String> = [
+            "agentState", "commandState", "channelConnectionState",
+            "notificationKind", "channelUnread", "channelIsActive",
+        ]
+        let timeKeys: Set<String> = [
+            "iTimeAgentStateChange", "iTimeCommandStart", "iTimeCommandEnd",
+            "iTimeNotification", "iTimeChannelUnread",
+        ]
+        let operators: Set<String> = ["$eq", "$ne", "$gt", "$gte", "$lt", "$lte"]
+
+        for (key, value) in match.conditions {
+            if scalarKeys.contains(key) {
+                guard validate(matchValue: value, allowedOperators: operators) else {
+                    throw SkinLoadError.parseFailure("invalid state match in '\(skinName)' at \(location).match.\(key)")
+                }
+                continue
+            }
+            if key == "timeSince", case .timeSince(let nested) = value,
+               !nested.isEmpty,
+               nested.allSatisfy({ timeKeys.contains($0.key) && validate(matchValue: $0.value, allowedOperators: operators) }) {
+                continue
+            }
+            throw SkinLoadError.parseFailure("invalid state match key in '\(skinName)' at \(location).match.\(key)")
+        }
+    }
+
+    private func validate(matchValue: MatchValue, allowedOperators: Set<String>) -> Bool {
+        switch matchValue {
+        case .scalar(let value):
+            return value.isFinite
+        case .operators(let values):
+            return !values.isEmpty && values.allSatisfy { allowedOperators.contains($0.key) && $0.value.isFinite }
+        case .timeSince:
+            return false
+        }
     }
 
     /// Amplify Task 9.4 — build `ResolvedDragRegion`s from the
