@@ -173,13 +173,13 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
                        "Unknown surface keys are logged and skipped; only the known key resolves")
     }
 
-    func testInvalidStatePresentationFailsClosedBeforeAnySurfaceIsReturned() throws {
-        let skinDir = skinsDir.appendingPathComponent("InvalidState")
+    func testUnknownStateMatchKeyFailsClosedBeforeAnySurfaceIsReturned() throws {
+        let skinDir = skinsDir.appendingPathComponent("InvalidStateMatch")
         try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
         let json = """
         {
           "version": "4.0",
-          "name": "InvalidState",
+          "name": "InvalidStateMatch",
           "surfaces": {
             "window.background": { "fill": { "kind": "color", "value": "#123456" } },
             "tabBar.tab.active": {
@@ -187,6 +187,37 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
                 {
                   "name": "running",
                   "match": { "notAReactiveState": 1 },
+                  "marker": { "symbol": "?" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidStateMatch")) { error in
+            guard case SkinLoadError.parseFailure(let reason) = error else {
+                return XCTFail("Expected fail-closed parseFailure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("state"), reason)
+        }
+    }
+
+    func testOverlengthStateMarkerFailsClosedIndependentlyOfMatchValidation() throws {
+        let skinDir = skinsDir.appendingPathComponent("InvalidStateMarker")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "InvalidStateMarker",
+          "surfaces": {
+            "window.background": { "fill": { "kind": "color", "value": "#123456" } },
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "channelConnectionState": 0 },
                   "marker": { "symbol": "TOO-LONG" }
                 }
               ]
@@ -196,11 +227,11 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         """
         try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
 
-        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidState")) { error in
+        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidStateMarker")) { error in
             guard case SkinLoadError.parseFailure(let reason) = error else {
                 return XCTFail("Expected fail-closed parseFailure, got \(error)")
             }
-            XCTAssertTrue(reason.contains("state"), reason)
+            XCTAssertTrue(reason.contains("marker"), reason)
         }
     }
 

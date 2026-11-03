@@ -290,6 +290,7 @@ final class TabBarViewSkinContextTests: XCTestCase {
 
     func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
         let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
         let channel = MockChannelController(type: .agentDirect, label: "Claude", state: .active)
         channel.persistentStateOverride = PersistentChannelState(
             kind: .needsApproval,
@@ -297,7 +298,12 @@ final class TabBarViewSkinContextTests: XCTestCase {
             reason: "Claude Code awaiting approval"
         )
 
-        view.updateTabs(channels: [channel], activeId: channel.channelId)
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            now: Date(),
+            staleThreshold: -1
+        )
 
         let button = try XCTUnwrap(view.subviews
             .compactMap { $0 as? NSScrollView }
@@ -305,8 +311,10 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .flatMap { $0.subviews }
             .compactMap { $0 as? NSButton }
             .first)
+        XCTAssertEqual(button.title, "! Claude")
         XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
         XCTAssertEqual(button.layer?.backgroundColor, NSColor(hex: "#4a391f")!.cgColor)
+        XCTAssertEqual(button.layer?.opacity, 1)
     }
 
     func testPerTabPersistentStatesRemainDistinctAcrossLiveSkinSwitch() throws {
