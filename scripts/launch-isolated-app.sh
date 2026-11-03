@@ -67,10 +67,14 @@ process_is_live() {
     local status
     if output="$(ps -p "$pid" -o pid= 2>"$CONFIG_ROOT/.ps-error")"; then
         rm -f "$CONFIG_ROOT/.ps-error"
-        [[ -n "$output" ]]
-        return
+        if [[ -n "$output" ]]; then
+            return 0
+        fi
+        echo "Process inspection returned no PID for live broker-owned process $pid" >&2
+        return 2
+    else
+        status=$?
     fi
-    status=$?
     if [[ "$status" -eq 1 && ! -s "$CONFIG_ROOT/.ps-error" ]]; then
         rm -f "$CONFIG_ROOT/.ps-error"
         return 1
