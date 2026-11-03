@@ -157,11 +157,140 @@ final class TabBarViewSkinContextTests: XCTestCase {
         XCTAssertFalse(button.title.contains("recreate session"), button.title)
         XCTAssertNil(button.toolTip)
         XCTAssertNil(button.accessibilityHelp(), "Recovered tab must not keep stale recovery instructions: \(button.accessibilityHelp() ?? "nil")")
-        XCTAssertEqual(button.accessibilityValue() as? String, "active")
+        XCTAssertEqual(button.accessibilityValue() as? String, "running")
+    }
+
+    func testStaleInteractionOutranksRoutineRunningAccessibility() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Long running", state: .active)
+
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            now: Date(),
+            staleThreshold: -1
+        )
+
+        let button = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(button.accessibilityValue() as? String, "stale-interaction")
+    }
+
+    func testDurableErrorAndStaleOutrankLingeringPermissionNotification() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .agentDirect, label: "Failed", state: .active)
+        channel.persistentStateOverride = PersistentChannelState(
+            kind: .error,
+            source: .agentAdapter,
+            reason: "command failed"
+        )
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let lingeringPermission = [channel.channelId: "permission_prompt"]
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            notifications: lingeringPermission
+        )
+
+        var tabButton = try button(for: channel.channelId, in: view)
+        XCTAssertTrue(tabButton.title.hasPrefix("× "), tabButton.title)
+        XCTAssertEqual(tabButton.accessibilityValue() as? String, "error: command failed")
+
+        channel.persistentStateOverride = PersistentChannelState(
+            kind: .stale,
+            source: .brokerRegistry,
+            reason: "session missing"
+        )
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            notifications: lingeringPermission
+        )
+
+        tabButton = try button(for: channel.channelId, in: view)
+        XCTAssertTrue(tabButton.title.hasPrefix("◌ "), tabButton.title)
+        XCTAssertEqual(tabButton.accessibilityValue() as? String, "stale: session missing")
+    }
+
+    func testDurableErrorAndStaleOutrankRoutineStaleInteractionPresentation() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+        let channel = MockChannelController(type: .agentDirect, label: "Failed", state: .active)
+
+        let states: [(PersistentChannelState, String, String)] = [
+            (.init(kind: .error, source: .agentAdapter, reason: "command failed"), "× Failed", "error: command failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), "◌ Failed", "stale: session missing"),
+        ]
+        for (persistentState, title, accessibilityValue) in states {
+            channel.persistentStateOverride = persistentState
+            view.updateTabs(
+                channels: [channel],
+                activeId: nil,
+                now: Date(),
+                staleThreshold: -1
+            )
+
+            let tabButton = try button(for: channel.channelId, in: view)
+            XCTAssertEqual(tabButton.title, title)
+            XCTAssertEqual(tabButton.accessibilityTitle(), "Failed")
+            XCTAssertEqual(tabButton.accessibilityValue() as? String, accessibilityValue)
+            XCTAssertEqual(tabButton.layer?.opacity, 1)
+        }
+    }
+
+    func testSkinMarkerIsVisibleButExcludedFromAccessibilityTitle() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)
+        channel.persistentStateOverride = PersistentChannelState(kind: .running, source: .processLifecycle)
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let button = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(button.title, "▶ Workspace")
+        XCTAssertEqual(button.accessibilityTitle(), "Workspace")
+        XCTAssertEqual(button.accessibilityValue() as? String, "running")
+    }
+
+    func testLiveSkinMarkerChangeRelayoutsExistingTabs() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)
+        channel.persistentStateOverride = PersistentChannelState(kind: .running, source: .processLifecycle)
+        view.skinContext = contextWithActiveMarker("I")
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+
+        let initialButton = try button(for: channel.channelId, in: view)
+        let initialWidth = initialButton.frame.width
+
+        view.skinContext = contextWithActiveMarker("WWW")
+
+        let updatedButton = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(updatedButton.title, "WWW Workspace")
+        XCTAssertGreaterThan(updatedButton.frame.width, initialWidth,
+                             "A live marker change must resize the existing tab to fit its new title")
+    }
+
+    func testChangingToSurfaceAbsentFromPartialSkinRestoresDefaultFont() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        let channel = MockChannelController(type: .shell, label: "Workspace", state: .active)
+        let snapshot = ReactiveUniformSnapshot()
+        var active = SkinContext.defaultSurface(for: .tabBarTabActive)
+        active.font = NSFont.systemFont(ofSize: 24, weight: .black)
+        view.skinContext = SkinContext(surfaces: [.tabBarTabActive: active], reactive: snapshot)
+
+        view.updateTabs(channels: [channel], activeId: channel.channelId)
+        let button = try button(for: channel.channelId, in: view)
+        XCTAssertEqual(button.font?.pointSize, 24)
+
+        view.updateTabs(channels: [channel], activeId: nil)
+
+        XCTAssertEqual(button.font?.pointSize, SkinContext.defaultSurface(for: .tabBarTabNormal).font?.pointSize)
+        XCTAssertNotEqual(button.font?.pointSize, 24)
     }
 
     func testPersistentNeedsApprovalPaintsActiveTopTabAsPermission() throws {
         let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: 32))
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
         let channel = MockChannelController(type: .agentDirect, label: "Claude", state: .active)
         channel.persistentStateOverride = PersistentChannelState(
             kind: .needsApproval,
@@ -169,7 +298,12 @@ final class TabBarViewSkinContextTests: XCTestCase {
             reason: "Claude Code awaiting approval"
         )
 
-        view.updateTabs(channels: [channel], activeId: channel.channelId)
+        view.updateTabs(
+            channels: [channel],
+            activeId: channel.channelId,
+            now: Date(),
+            staleThreshold: -1
+        )
 
         let button = try XCTUnwrap(view.subviews
             .compactMap { $0 as? NSScrollView }
@@ -177,8 +311,51 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .flatMap { $0.subviews }
             .compactMap { $0 as? NSButton }
             .first)
+        XCTAssertEqual(button.title, "! Claude")
         XCTAssertEqual(button.accessibilityValue() as? String, "needs-approval")
         XCTAssertEqual(button.layer?.backgroundColor, NSColor(hex: "#4a391f")!.cgColor)
+        XCTAssertEqual(button.layer?.opacity, 1)
+    }
+
+    func testPerTabPersistentStatesRemainDistinctAcrossLiveSkinSwitch() throws {
+        let view = TabBarView(frame: NSRect(x: 0, y: 0, width: 700, height: 32))
+        let states: [(PersistentChannelStateKind, String, String)] = [
+            (.running, "▶", "running"),
+            (.needsApproval, "!", "needs-approval"),
+            (.error, "×", "error: failed"),
+            (.stale, "◌", "stale: missing"),
+        ]
+        let channels = states.enumerated().map { index, item -> MockChannelController in
+            let channel = MockChannelController(type: .agentDirect, label: "Agent \(index + 1)", state: item.0 == .stale ? .stale : .active)
+            channel.persistentStateOverride = PersistentChannelState(
+                kind: item.0,
+                source: .agentAdapter,
+                reason: item.0 == .error ? "failed" : item.0 == .stale ? "missing" : nil
+            )
+            return channel
+        }
+
+        view.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+        view.updateTabs(channels: channels, activeId: channels[0].channelId)
+
+        for (channel, expected) in zip(channels, states) {
+            let button = try button(for: channel.channelId, in: view)
+            XCTAssertTrue(button.title.hasPrefix(expected.1 + " "), button.title)
+            XCTAssertEqual(button.accessibilityValue() as? String, expected.2)
+        }
+
+        let mercury = try SkinEngine().loadComposite(named: "MercuryDeck")
+        view.skinContext = MainWindowController.buildSkinContext(
+            overriding: mercury.surfaces,
+            reactive: ReactiveUniformSnapshot()
+        )
+
+        let mercuryMarkers = ["▷", "!", "×", "◌"]
+        for ((channel, expected), marker) in zip(zip(channels, states), mercuryMarkers) {
+            let button = try button(for: channel.channelId, in: view)
+            XCTAssertTrue(button.title.hasPrefix(marker + " "), button.title)
+            XCTAssertEqual(button.accessibilityValue() as? String, expected.2)
+        }
     }
 
     func testTabTitleIncludesAgentIdentityIndicatorPrefix() throws {
@@ -241,6 +418,23 @@ final class TabBarViewSkinContextTests: XCTestCase {
             .compactMap { $0 as? NSButton }
         let button = try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
         return button.title
+    }
+
+    private func button(for channelId: UUID, in view: TabBarView) throws -> NSButton {
+        let buttons = view.subviews
+            .compactMap { $0 as? NSScrollView }
+            .compactMap { $0.documentView }
+            .flatMap { $0.subviews }
+            .compactMap { $0 as? NSButton }
+        return try XCTUnwrap(buttons.first { $0.identifier?.rawValue == channelId.uuidString })
+    }
+
+    private func contextWithActiveMarker(_ symbol: String) -> SkinContext {
+        let snapshot = ReactiveUniformSnapshot()
+        var surfaces = SkinContext.builtInDefaults(reactive: snapshot).allResolvedSurfacesForTesting
+        surfaces[.tabBarTabActive]?.marker = StateMarkerDescriptor(symbol: symbol)
+        surfaces[.tabBarTabActive]?.states = []
+        return SkinContext(surfaces: surfaces, reactive: snapshot)
     }
 }
 

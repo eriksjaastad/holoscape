@@ -16,6 +16,34 @@ import os
 /// provides sub-microsecond acquire/release for uncontended cases — fine
 /// for state that changes on event transitions, not per frame.
 final class ReactiveUniformSnapshot: @unchecked Sendable {
+    enum MatchKey: String, CaseIterable {
+        case agentState
+        case previousAgentState
+        case commandState
+        case previousCommandState
+        case lastCommandExitCode
+        case channelId
+        case channelIsActive
+        case channelUnread
+        case channelConnectionState
+        case notificationKind
+        case outputEventCount
+        case spriteState
+    }
+
+    enum TimestampName: String, CaseIterable {
+        case agentStateChange = "iTimeAgentStateChange"
+        case lastOutput = "iTimeLastOutput"
+        case lastNotification = "iTimeLastNotification"
+        case commandStart = "iTimeCommandStart"
+        case commandEnd = "iTimeCommandEnd"
+    }
+
+    /// These sets are derived from the same typed identifiers consumed by the
+    /// readers below, so loader validation cannot admit a key the runtime drops.
+    static let supportedMatchKeys = Set(MatchKey.allCases.map(\.rawValue))
+    static let supportedTimestampNames = Set(TimestampName.allCases.map(\.rawValue))
+
     // MARK: - Agent state
     var agentState: Int32 { lock.withLock { _agentState } }
     var previousAgentState: Int32 { lock.withLock { _previousAgentState } }
@@ -197,14 +225,14 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     /// Read a Double-valued field by its GLSL uniform name. Used by the
     /// `timeSince` match operator.
     func timestamp(named name: String) -> Double? {
-        lock.withLock {
-            switch name {
-            case "iTimeAgentStateChange": return _timeAgentStateChange
-            case "iTimeLastOutput": return _timeLastOutput
-            case "iTimeLastNotification": return _timeLastNotification
-            case "iTimeCommandStart": return _timeCommandStart
-            case "iTimeCommandEnd": return _timeCommandEnd
-            default: return nil
+        guard let timestamp = TimestampName(rawValue: name) else { return nil }
+        return lock.withLock {
+            switch timestamp {
+            case .agentStateChange: return _timeAgentStateChange
+            case .lastOutput: return _timeLastOutput
+            case .lastNotification: return _timeLastNotification
+            case .commandStart: return _timeCommandStart
+            case .commandEnd: return _timeCommandEnd
             }
         }
     }
@@ -213,21 +241,21 @@ final class ReactiveUniformSnapshot: @unchecked Sendable {
     /// prefix dropped). Returns nil for unknown keys — the evaluator
     /// logs and skips unknown match conditions.
     func intValue(forMatchKey key: String) -> Int32? {
-        lock.withLock {
-            switch key {
-            case "agentState": return _agentState
-            case "previousAgentState": return _previousAgentState
-            case "commandState": return _commandState
-            case "previousCommandState": return _previousCommandState
-            case "lastCommandExitCode": return _lastCommandExitCode
-            case "channelId": return _channelId
-            case "channelIsActive": return _channelIsActive
-            case "channelUnread": return _channelUnread
-            case "channelConnectionState": return _channelConnectionState
-            case "notificationKind": return _notificationKind
-            case "outputEventCount": return _outputEventCount
-            case "spriteState": return _spriteState
-            default: return nil
+        guard let matchKey = MatchKey(rawValue: key) else { return nil }
+        return lock.withLock {
+            switch matchKey {
+            case .agentState: return _agentState
+            case .previousAgentState: return _previousAgentState
+            case .commandState: return _commandState
+            case .previousCommandState: return _previousCommandState
+            case .lastCommandExitCode: return _lastCommandExitCode
+            case .channelId: return _channelId
+            case .channelIsActive: return _channelIsActive
+            case .channelUnread: return _channelUnread
+            case .channelConnectionState: return _channelConnectionState
+            case .notificationKind: return _notificationKind
+            case .outputEventCount: return _outputEventCount
+            case .spriteState: return _spriteState
             }
         }
     }

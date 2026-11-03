@@ -118,17 +118,34 @@
     },
     "tabBar.tab.active": {
       "fill": { "kind": "color", "value": "#ffb347" },
+      "border": { "color": "#67d9ff", "width": 1.0 },
       "corner": 4,
       "states": [
         {
+          "name": "running",
+          "match": { "agentState": 1, "channelConnectionState": 0 },
+          "border": { "color": "#67d9ff", "width": 1.0 },
+          "marker": { "symbol": "▷" }
+        },
+        {
+          "name": "needs-approval",
+          "match": { "channelConnectionState": 1 },
+          "border": { "color": "#ffb347", "width": 2.0 },
+          "marker": { "symbol": "!" }
+        },
+        {
           "name": "error",
           "match": { "channelConnectionState": 2 },
-          "fill": { "kind": "color", "value": "#d96f5f" }
+          "fill": { "kind": "color", "value": "#d96f5f" },
+          "border": { "color": "#ffd4ca", "width": 2.0 },
+          "marker": { "symbol": "×" }
         },
         {
           "name": "stale",
           "match": { "channelConnectionState": 3 },
-          "fill": { "kind": "color", "value": "#a97ae6" }
+          "fill": { "kind": "color", "value": "#a97ae6" },
+          "border": { "color": "#e0c7ff", "width": 1.0 },
+          "marker": { "symbol": "◌" }
         }
       ]
     },
@@ -137,19 +154,31 @@
       "corner": 4,
       "states": [
         {
+          "name": "running",
+          "match": { "agentState": 1, "channelConnectionState": 0 },
+          "border": { "color": "#67d9ff", "width": 1.0 },
+          "marker": { "symbol": "▷" }
+        },
+        {
           "name": "needs-approval",
           "match": { "channelConnectionState": 1 },
-          "fill": { "kind": "color", "value": "#5b4630" }
+          "fill": { "kind": "color", "value": "#5b4630" },
+          "border": { "color": "#ffb347", "width": 2.0 },
+          "marker": { "symbol": "!" }
         },
         {
           "name": "error",
           "match": { "channelConnectionState": 2 },
-          "fill": { "kind": "color", "value": "#5a3734" }
+          "fill": { "kind": "color", "value": "#5a3734" },
+          "border": { "color": "#d96f5f", "width": 2.0 },
+          "marker": { "symbol": "×" }
         },
         {
           "name": "stale",
           "match": { "channelConnectionState": 3 },
-          "fill": { "kind": "color", "value": "#4a3f5f" }
+          "fill": { "kind": "color", "value": "#4a3f5f" },
+          "border": { "color": "#a97ae6", "width": 1.0 },
+          "marker": { "symbol": "◌" }
         }
       ]
     },
@@ -158,19 +187,31 @@
       "corner": 4,
       "states": [
         {
+          "name": "running",
+          "match": { "agentState": 1, "channelConnectionState": 0 },
+          "border": { "color": "#67d9ff", "width": 1.0 },
+          "marker": { "symbol": "▷" }
+        },
+        {
           "name": "needs-approval",
           "match": { "channelConnectionState": 1 },
-          "fill": { "kind": "color", "value": "#5b4630" }
+          "fill": { "kind": "color", "value": "#5b4630" },
+          "border": { "color": "#ffb347", "width": 2.0 },
+          "marker": { "symbol": "!" }
         },
         {
           "name": "error",
           "match": { "channelConnectionState": 2 },
-          "fill": { "kind": "color", "value": "#5a3734" }
+          "fill": { "kind": "color", "value": "#5a3734" },
+          "border": { "color": "#d96f5f", "width": 2.0 },
+          "marker": { "symbol": "×" }
         },
         {
           "name": "stale",
           "match": { "channelConnectionState": 3 },
-          "fill": { "kind": "color", "value": "#4a3f5f" }
+          "fill": { "kind": "color", "value": "#4a3f5f" },
+          "border": { "color": "#a97ae6", "width": 1.0 },
+          "marker": { "symbol": "◌" }
         }
       ]
     },
@@ -178,25 +219,65 @@
       "fill": { "kind": "color", "value": "#171c20" }
     },
     "sidebar.row.selected": {
-      "fill": { "kind": "color", "value": "#3b4850" }
-    },
-    "sidebar.row.indicator": {
-      "fill": { "kind": "color", "value": "#67d9ff" },
+      "fill": { "kind": "color", "value": "#3b4850" },
       "states": [
+        {
+          "name": "running",
+          "match": { "agentState": 1, "channelConnectionState": 0 },
+          "border": { "color": "#67d9ff", "width": 1.0 },
+          "marker": { "symbol": "▷" }
+        },
         {
           "name": "needs-approval",
           "match": { "channelConnectionState": 1 },
-          "fill": { "kind": "color", "value": "#ffb347" }
+          "border": { "color": "#ffb347", "width": 2.0 },
+          "marker": { "symbol": "!" }
         },
         {
-          "name": "disconnected",
+          "name": "error",
           "match": { "channelConnectionState": 2 },
-          "fill": { "kind": "color", "value": "#d96f5f" }
+          "border": { "color": "#d96f5f", "width": 2.0 },
+          "marker": { "symbol": "×" }
         },
         {
           "name": "stale",
           "match": { "channelConnectionState": 3 },
-          "fill": { "kind": "color", "value": "#a97ae6" }
+          "border": { "color": "#a97ae6", "width": 1.0 },
+          "marker": { "symbol": "◌" }
+        }
+      ]
+    },
+    "sidebar.row.indicator": {
+      "fill": { "kind": "color", "value": "#67d9ff" },
+      "border": { "color": "#a9edff", "width": 1.0 },
+      "marker": { "symbol": "•" },
+      "states": [
+        {
+          "name": "running",
+          "match": { "agentState": 1, "channelConnectionState": 0 },
+          "border": { "color": "#a9edff", "width": 1.0 },
+          "marker": { "symbol": "▷" }
+        },
+        {
+          "name": "needs-approval",
+          "match": { "channelConnectionState": 1 },
+          "fill": { "kind": "color", "value": "#ffb347" },
+          "border": { "color": "#ffe0a5", "width": 1.0 },
+          "marker": { "symbol": "!" }
+        },
+        {
+          "name": "error",
+          "match": { "channelConnectionState": 2 },
+          "fill": { "kind": "color", "value": "#d96f5f" },
+          "border": { "color": "#ffd4ca", "width": 1.0 },
+          "marker": { "symbol": "×" }
+        },
+        {
+          "name": "stale",
+          "match": { "channelConnectionState": 3 },
+          "fill": { "kind": "color", "value": "#a97ae6" },
+          "border": { "color": "#e0c7ff", "width": 1.0 },
+          "marker": { "symbol": "◌" }
         }
       ]
     },

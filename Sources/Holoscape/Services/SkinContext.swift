@@ -27,6 +27,7 @@ final class SkinContext {
         var font: NSFont?
         var text: ResolvedText
         var animation: ResolvedAnimation?
+        var marker: StateMarkerDescriptor? = nil
         /// State variants evaluated by `currentState(for:)`. The array is
         /// preserved verbatim from the manifest; evaluation reads from
         /// the reactive snapshot and applies overrides in CSS-cascade
@@ -90,6 +91,7 @@ final class SkinContext {
     let reactive: ReactiveUniformSnapshot
     let fontRegistry: [String: CGFont]
     let imageCache: [String: NSImage]
+    let ninepatches: [String: NinepatchSidecar]
 
     // MARK: - Construction
 
@@ -97,12 +99,14 @@ final class SkinContext {
         surfaces: [SurfaceKey: ResolvedSurface],
         reactive: ReactiveUniformSnapshot,
         fontRegistry: [String: CGFont] = [:],
-        imageCache: [String: NSImage] = [:]
+        imageCache: [String: NSImage] = [:],
+        ninepatches: [String: NinepatchSidecar] = [:]
     ) {
         self.surfaces = surfaces
         self.reactive = reactive
         self.fontRegistry = fontRegistry
         self.imageCache = imageCache
+        self.ninepatches = ninepatches
     }
 
     /// Build a SkinContext whose surfaces all use the built-in Default visual baseline.
@@ -435,16 +439,11 @@ final class SkinContext {
 
     private func applyVariant(_ variant: StateVariant, to resolved: inout ResolvedSurface) {
         if let fill = variant.fill {
-            // Ninepatch limitation: state-variant image fills with tile mode
-            // `ninepatch` get a nil sidecar here because SkinContext doesn't
-            // currently store the ninepatches map alongside imageCache. No
-            // shipped skin uses a state-variant image fill yet; if one does,
-            // add a `ninepatches: [String: NinepatchSidecar]` property on
-            // SkinContext alongside `imageCache` and thread it through at
-            // both the init-time wiring (SkinEngine.loadComposite) and this
-            // call site. Until then, the tile mode falls back to stretch
-            // for state-variant image fills.
-            if let converted = Self.convertFill(fill, imageCache: imageCache) {
+            if let converted = Self.convertFill(
+                fill,
+                imageCache: imageCache,
+                ninepatches: ninepatches
+            ) {
                 resolved.fill = converted
             }
         }
@@ -459,6 +458,9 @@ final class SkinContext {
         }
         if let text = variant.text, let converted = Self.convertText(text) {
             resolved.text = converted
+        }
+        if let marker = variant.marker {
+            resolved.marker = marker
         }
     }
 
@@ -577,6 +579,9 @@ final class SkinContext {
         }
         if let animation = descriptor.animation {
             base.animation = convertAnimation(animation)
+        }
+        if let marker = descriptor.marker {
+            base.marker = marker
         }
         if let states = descriptor.states {
             base.states = states
@@ -851,6 +856,7 @@ final class SkinContext {
             font: defaultFont(for: key),
             text: text,
             animation: defaultAnimation(for: key),
+            marker: defaultMarker(for: key),
             states: states
         )
     }
@@ -945,15 +951,14 @@ final class SkinContext {
         }
     }
 
+    private static func defaultMarker(for key: SurfaceKey) -> StateMarkerDescriptor? {
+        key == .sidebarRowIndicator ? StateMarkerDescriptor(symbol: "•") : nil
+    }
+
     // Built-in Default state variants are shared with the standalone fallback.
-    /// notification and connection-state colors so `SidebarTabEntry`
-    /// can write `notificationKind`, `channelUnread`, and
-    /// `channelConnectionState` into its own snapshot and let state
-    /// resolution produce the right color.
-    ///
-    /// Notification kind mapping (matches design.md Requirement 12):
-    ///   0 = none, 1 = info (idle prompt), 2 = warn (permission prompt),
-    ///   3 = error (reserved).
+    /// Notification, durable connection truth, border emphasis, and marker
+    /// symbols resolve from each view's snapshot. Symbols and border weights
+    /// keep the required states distinct without depending on color alone.
     private static func defaultStates(for key: SurfaceKey) -> [StateVariant] {
         switch key {
         case .sidebarRowNormal:
@@ -980,41 +985,90 @@ final class SkinContext {
                         "notificationKind": .scalar(2),
                     ]),
                     fill: .color("#4a391f"),
-                    text: TextDescriptor(color: "#f0c674", shadow: nil)
+                    border: BorderDescriptor(color: "#f0c674", width: 2),
+                    text: TextDescriptor(color: "#f0c674", shadow: nil),
+                    marker: StateMarkerDescriptor(symbol: "!")
                 ),
-            ]
+            ] + requiredChannelStateVariants()
+        case .sidebarRowSelected, .tabBarTabActive, .tabBarTabNormal,
+             .tabBarTabIdle, .tabBarTabPermission:
+            return requiredChannelStateVariants()
         case .sidebarRowIndicator:
-            // Base fill is systemGreen (active/usable). No need for an
-            // "active" variant — the absence of a match falls through to
-            // the base, which IS the active color. Variants paint the three
-            // non-default connection states: 1 = needs-approval,
-            // 2 = error/disconnected, 3 = stale.
             return [
+                StateVariant(
+                    name: "running",
+                    match: MatchExpression(conditions: [
+                        "agentState": .scalar(1),
+                        "channelConnectionState": .scalar(0),
+                    ]),
+                    border: BorderDescriptor(color: "#4fd1a5", width: 1),
+                    marker: StateMarkerDescriptor(symbol: "▶")
+                ),
                 StateVariant(
                     name: "needs-approval",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(1),
                     ]),
-                    fill: .color("#f0c674")  // approximates NSColor.systemYellow
+                    fill: .color("#f0c674"),
+                    border: BorderDescriptor(color: "#f0c674", width: 1),
+                    marker: StateMarkerDescriptor(symbol: "!")
                 ),
                 StateVariant(
-                    name: "disconnected",
+                    name: "error",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(2),
                     ]),
-                    fill: .color("#ff6b6b")  // approximates NSColor.systemRed
+                    fill: .color("#ff6b6b"),
+                    border: BorderDescriptor(color: "#ff6b6b", width: 1),
+                    marker: StateMarkerDescriptor(symbol: "×")
                 ),
                 StateVariant(
                     name: "stale",
                     match: MatchExpression(conditions: [
                         "channelConnectionState": .scalar(3),
                     ]),
-                    fill: .color("#b49cff")
+                    fill: .color("#b49cff"),
+                    border: BorderDescriptor(color: "#b49cff", width: 1),
+                    marker: StateMarkerDescriptor(symbol: "◌")
                 ),
             ]
         default:
             return []
         }
+    }
+
+    private static func requiredChannelStateVariants() -> [StateVariant] {
+        [
+            StateVariant(
+                name: "running",
+                match: MatchExpression(conditions: [
+                    "agentState": .scalar(1),
+                    "channelConnectionState": .scalar(0),
+                ]),
+                border: BorderDescriptor(color: "#4fd1a5", width: 1),
+                marker: StateMarkerDescriptor(symbol: "▶")
+            ),
+            StateVariant(
+                name: "needs-approval",
+                match: MatchExpression(conditions: ["channelConnectionState": .scalar(1)]),
+                fill: .color("#4a391f"),
+                border: BorderDescriptor(color: "#f0c674", width: 2),
+                text: TextDescriptor(color: "#f0c674", shadow: nil),
+                marker: StateMarkerDescriptor(symbol: "!")
+            ),
+            StateVariant(
+                name: "error",
+                match: MatchExpression(conditions: ["channelConnectionState": .scalar(2)]),
+                border: BorderDescriptor(color: "#ff6b6b", width: 2),
+                marker: StateMarkerDescriptor(symbol: "×")
+            ),
+            StateVariant(
+                name: "stale",
+                match: MatchExpression(conditions: ["channelConnectionState": .scalar(3)]),
+                border: BorderDescriptor(color: "#b49cff", width: 1),
+                marker: StateMarkerDescriptor(symbol: "◌")
+            ),
+        ]
     }
 }
 

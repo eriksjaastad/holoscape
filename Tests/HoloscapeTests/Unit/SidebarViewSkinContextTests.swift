@@ -240,6 +240,102 @@ final class SidebarViewSkinContextTests: XCTestCase {
         XCTAssertEqual(entry.accessibilityValue() as? String, "stale: broker session unavailable")
     }
 
+    func testApprovalOutranksStaleInteractionAccessibility() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        entry.configure(
+            label: "Codex",
+            hasUnread: false,
+            state: .active,
+            persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+            isActive: false,
+            notificationType: "permission_prompt",
+            hasStaleInteraction: true
+        )
+
+        XCTAssertEqual(entry.statusTextForTesting, "Approval")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "needs-approval")
+        XCTAssertEqual(entry.layer?.opacity, 1)
+    }
+
+    func testDurableErrorAndStaleOutrankRoutineStaleInteractionPresentation() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 220, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let states: [(PersistentChannelState, ChannelState, String, String)] = [
+            (.init(kind: .error, source: .brokerRegistry, reason: "command failed"), .active, "command failed", "error: command failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), .stale, "session missing", "stale: session missing"),
+        ]
+        for (persistentState, runtimeState, status, accessibilityValue) in states {
+            entry.configure(
+                label: "Codex",
+                hasUnread: false,
+                state: runtimeState,
+                persistentState: persistentState,
+                isActive: false,
+                hasStaleInteraction: true
+            )
+
+            XCTAssertEqual(entry.statusTextForTesting, status)
+            XCTAssertEqual(entry.accessibilityValue() as? String, accessibilityValue)
+            XCTAssertEqual(entry.layer?.opacity, 1)
+        }
+    }
+
+    func testAcceptedOneToThreeCharacterStateMarkersFitCompactSidebarIndicator() throws {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
+        let snapshot = ReactiveUniformSnapshot()
+
+        for symbol in ["W", "WW", "WWW"] {
+            var surfaces = SkinContext.builtInDefaults(reactive: snapshot).allResolvedSurfacesForTesting
+            surfaces[.sidebarRowIndicator]?.marker = StateMarkerDescriptor(symbol: symbol)
+            surfaces[.sidebarRowIndicator]?.states = []
+            entry.skinContext = SkinContext(surfaces: surfaces, reactive: snapshot)
+
+            entry.configure(
+                label: "Workspace",
+                hasUnread: false,
+                state: .active,
+                persistentState: PersistentChannelState(kind: .running, source: .processLifecycle),
+                isActive: false
+            )
+            entry.layoutSubtreeIfNeeded()
+
+            let marker = try XCTUnwrap(entry.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == symbol })
+            XCTAssertGreaterThanOrEqual(marker.frame.width, marker.intrinsicContentSize.width - 1, symbol)
+            XCTAssertLessThanOrEqual(marker.frame.maxX, entry.bounds.maxX, symbol)
+        }
+    }
+
+    func testRequiredPersistentStatesUpdateMarkerStatusAndAccessibilityLive() {
+        let entry = SidebarTabEntry(frame: NSRect(x: 0, y: 0, width: 167, height: 48))
+        entry.skinContext = SkinContext.builtInDefaults(reactive: ReactiveUniformSnapshot())
+
+        let states: [(PersistentChannelState, String, String, String)] = [
+            (.init(kind: .running, source: .processLifecycle), "▶", "Running", "running"),
+            (.init(kind: .needsApproval, source: .agentAdapter), "!", "Approval", "needs-approval"),
+            (.init(kind: .error, source: .brokerRegistry, reason: "host failed"), "×", "host failed", "error: host failed"),
+            (.init(kind: .stale, source: .brokerRegistry, reason: "session missing"), "◌", "session missing", "stale: session missing"),
+        ]
+
+        for (state, marker, status, accessibilityValue) in states {
+            entry.configure(
+                label: "Workspace",
+                hasUnread: false,
+                state: state.kind == .stale ? .stale : .active,
+                persistentState: state,
+                isActive: true
+            )
+            entry.layoutSubtreeIfNeeded()
+
+            XCTAssertEqual(entry.stateMarkerForTesting, marker, state.kind.rawValue)
+            XCTAssertEqual(entry.statusTextForTesting, status, state.kind.rawValue)
+            XCTAssertEqual(entry.accessibilityValue() as? String, accessibilityValue, state.kind.rawValue)
+            XCTAssertLessThanOrEqual(entry.stateMarkerFrameForTesting.maxX, entry.bounds.maxX)
+        }
+    }
+
     // MARK: - Unread regression guard
 
     /// Unread state flows through a `channelUnread: { $gte: 1 }` state
@@ -319,7 +415,7 @@ final class SidebarViewSkinContextTests: XCTestCase {
             entry.accessibilityHelp()?.contains("Broker host is unavailable") == true,
             "Recovered row must clear stale recovery instructions: \(entry.accessibilityHelp() ?? "nil")"
         )
-        XCTAssertEqual(entry.accessibilityValue() as? String, "active")
+        XCTAssertEqual(entry.accessibilityValue() as? String, "running")
     }
 
     // MARK: - Helpers

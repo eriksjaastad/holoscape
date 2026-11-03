@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Holoscape
 
@@ -178,6 +179,25 @@ final class HotReloadTests: XCTestCase {
         wait(for: [noFire], timeout: 0.5)
     }
 
+    func testControllerReloadCarriesStateImageAndNinepatchIntoLiveContext() throws {
+        try writeStateImageSkin()
+        _ = NSApplication.shared
+
+        let configService = ConfigService(configDir: tempDir)
+        let channelManager = ChannelManager(configService: configService)
+        let controller = MainWindowController(channelManager: channelManager, configService: configService)
+
+        controller.reloadSkin(named: "TestSkin")
+        controller.reactiveSnapshot.setChannelConnectionState(0)
+
+        guard case .image(_, let tile, let ninepatch, _) = controller.skinContext
+            .currentState(for: .tabBarTabActive).fill else {
+            return XCTFail("Controller reload must retain validated state image assets in the live context")
+        }
+        XCTAssertEqual(tile, .ninepatch)
+        XCTAssertEqual(ninepatch, NinepatchSidecar(stretchX: [0, 1], stretchY: [0, 1]))
+    }
+
     // MARK: - Helpers
 
     /// nonisolated so `setUpWithError` (non-actor-isolated) can call it.
@@ -200,6 +220,44 @@ final class HotReloadTests: XCTestCase {
     /// `skinDir` property on hand.
     private func writeSkinJson(windowColor: String) throws {
         try writeSkinJson(windowColor: windowColor, to: skinDir)
+    }
+
+    private func writeStateImageSkin() throws {
+        let json = """
+        {
+          "version": "4.0",
+          "name": "TestSkin",
+          "surfaces": {
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "channelConnectionState": 0 },
+                  "fill": { "kind": "image", "path": "state.png", "tile": "ninepatch" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+        try writePNG(to: skinDir.appendingPathComponent("state.png"))
+        try Data(#"{"stretchX":[0,1],"stretchY":[0,1]}"#.utf8)
+            .write(to: skinDir.appendingPathComponent("state.ninepatch.json"))
+    }
+
+    private func writePNG(to url: URL) throws {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "HotReloadTests", code: 1)
+        }
+        try png.write(to: url)
     }
 }
 

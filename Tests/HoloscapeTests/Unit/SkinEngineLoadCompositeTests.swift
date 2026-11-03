@@ -146,7 +146,16 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
           "name": "ForwardCompat",
           "surfaces": {
             "window.background":        { "fill": { "kind": "color", "value": "#123456" } },
-            "future.surface.from.v99":  { "fill": { "kind": "color", "value": "#abcdef" } }
+            "future.surface.from.v99":  {
+              "fill": { "kind": "color", "value": "#abcdef" },
+              "states": [
+                {
+                  "name": "future-state",
+                  "match": { "futureReactiveUniform": 42 },
+                  "marker": { "symbol": "?" }
+                }
+              ]
+            }
           }
         }
         """
@@ -162,6 +171,231 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         XCTAssertNotNil(surfaces[.windowBackground])
         XCTAssertEqual(surfaces.count, 1,
                        "Unknown surface keys are logged and skipped; only the known key resolves")
+    }
+
+    func testUnknownStateMatchKeyFailsClosedBeforeAnySurfaceIsReturned() throws {
+        let skinDir = skinsDir.appendingPathComponent("InvalidStateMatch")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "InvalidStateMatch",
+          "surfaces": {
+            "window.background": { "fill": { "kind": "color", "value": "#123456" } },
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "notAReactiveState": 1 },
+                  "marker": { "symbol": "?" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidStateMatch")) { error in
+            guard case SkinLoadError.parseFailure(let reason) = error else {
+                return XCTFail("Expected fail-closed parseFailure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("state"), reason)
+        }
+    }
+
+    func testOverlengthStateMarkerFailsClosedIndependentlyOfMatchValidation() throws {
+        let skinDir = skinsDir.appendingPathComponent("InvalidStateMarker")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "InvalidStateMarker",
+          "surfaces": {
+            "window.background": { "fill": { "kind": "color", "value": "#123456" } },
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "channelConnectionState": 0 },
+                  "marker": { "symbol": "TOO-LONG" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertThrowsError(try SkinEngine().loadComposite(named: "InvalidStateMarker")) { error in
+            guard case SkinLoadError.parseFailure(let reason) = error else {
+                return XCTFail("Expected fail-closed parseFailure, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("marker"), reason)
+        }
+    }
+
+    func testAllReactiveSnapshotMatchKeysAndTimestampsAreAccepted() throws {
+        let skinDir = skinsDir.appendingPathComponent("CompleteMatchContract")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "CompleteMatchContract",
+          "surfaces": {
+            "tabBar.tab.normal": {
+              "states": [
+                {
+                  "name": "all-supported-fields",
+                  "match": {
+                    "agentState": 0,
+                    "previousAgentState": 0,
+                    "commandState": 0,
+                    "previousCommandState": 0,
+                    "lastCommandExitCode": 0,
+                    "channelId": 0,
+                    "channelIsActive": 0,
+                    "channelUnread": 0,
+                    "channelConnectionState": 0,
+                    "notificationKind": 0,
+                    "outputEventCount": 0,
+                    "spriteState": 0,
+                    "timeSince": {
+                      "iTimeAgentStateChange": { "$gte": 0 },
+                      "iTimeLastOutput": { "$gte": 0 },
+                      "iTimeLastNotification": { "$gte": 0 },
+                      "iTimeCommandStart": { "$gte": 0 },
+                      "iTimeCommandEnd": { "$gte": 0 }
+                    }
+                  },
+                  "marker": { "symbol": "A" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+        XCTAssertNoThrow(try SkinEngine().loadComposite(named: "CompleteMatchContract"))
+    }
+
+    func testMissingOrCorruptStateImageFailsClosed() throws {
+        for (skinName, assetData) in [
+            ("MissingStateImage", nil),
+            ("CorruptStateImage", Data("not a png".utf8)),
+        ] {
+            let skinDir = skinsDir.appendingPathComponent(skinName)
+            try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+            let json = """
+            {
+              "version": "4.0",
+              "name": "\(skinName)",
+              "surfaces": {
+                "tabBar.tab.normal": {
+                  "states": [
+                    {
+                      "name": "running",
+                      "match": { "channelConnectionState": 1 },
+                      "fill": { "kind": "image", "path": "state.png", "tile": "stretch" }
+                    }
+                  ]
+                }
+              }
+            }
+            """
+            try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+            if let assetData {
+                try assetData.write(to: skinDir.appendingPathComponent("state.png"))
+            }
+
+            XCTAssertThrowsError(try SkinEngine().loadComposite(named: skinName), skinName) { error in
+                guard case SkinLoadError.parseFailure(let reason) = error else {
+                    return XCTFail("Expected fail-closed parseFailure, got \(error)")
+                }
+                XCTAssertTrue(reason.contains("state fill"), reason)
+            }
+        }
+    }
+
+    func testValidStateImageIsAvailableToLiveSkinContext() throws {
+        let skinDir = skinsDir.appendingPathComponent("StateImage")
+        try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+        let json = """
+        {
+          "version": "4.0",
+          "name": "StateImage",
+          "surfaces": {
+            "tabBar.tab.active": {
+              "states": [
+                {
+                  "name": "running",
+                  "match": { "channelConnectionState": 0 },
+                  "fill": { "kind": "image", "path": "state.png", "tile": "ninepatch" }
+                }
+              ]
+            }
+          }
+        }
+        """
+        try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+        try writePNG(to: skinDir.appendingPathComponent("state.png"))
+        try Data(#"{"stretchX":[0,1],"stretchY":[0,1]}"#.utf8)
+            .write(to: skinDir.appendingPathComponent("state.ninepatch.json"))
+
+        let loaded = try SkinEngine().loadComposite(named: "StateImage")
+        let snapshot = ReactiveUniformSnapshot()
+        snapshot.setChannelConnectionState(0)
+        let context = MainWindowController.buildSkinContext(
+            overriding: loaded.surfaces,
+            reactive: snapshot,
+            images: loaded.images,
+            ninepatches: loaded.ninepatches
+        )
+
+        guard case .image(_, let tile, let ninepatch, _) = context.currentState(for: .tabBarTabActive).fill else {
+            return XCTFail("A validated state image must remain available after the live context is built")
+        }
+        XCTAssertEqual(tile, .ninepatch)
+        XCTAssertEqual(ninepatch, NinepatchSidecar(stretchX: [0, 1], stretchY: [0, 1]))
+    }
+
+    func testMalformedNestedStatePresentationFailsClosed() throws {
+        let invalidStates = [
+            "\"text\": { \"color\": \"#ffffff\", \"shadow\": { \"color\": \"not-a-color\", \"opacity\": 1, \"blur\": 2, \"offsetX\": 0, \"offsetY\": 0 } }",
+            "\"animation\": { \"fill\": { \"duration\": 0.2, \"curve\": \"futureCurve\" } }",
+        ]
+
+        for (index, invalidState) in invalidStates.enumerated() {
+            let skinName = "InvalidNestedState\(index)"
+            let skinDir = skinsDir.appendingPathComponent(skinName)
+            try FileManager.default.createDirectory(at: skinDir, withIntermediateDirectories: true)
+            let json = """
+            {
+              "version": "4.0",
+              "name": "\(skinName)",
+              "surfaces": {
+                "tabBar.tab.active": {
+                  "states": [
+                    {
+                      "name": "running",
+                      "match": { "channelConnectionState": 0 },
+                      \(invalidState)
+                    }
+                  ]
+                }
+              }
+            }
+            """
+            try Data(json.utf8).write(to: skinDir.appendingPathComponent("skin.json"))
+
+            XCTAssertThrowsError(try SkinEngine().loadComposite(named: skinName), skinName) { error in
+                guard case SkinLoadError.parseFailure(let reason) = error else {
+                    return XCTFail("Expected fail-closed parseFailure, got \(error)")
+                }
+                XCTAssertTrue(reason.contains("state presentation"), reason)
+            }
+        }
     }
 
     // MARK: - v1-only manifest (no surfaces block)
@@ -232,5 +466,19 @@ final class SkinEngineLoadCompositeTests: XCTestCase {
         XCTAssertEqual(loaded.layout?.screenVessel?.variant, .mercuryScreenBody)
         XCTAssertEqual(loaded.layout?.seam?.thickness, 20)
         XCTAssertEqual(loaded.layout?.seam?.style, .mechanical)
+    }
+
+    private func writePNG(to url: URL) throws {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "SkinEngineLoadCompositeTests", code: 1)
+        }
+        try png.write(to: url)
     }
 }

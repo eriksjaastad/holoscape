@@ -117,6 +117,9 @@ struct LoadedSkin {
     let fonts: SkinFontBundle
     /// Decoded images keyed by their manifest path. Empty for `.defaults`.
     let images: [String: NSImage]
+    /// Valid ninepatch sidecars keyed by manifest image path. State variants
+    /// need the same metadata as base fills so their rendering is complete.
+    let ninepatches: [String: NinepatchSidecar]
     /// Absolute URL of the skin's directory. Nil for `.defaults`. Used
     /// by Task 11 to scope its FSEventStream watcher.
     let skinDir: URL?
@@ -180,6 +183,7 @@ struct LoadedSkin {
         surfaces: nil,
         fonts: SkinFontBundle(fonts: [:], registeredURLs: []),
         images: [:],
+        ninepatches: [:],
         skinDir: nil,
         windowShape: nil,
         validationBannerReason: nil,
@@ -1048,6 +1052,8 @@ class SkinEngine {
             throw SkinLoadError.notFound(name)
         }
 
+        try validateStatePresentations(in: manifest, skinName: name)
+
         // Images may throw SkinAssetError.invalidPath — surface as parseFailure
         // so callers have one error type to handle.
         let images: [String: NSImage]
@@ -1056,6 +1062,7 @@ class SkinEngine {
         } catch {
             throw SkinLoadError.parseFailure("image load failed for '\(name)': \(error)")
         }
+        try validateStateImageAssets(in: manifest, images: images, skinName: name)
 
         // For each loaded image, attempt to load its `.ninepatch.json`
         // sidecar. A missing sidecar is not an error — the image just
@@ -1190,6 +1197,7 @@ class SkinEngine {
             surfaces: effectiveSurfaces,
             fonts: fonts,
             images: images,
+            ninepatches: ninepatches,
             skinDir: skinDir,
             windowShape: validatedShape,
             validationBannerReason: effectiveBannerReason,
@@ -1200,6 +1208,161 @@ class SkinEngine {
             chromeValidation: loadedChromeValidation,
             layout: manifest.layout
         )
+    }
+
+    /// State presentation is applied live to already-visible chrome. Reject a
+    /// malformed state block before loading assets or registering fonts so a
+    /// hot reload cannot install only the valid subset of a broken skin.
+    private func validateStatePresentations(in manifest: SkinDefinition, skinName: String) throws {
+        guard let surfaces = manifest.surfaces else { return }
+
+        for (surfaceKey, descriptor) in surfaces {
+            // Unknown surfaces belong to a future manifest contract. They are
+            // dropped during conversion, so validating their state fields with
+            // this build's vocabulary would break forward compatibility.
+            guard SurfaceKey(rawValue: surfaceKey) != nil else { continue }
+            if let marker = descriptor.marker {
+                try validate(marker: marker, location: "\(surfaceKey).marker", skinName: skinName)
+            }
+            for (index, state) in (descriptor.states ?? []).enumerated() {
+                let location = "\(surfaceKey).states[\(index)]"
+                guard !state.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location): empty name")
+                }
+                try validate(match: state.match, location: location, skinName: skinName)
+                if let marker = state.marker {
+                    try validate(marker: marker, location: "\(location).marker", skinName: skinName)
+                }
+                if let fill = state.fill {
+                    try validate(fill: fill, location: "\(location).fill", skinName: skinName)
+                }
+                if let border = state.border {
+                    guard border.width.isFinite, border.width >= 0, NSColor(hex: border.color) != nil else {
+                        throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).border")
+                    }
+                }
+                if let corner = state.corner, !isValid(corner: corner) {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).corner")
+                }
+                if let text = state.text, !isValid(text: text) {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).text")
+                }
+                if let animation = state.animation, !isValid(animation: animation) {
+                    throw SkinLoadError.parseFailure("invalid state presentation in '\(skinName)' at \(location).animation")
+                }
+            }
+        }
+    }
+
+    private func isValid(corner: CornerDescriptor) -> Bool {
+        switch corner {
+        case .uniform(let radius):
+            return radius.isFinite && radius >= 0
+        case .asymmetric(let topLeft, let topRight, let bottomRight, let bottomLeft):
+            return [topLeft, topRight, bottomRight, bottomLeft].allSatisfy { $0.isFinite && $0 >= 0 }
+        }
+    }
+
+    private func isValid(text: TextDescriptor) -> Bool {
+        NSColor(hex: text.color) != nil && text.shadow.map(isValid(shadow:)) != false
+    }
+
+    private func isValid(shadow: ShadowDescriptor) -> Bool {
+        NSColor(hex: shadow.color) != nil
+            && shadow.opacity.isFinite && (0...1).contains(shadow.opacity)
+            && shadow.blur.isFinite && shadow.blur >= 0
+            && shadow.offsetX.isFinite && shadow.offsetY.isFinite
+    }
+
+    private func isValid(animation: AnimationDescriptor) -> Bool {
+        [animation.default, animation.fill, animation.corner]
+            .compactMap { $0 }
+            .allSatisfy(isValid(curve:))
+    }
+
+    private func isValid(curve: CurveDescriptor) -> Bool {
+        let supportedCurves: Set<String> = ["linear", "easeIn", "easeOut", "easeInEaseOut", "easeInOut", "spring"]
+        return curve.duration.isFinite && curve.duration >= 0 && supportedCurves.contains(curve.curve)
+    }
+
+    private func validate(marker: StateMarkerDescriptor, location: String, skinName: String) throws {
+        let trimmed = marker.symbol.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == marker.symbol,
+              (1...3).contains(marker.symbol.count),
+              marker.symbol.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            throw SkinLoadError.parseFailure("invalid state marker in '\(skinName)' at \(location)")
+        }
+    }
+
+    private func validate(fill: FillDescriptor, location: String, skinName: String) throws {
+        switch fill {
+        case .color(let color):
+            guard NSColor(hex: color) != nil else {
+                throw SkinLoadError.parseFailure("invalid state fill in '\(skinName)' at \(location)")
+            }
+        case .gradient(_, let stops):
+            guard stops.count >= 2,
+                  stops.allSatisfy({ $0.offset.isFinite && (0...1).contains($0.offset) && NSColor(hex: $0.color) != nil }) else {
+                throw SkinLoadError.parseFailure("invalid state gradient in '\(skinName)' at \(location)")
+            }
+        case .image:
+            break // Asset sandboxing and decode validation run in loadImages.
+        }
+    }
+
+    private func validate(match: MatchExpression, location: String, skinName: String) throws {
+        let operators: Set<String> = ["$eq", "$ne", "$gt", "$gte", "$lt", "$lte"]
+
+        for (key, value) in match.conditions {
+            if ReactiveUniformSnapshot.supportedMatchKeys.contains(key) {
+                guard validate(matchValue: value, allowedOperators: operators) else {
+                    throw SkinLoadError.parseFailure("invalid state match in '\(skinName)' at \(location).match.\(key)")
+                }
+                continue
+            }
+            if key == "timeSince", case .timeSince(let nested) = value,
+               !nested.isEmpty,
+               nested.allSatisfy({
+                   ReactiveUniformSnapshot.supportedTimestampNames.contains($0.key)
+                       && validate(matchValue: $0.value, allowedOperators: operators)
+               }) {
+                continue
+            }
+            throw SkinLoadError.parseFailure("invalid state match key in '\(skinName)' at \(location).match.\(key)")
+        }
+    }
+
+    /// A state override is atomic presentation data. If its image is missing
+    /// or corrupt, reject the skin instead of silently retaining the base fill
+    /// while applying the rest of the state override.
+    private func validateStateImageAssets(
+        in manifest: SkinDefinition,
+        images: [String: NSImage],
+        skinName: String
+    ) throws {
+        guard let surfaces = manifest.surfaces else { return }
+        for (surfaceKey, descriptor) in surfaces {
+            guard SurfaceKey(rawValue: surfaceKey) != nil else { continue }
+            for (index, state) in (descriptor.states ?? []).enumerated() {
+                guard let fill = state.fill, case .image(let path, _, let sprite) = fill else { continue }
+                guard let image = images[path], sprite.map({ $0.isValid(imageSize: image.size) }) != false else {
+                    throw SkinLoadError.parseFailure(
+                        "invalid state fill in '\(skinName)' at \(surfaceKey).states[\(index)].fill: image '\(path)' or its sprite descriptor is invalid"
+                    )
+                }
+            }
+        }
+    }
+
+    private func validate(matchValue: MatchValue, allowedOperators: Set<String>) -> Bool {
+        switch matchValue {
+        case .scalar(let value):
+            return value.isFinite
+        case .operators(let values):
+            return !values.isEmpty && values.allSatisfy { allowedOperators.contains($0.key) && $0.value.isFinite }
+        case .timeSince:
+            return false
+        }
     }
 
     /// Amplify Task 9.4 — build `ResolvedDragRegion`s from the
