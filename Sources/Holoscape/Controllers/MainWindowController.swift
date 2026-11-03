@@ -289,9 +289,6 @@ class MainWindowController: NSObject, NSWindowDelegate, @preconcurrency NSSplitV
     internal var chromeWindowControlHoverOverlaysForTesting: [NSView] {
         chromeWindowControlHoverGroup?.overlays ?? []
     }
-    internal func setChromeWindowControlsHoveredForTesting(_ hovered: Bool) {
-        chromeWindowControlHoverGroup?.setHovered(hovered)
-    }
     internal func setComposerDraftForTesting(_ draft: String, channelId: UUID) {
         composerStates.updateDraft(draft, for: channelId)
         if activeChannelId == channelId {

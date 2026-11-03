@@ -769,10 +769,15 @@ extension MainWindowController {
 final class ChromeWindowControlHoverGroup: NSObject {
     private weak var contentView: NSView?
     private var trackingArea: NSTrackingArea?
+    private let groupRect: CGRect
     let overlays: [NSView]
 
     init(contentView: NSView, buttons: [NSWindow.ButtonType: NSButton]) {
         self.contentView = contentView
+        self.groupRect = buttons.values
+            .map(\.frame)
+            .reduce(CGRect.null) { $0.union($1) }
+            .insetBy(dx: -5, dy: -5)
         self.overlays = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { type in
             guard let button = buttons[type] else { return nil }
             let overlay = ChromeWindowControlGlyphView(buttonType: type, frame: button.frame)
@@ -781,10 +786,6 @@ final class ChromeWindowControlHoverGroup: NSObject {
         }
         super.init()
 
-        let groupRect = buttons.values
-            .map(\.frame)
-            .reduce(CGRect.null) { $0.union($1) }
-            .insetBy(dx: -5, dy: -5)
         if !groupRect.isNull {
             let area = NSTrackingArea(
                 rect: groupRect,
@@ -797,10 +798,17 @@ final class ChromeWindowControlHoverGroup: NSObject {
         }
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(applicationDidBecomeActive(_:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(applicationDidResignActive(_:)),
             name: NSApplication.didResignActiveNotification,
             object: nil
         )
+        reconcileHoverStateFromPointer()
     }
 
     deinit {
@@ -815,20 +823,42 @@ final class ChromeWindowControlHoverGroup: NSObject {
         overlays.forEach { $0.removeFromSuperview() }
     }
 
-    @objc func mouseEntered(with event: NSEvent) {
-        setHovered(NSApp.isActive)
+    @objc(mouseEntered:)
+    func mouseEntered(_ event: NSEvent) {
+        reconcileHoverState(pointerInside: true, applicationIsActive: NSApp.isActive)
     }
 
-    @objc func mouseExited(with event: NSEvent) {
-        setHovered(false)
+    @objc(mouseExited:)
+    func mouseExited(_ event: NSEvent) {
+        reconcileHoverState(pointerInside: false, applicationIsActive: NSApp.isActive)
+    }
+
+    func reconcileHoverState(pointerInside: Bool, applicationIsActive: Bool) {
+        setHovered(pointerInside && applicationIsActive)
     }
 
     func setHovered(_ hovered: Bool) {
         overlays.forEach { $0.isHidden = !hovered }
     }
 
+    @objc private func applicationDidBecomeActive(_ notification: Notification) {
+        reconcileHoverStateFromPointer()
+    }
+
     @objc private func applicationDidResignActive(_ notification: Notification) {
-        setHovered(false)
+        reconcileHoverState(pointerInside: false, applicationIsActive: false)
+    }
+
+    private func reconcileHoverStateFromPointer() {
+        guard let contentView, let window = contentView.window, !groupRect.isNull else {
+            setHovered(false)
+            return
+        }
+        let localPoint = contentView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        reconcileHoverState(
+            pointerInside: groupRect.contains(localPoint),
+            applicationIsActive: NSApp.isActive
+        )
     }
 }
 

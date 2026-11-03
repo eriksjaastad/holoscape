@@ -113,11 +113,16 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
         XCTAssertEqual(zoom.accessibilityLabel(), "Enter full screen")
         XCTAssertEqual(zoom.toolTip, "Enter full screen (Option-click to zoom window)")
 
+        let hoverGroup = try XCTUnwrap(controller.chromeWindowControlHoverGroup)
+        XCTAssertTrue(hoverGroup.responds(to: NSSelectorFromString("mouseEntered:")))
+        XCTAssertTrue(hoverGroup.responds(to: NSSelectorFromString("mouseExited:")))
         XCTAssertEqual(controller.chromeWindowControlHoverOverlaysForTesting.count, 3)
         XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
-        controller.setChromeWindowControlsHoveredForTesting(true)
+        hoverGroup.reconcileHoverState(pointerInside: true, applicationIsActive: true)
         XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy { !$0.isHidden })
-        controller.setChromeWindowControlsHoveredForTesting(false)
+        hoverGroup.reconcileHoverState(pointerInside: true, applicationIsActive: false)
+        XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
+        hoverGroup.reconcileHoverState(pointerInside: false, applicationIsActive: true)
         XCTAssertTrue(controller.chromeWindowControlHoverOverlaysForTesting.allSatisfy(\.isHidden))
 
         controller.updateChromeZoomButtonLabel(isFullScreen: true)
