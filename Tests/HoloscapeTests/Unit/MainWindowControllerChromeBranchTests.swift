@@ -133,6 +133,14 @@ final class MainWindowControllerChromeBranchTests: XCTestCase {
                        "Exiting chrome must restore the standard minimum window size")
         XCTAssertGreaterThanOrEqual(controller.window.contentView?.bounds.width ?? 0, 720)
         XCTAssertGreaterThanOrEqual(controller.window.contentView?.bounds.height ?? 0, 500)
+        let splitView = controller.splitViewForTesting
+        XCTAssertEqual(controller.splitView(splitView, constrainMinCoordinate: 0, ofSubviewAt: 0), 220,
+                       "Exiting chrome must restore the sidebar minimum")
+        XCTAssertLessThanOrEqual(
+            controller.splitView(splitView, constrainMaxCoordinate: splitView.bounds.width, ofSubviewAt: 0),
+            splitView.bounds.width - splitView.dividerThickness - 480,
+            "Exiting chrome must restore the main-content minimum"
+        )
         let root = try XCTUnwrap(controller.window.contentView)
         XCTAssertTrue(controller.appContentHost.superview === root)
         XCTAssertEqual(hostAttachmentConstraints(for: controller.appContentHost, in: root).count, 4,
