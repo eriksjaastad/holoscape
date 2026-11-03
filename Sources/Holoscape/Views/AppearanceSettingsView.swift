@@ -180,9 +180,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
         skinLibrary.addTableColumn(skinColumn)
         libraryScrollView.documentView = skinLibrary
 
-        let skinActionSpacer = NSView()
-        skinActionSpacer.widthAnchor.constraint(equalToConstant: 148).isActive = true
-        let skinActions = NSStackView(views: [skinActionSpacer, createSkinButton, duplicateSkinButton, revealSkinButton, deleteSkinButton])
+        let skinActions = NSStackView(views: [createSkinButton, duplicateSkinButton, revealSkinButton, deleteSkinButton])
         skinActions.orientation = .horizontal
         skinActions.spacing = 8
         skinActions.setAccessibilityIdentifier("skin-actions")
@@ -299,7 +297,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
     ]
 
     private func loadCurrentValues() {
-        refreshSkinPopupItems(selectedTitle: config.skinName ?? skinPopup.titleOfSelectedItem)
+        refreshSkinPopupItems(selectedIdentifier: config.skinName ?? selectedSkinIdentifier())
 
         // Shader
         let selectedShader = Self.shaderPathMap.first { $0.value == config.customShaderPath }?.key ?? "None"
@@ -374,7 +372,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
         guard let name = promptForSkinName(title: "Create Skin", message: "Enter a name for the new skin:") else { return }
         do {
             _ = try skinLibraryService.create(name: name)
-            refreshSkinPopupItems(selectedTitle: name)
+            refreshSkinPopupItems(selectedIdentifier: name)
             applySelectedSkin(named: name)
         } catch {
             showSkinError(error)
@@ -386,7 +384,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
         guard source != "Default", let name = promptForSkinName(title: "Duplicate Skin", message: "Enter a name for the copy of \"\(source)\":") else { return }
         do {
             _ = try skinLibraryService.create(name: name, from: .existing(source))
-            refreshSkinPopupItems(selectedTitle: name)
+            refreshSkinPopupItems(selectedIdentifier: name)
             applySelectedSkin(named: name)
         } catch {
             showSkinError(error)
@@ -409,7 +407,7 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
               confirmSkinDeletion(name: name) else { return }
         do {
             try skinLibraryService.delete(name: name, activeSkinName: config.skinName)
-            refreshSkinPopupItems(selectedTitle: config.skinName ?? "Default")
+            refreshSkinPopupItems(selectedIdentifier: config.skinName ?? "Default")
         } catch {
             showSkinError(error)
         }
@@ -565,13 +563,13 @@ class AppearanceSettingsWindowController: NSWindowController, NSMenuDelegate, NS
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu == skinPopup.menu else { return }
-        refreshSkinPopupItems(selectedTitle: skinPopup.titleOfSelectedItem)
+        refreshSkinPopupItems(selectedIdentifier: selectedSkinIdentifier())
     }
 
-    private func refreshSkinPopupItems(selectedTitle: String? = nil) {
+    private func refreshSkinPopupItems(selectedIdentifier: String? = nil) {
         skinCatalog = skinEngine.availableSkinCatalog()
-        let selectedIdentifier = selectedTitle.flatMap { title in
-            skinCatalog.first(where: { $0.identifier == title || $0.displayName == title })?.identifier
+        let selectedIdentifier = selectedIdentifier.flatMap { identifier in
+            skinCatalog.contains(where: { $0.identifier == identifier }) ? identifier : nil
         } ?? "Default"
         isRefreshingSkinControls = true
         defer { isRefreshingSkinControls = false }

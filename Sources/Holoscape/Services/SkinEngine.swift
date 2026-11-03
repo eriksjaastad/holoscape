@@ -340,15 +340,26 @@ class SkinEngine {
     /// manifest names are presentation only and may collide.
     func availableSkinCatalog() -> [SkinCatalogEntry] {
         [.default] + availableSkins().dropFirst().compactMap { identifier in
-            guard let definition = loadSkin(named: identifier) else { return nil }
+            guard let resolved = resolveCatalogEntry(named: identifier) else { return nil }
             return SkinCatalogEntry(
                 identifier: identifier,
-                displayName: nonEmpty(definition.name) ?? identifier,
-                author: nonEmpty(definition.author),
-                description: nonEmpty(definition.description),
-                source: userSkinExists(named: identifier) ? .user : .bundled
+                displayName: nonEmpty(resolved.definition.name) ?? identifier,
+                author: nonEmpty(resolved.definition.author),
+                description: nonEmpty(resolved.definition.description),
+                source: resolved.source
             )
         }
+    }
+
+    private func resolveCatalogEntry(named name: String) -> (definition: SkinDefinition, source: SkinCatalogSource)? {
+        do {
+            guard let resolved = try resolveSkinLocationReportingBundleFailure(named: name),
+                  let definition = loadSkin(named: name, from: resolved.url) else { return nil }
+            return (definition, resolved.source)
+        } catch {
+            NSLog("SkinEngine: could not resolve catalog entry '\(name)': \(error)")
+        }
+        return nil
     }
 
     private func nonEmpty(_ value: String?) -> String? {
@@ -358,17 +369,6 @@ class SkinEngine {
         return trimmed
     }
 
-    private func userSkinExists(named name: String) -> Bool {
-        let directoryManifest = skinsDirectory
-            .appendingPathComponent(name)
-            .appendingPathComponent("skin.json")
-        if FileManager.default.fileExists(atPath: directoryManifest.path) {
-            return true
-        }
-        var isDirectory: ObjCBool = false
-        let bundle = skinsDirectory.appendingPathComponent(name + ".wamp")
-        return FileManager.default.fileExists(atPath: bundle.path, isDirectory: &isDirectory) && !isDirectory.boolValue
-    }
 
     /// Enumerate skin names under the user's `~/.holoscape/skins/`
     /// (or the `HOLOSCAPE_CONFIG_DIR` test override). Both directory-
@@ -475,6 +475,12 @@ class SkinEngine {
     }
 
     private func resolveSkinDirReportingBundleFailure(named name: String) throws -> URL? {
+        try resolveSkinLocationReportingBundleFailure(named: name)?.url
+    }
+
+    private func resolveSkinLocationReportingBundleFailure(
+        named name: String
+    ) throws -> (url: URL, source: SkinCatalogSource)? {
         guard name != "Default" else { return nil }
 
         // User directory: try dir-layout first, then `.wamp`.
@@ -482,7 +488,7 @@ class SkinEngine {
             named: name,
             under: skinsDirectory
         ) {
-            return url
+            return (url, .user)
         }
 
         // Bundle directory: same order. A malformed user bundle must not
@@ -492,7 +498,7 @@ class SkinEngine {
                named: name,
                under: bundleRoot
            ) {
-            return url
+            return (url, .bundled)
         }
 
         return nil

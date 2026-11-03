@@ -146,4 +146,29 @@ final class SkinEngineDensityGateTests: XCTestCase {
         let frame = storageButton.convert(storageButton.bounds, to: scrollView.contentView)
         XCTAssertTrue(scrollView.contentView.bounds.intersects(frame))
     }
+
+    func testAppearanceSettingsKeepsSkinActionsInsideMinimumWidth() throws {
+        let service = ConfigService()
+        let controller = AppearanceSettingsWindowController(
+            config: service.load().appearance,
+            configService: service
+        )
+        let window = try XCTUnwrap(controller.window)
+        window.setContentSize(NSSize(width: 520, height: 520))
+        let contentView = try XCTUnwrap(window.contentView)
+        contentView.layoutSubtreeIfNeeded()
+
+        let buttons = [
+            controller._createSkinButtonForTesting,
+            controller._duplicateSkinButtonForTesting,
+            controller._revealSkinButtonForTesting,
+            controller._deleteSkinButtonForTesting,
+        ]
+        for button in buttons {
+            let frame = button.convert(button.bounds, to: contentView)
+            XCTAssertGreaterThanOrEqual(frame.minX, contentView.bounds.minX)
+            XCTAssertLessThanOrEqual(frame.maxX, contentView.bounds.maxX)
+            XCTAssertGreaterThanOrEqual(frame.width, button.intrinsicContentSize.width)
+        }
+    }
 }

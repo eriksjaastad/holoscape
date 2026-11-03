@@ -55,6 +55,28 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         XCTAssertEqual(controller._skinPopupForTesting.titleOfSelectedItem, "Mercury Deck")
     }
 
+    func testRefreshingPopupPreservesIdentifierWhenDisplayNamesCollide() throws {
+        for identifier in ["First", "Second"] {
+            let skin = root.appendingPathComponent("bundle/\(identifier)")
+            try FileManager.default.createDirectory(at: skin, withIntermediateDirectories: true)
+            try Data(#"{"version":"2.0","name":"Shared Display Name"}"#.utf8)
+                .write(to: skin.appendingPathComponent("skin.json"))
+        }
+        var config = configService.load().appearance
+        config.skinName = "Second"
+        let controller = TestAppearanceController(
+            config: config,
+            configService: configService,
+            skinEngine: engine,
+            skinLibraryService: library
+        )
+        let popup = controller._skinPopupForTesting
+
+        controller.menuNeedsUpdate(try XCTUnwrap(popup.menu))
+
+        XCTAssertEqual(popup.selectedItem?.representedObject as? String, "Second")
+    }
+
     func testCreateRefreshesSelectsAndUsesDelegateApplyPath() throws {
         let controller = TestAppearanceController(config: configService.load().appearance, configService: configService, skinEngine: engine, skinLibraryService: library)
         controller.promptedNames = ["Aurora"]

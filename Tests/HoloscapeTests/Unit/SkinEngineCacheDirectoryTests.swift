@@ -86,5 +86,9 @@ final class SkinEngineCacheDirectoryTests: XCTestCase {
         let loaded = try engine.loadComposite(named: skinName)
 
         XCTAssertEqual(loaded.skinDir?.path, bundledSkin.path)
+        XCTAssertEqual(
+            engine.availableSkinCatalog().first(where: { $0.identifier == skinName })?.source,
+            .bundled
+        )
     }
 }
