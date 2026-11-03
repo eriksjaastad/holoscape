@@ -118,13 +118,21 @@ final class SkinLibraryService {
         guard let url = engine.resolvedSkinDirectoryForManagement(named: name) else {
             throw SkinLibraryError.sourceMissing(name)
         }
+        guard try !isSymbolicLink(url), isApprovedSourceDirectory(url), try isRealDirectory(url) else {
+            throw SkinLibraryError.unsafePath(name)
+        }
         return url
     }
 
     func isUserManaged(name: String) -> Bool {
         guard name != "Default" else { return false }
         let url = engine.skinsDirectory.appendingPathComponent(name, isDirectory: true)
-        return isSafeUserDirectory(url)
+        do {
+            return try isSafeUserDirectory(url)
+        } catch {
+            NSLog("SkinLibraryService: could not inspect user skin '\(name)': \(error.localizedDescription)")
+            return false
+        }
     }
 
     func delete(name: String, activeSkinName: String?) throws {
@@ -133,7 +141,10 @@ final class SkinLibraryService {
         }
         guard name != "Default" else { throw SkinLibraryError.notUserManaged(name) }
         let url = engine.skinsDirectory.appendingPathComponent(name, isDirectory: true)
-        guard isSafeUserDirectory(url) else {
+        if try isSymbolicLink(url) {
+            throw SkinLibraryError.unsafePath(name)
+        }
+        guard try isSafeUserDirectory(url) else {
             if !isSafePathComponent(name) { throw SkinLibraryError.unsafePath(name) }
             throw SkinLibraryError.notUserManaged(name)
         }
@@ -311,18 +322,42 @@ final class SkinLibraryService {
         return resolvedPath != rootPath && resolvedPath.hasPrefix(rootPath + "/")
     }
 
-    private func isSafeUserDirectory(_ url: URL) -> Bool {
+    private func isSafeUserDirectory(_ url: URL) throws -> Bool {
         let rootPath = engine.skinsDirectory.standardizedFileURL.path
         let candidate = url.standardizedFileURL
         let candidatePath = candidate.path
         guard isSafePathComponent(url.lastPathComponent),
               candidatePath.hasPrefix(rootPath + "/"),
               candidatePath != rootPath,
+              try !isSymbolicLink(candidate),
+              try isRealDirectory(candidate),
               isSafeResolvedDirectory(candidate) else { return false }
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: candidatePath, isDirectory: &isDirectory), isDirectory.boolValue else { return false }
-        var isManifestDirectory: ObjCBool = false
         let manifest = candidate.appendingPathComponent("skin.json")
-        return fileManager.fileExists(atPath: manifest.path, isDirectory: &isManifestDirectory) && !isManifestDirectory.boolValue
+        return try !isSymbolicLink(manifest) && fileTypeIfPresent(at: manifest) == .typeRegular
+    }
+
+    private func isRealDirectory(_ url: URL) throws -> Bool {
+        try fileTypeIfPresent(at: url) == .typeDirectory
+    }
+
+    private func isSymbolicLink(_ url: URL) throws -> Bool {
+        try fileTypeIfPresent(at: url) == .typeSymbolicLink
+    }
+
+    private func fileTypeIfPresent(at url: URL) throws -> FileAttributeType? {
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: url.path)
+            guard let type = attributes[.type] as? FileAttributeType else {
+                throw SkinLibraryError.destinationFailure("Could not determine the filesystem type of '\(url.lastPathComponent)'.")
+            }
+            return type
+        } catch {
+            let cocoaError = error as NSError
+            if cocoaError.domain == NSCocoaErrorDomain,
+               (cocoaError.code == NSFileNoSuchFileError || cocoaError.code == NSFileReadNoSuchFileError) {
+                return nil
+            }
+            throw SkinLibraryError.destinationFailure(error.localizedDescription)
+        }
     }
 }

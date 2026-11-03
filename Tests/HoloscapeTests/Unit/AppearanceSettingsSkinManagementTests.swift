@@ -94,6 +94,27 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         XCTAssertEqual(delegate.changedConfigs.last?.skinName, "Aurora")
     }
 
+    func testCreatePersistsStableIdentifierAndFreshControllerRestoresSelection() throws {
+        let controller = TestAppearanceController(config: configService.load().appearance, configService: configService, skinEngine: engine, skinLibraryService: library)
+        controller.promptedNames = ["Aurora"]
+
+        controller._performCreateForTesting()
+
+        XCTAssertEqual(configService.load().appearance.skinName, "Aurora")
+        let freshEngine = SkinEngine(
+            skinsDirectoryOverride: root.appendingPathComponent("skins"),
+            bundledSkinsDirectoryOverride: root.appendingPathComponent("bundle")
+        )
+        let freshController = TestAppearanceController(
+            config: configService.load().appearance,
+            configService: configService,
+            skinEngine: freshEngine,
+            skinLibraryService: SkinLibraryService(engine: freshEngine)
+        )
+        XCTAssertEqual(freshController._skinPopupForTesting.selectedItem?.representedObject as? String, "Aurora")
+        XCTAssertTrue(freshController._skinCatalogForTesting.contains { $0.identifier == "Aurora" && $0.source == .user })
+    }
+
     func testDuplicateRefreshesSelectsAndUsesDelegateApplyPath() throws {
         _ = try library.create(name: "Source")
         let controller = TestAppearanceController(config: configService.load().appearance, configService: configService, skinEngine: engine, skinLibraryService: library)
@@ -109,6 +130,27 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         XCTAssertEqual(delegate.selectedNames, ["Copy"])
     }
 
+    func testDuplicateFailureIsVisibleWithoutPartialLibraryOrConfigState() throws {
+        let source = try library.create(name: "Source")
+        let controller = TestAppearanceController(config: configService.load().appearance, configService: configService, skinEngine: engine, skinLibraryService: library)
+        controller._skinPopupForTesting.selectItem(withTitle: "Source")
+        try Data("{ invalid".utf8).write(to: source.appendingPathComponent("skin.json"), options: .atomic)
+        controller.promptedNames = ["Copy"]
+        let delegate = AppearanceDelegateSpy()
+        controller.settingsDelegate = delegate
+
+        controller._performDuplicateForTesting()
+
+        XCTAssertEqual(controller.presentedError as? SkinLibraryError, .invalidSource("Source"))
+        XCTAssertEqual(controller._skinPopupForTesting.selectedItem?.representedObject as? String, "Source")
+        XCTAssertNil(configService.load().appearance.skinName)
+        XCTAssertTrue(delegate.selectedNames.isEmpty)
+        XCTAssertTrue(delegate.changedConfigs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("skins/Copy").path))
+        let entries = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("skins"), includingPropertiesForKeys: nil)
+        XCTAssertFalse(entries.contains { $0.lastPathComponent.hasPrefix(".Copy.staging-") })
+    }
+
     func testDeleteChooserExcludesActiveSkinAndDeletesConfirmedInactiveSkin() throws {
         _ = try library.create(name: "Active")
         _ = try library.create(name: "Inactive")
@@ -116,6 +158,8 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         config.skinName = "Active"
         let controller = TestAppearanceController(config: config, configService: configService, skinEngine: engine, skinLibraryService: library)
         controller.skinChosenForDeletion = "Inactive"
+        let delegate = AppearanceDelegateSpy()
+        controller.settingsDelegate = delegate
 
         controller._performDeleteForTesting()
 
@@ -123,6 +167,10 @@ final class AppearanceSettingsSkinManagementTests: XCTestCase {
         XCTAssertTrue(controller.confirmationRequested)
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("skins/Active").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("skins/Inactive").path))
+        XCTAssertFalse(controller._skinCatalogForTesting.contains { $0.identifier == "Inactive" })
+        XCTAssertEqual(controller._skinPopupForTesting.selectedItem?.representedObject as? String, "Active")
+        XCTAssertTrue(delegate.selectedNames.isEmpty)
+        XCTAssertTrue(delegate.changedConfigs.isEmpty)
     }
 
     func testDeleteIsDisabledWhenNoInactiveUserSkinExists() throws {
